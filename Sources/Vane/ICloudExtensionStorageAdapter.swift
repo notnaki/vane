@@ -42,12 +42,12 @@ import Foundation
         }
     }
 
-    func bindAccount(_ account: String) async throws {
+    func bindAccount(_ account: String, fresh: Bool = false) async throws {
         guard !working else { throw ICloudFailure.unavailable("An extension sync operation is already in progress. Retry after it finishes.") }
         working = true; defer { working = false }
         accountBound = false
         try ICloudApplyContext.check()
-        try await cache.bindAccount(account)
+        try await cache.bindAccount(account, fresh: fresh)
         try ICloudApplyContext.check()
         accountBound = true
     }

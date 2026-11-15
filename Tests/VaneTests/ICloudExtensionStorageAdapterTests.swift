@@ -118,18 +118,28 @@ import XCTest
         }
     }
 
-    func testLegacyUnboundCacheIsQuarantinedBeforeCapture() async throws {
+    func testLegacyUnboundCacheIsAdoptedForSameAccountAndQuarantinedOnAccountReset() async throws {
         try await fixture { root, profile, owner in
             let ns = namespace(profile), adapter = try await owner.adapter(root)
-            try await adapter.apply([item(ns, "old-cloud-only", "secret")], deleted: [], enabled: [.extensionSyncData])
+            let pending = try item(ns, "old-cloud-only", "secret")
+            try await adapter.apply([pending], deleted: [], enabled: [.extensionSyncData])
             let file = root.appendingPathComponent("icloud-extension-storage.json")
             var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
             legacy.removeValue(forKey: "accountID")
-            try JSONSerialization.data(withJSONObject: legacy).write(to: file)
-            let restarted = try await owner.adapter(root)
-            let captured = try await restarted.capture([.extensionSyncData])
+            let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+            try legacyData.write(to: file)
+            // Upgrade, same account: the journal keeps its baseline, so the cache must too,
+            // or capture would upload this inactive extension's settings as deletions.
+            let upgraded = try await owner.adapter(root)
+            let kept = try await upgraded.capture([.extensionSyncData])
+            XCTAssertEqual(kept, [pending])
+            // The journal reset for a new account: the legacy cache is quarantined.
+            try legacyData.write(to: file)
+            let switched = try await owner.adapter(root)
+            try await switched.bindAccount("new-account", fresh: true)
+            let captured = try await switched.capture([.extensionSyncData])
             XCTAssertTrue(captured.isEmpty)
-            XCTAssertEqual(restarted.pendingExtensionCount, 0)
+            XCTAssertEqual(switched.pendingExtensionCount, 0)
         }
     }
 

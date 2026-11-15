@@ -70,10 +70,12 @@ actor ICloudJournal {
     }
     func setEpochs(_ epochs: [ICloudCategory: String]) throws { var next = state; next.epochs = epochs; try save(next) }
 
-    func bindAccount(_ account: String, allowMerge: Bool) throws {
+    /// True when the journal reset for a different account.
+    @discardableResult
+    func bindAccount(_ account: String, allowMerge: Bool) throws -> Bool {
         guard !account.isEmpty else { throw ICloudFailure.unavailable("Sign in to iCloud to start syncing.") }
         let identity = ICloudIdentity.digest(account)
-        guard state.accountID != identity else { return }
+        guard state.accountID != identity else { return false }
         if state.accountID != nil {
             guard allowMerge else { throw ICloudFailure.accountChanged }
             // Keep the previous account's unsent work recoverable, never replay it to
@@ -83,7 +85,8 @@ actor ICloudJournal {
             var next = State(deviceID: state.deviceID)
             next.accountID = identity
             try save(next)
-        } else { var next = state; next.accountID = identity; try save(next) }
+            return true
+        } else { var next = state; next.accountID = identity; try save(next); return false }
     }
 
     func capture(_ items: [ICloudItem], enabled: Set<ICloudCategory>) throws {

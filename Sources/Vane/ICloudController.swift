@@ -401,7 +401,12 @@ import Foundation
             guard generation == token else { return }
             let account = try await transport.rebindAccount()
             guard generation == token else { return }
-            try await journal.bindAccount(account, allowMerge: true)
+            if try await journal.bindAccount(account, allowMerge: true) {
+                // The previous account's extension cache must not seed the new one.
+                for adapter in adapters.compactMap({ $0 as? ICloudExtensionStorageAdapter }) {
+                    try await adapter.bindAccount(account, fresh: true)
+                }
+            }
             guard generation == token else { return }
             needsAccountConsent = false; masterEnabled = true; stopped = false; saveSwitches()
             await syncNow()

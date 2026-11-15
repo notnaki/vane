@@ -78,11 +78,20 @@ actor ICloudExtensionStorageCache {
     }
 
     /// Bind only after the transport and journal have validated the Apple Account.
-    /// Legacy/unapplied shadows are recovery data, never local data for a new account.
-    func bindAccount(_ account: String) throws {
+    /// A cache from before binding existed belongs to the journal's account, like the
+    /// journal's own legacy state: wiping it would turn inactive extensions' baselines into
+    /// uploaded deletions. `fresh` (the journal just reset for a new account) and a
+    /// different bound account quarantine it instead.
+    func bindAccount(_ account: String, fresh: Bool = false) throws {
         guard !account.isEmpty else { throw ICloudFailure.accountChanged }
         let old = try loaded(), identity = ICloudIdentity.digest(account)
-        guard old.accountID != identity else { return }
+        guard fresh || old.accountID != identity else { return }
+        if !fresh, old.accountID == nil {
+            var adopted = old
+            adopted.accountID = identity
+            try save(adopted)
+            return
+        }
         if FileManager.default.fileExists(atPath: file.path) {
             let archive = file.deletingLastPathComponent().appendingPathComponent(
                 "icloud-extension-storage-account-" + UUID().uuidString + ".json")
