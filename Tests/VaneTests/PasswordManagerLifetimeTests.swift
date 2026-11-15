@@ -10,7 +10,7 @@ import XCTest
         secrets.beginEditing("fixture", account: "ada", password: "secret")
         XCTAssertTrue(secrets.authorizesEdit("fixture"))
         let context = secrets.secretContext
-        XCTAssertFalse(secrets.authorizesEdit("fixture", now: .now + .seconds(61)))
+        XCTAssertFalse(secrets.authorizesEdit("fixture", now: .now + .seconds(301)))
         XCTAssertNil(secrets.editing)
         XCTAssertTrue(secrets.draftPassword.isEmpty)
         XCTAssertNotEqual(context, secrets.secretContext)
@@ -35,16 +35,20 @@ import XCTest
         }
     }
 
-    func testDeactivationClearsDraftsAndInvalidatesPendingAuthentication() {
+    func testScreenLockClearsDraftsButAppSwitchKeepsThem() {
         let secrets = PasswordManagerSecrets()
         secrets.watchSettingsClose()
         defer { secrets.stopWatching() }
-        for name in [NSApplication.didResignActiveNotification] {
+        secrets.editing = "fixture"
+        secrets.draftPassword = "secret"
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        XCTAssertEqual(secrets.editing, "fixture", "Switching apps mid-edit must keep the draft")
+        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
             secrets.editing = "fixture"
             secrets.draftPassword = "secret"
             secrets.revealed["fixture"] = "secret"
             let context = secrets.secretContext
-            NotificationCenter.default.post(name: name, object: NSApp)
+            NSWorkspace.shared.notificationCenter.post(name: name, object: nil)
             XCTAssertNil(secrets.editing)
             XCTAssertTrue(secrets.draftPassword.isEmpty)
             XCTAssertTrue(secrets.revealed.isEmpty)

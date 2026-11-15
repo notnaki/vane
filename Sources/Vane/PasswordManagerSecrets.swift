@@ -12,12 +12,11 @@ import Combine
     var secretContext = UUID()
     var forgetting: [String: Task<Void, Never>] = [:]
     private var closing: Any?
-    private var observers: [Any] = []
     private var workspaceObservers: [Any] = []
     private var editExpires: ContinuousClock.Instant?
     private var editExpiry: Task<Void, Never>?
 
-    func beginEditing(_ id: String, account: String, password: String, lifetime: Duration = .seconds(60)) {
+    func beginEditing(_ id: String, account: String, password: String, lifetime: Duration = .seconds(300)) {
         forget()
         editing = id
         draftAccount = account
@@ -49,17 +48,9 @@ import Combine
 
     func watchSettingsClose() {
         if closing == nil { closing = SettingsWindow.onClose { [weak self] in self?.forget() } }
-        guard observers.isEmpty else { return }
-        let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.forget() }
-        })
-        observers.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] note in
-            let window = note.object as? NSWindow
-            MainActor.assumeIsolated {
-                if SettingsWindow.holds(window) { self?.forget() }
-            }
-        })
+        guard workspaceObservers.isEmpty else { return }
+        // Not on app switch or key-window loss: copying something from elsewhere mid-edit
+        // is normal. Locking the screen or sleeping ends the authorization.
         for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.forget() }
@@ -71,8 +62,6 @@ import Combine
         forget()
         if let closing { NotificationCenter.default.removeObserver(closing) }
         closing = nil
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers.removeAll()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         workspaceObservers.removeAll()
     }
