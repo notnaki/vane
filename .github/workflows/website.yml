@@ -26,7 +26,7 @@ jobs:
         run: |
           for file in *.js; do node --check "$file"; done
       - name: Website regressions
-        run: node tests/galaxy.test.cjs
+        run: node tests/site-metadata.test.cjs
       - name: Check local links and sitemap
         run: python3 tests/site-links.py
       - name: Validate diff whitespace
