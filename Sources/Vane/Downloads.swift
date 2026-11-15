@@ -40,11 +40,21 @@ import Darwin
             for item in manager.items {
                 if item.status.isLive { manager.cancel(item) }
                 item.operation = UUID()
+                item.privateStore = nil
+                item.privateResumer?.stopLoading()
+                item.privateResumer = nil
+                item.sourceWeb = nil
+                manager.deleteResume(item)
                 ScopedPaths.releaseBookmark(owner: item.scopeOwner)
                 item.destinationLease = nil
             }
             manager.items = []
             manager.retryOrigins = [:]
+            manager.resuming = [:]
+            manager.saveAsDownloads = [:]
+            manager.privateResumeData = [:]
+            manager.resumer?.stopLoading()
+            manager.resumer = nil
         }
         cache[id] = nil
         try? FileManager.default.removeItem(at: listURL(for: id, in: dir))
@@ -1354,7 +1364,7 @@ import Darwin
     /// profile's data store is what carries the cookies the range request needs.
     private func resumeWebView(for item: Item) -> WKWebView {
         if let source = item.sourceWeb { return source }
-        guard profileID == Profile.incognito.id, let store = item.privateStore else { return resumer }
+        guard profileID == Profile.incognito.id, let store = item.privateStore else { return profileResumer() }
         if let web = item.privateResumer { return web }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
@@ -1363,11 +1373,15 @@ import Darwin
         return web
     }
 
-    private lazy var resumer: WKWebView = {
+    private var resumer: WKWebView?
+    private func profileResumer() -> WKWebView {
+        if let resumer { return resumer }
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = ProfileManager.dataStore(for: profileID)
-        return WKWebView(frame: .zero, configuration: cfg)
-    }()
+        let web = WKWebView(frame: .zero, configuration: cfg)
+        resumer = web
+        return web
+    }
 
     private func resumeURL(_ item: Item) -> URL {
         Self.resumeDir(for: profileID, in: directory)

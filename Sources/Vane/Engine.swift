@@ -3173,6 +3173,9 @@ struct Stash {
         didSet {
             Suspension.updateLifecycle()
             if oldValue.contains(where: \.isPrivate) { Tab.clearPrivateHTTPSStateIfUnused() }
+            if oldValue.contains(where: \.isPrivate), !all.contains(where: \.isPrivate) {
+                PrivateBrowsing.endSession()
+            }
         }
     }
 

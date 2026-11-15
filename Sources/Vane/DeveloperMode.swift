@@ -26,9 +26,16 @@ import ExtensionResourceBridge
     private static let base = "developerSites"
     private static func key(_ profile: UUID) -> String { ProfileManager.defaultsKey(base, profile) }
     private static var defaults: UserDefaults { .vane }
+    private static var privateSites: [String: Bool] = [:]
+
+    static func clearPrivateState() {
+        privateSites = [:]
+        defaults.removeObject(forKey: key(Profile.incognito.id))
+    }
 
     private static func table(_ profile: UUID) -> [String: Bool] {
-        (defaults.dictionary(forKey: key(profile)) ?? [:]).compactMapValues { $0 as? Bool }
+        if profile == Profile.incognito.id { return privateSites }
+        return (defaults.dictionary(forKey: key(profile)) ?? [:]).compactMapValues { $0 as? Bool }
     }
 
     /// The answer for a url: what the user said about its host, else whether it is local.
@@ -49,7 +56,9 @@ import ExtensionResourceBridge
     static func set(_ on: Bool, for url: URL, profile: UUID) {
         var t = table(profile)
         set(on, for: url, in: &t)
-        if t.isEmpty { defaults.removeObject(forKey: key(profile)) } else { defaults.set(t, forKey: key(profile)) }
+        if profile == Profile.incognito.id { privateSites = t }
+        else if t.isEmpty { defaults.removeObject(forKey: key(profile)) }
+        else { defaults.set(t, forKey: key(profile)) }
     }
 
     /// Read the answer for where the tab is and put it on the web view. Runs on attach, on

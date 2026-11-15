@@ -5,10 +5,20 @@ import Foundation
 /// transfers, save locations, resume credentials, bookmarks, and persistence.
 @MainActor final class DownloadLibrary: ObservableObject {
     private static let shared = DownloadLibrary(profiles: .shared) { Downloads.manager(for: $0) }
-    private static let incognito = DownloadLibrary(managers: [Downloads.manager(for: Profile.incognito.id)])
+    private static var incognito: DownloadLibrary?
 
     static func library(for profileID: UUID) -> DownloadLibrary {
-        profileID == Profile.incognito.id ? incognito : shared
+        guard profileID == Profile.incognito.id else { return shared }
+        if let incognito { return incognito }
+        let library = DownloadLibrary(managers: [Downloads.manager(for: profileID)])
+        incognito = library
+        return library
+    }
+
+    static func endPrivateSession() {
+        Downloads.forget(Profile.incognito.id)
+        // Keep an already-open Library bound to the next session, without its old rows.
+        incognito?.observe([Downloads.manager(for: Profile.incognito.id)])
     }
 
     private var managers: [Downloads] = []
