@@ -2272,9 +2272,34 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         }
     }
 
-    func testHardeningNativeFormGettersPreserveActionAndExternalControls() async throws {
+    func testHardeningClobberedAncestryCannotSkipCrossOriginOuterForm() async throws {
         let (web, _) = try await fixture("""
-            <form id=login action='/login'><input name=tagName><input name=action><input name=elements><input id=password type=password></form>
+            <form action="https://other.example.test/login"><div id="mount"></div></form>
+            <input name="assignedSlot" form="inner">
+            """)
+        _ = try await js(web, """
+            const f = document.createElement('form'); f.id = 'inner'; f.action = '/login';
+            f.innerHTML = '<input id=password type=password>';
+            document.getElementById('mount').append(f);
+            """)
+        expectEqual(try await js(web, "document.getElementById('inner').assignedSlot === document.querySelector('[name=assignedSlot]')") as? Bool, true)
+        _ = try await js(web, "password.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
+    func testHardeningShadowedFormMethodsFailClosed() async throws {
+        for name in ["getAttribute", "querySelectorAll", "parentNode"] {
+            let (web, _) = try await fixture("<form action='/login'><input name=\(name)><input id=password type=password></form>")
+            _ = try await js(web, "password.focus()")
+            expectFalse(try await fill(web))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testHardeningOrdinaryShadowingNamesKeepActionAndExternalControls() async throws {
+        let (web, _) = try await fixture("""
+            <form id=login action='/login'><input name=action><input name=method><input id=password type=password></form>
             <button id=submit form=login formaction='https://other.example.test/login'>Go</button>
             """)
         _ = try await js(web, "password.focus()")

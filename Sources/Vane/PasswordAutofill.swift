@@ -21,6 +21,28 @@ import WebKit
       function isForm(el) {
         try { return elementTagName.call(el) === 'FORM'; } catch (_) { return false; }
       }
+      // ponytail: fail closed. A control whose name or id shadows a property read here
+      // can redirect every later read (parentNode, assignedSlot, getAttribute,
+      // querySelectorAll...), so such a form is never trusted, rather than hardening each read.
+      // Properties this script reads from forms and their ancestors. Ordinary field names
+      // (name, action, submit, title, id...) stay usable; they are read through attributes.
+      var shadowable = new Set(['tagName', 'localName', 'nodeName', 'nodeType', 'elements', 'children',
+        'childNodes', 'firstChild', 'parentNode', 'parentElement', 'previousSibling', 'nextSibling',
+        'assignedSlot', 'getRootNode', 'shadowRoot', 'host', 'isConnected', 'ownerDocument', 'contains',
+        'getAttribute', 'hasAttribute', 'attributes', 'querySelector', 'querySelectorAll', 'matches',
+        'closest', 'getBoundingClientRect', 'getClientRects', 'offsetWidth', 'offsetHeight', 'offsetParent',
+        'clientTop', 'clientLeft', 'textContent', 'inert', 'hidden', 'style', 'addEventListener',
+        'removeEventListener', 'dispatchEvent']);
+      function clobbered(form) {
+        try {
+          return Array.from(formElements.call(form)).some(function (el) {
+            return ['name', 'id'].some(function (key) {
+              var value = elementGetAttribute.call(el, key);
+              return !!value && shadowable.has(value);
+            });
+          });
+        } catch (_) { return true; }
+      }
       // Follow only public open roots. Slots participate in ancestor visibility;
       // closed roots never become reachable, even through a previously cached field.
       function composedParent(el) {
@@ -248,7 +270,7 @@ import WebKit
               }
             }
             return Array.from(new Set(forms)).every(function (form) {
-              if (formElements.call(form).length > 20000) return false;
+              if (formElements.call(form).length > 20000 || clobbered(form)) return false;
               var action = new URL(elementGetAttribute.call(form, 'action') || document.baseURI, document.baseURI);
               if (action.origin !== topOrigin || action.protocol !== 'https:') return false;
               var overrides = deepQuery(form, '[formaction]');
