@@ -1656,7 +1656,14 @@ struct PaletteSizing {
     /// is decided by asking the same functions that will run — `Bangs` then `Search.url`,
     /// the address bar's own decision table — rather than by a second copy of the heuristic.
     private func typedRow() -> PaletteRow? {
-        if let activeBang, let url = Bangs.scopedURL(typed, using: activeBang) {
+        if let activeBang {
+            // Never fall through to the default engine with words meant for this bang.
+            guard let url = Bangs.scopedURL(typed, using: activeBang) else {
+                return PaletteRow(id: "typed", icon: "exclamationmark.triangle", title: typed.isEmpty ? activeBang.name : typed,
+                                  trailing: "Blocked", kind: "\(activeBang.name) address is not valid") { _ in
+                    axAnnounce("\(activeBang.name) has an address Vane cannot open. Edit it in Settings.")
+                }
+            }
             return PaletteRow(id: "typed", icon: "magnifyingglass",
                               title: typed.isEmpty ? "Open \(activeBang.name)" : typed,
                               kind: "\(typed.isEmpty ? "Open" : "Search") \(activeBang.name)") { target in

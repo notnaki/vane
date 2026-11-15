@@ -69,7 +69,9 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
     static var current: SearchEngine {
         get {
             let id = defaults.string(forKey: "searchEngine")
-            return all.first { $0.id == id } ?? defaultEngine
+            // A custom engine saved before validation existed falls back rather than
+            // leaving Return dead with no explanation.
+            return all.first { $0.id == id && validTemplate($0.queryTemplate) } ?? defaultEngine
         }
         set { defaults.set(newValue.id, forKey: "searchEngine") }
     }
@@ -125,7 +127,8 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
 
     /// Shared by Settings, add, and use-time validation of already persisted engines.
     nonisolated static func validTemplate(_ template: String) -> Bool {
-        template.components(separatedBy: "%s").count == 2
+        // Engines have always filled every %s; only the scheme and authority are new rules.
+        template.contains("%s")
             && webURL(template.replacingOccurrences(of: "%s", with: "vane")) != nil
     }
 

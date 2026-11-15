@@ -179,6 +179,9 @@ extension SearchEngine {
         guard scheme == "http" || scheme == "https" else {
             return .rejected("A bang address has to be http or https.")
         }
+        guard Search.validTemplate(template) else {
+            return .rejected("A bang address cannot include a username or password.")
+        }
         let name = bang.name.trimmingCharacters(in: .whitespacesAndNewlines)
         var list = custom
         let replaced = list.contains { $0.keyword == keyword }

@@ -70,7 +70,7 @@ import XCTest
             "file:///tmp/%s", "data:text/html,%s", "ftp://example.com/%s",
             "https:///search?q=%s", "https://?q=%s", "https://user:pass@example.com/%s",
             "https://user@example.com/%s", "https://:pass@example.com/%s", "https://@example.com/%s",
-            "https://example.com/search", "https://example.com/?q=%s&other=%s",
+            "https://example.com/search",
         ] {
             let engine = SearchEngine(id: "unsafe", name: "Unsafe", queryTemplate: template)
             Search.add(engine)
@@ -80,12 +80,17 @@ import XCTest
             // Simulate templates persisted by an earlier version, bypassing add validation.
             Search.custom = [engine]
             Search.current = engine
-            XCTAssertNil(Search.search("probe"), template)
+            XCTAssertEqual(Search.current.id, Search.defaultEngine.id, template)
+            XCTAssertNotEqual(Search.search("probe")?.scheme, "javascript", template)
             XCTAssertNil(Bangs.resolve("!unsafe probe"), template)
             XCTAssertNil(Bangs.resolve("!unsafe"), template)
             Search.custom = []
         }
-        for template in ["https://search.example/find/%s?ui=1", "http://localhost:8080/?q=%s"] {
+        if case .accepted = Bangs.add(.init(bang: "private", "Private", "https://user:pass@intranet.example/?q=%s")) {
+            XCTFail("A bang must not carry credentials the search would then drop")
+        }
+        for template in ["https://search.example/find/%s?ui=1", "http://localhost:8080/?q=%s",
+                         "https://example.com/?q=%s&other=%s"] {
             let engine = SearchEngine(id: "valid", name: "Valid", queryTemplate: template)
             Search.add(engine)
             XCTAssertEqual(Search.custom, [engine])
