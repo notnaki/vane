@@ -447,10 +447,8 @@ import SwiftUI
             guard ok else { problem = "Authentication was not completed. Try again and use your Mac login password if Touch ID is unavailable."; return }
             guard let plain = readPassword(login, profileID: scope) else { return }
             selected = login.id
-            secrets.editing = login.id
             draftSite = login.origin.url.absoluteString
-            secrets.draftAccount = login.account
-            secrets.draftPassword = plain
+            secrets.beginEditing(login.id, account: login.account, password: plain)
         }
     }
 
@@ -463,15 +461,16 @@ import SwiftUI
     }
 
     private func cancelEditing() {
-        secrets.editing = nil
-        secrets.draftAccount = ""
-        secrets.draftPassword = ""
-        secrets.secretContext = UUID()
+        secrets.forget()
     }
 
     /// A changed username is a different keychain item, so the old one goes — but only after
     /// the new one is safely stored, and only after its last-used stamp has moved across.
     private func commit(_ login: Passwords.Login) {
+        guard secrets.authorizesEdit(login.id) else {
+            problem = "Password editing expired. Choose Edit and authenticate again."
+            return
+        }
         let account = secrets.draftAccount
         // Checked before anything is closed or written. An empty password is not a password,
         // and quietly keeping the old one while the field says otherwise is worse than
@@ -1261,7 +1260,6 @@ struct PasswordOfferCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var reviewing = false
-    @State private var draftSite = ""
     @State private var draftAccount = ""
     @State private var draftPassword = ""
     @State private var revealRequest = UUID()
@@ -1276,7 +1274,7 @@ struct PasswordOfferCard: View {
             if reviewing {
                 VStack(alignment: .leading, spacing: Look.inset) {
                     Text("Website").font(Look.caption).foregroundStyle(Look.inkSecondary)
-                    TextField("HTTPS website", text: $draftSite).textFieldStyle(.roundedBorder)
+                    Text(offer.origin.url.absoluteString).textSelection(.enabled)
                     Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
                     TextField("Username (optional)", text: $draftAccount).textFieldStyle(.roundedBorder)
                     PasswordDraftField(text: $draftPassword)
@@ -1385,17 +1383,16 @@ struct PasswordOfferCard: View {
                 .accessibilityLabel("Never save passwords for \(offer.host)")
             Button(reviewing ? (offer.update ? "Update" : "Save") : "Review…") {
                 if !reviewing {
-                    draftSite = offer.origin.url.absoluteString
                     draftAccount = offer.account
                     draftPassword = offer.password
                     reviewing = true
-                } else if let origin = PasswordsPane.siteOrigin(draftSite) {
-                    if let saveReviewed { saveReviewed(origin, draftAccount, draftPassword) }
+                } else {
+                    if let saveReviewed { saveReviewed(offer.origin, draftAccount, draftPassword) }
                     else { save() }
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(reviewing && (PasswordsPane.siteOrigin(draftSite) == nil || draftPassword.isEmpty))
+            .disabled(reviewing && draftPassword.isEmpty)
         }
         .controlSize(.large)
     }

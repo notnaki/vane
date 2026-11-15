@@ -20,18 +20,19 @@ import XCTest
         XCTAssertNil(tab.pendingSave)
     }
 
-    func testReviewedWebsiteAndUsernameAreSavedExactly() throws {
+    func testReviewedOfferCannotRetargetItsCapturedSecret() throws {
         TestEnvironment.prepare()
-        let profile = UUID(), original = PasswordOrigin(host: "before-\(UUID()).invalid")
-        let corrected = PasswordOrigin(host: "after-\(UUID()).invalid", port: 8443)
-        defer { Passwords.deleteAll(profileID: profile) }
-        let tab = Tab(profileID: profile)
-        defer { tab.tearDown() }
-        tab.pendingSave = PendingSave(host: original.host, account: "", password: "typed")
-        tab.confirmSave(origin: corrected, account: " corrected ", password: "reviewed")
-        XCTAssertNil(tab.passwordSaveProblem)
-        XCTAssertEqual(Passwords.password(origin: corrected, account: " corrected ", profileID: profile), "reviewed")
-        XCTAssertNil(Passwords.password(origin: original, account: "", profileID: profile))
+        let profile = UUID(), original = PasswordOrigin(host: "captured.invalid")
+        let offer = PendingSave(host: original.host, account: "ada", password: "captured")
+        var operations = Passwords.ReviewOperations()
+        operations.snapshot = { _, _, _ in XCTFail("Retargeting reached Keychain"); return (nil, nil) }
+        operations.insert = { _, _, _, _ in XCTFail("Retargeted secret was saved") }
+        for destination in [PasswordOrigin(host: "other.invalid"), PasswordOrigin(host: original.host, port: 8443)] {
+            XCTAssertThrowsError(try Passwords.reviewedSave(offer, origin: destination, account: "ada",
+                password: "captured", profileID: profile, operations: operations)) { error in
+                XCTAssertTrue(error is Passwords.SaveOriginChanged)
+            }
+        }
     }
 
     func testPrivateWindowCannotPersistEvenAStagedOffer() {
