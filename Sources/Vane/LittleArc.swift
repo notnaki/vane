@@ -463,6 +463,7 @@ import SwiftUI
                 store.clearSuggestions()
                 store.palette = nil
                 store.tabs.forEach { $0.tearDown() }
+                Library.shared.forgetPrivateQuery(in: store)
                 TabStore.all.removeAll { $0 === store }
                 LittleArc.keptDelegates.removeAll { $0 === self }
                 rebuild()

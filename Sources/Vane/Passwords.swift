@@ -843,8 +843,40 @@ enum Passwords {
             secretDidChange()
             let integrations = IntegrationTokens.deleteEverything(dataDir: dataDir, keychain: keychain)
             let ai = AIKeys.deleteEverything(namespace: dataDir.map { UserDefaults.suiteName(forDataDir: $0) }, delete: keychain.delete)
-            return integrations && ai
+            let mirrors = deletePasswordMirrors(dataDir: dataDir, keychain: keychain)
+            return integrations && ai && mirrors
         }
+    }
+
+    /// Only the production instance can own iCloud mirrors. Enumerate metadata in its
+    /// data-protection Keychain and remove exact references, including legacy envelopes.
+    private static func deletePasswordMirrors(dataDir: String?, keychain: IntegrationTokens.Keychain) -> Bool {
+        guard dataDir == nil else { return true }
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecReturnAttributes as String: true, kSecReturnPersistentRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll]
+        if let group = try? ICloudProvisioning.current().keychainGroup { query[kSecAttrAccessGroup as String] = group }
+        var output: CFTypeRef?
+        let status = keychain.copy(query as CFDictionary, &output)
+        // Unentitled (local/dev) builds cannot reach, and so never wrote, a mirror.
+        if status == errSecItemNotFound || status == errSecMissingEntitlement { return true }
+        guard status == errSecSuccess, let items = output as? [[String: Any]] else { return false }
+        let prefix = "io.github.notnaki.vane.icloud-secrets.v1."
+        for item in items {
+            guard let service = item[kSecAttrService as String] as? String, service.hasPrefix(prefix) else { continue }
+            let parts = service.dropFirst(prefix.count).split(separator: ".", maxSplits: 2)
+            guard parts.count >= 2, parts[1] == "passwords" else { continue }
+            guard let reference = item[kSecValuePersistentRef as String] as? Data else { return false }
+            var deletion: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                kSecValuePersistentRef as String: reference, kSecUseDataProtectionKeychain as String: true,
+                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny]
+            deletion[kSecAttrAccessGroup as String] = query[kSecAttrAccessGroup as String]
+            let deleted = keychain.delete(deletion as CFDictionary)
+            guard deleted == errSecSuccess || deleted == errSecItemNotFound else { return false }
+        }
+        return true
     }
 
     static func deleteAll(profileID: UUID, dataDir: String? = Store.overrideDirectory,

@@ -222,6 +222,52 @@ final class IntegrationTokenTests: XCTestCase {
         XCTAssertEqual(keychain.items.first?[kSecAttrCreator as String] as? Int, 123)
     }
 
+    func testPrivacyLeftoversEraseRemovesPasswordMirrorsUsingFakeKeychainOnly() {
+        let keychain = TokenKeychain()
+        let prefix = "io.github.notnaki.vane.icloud-secrets.v1.fixture."
+        let removed = ["passwords", "passwords.payloads", "passwords.revisions", "passwords.baseline.device"]
+        let kept = ["aiKeys.payloads", "passwords-other", "unrelated"]
+        for service in removed + kept {
+            keychain.items.append([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: prefix + service,
+                kSecAttrAccount as String: UUID().uuidString,
+                kSecAttrSynchronizable as String: true,
+                kSecValueData as String: Data("fake mirror payload".utf8),
+                kSecValuePersistentRef as String: Data(service.utf8),
+            ])
+        }
+        let base = keychain.operations
+        var operations = base
+        var mirrorReads = 0, mirrorDeletes = 0
+        operations.copy = { query, result in
+            let query = query as NSDictionary as! [String: Any]
+            if query[kSecUseDataProtectionKeychain as String] as? Bool == true {
+                mirrorReads += 1
+                XCTAssertEqual(query[kSecAttrSynchronizable as String] as? String, kSecAttrSynchronizableAny as String)
+                XCTAssertEqual(query[kSecReturnPersistentRef as String] as? Bool, true)
+            }
+            return base.copy(query as CFDictionary, result)
+        }
+        operations.delete = { query in
+            let query = query as NSDictionary as! [String: Any]
+            if query[kSecUseDataProtectionKeychain as String] as? Bool == true {
+                mirrorDeletes += 1
+                XCTAssertEqual(query[kSecAttrSynchronizable as String] as? String, kSecAttrSynchronizableAny as String)
+                XCTAssertNotNil(query[kSecValuePersistentRef as String])
+            }
+            return base.delete(query as CFDictionary)
+        }
+        // Test instances never own the production iCloud mirror.
+        Passwords.deleteEverything(dataDir: directory, keychain: operations)
+        XCTAssertEqual(keychain.items.count, removed.count + kept.count)
+        Passwords.deleteEverything(dataDir: nil, keychain: operations)
+        XCTAssertEqual(Set(keychain.items.compactMap { $0[kSecAttrService as String] as? String }),
+                       Set(kept.map { prefix + $0 }))
+        XCTAssertEqual(mirrorReads, 1)
+        XCTAssertEqual(mirrorDeletes, removed.count)
+    }
+
     func testDefaultInstanceErasePreservesEveryIsolatedInstance() {
         let keychain = TokenKeychain()
         let own = store(keychain, profile: ProfileManager.defaultID, directory: nil)

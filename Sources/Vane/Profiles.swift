@@ -691,6 +691,7 @@ struct Space: Identifiable, Codable, Equatable {
         deletedProfileIDs.insert(id)
         profiles = remaining
         activeID = nextActiveID
+        forgetLibraryPreferences(for: id)
         Tab.discardPreparedFirstPage(for: id)
         FavouritePreviews.shared.forget(profileID: id)
 
@@ -751,6 +752,7 @@ struct Space: Identifiable, Codable, Equatable {
         let faviconRetirement = sandboxed ? nil : Favicons.forget(id, retiring: true)
         profiles = remaining
         activeID = nextActiveID
+        forgetLibraryPreferences(for: id)
         // Invalidate documents before yielding to credential/database workers. A stale
         // window must not enqueue new content for a profile already absent on disk.
         EaselStore.forget(id, directory: directory)
@@ -804,11 +806,17 @@ struct Space: Identifiable, Codable, Equatable {
         let suffix = suffix(id)
         for base in ["pinShape", "todayShape"] {
             defaults.removeObject(forKey: defaultsKey(base, id))
+            // Include orphaned Space keys, without touching another profile's shapes.
             for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(base + ".") && key.hasSuffix(suffix) {
                 let space = String(key.dropFirst(base.count + 1).dropLast(suffix.count))
                 if UUID(uuidString: space) != nil { defaults.removeObject(forKey: key) }
             }
         }
+    }
+
+    private func forgetLibraryPreferences(for id: UUID) {
+        Archive.forget(id)
+        Self.removeArchivedPreferences(for: id)
     }
 
     /// Cookies, localStorage, IndexedDB, caches — everything WebKit keeps for a profile.

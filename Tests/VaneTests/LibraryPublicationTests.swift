@@ -97,12 +97,13 @@ import XCTest
 
     func testSectionChangeClearsQueryButKeepsVisitFiltersAndPrivateFallback() {
         let store = fixture(isPrivate: true)
-        Library.shared.query = "needle"
+        Library.shared.setQuery("needle", in: store)
         Library.shared.littleArcOnly = true
         Library.shared.completedOnly = true
         let publications = Publications(store: store)
         Library.open(.downloads, in: store)
-        XCTAssertEqual(publications.values, ["section": 1, "query": 1, "focus": 1])
+        XCTAssertEqual(publications.values, ["section": 1, "focus": 1])
+        XCTAssertEqual(Library.shared.query(in: store), "")
         XCTAssertTrue(Library.shared.littleArcOnly)
         XCTAssertTrue(Library.shared.completedOnly)
         publications.reset()

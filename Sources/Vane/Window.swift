@@ -1038,6 +1038,7 @@ extension VaneWindow {
                     // Take the pages down with the window: see `Tab.tearDown`. Every Space
                     // the store was keeping alive behind its own goes too — see `Stash`.
                     let pages = one.everyTab
+                    Library.shared.forgetPrivateQuery(in: one)
                     TabStore.all.removeAll { $0 === one }
                     SharedTabs.release(pages, excluding: one)
                     one.extensions.sync()

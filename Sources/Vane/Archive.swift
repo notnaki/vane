@@ -69,6 +69,11 @@ extension Prefs {
         return a
     }
 
+    static func forget(_ profileID: UUID) {
+        caches.removeValue(forKey: profileID)?.entries = []
+        UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey("archivedTabs", profileID))
+    }
+
     private let profileID: UUID
     @Published private(set) var entries: [Entry] = []
 

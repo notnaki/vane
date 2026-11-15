@@ -184,18 +184,17 @@ import XCTest
     func testWidthChangesRetainLibrarySearchAndRealQueryUpdates() throws {
         TestEnvironment.prepare()
         let previous = SidebarWidth.shared.width
-        let query = Library.shared.query
         SidebarWidth.shared.setLiveWidth(228)
+        let (window, root, store, _) = browser(width: 900)
         defer {
             SidebarWidth.shared.setLiveWidth(previous)
-            Library.shared.query = query
+            Library.shared.forgetPrivateQuery(in: store)
         }
-        let (window, root, _, _) = browser(width: 900)
         let field = try XCTUnwrap(descendants(CommandField.BarField.self, in: root).first {
             $0.placeholderString == Library.shared.section.searchPrompt
         })
         let originalWidth = field.frame.width
-        Library.shared.query = "kept search"
+        Library.shared.setQuery("kept search", in: store)
         root.layoutSubtreeIfNeeded()
         XCTAssertEqual(field.stringValue, "kept search")
         SidebarWidth.shared.setLiveWidth(164)
@@ -203,7 +202,7 @@ import XCTest
         XCTAssertTrue(field.isDescendant(of: root))
         XCTAssertEqual(field.stringValue, "kept search")
         XCTAssertEqual(field.frame.width, originalWidth, accuracy: 0.001)
-        Library.shared.query = "updated search"
+        Library.shared.setQuery("updated search", in: store)
         root.layoutSubtreeIfNeeded()
         XCTAssertEqual(field.stringValue, "updated search")
         XCTAssertFalse(window.isVisible)
