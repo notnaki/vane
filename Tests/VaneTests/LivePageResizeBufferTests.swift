@@ -421,6 +421,7 @@ import XCTest
         for _ in 0..<3 where !f.paints.isEmpty { nextPaint(&f.paints)(); frame?() }
         frame?(); frame?()
         XCTAssertTrue(f.paints.isEmpty, "A held drag must not repaint the same clamped viewport every frame")
+        XCTAssertEqual(f.web.frame.width, 720.5, "The held fit covers the wider visible clip")
     }
 
     func testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick() {

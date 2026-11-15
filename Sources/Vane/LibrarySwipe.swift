@@ -140,9 +140,9 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 // A close waits for the page's paint before the card moves. Fading the
                 // panel at the close itself left an empty strip beside the unmoved page.
                 .opacity(libraryOpen || gesture.progress != nil || progress > 0 ? 1 : 0)
-                // Hit testing and accessibility already end at the close; staying enabled
-                // until it has left keeps the departing panel from greying out.
-                .disabled(palettePresented || (!libraryOpen && gesture.progress == nil && progress == 0))
+                // Disabled at the close itself, even while still visible: that is what takes
+                // keyboard focus out of a Library closed by a path that cleared libraryOpen first.
+                .disabled(palettePresented || (!libraryOpen && gesture.progress == nil))
                 .allowsHitTesting(libraryOpen && !palettePresented)
                 .accessibilityHidden(!libraryOpen || palettePresented)
                 .zIndex(1)
