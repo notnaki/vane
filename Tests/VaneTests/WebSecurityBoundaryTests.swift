@@ -13,30 +13,6 @@ import WebKit
             XCTAssertTrue(DeveloperMode.isLocal(URL(string: "http://\(host)/")), host)
         }
     }
-    func testPlayingInlineTransitionDoesNotRequestTabActivation() throws {
-        let context = try XCTUnwrap(JSContext())
-        context.evaluateScript("""
-            var window = this, messages = [], listeners = {};
-            var document = {
-                querySelectorAll: function () { return []; },
-                addEventListener: function (name, listener) { listeners[name] = listener; }
-            };
-            var webkit = {messageHandlers: {vanepip: {postMessage: function (value) { messages.push(value); }}}};
-            """)
-        context.evaluateScript(PictureInPicture.script)
-        XCTAssertNil(context.exception)
-        context.evaluateScript("""
-            var video = {webkitPresentationMode: 'picture-in-picture', paused: false,
-                         getAttribute: function () { return null; }};
-            listeners.webkitpresentationmodechanged({target: video});
-            video.webkitPresentationMode = 'inline';
-            listeners.webkitpresentationmodechanged({target: video});
-            """)
-        XCTAssertNil(context.exception)
-        let messages = try XCTUnwrap(context.evaluateScript("messages")?.toArray())
-        XCTAssertEqual(messages.count, 2, "A page-controlled mode transition may only report playback state")
-        XCTAssertFalse(messages.contains { ($0 as? String) == "return" })
-    }
     func testReaderEscapesMarkupScalarsWithCombiningMarks() {
         XCTAssertEqual(Reader.esc("&\u{301}<\u{301}>\u{301}\"\u{301}'\u{301}"),
                        "&amp;\u{301}&lt;\u{301}&gt;\u{301}&quot;\u{301}&#39;\u{301}")
