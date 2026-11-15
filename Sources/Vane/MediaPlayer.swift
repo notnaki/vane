@@ -334,11 +334,14 @@ enum MediaTray {
         let at: Date
     }
     private static let maxSources = 8
-    @Published private var reports: [UUID: [Source: Report]] = [:]
-    @Published var held: Set<UUID> = []
-    @Published private(set) var minimized: Set<UUID> = []
-    @Published private var dismissed: Set<UUID> = []
-    @Published var asking: Set<UUID> = []
+    // Published by hand: the tray and the offscreen pages ask about every tab in the window
+    // on each store publication, and a `@Published` read goes through a key path each time.
+    // Nothing subscribes to these individually; observers hear the same `objectWillChange`.
+    private var reports: [UUID: [Source: Report]] = [:] { willSet { objectWillChange.send() } }
+    var held: Set<UUID> = [] { willSet { objectWillChange.send() } }
+    private(set) var minimized: Set<UUID> = [] { willSet { objectWillChange.send() } }
+    private var dismissed: Set<UUID> = [] { willSet { objectWillChange.send() } }
+    var asking: Set<UUID> = [] { willSet { objectWillChange.send() } }
     private var preferred: [UUID: Source] = [:]
     private var pipSources: [UUID: String] = [:]
     private var buckets: [UUID: [Origin: MediaTray.Bucket]] = [:]
@@ -379,7 +382,8 @@ enum MediaTray {
     func isDismissed(_ id: UUID) -> Bool { dismissed.contains(id) }
 
     func keepsRunning(_ tab: Tab) -> Bool {
-        tab.inMeetCall || isPlaying(tab) || tab.pictureInPicture || asking.contains(tab.id) || held.contains(tab.id)
+        // The in-memory sets first; the tab's own published flags cost a key-path read each.
+        isPlaying(tab) || asking.contains(tab.id) || held.contains(tab.id) || tab.inMeetCall || tab.pictureInPicture
     }
 
     func handle(_ body: Any, for tab: Tab, from frame: WKFrameInfo) {
@@ -428,14 +432,15 @@ enum MediaTray {
     }
 
     func forget(_ id: UUID) {
-        reports[id] = nil
+        // Each published write notifies every observer, even when nothing was removed.
+        if reports[id] != nil { reports[id] = nil }
         buckets[id] = nil
         preferred[id] = nil
         pipSources[id] = nil
-        held.remove(id)
-        minimized.remove(id)
-        dismissed.remove(id)
-        asking.remove(id)
+        if held.contains(id) { held.remove(id) }
+        if minimized.contains(id) { minimized.remove(id) }
+        if dismissed.contains(id) { dismissed.remove(id) }
+        if asking.contains(id) { asking.remove(id) }
         PiPMinimizeControls.remove(id)
     }
 
@@ -604,18 +609,24 @@ struct MediaTrayView: View {
 
     /// The tab on the tray, including stashed Spaces and this window's parked profiles.
     private var tab: Tab? {
+        let held = media.held
         let all = stores.flatMap(\.everyTab).filter {
-            !$0.pictureInPicture && (media.info(for: $0.id)?.video != true || media.minimized.contains($0.id))
+            // `MediaTray.showing` only ever picks a playing or held tab. Ask that first: it
+            // is answered from sets already in memory, and it rejects nearly every tab.
+            (held.contains($0.id) || media.isPlaying($0))
+                && !$0.pictureInPicture && (media.info(for: $0.id)?.video != true || media.minimized.contains($0.id))
         }
         let rows = all.filter { !media.isDismissed($0.id) }.map {
             MediaTray.Playing(id: $0.id, playing: media.isPlaying($0), lastActive: $0.lastActive)
         }
-        guard let id = MediaTray.showing(rows, current: store.current, held: media.held, minimized: media.minimized)
+        guard let id = MediaTray.showing(rows, current: store.current, held: held, minimized: media.minimized)
         else { return nil }
         return all.first { $0.id == id }
     }
 
     var body: some View {
+        // Scans every tab in every parked store; resolve it once per body.
+        let tab = self.tab
         ZStack {
             if let tab { player(tab) }
         }

@@ -245,6 +245,19 @@ final class VaneWindow: NSWindow {
     /// by the inset every time the peek opens.
     private var baseX: [NSWindow.ButtonType: CGFloat] = [:]
 
+    /// AppKit finds each standard button by walking the whole view tree, and every layout
+    /// pass asks for all three. Reuse a button while it is still installed in this window;
+    /// AppKit's replacements (style mask or fullscreen changes) detach the old one.
+    private let lightButtons = NSMapTable<NSNumber, NSButton>.strongToWeakObjects()
+
+    override func standardWindowButton(_ kind: NSWindow.ButtonType) -> NSButton? {
+        let key = NSNumber(value: kind.rawValue)
+        if let button = lightButtons.object(forKey: key), button.window === self { return button }
+        let button = super.standardWindowButton(kind)
+        lightButtons.setObject(button, forKey: key)
+        return button
+    }
+
     /// Interpolated by the same SwiftUI transaction as the sidebar. Keep this
     /// across AppKit relayouts instead of snapping back to the destination row.
     private var trafficLightOffset: CGPoint?
@@ -507,11 +520,9 @@ final class TrafficLightRest: NSView {
     /// Crossfades this face against AppKit's own three underneath, which is the whole of the
     /// hover. The list's own timing, so the chrome moves at one speed; Reduce Motion cuts.
     private func show(animated: Bool) {
-        NSAnimationContext.runAnimationGroup {
-            $0.duration = animated && !Motion.reduced ? Look.listSeconds : 0
-            animator().alphaValue = lit ? 0 : Look.lightHoverAlpha
-            for light in lights { light.animator().alphaValue = lit ? Look.lightHoverAlpha : 0.001 }
-        }
+        let duration = animated && !Motion.reduced ? Look.listSeconds : 0
+        fade(to: lit ? 0 : Look.lightHoverAlpha, duration: duration)
+        for light in lights { light.fade(to: lit ? Look.lightHoverAlpha : 0.001, duration: duration) }
     }
 
     /// The discs are ink over whatever the space is washed in, and ink is appearance-keyed.

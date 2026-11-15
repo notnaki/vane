@@ -121,3 +121,30 @@ extension CAAnimation {
         preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
     }
 }
+
+extension NSView {
+    /// Fades a layer-backed view on the compositor at the display's full rate, like
+    /// `animator().alphaValue` but pinned. A newer fade starts from the presented value.
+    /// The completion runs when the fade ends or is superseded, as AppKit's does.
+    func fade(to alpha: CGFloat, duration: TimeInterval, completion: (() -> Void)? = nil) {
+        guard let layer, duration > 0 else {
+            self.layer?.removeAnimation(forKey: "vane.fade")
+            alphaValue = alpha
+            if let completion { DispatchQueue.main.async { completion() } }
+            return
+        }
+        let from = layer.presentation()?.opacity ?? Float(alphaValue)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock(completion)
+        alphaValue = alpha
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = from
+        animation.toValue = Float(alpha)
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .default)
+        animation.pinToDisplayRate(of: window?.screen)
+        layer.add(animation, forKey: "vane.fade")
+        CATransaction.commit()
+    }
+}

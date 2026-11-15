@@ -148,10 +148,7 @@ import AppKit
             return
         }
         if visible { isHidden = false }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            animator().alphaValue = visible ? 1 : 0
-        } completionHandler: { [weak self] in
+        fade(to: visible ? 1 : 0, duration: 0.12) { [weak self] in
             Task { @MainActor in
                 guard let self, self.visibilityGeneration == generation else { return }
                 self.isHidden = !visible

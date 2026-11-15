@@ -27,8 +27,18 @@ import SwiftUI
     /// Keep both ends to retain the page identity and app/profile suffix, without
     /// changing the full title in the tab model or splitting composed characters.
     private static func width(_ title: String) -> CGFloat {
-        (title as NSString).size(withAttributes: [.font: NSFont.menuFont(ofSize: 0)]).width
+        // The title is recomposed on every store publication, almost always from the same
+        // strings, and measuring them is the whole cost of composing it.
+        let font = NSFont.menuFont(ofSize: 0)
+        if font != measuredFont { measuredFont = font; measured.removeAll(keepingCapacity: true) }
+        if let known = measured[title] { return known }
+        let width = (title as NSString).size(withAttributes: [.font: font]).width
+        if measured.count >= 256 { measured.removeAll(keepingCapacity: true) }
+        measured[title] = width
+        return width
     }
+    private static var measuredFont: NSFont?
+    private static var measured: [String: CGFloat] = [:]
 
     private static func compact(_ title: String, maximumWidth: CGFloat = 480) -> String {
         if width(title) <= maximumWidth { return title }

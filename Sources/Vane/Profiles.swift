@@ -999,10 +999,41 @@ struct Space: Identifiable, Codable, Equatable {
     /// Read filters on `profileID` as well as reading the profile's own file, so a space can
     /// never surface under a profile that does not own it even if the file is edited by hand.
     func spaces(for profileID: UUID) -> [Space] {
+        // Views ask on every store publication. The file stays the only source of truth:
+        // its identity, size and both timestamps are checked on each call, taken before the
+        // read, so any writer — this process or another — is seen by the next caller.
+        let path: String
+        if let known = spacesPaths[profileID] { path = known }
+        else {
+            path = Self.spacesURL(for: profileID, in: directory).path
+            spacesPaths[profileID] = path
+        }
+        var info = stat()
+        let stamp = stat(path, &info) == 0
+            ? SpacesFileStamp(inode: info.st_ino, size: info.st_size,
+                              modified: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                              changed: info.st_ctimespec.tv_sec, changedNanoseconds: info.st_ctimespec.tv_nsec)
+            : nil
+        if let stamp, let known = decodedSpaces[profileID], known.stamp == stamp { return known.spaces }
+        decodedSpaces[profileID] = nil
         guard let data = try? Data(contentsOf: Self.spacesURL(for: profileID, in: directory)),
               let all = try? JSONDecoder().decode([Space].self, from: data) else { return [] }
-        return all.filter { $0.profileID == profileID }
+        let owned = all.filter { $0.profileID == profileID }
+        if let stamp { decodedSpaces[profileID] = (stamp, owned) }
+        return owned
     }
+
+    private struct SpacesFileStamp: Equatable {
+        let inode: UInt64
+        let size: Int64
+        let modified: Int
+        let modifiedNanoseconds: Int
+        let changed: Int
+        let changedNanoseconds: Int
+    }
+    private var decodedSpaces: [UUID: (stamp: SpacesFileStamp, spaces: [Space])] = [:]
+    /// `directory` never changes, so neither does where a profile's Spaces are kept.
+    private var spacesPaths: [UUID: String] = [:]
 
     /// Every saved Space, in profile order and then each profile's Space order.
     /// Read-only: opening the Library must not create Spaces in unused profiles.
