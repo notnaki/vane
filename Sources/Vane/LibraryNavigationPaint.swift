@@ -39,7 +39,22 @@ extension EnvironmentValues {
     private var currentLeading: CGFloat = 0
     var isPreparing: Bool { arrival != nil || requestedProgress != progress || buffer != nil }
 
-    init(progress: CGFloat) { self.progress = progress; requestedProgress = progress }
+    private let presenter: WindowResizePreparation.Presenter?
+    private let deadlineDriver: WindowResizePreparation.Deadline?
+
+    /// Tests inject the buffer's paint and watchdog clocks; production passes neither.
+    init(progress: CGFloat, presenter: WindowResizePreparation.Presenter? = nil,
+         deadline: WindowResizePreparation.Deadline? = nil) {
+        self.progress = progress; requestedProgress = progress
+        self.presenter = presenter; deadlineDriver = deadline
+    }
+
+    /// Where AppKit has actually installed the page edge, which can trail the
+    /// accepted phase by one SwiftUI layout.
+    private func installedLeading(in window: NSWindow) -> CGFloat? {
+        guard let marker, marker.window === window, let root = window.contentView else { return nil }
+        return marker.convert(.zero, to: root).x - root.bounds.minX
+    }
 
     func afterPresentation(of target: CGFloat, when visible: @escaping () -> Bool,
                            _ completion: @escaping () -> Void) {
@@ -77,7 +92,7 @@ extension EnvironmentValues {
         stopArrivalFrames = SidebarResizePublication.displayFrames(for: window)({ [weak self] in self?.schedule() })
     }
 
-    private func drain() {
+    func drain() {
         if !finishingBuffer, let window = marker?.window, window.isVisible {
             let leading = requestedLeading
             // Different logical phases can round to the same backing-pixel edge.
@@ -87,16 +102,21 @@ extension EnvironmentValues {
             }
             if requestedProgress != progress || buffer != nil {
                 if buffer == nil {
-                    let initial = currentLeading
+                    // The buffer captures native widths now. Pair them with the
+                    // leading native layout has installed, not an accepted phase
+                    // still in flight (a cancelled gesture can leave one): a
+                    // mismatched pair offsets every later width by their difference.
+                    let installed = installedLeading(in: window) ?? currentLeading
+                    let initial = abs(installed - currentLeading) < 0.001 ? currentLeading : installed
                     acceptedLeading = initial
                     let token = UUID()
                     bufferToken = token
                     buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
+                        presenter: presenter, deadline: deadlineDriver,
                         navigation: .init(owner: owner, leading: initial, exactRequests: true,
-                            layoutLeading: { [weak marker, weak window] in
-                                guard let marker, let window, marker.window === window,
-                                      let root = window.contentView else { return nil }
-                                return marker.convert(.zero, to: root).x - root.bounds.minX
+                            layoutLeading: { [weak self, weak window] in
+                                guard let self, let window else { return nil }
+                                return self.installedLeading(in: window)
                             }),
                         apply: { [weak self] _, accepted in
                             guard let self, self.bufferToken == token, let accepted else { return }

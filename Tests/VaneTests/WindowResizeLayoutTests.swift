@@ -444,6 +444,17 @@ import XCTest
                 if !rapid { XCTAssertLessThanOrEqual(steps.max() ?? .infinity,24) }
             }
             XCTAssertFalse(owner.interrupted, "Library capture must retain actual foreground ownership")
+            // Unlike the budgets above, travelling through the stroke needs no
+            // particular cadence: a page that jumps between its endpoints has no
+            // interior position, and one that overshoots a reversal turns more
+            // often than the six monotonic input strokes do.
+            let low = min(baseline.left, baseline.left + travel), high = max(baseline.left, baseline.left + travel)
+            let interior = Set(changes.map(\.left).filter { $0 > low + 2 && $0 < high - 2 }.map { $0.rounded() })
+            let rising = zip(changes, changes.dropFirst()).map { $1.left > $0.left }
+            let turns = zip(rising, rising.dropFirst()).filter { $0 != $1 }.count
+            print("LIBRARY_TRAVEL rapid=\(rapid) interior=\(interior.count) turns=\(turns)")
+            if abs(travel) > 8 { XCTAssertGreaterThanOrEqual(interior.count, 2, "Library navigation must move through intermediate positions") }
+            XCTAssertLessThanOrEqual(turns, 5, "Each stroke must progress monotonically toward its endpoint")
             XCTAssertGreaterThanOrEqual(changes.map(\.left).max() ?? 0, 368)
             if travel < 0 {
                 XCTAssertLessThanOrEqual(changes.map(\.left).min() ?? .infinity, baseline.left + travel + 2)

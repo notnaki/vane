@@ -93,6 +93,47 @@ import XCTest
         XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
     }
 
+    /// A released or reversed gesture cancels its buffer while SwiftUI has
+    /// accepted a phase (leading 300) that AppKit has not laid out yet (228).
+    func testLibraryPaintPairsAReplacementBufferWithTheInstalledNativeLeading() throws {
+        let f = Fixture(); defer { f.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let paint = LibraryNavigationPaint(progress: 0.5,
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in })
+        defer { paint.cancel() }
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 889, height: 400))
+        let marker = LibraryPaintView(frame: NSRect(x: 228, y: 0, width: 0, height: 0))
+        f.host.removeFromSuperview()
+        f.host.frame = NSRect(x: 228, y: 0, width: 661, height: 400)
+        root.addSubview(marker)
+        root.addSubview(f.host)
+        f.window.setContentSize(root.frame.size)
+        f.window.contentView = root
+        f.host.libraryNavigationPaintOwner = paint.owner
+        XCTAssertEqual(f.web.frame.width, 661)
+
+        // Phase 0.5 of 228...372 is leading 300; the next sample asks for 336.
+        paint.request(0.75, marker: marker, startLeading: 228, endLeading: 372,
+                      targetLeading: 336, currentLeading: 300)
+        paint.drain()
+        XCTAssertEqual(paint.progress, 0.75, "A covered shrink publishes its phase immediately")
+        XCTAssertTrue(paint.isPreparing)
+
+        // Native layout installs the published phase: 889 - 336 = 553.
+        marker.setFrameOrigin(NSPoint(x: 336, y: 0))
+        f.host.setFrameOrigin(NSPoint(x: 336, y: 0))
+        f.host.setFrameSize(NSSize(width: 553, height: 400))
+        for _ in 0..<4 {
+            while !paints.isEmpty { paints.removeFirst()() }
+            paint.drain()
+        }
+        XCTAssertTrue(paints.isEmpty)
+        XCTAssertEqual(f.web.frame.width, 553, "Widths captured at leading 228 must not be measured from leading 300")
+        XCTAssertFalse(paint.isPreparing, "An installed, painted phase must release the buffer and deferred activation")
+        XCTAssertEqual(paint.progress, 0.75)
+        XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
+    }
+
     func testExactLibraryGrowthPublishesPaintedProgressWhileNewerInputWaits() throws {
         let f = Fixture(); defer { f.close() }
         let owner = UUID()
