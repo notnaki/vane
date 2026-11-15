@@ -17,6 +17,11 @@ import XCTest
             XCTAssertTrue(screen.contains(frame), "The exact snapshot owner must stay on screen")
             XCTAssertFalse(frame.contains(point), "The live return control must not acquire physical-pointer hover")
             XCTAssertEqual(frame.size, size)
+            // Persistent-occlusion recovery cycles through every remaining corner.
+            let alternatives = SidebarSnapshot.frames(avoiding: point, size: size, within: screen)
+            XCTAssertEqual(alternatives.first, frame)
+            XCTAssertEqual(alternatives.count, point == points.last ? 4 : 3)
+            XCTAssertTrue(alternatives.allSatisfy { screen.contains($0) && !$0.contains(point) })
         }
     }
 
@@ -203,6 +208,51 @@ import XCTest
         if let failure { throw failure }
     }
 
+    func testSnapshotLeavesAPlacementThatStaysOccluded() async throws {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do {
+            // An opaque panel ordered above the owner's first placement keeps it
+            // occluded however often it is re-presented in place.
+            let cover = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
+            cover.isReleasedWhenClosed = false
+            cover.isOpaque = true; cover.backgroundColor = .black
+            cover.level = .floating; cover.hidesOnDeactivate = false
+            defer { cover.orderOut(nil); cover.close() }
+            var covered: NSRect?
+            var occluded = false
+            var sampled: NSRect?
+            _ = try await SidebarSnapshot.imageWhenReady(Color.gray, observePresentation: { window in
+                if covered == nil {
+                    covered = window.frame
+                    cover.setFrame(window.frame.insetBy(dx: -8, dy: -8), display: true)
+                    cover.orderFrontRegardless()
+                }
+                if let covered, window.frame == covered, !window.occlusionState.contains(.visible) { occluded = true }
+            }, allowRecovery: { window in
+                // Hold recovery until the covered placement is observably occluded.
+                occluded || window.frame != covered
+            }) { host in
+                guard let window = host.window else { return false }
+                sampled = window.frame
+                return true
+            }
+            print("Snapshot covered placement covered=\(String(describing: covered)) occluded=\(occluded) sampled=\(String(describing: sampled))")
+            let frame = try XCTUnwrap(sampled)
+            XCTAssertTrue(occluded, "The fixture must observe native occlusion of the covered placement")
+            XCTAssertFalse(frame.intersects(cover.frame), "Admission must move a persistently occluded owner")
+        } catch { failure = error }
+        do { try await loop.close() } catch {
+            if failure == nil { failure = error } else { XCTFail("Covered snapshot loop cleanup: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
     func testSnapshotDoesNotSampleBeforeItsCurrentNativeRowsCommit() throws {
         TestEnvironment.prepare()
         let owner = NSObject()
@@ -253,7 +303,7 @@ import XCTest
     private let start = ContinuousClock.now
     private var timeline: [String] = []
     private var lastObservation = ""
-    private var readyCalls = 0, forcedLayouts = 0
+    private var readyCalls = 0
 
     var elapsed: Double {
         let duration = ContinuousClock.now - start
@@ -270,17 +320,9 @@ import XCTest
         return visible.count == 1 ? visible[0] : nil
     }
 
-    /// Resolve the current host's bridge. SwiftUI applies pending graph
-    /// updates (bridge creation, placement, updateNSView) in the hosting view's
-    /// layout; flag it explicitly instead of waiting for a display cycle.
     func admit(in host: NSView, phase: Int) -> SnapshotInteractiveProbe.Native? {
         readyCalls += 1
         observe(host, phase: phase, note: "ready")
-        if let probe = probe(in: host), phase != 1 || probe.hovered { return probe }
-        host.needsLayout = true
-        host.layoutSubtreeIfNeeded()
-        forcedLayouts += 1
-        observe(host, phase: phase, note: "forced")
         return probe(in: host)
     }
 
@@ -290,7 +332,7 @@ import XCTest
 
     func report(phase: Int) -> String {
         "Snapshot pointer-intrusion phase=\(phase) elapsed=\(String(format: "%.3f", elapsed)) "
-            + "readyCalls=\(readyCalls) forcedLayouts=\(forcedLayouts)\n  "
+            + "readyCalls=\(readyCalls)\n  "
             + timeline.joined(separator: "\n  ")
     }
 

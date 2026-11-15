@@ -34,9 +34,12 @@ import XCTest
         defer { window.contentView = nil; window.close() }
         var admission = "starting"
         var occlusionRecoveryPending = false
-        // Reported on timeout so a stalled admission names its exact gate:
-        // ready(host) is only consulted after every native condition held.
-        var rebuilds = 0, readyCalls = 0
+        var lastRepresentation = ContinuousClock.now
+        // Reported on timeout so a stalled admission names its exact gate and
+        // when it changed: ready(host) is only consulted after every gate held.
+        let start = ContinuousClock.now
+        var gates = "", history: [String] = []
+        var rebuilds = 0, readyCalls = 0, representations = 0, placement = 0
         do {
             try await compatibilityWait {
                 // The live return tile has its own SwiftUI hover caption. A static
@@ -66,10 +69,20 @@ import XCTest
                     }
                     // Re-keying an already-key window can leave its occlusion
                     // state stale. Re-present that exact owner to refresh it.
+                    // If it stays occluded in place (another window covers that
+                    // corner, or no fresh occlusion arrives), re-present it at the
+                    // next pointer-free placement instead of waiting on one attempt.
                     if window.isVisible && window.isKeyWindow && !window.occlusionState.contains(.visible)
-                        && !occlusionRecoveryPending {
+                        && (!occlusionRecoveryPending
+                            || ContinuousClock.now - lastRepresentation > occlusionRetryInterval) {
+                        if occlusionRecoveryPending {
+                            placement += 1
+                            try positionAwayFromPointer(window, pointer: pointerLocation(), skipping: placement)
+                        }
                         window.orderOut(nil)
                         occlusionRecoveryPending = true
+                        lastRepresentation = ContinuousClock.now
+                        representations += 1
                     }
                     window.makeKeyAndOrderFront(nil)
                 }
@@ -82,41 +95,83 @@ import XCTest
                     && NSApp.modalWindow == nil && window.attachedSheet == nil && host.window === window
                     && !pointerInside && populated
                 if admitted { readyCalls += 1 }
+                let current = "active=\(NSApp.isActive) key=\(window.isKeyWindow) owner=\(NSApp.keyWindow === window) "
+                    + "visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) placed=\(onScreen) "
+                    + "pointerInside=\(pointerInside) populated=\(populated) frame=\(window.frame) "
+                    + "representations=\(representations) admitted=\(admitted)"
+                if current != gates, history.count < 40 {
+                    history.append("t=\(ContinuousClock.now - start) \(current)")
+                }
+                gates = current
                 admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) "
                     + "owner=\(NSApp.keyWindow === window) visible=\(window.isVisible) "
                     + "occlusion=\(window.occlusionState.rawValue) attached=\(host.window === window) "
                     + "placed=\(onScreen) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil) "
                     + "pointerInside=\(pointerInside) populated=\(populated) frame=\(window.frame) "
-                    + "host=\(ObjectIdentifier(host)) rebuilds=\(rebuilds) readyCalls=\(readyCalls)"
+                    + "host=\(ObjectIdentifier(host)) rebuilds=\(rebuilds) readyCalls=\(readyCalls) "
+                    + "representations=\(representations)"
                 return admitted && ready(host)
             }
         } catch {
-            print("Sidebar snapshot admission failed: \(admission)")
+            print("Sidebar snapshot admission failed: \(admission)\n  "
+                  + history.joined(separator: "\n  ") + "\n  windows above: \(windowsAbove(window))")
             throw error
         }
         host.layoutSubtreeIfNeeded()
         return try XCTUnwrap(captureBitmap(in: host).cgImage)
     }
 
+    /// How long a re-presented owner may stay occluded before moving it.
+    static let occlusionRetryInterval: Duration = .milliseconds(400)
+
     /// Pick a fully visible presentation owner without moving the user's cursor.
     /// Accept an explicit point/screen so every corner and nonzero screen origin
     /// can be covered without depending on the machine's physical pointer.
     static func frame(avoiding pointer: NSPoint, size: NSSize, within screen: NSRect) -> NSRect? {
-        guard size.width <= screen.width, size.height <= screen.height else { return nil }
+        frames(avoiding: pointer, size: size, within: screen).first
+    }
+
+    static func frames(avoiding pointer: NSPoint, size: NSSize, within screen: NSRect) -> [NSRect] {
+        guard size.width <= screen.width, size.height <= screen.height else { return [] }
         let origins = [NSPoint(x: screen.minX, y: screen.minY),
                        NSPoint(x: screen.maxX - size.width, y: screen.minY),
                        NSPoint(x: screen.minX, y: screen.maxY - size.height),
                        NSPoint(x: screen.maxX - size.width, y: screen.maxY - size.height)]
-        return origins.lazy.map { NSRect(origin: $0, size: size) }.first { !$0.contains(pointer) }
+        return origins.map { NSRect(origin: $0, size: size) }.filter { !$0.contains(pointer) }
     }
 
-    private static func positionAwayFromPointer(_ window: NSWindow, pointer: NSPoint) throws {
+    /// `skipping` cycles through every pointer-free corner of every screen,
+    /// starting with the main screen's first, so a covered placement is left.
+    private static func positionAwayFromPointer(_ window: NSWindow, pointer: NSPoint, skipping: Int = 0) throws {
         let screen = NSScreen.main.map { [$0] } ?? []
-        let candidates = screen + NSScreen.screens.filter { $0 !== NSScreen.main }
-        let placement = try XCTUnwrap(candidates.lazy.compactMap {
-            frame(avoiding: pointer, size: window.frame.size, within: $0.visibleFrame.insetBy(dx: 20, dy: 20))
-        }.first, "No visible snapshot placement excludes the pointer")
+        let candidates = (screen + NSScreen.screens.filter { $0 !== NSScreen.main }).flatMap {
+            frames(avoiding: pointer, size: window.frame.size, within: $0.visibleFrame.insetBy(dx: 20, dy: 20))
+        }
+        let placement = try XCTUnwrap(candidates.isEmpty ? nil : candidates[skipping % candidates.count],
+                                      "No visible snapshot placement excludes the pointer")
         window.setFrameOrigin(placement.origin)
+    }
+
+    /// Windows the window server orders above the snapshot owner (any process),
+    /// in AppKit screen coordinates, so a timeout names what covers it.
+    private static func windowsAbove(_ window: NSWindow) -> String {
+        guard window.windowNumber > 0,
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow, .excludeDesktopElements],
+                                                    CGWindowID(window.windowNumber)) as? [[String: Any]]
+        else { return "unavailable" }
+        let height = NSScreen.screens.first?.frame.maxY ?? 0
+        let rows = list.prefix(12).map { info -> String in
+            let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
+            let layer = info[kCGWindowLayer as String] as? Int ?? 0
+            let alpha = info[kCGWindowAlpha as String] as? Double ?? 1
+            var frame = CGRect.zero
+            if let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+               let rect = CGRect(dictionaryRepresentation: bounds) {
+                frame = NSRect(x: rect.minX, y: height - rect.maxY, width: rect.width, height: rect.height)
+            }
+            return "\(owner) layer=\(layer) alpha=\(alpha) frame=\(frame) covers=\(frame.intersects(window.frame))"
+        }
+        return "\(list.count)[\(rows.joined(separator: "; "))]"
     }
 
     static func pixels<V: View>(_ view: V, width: CGFloat = 250, height: CGFloat = 400, appearance: NSAppearance.Name = .darkAqua,
