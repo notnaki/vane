@@ -34,8 +34,11 @@ import XCTest
 
     private final class Capture: NSObject, WKScriptMessageHandler {
         var messages: [[String: Any]] = []
+        var visibility: [String] = []
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            if let body = message.body as? [String: Any] { messages.append(body) }
+            guard let body = message.body as? [String: Any] else { return }
+            if let state = body["fixtureVisibility"] as? String { visibility.append(state) }
+            else { messages.append(body) }
         }
     }
     private func js(_ web: WKWebView, _ source: String, isolated: Bool = false) async throws -> Any? {
@@ -214,6 +217,7 @@ import XCTest
         let native = discoveryNativeDiagnostics(web)
         let state = try? await js(web, "JSON.stringify({visibility:document.visibilityState, state:document.readyState, anchorFunction:typeof __vaneAnchor, host:!!document.getElementById('host'), shadow:!!document.getElementById('host')?.shadowRoot, visibilityHistory:globalThis.__shadowFixtureVisibility||[], anchor:typeof __vaneAnchor==='function'?JSON.parse(__vaneAnchor()):null})", isolated: true)
         return native + " " +
+            "visibilityReceipts=\(capture?.visibility ?? []) " +
             "readyMessages=\(capture?.messages.filter { $0["ready"] as? Bool == true }.count ?? 0) document=\(String(describing: state))"
     }
 
@@ -226,15 +230,15 @@ import XCTest
                                width: size.width, height: size.height), display: false)
     }
 
-    private func admitDiscoveryDocument(_ web: WKWebView, loop: NativeFixtureApplicationLoop) async throws {
-        var readmissionRequested = false
+    private func admitDiscoveryDocument(_ web: WKWebView, capture: Capture, loop: NativeFixtureApplicationLoop,
+                                         afterPresentationRequest: (NSWindow) -> Void = { _ in }) async throws {
         let admissionStart = ProcessInfo.processInfo.systemUptime
         var probeTrace: [String] = []
         defer { print("SHADOW_ADMISSION_TRACE " + probeTrace.joined(separator: " | ")) }
         var lastUnready = ""
         var lastDocumentProbe = "not sampled"
         try await wait("visible shadow discovery document", diagnostics: {
-            "lastUnready={\(lastUnready)} lastDocumentProbe={\(lastDocumentProbe)} " + (await self.discoveryDiagnostics(web))
+            "lastUnready={\(lastUnready)} lastDocumentProbe={\(lastDocumentProbe)} " + (await self.discoveryDiagnostics(web, capture: capture))
         }) {
             // Verify loop ownership/policy even while its presentation prerequisite
             // is withdrawn; do not short-circuit before we can restore that owner.
@@ -242,25 +246,31 @@ import XCTest
             guard let window = web.window, window.contentView === web else { return false }
             if !self.discoveryPresentationReady(window, document: web) {
                 lastUnready = self.discoveryNativeDiagnostics(web)
-                if !readmissionRequested {
-                    if NSApp.isHidden { NSApp.unhide(nil) }
-                    if window.isMiniaturized { window.deminiaturize(nil) }
-                    if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(window.frame) }) {
-                        try self.positionDiscoveryWindow(window)
-                    }
+                // A presentation request is not a receipt: activation is
+                // asynchronous and another window can take key ownership after
+                // makeKeyAndOrderFront. Recover whichever prerequisite is still
+                // absent instead of permanently consuming one recovery attempt.
+                if NSApp.isHidden { NSApp.unhide(nil) }
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(window.frame) }) {
+                    try self.positionDiscoveryWindow(window)
+                }
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                if !window.isVisible || !window.isKeyWindow || NSApp.keyWindow !== window {
                     window.makeKeyAndOrderFront(nil)
-                    NSApp.activate(ignoringOtherApps: true)
-                    readmissionRequested = true
+                    afterPresentationRequest(window)
                 }
                 return false
             }
-            readmissionRequested = false
-            let probeStart = ProcessInfo.processInfo.systemUptime - admissionStart
-            let visibility = try await self.js(web, "document.visibilityState", isolated: true) as? String
+            // Hidden WebProcesses may defer evaluateJavaScript replies. A reply
+            // can also describe the state before native readmission. Observe the
+            // document's ordered visibility notifications without queuing another
+            // WebProcess request inside this bounded admission predicate.
+            let visibility = capture.visibility.last
             let elapsed = ProcessInfo.processInfo.systemUptime - admissionStart
             let loopReady = try loop.isReadyForInteraction()
             let nativeReady = self.discoveryPresentationReady(window, document: web)
-            lastDocumentProbe = "start=\(probeStart) end=\(elapsed) visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
+            lastDocumentProbe = "elapsed=\(elapsed) visibility=\(visibility ?? "unavailable") loopReady=\(loopReady) nativeReady=\(nativeReady)"
             probeTrace.append(lastDocumentProbe)
             if !nativeReady { lastUnready = self.discoveryNativeDiagnostics(web) }
             return visibility == "visible" && loopReady && nativeReady
@@ -279,9 +289,14 @@ import XCTest
         try await checkLateShadowDiscovery(withdrawal: .offscreen)
     }
 
+    func testLateShadowDiscoveryRekeysAfterReadmissionLosesKeyOwnership() async throws {
+        try await checkLateShadowDiscovery(withdrawal: .hidden, displaceReadmission: true)
+    }
+
     private enum DiscoveryWithdrawal: Equatable { case none, hidden, offscreen }
 
-    private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none) async throws {
+    private func checkLateShadowDiscovery(withdrawal: DiscoveryWithdrawal = .none,
+                                          displaceReadmission: Bool = false) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared, policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
@@ -298,10 +313,14 @@ import XCTest
             loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
             let ownedLoop = try XCTUnwrap(loop)
             let (web, capture) = try await fixture("<div id=host></div>", tracking: """
-                globalThis.__shadowFixtureVisibility = [{state:document.visibilityState, at:Date.now()}];
-                document.addEventListener('visibilitychange', () => {
-                    __shadowFixtureVisibility.push({state:document.visibilityState, at:Date.now()});
-                });
+                globalThis.__shadowFixtureVisibility = [];
+                function reportVisibility() {
+                    const state = document.visibilityState;
+                    __shadowFixtureVisibility.push({state, at:Date.now()});
+                    webkit.messageHandlers.vanepw.postMessage({fixtureVisibility:state});
+                }
+                document.addEventListener('visibilitychange', reportVisibility);
+                reportVisibility();
                 """, present: { window, web in
                 // Discovery starts in a stable host, not AppKit's automatic
                 // show/hide animation. The explicit orderOut/DOM-hidden control
@@ -328,7 +347,7 @@ import XCTest
             if withdrawal != .none {
                 // Admit the visible WebKit document before injecting withdrawal,
                 // not just the native window that hosted its initial navigation.
-                try await admitDiscoveryDocument(web, loop: ownedLoop)
+                try await admitDiscoveryDocument(web, capture: capture, loop: ownedLoop)
             }
             switch withdrawal {
             case .none: break
@@ -337,10 +356,10 @@ import XCTest
                 XCTAssertFalse(owner.isVisible, "The native presentation must actually withdraw before readmission")
                 // Native ordering and WebProcess visibility are asynchronous.
                 // Observe the hidden boundary before asking the fixture to show it.
-                try await wait("hidden shadow discovery control", diagnostics: { await self.discoveryDiagnostics(web) }) {
+                try await wait("hidden shadow discovery control", diagnostics: { await self.discoveryDiagnostics(web, capture: capture) }) {
                     _ = try ownedLoop.isReadyForInteraction()
                     guard !owner.isVisible else { return false }
-                    let hidden = try await self.js(web, "document.visibilityState", isolated: true) as? String == "hidden"
+                    let hidden = capture.visibility.last == "hidden"
                     if hidden { print("SHADOW_WITHDRAWAL nativeVisible=false documentVisibility=hidden") }
                     return hidden
                 }
@@ -351,13 +370,46 @@ import XCTest
                 XCTAssertTrue(owner.isKeyWindow)
                 XCTAssertFalse(NSScreen.screens.contains { $0.visibleFrame.contains(owner.frame) })
             }
-            try await admitDiscoveryDocument(web, loop: ownedLoop)
+            let visibilityReceiptsBeforeReadmission = capture.visibility.count
+            var displaced = false
+            var competing: NSWindow?
+            defer {
+                competing?.orderOut(nil)
+                competing?.close()
+            }
+            if displaceReadmission {
+                let other = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 200, height: 150),
+                                     styleMask: .titled, backing: .buffered, defer: false)
+                other.isReleasedWhenClosed = false
+                competing = other
+            }
+            try await admitDiscoveryDocument(web, capture: capture, loop: ownedLoop,
+                                              afterPresentationRequest: { window in
+                guard let competing, !displaced else { return }
+                // Inject loss after the native request, before admission can
+                // sample it. This ordering needs no timer or executor assumption.
+                competing.makeKeyAndOrderFront(nil)
+                displaced = true
+                XCTAssertTrue(competing.isKeyWindow)
+                XCTAssertFalse(window.isKeyWindow)
+                print("SHADOW_READMISSION_DISPLACED competingKey=\(competing.isKeyWindow) ownerKey=\(window.isKeyWindow)")
+            })
+            if displaceReadmission {
+                XCTAssertTrue(displaced, "The first readmission must actually lose its key owner")
+                XCTAssertTrue(owner.isKeyWindow)
+                XCTAssertTrue(app.keyWindow === owner)
+            }
+            if withdrawal == .hidden {
+                XCTAssertGreaterThan(capture.visibility.count, visibilityReceiptsBeforeReadmission,
+                                     "Readmission needs a new visible notification after the observed hidden boundary")
+                XCTAssertEqual(capture.visibility.last, "visible")
+            }
             _ = try await js(web, "var root=host.attachShadow({mode:'open'}); root.innerHTML='<div id=inner></div>'; var inner=root.getElementById('inner'); var nested=inner.attachShadow({mode:'open'}); nested.innerHTML='<form><input autocomplete=username><input id=password type=password></form>'")
             try await wait("late shadow root discovery", diagnostics: { await self.discoveryDiagnostics(web, capture: capture) }) { capture.messages.contains { $0["ready"] as? Bool == true } }
             let originalAnchor = try await anchor(web)
             let old = try XCTUnwrap(originalAnchor?["target"] as? String)
             let count = capture.messages.filter { $0["ready"] as? Bool == true }.count
-            try await admitDiscoveryDocument(web, loop: ownedLoop)
+            try await admitDiscoveryDocument(web, capture: capture, loop: ownedLoop)
             _ = try await js(web, "nested.getElementById('password').outerHTML='<input id=password type=password autocomplete=current-password>'")
             try await wait("replacement shadow field discovery", diagnostics: { await self.discoveryDiagnostics(web, capture: capture) }) { capture.messages.filter { $0["ready"] as? Bool == true }.count > count }
             let stale = try await fill(web, target: old)
