@@ -7,10 +7,10 @@
        minimum needed to put it back into a working browser. -->
   <key>com.apple.security.app-sandbox</key><true/>
 
-  <!-- Outbound HTTP(S), and the local sockets WebRTC binds to receive media/data.
-       ponytail: network.server is the one entitlement here NOT proved by a test in this
-       branch — verifying ICE host-candidate gathering needs a real peer. Safari ships it
-       for the same reason. Ceiling: drop it if WebRTC is ever declared out of scope. -->
+  <!-- Outbound HTTP(S). network.server is for Vane's own 127.0.0.1 listeners: the
+       ChatGPT sign-in OAuth callback (ChatGPTSignIn.swift) and the BrowserChecks loopback
+       fixture the release smoke runs. WebRTC does not need it; WebKit's networking process
+       owns those sockets. -->
   <key>com.apple.security.network.client</key><true/>
   <key>com.apple.security.network.server</key><true/>
 
@@ -49,7 +49,6 @@
   <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
   <array>
     <string>/Applications/</string>
-    <string>/Library/Application Support/Vane/</string>
     <!-- Automatic browser import: known source locations only, always read-only.
          Scans run on explicit import/onboarding entry; Keychain and macOS privacy
          consent remain separate. No blanket home or Library access. -->
@@ -71,19 +70,6 @@
        load on the next one. See `ScopedPaths` in Profiles.swift. -->
   <key>com.apple.security.files.bookmarks.app-scope</key><true/>
 
-  <!-- One-shot read of the pre-sandbox data at ~/Library/Application Support/Vane, which
-       sandboxing would otherwise strand: the history/bookmarks database, the profile list,
-       the saved session and the favicon cache. macOS auto-migrates anything named after the
-       *bundle id* into the container (verified: ~/Library/Preferences/io.github.notnaki.vane
-       .plist moves by itself) but this folder is named after the app, so nothing moves it.
-       `LegacyData.migrateIfNeeded` copies it in on first sandboxed launch and never reads it
-       again.
-       ponytail: a temporary exception is exactly what it says — delete this key (and the
-       migration) a release after everyone has launched once. Read-only and scoped to the
-       one folder, so it grants nothing else. Not usable for the Mac App Store without
-       review justification; fine for Developer ID. -->
-  <!-- The read-only legacy data path is listed in the home-relative array above. -->
-
   <!-- Safe Browsing. WebKit asks Safari's service whether a URL is a known phishing or
        malware site; the sandbox denies the lookup by name
        ("deny(1) mach-lookup com.apple.Safari.SafeBrowsing.Service") and the deceptive-site
@@ -102,17 +88,13 @@
     <string>com.apple.PIPAgent</string>
   </array>
 
-  <!-- Hardened Runtime (only enforced on the Developer ID branch of make-app.sh). WebKit's
-       JIT lives in an Apple-signed XPC service, but keep it: it costs nothing and the day
-       anything JITs in-process this is the difference between running and crashing. -->
-  <key>com.apple.security.cs.allow-jit</key><true/>
-
   <!-- Deliberately NOT here:
        * keychain-access-groups — needs $(AppIdentifierPrefix), i.e. a Team ID, which this
          ad-hoc-signed build does not have. A sandboxed app reaches its OWN keychain items
          without it; the entitlement is only for sharing a group between apps. Add
          "$(AppIdentifierPrefix)io.github.notnaki.vane" the day a Developer ID exists.
-       * files.user-selected.read-write, downloads read beyond ~/Downloads, home-relative
-         exceptions for other browsers' profile folders (see BrowserImport in the report). -->
+       * cs.allow-jit — WebKit JITs in its own XPC services; in-process JSContext falls
+         back to the interpreter under Hardened Runtime (measured).
+       * downloads access beyond ~/Downloads, or blanket home/Library exceptions. -->
 </dict>
 </plist>

@@ -72,16 +72,18 @@ import WebKit
         return memory
     }
 
-    private static func key(scope: Scope, fingerprint: String) -> String {
+    /// The fault is part of the decision: accepting an expired certificate is not accepting
+    /// the same certificate once it is revoked or presented for the wrong name.
+    private static func key(scope: Scope, fingerprint: String, fault: Fault) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         guard let data = try? encoder.encode(scope) else { return "" }
-        return prefix + data.base64EncodedString() + "|" + fingerprint
+        return prefix + data.base64EncodedString() + "|" + fingerprint + "|" + fault.rawValue
     }
 
     private static func scope(from key: String) -> Scope? {
         guard key.hasPrefix(prefix),
-              let bar = key.lastIndex(of: "|"),
+              let bar = key.firstIndex(of: "|"),
               let data = Data(base64Encoded: String(key[key.index(key.startIndex,
                                                                   offsetBy: prefix.count)..<bar])),
               let scope = try? JSONDecoder().decode(Scope.self, from: data)
@@ -94,15 +96,16 @@ import WebKit
     /// Keyed on the certificate too, not just the host: an exception for one certificate
     /// must not silently cover whatever certificate shows up tomorrow. Swapping the cert is
     /// exactly what an interception looks like, so it has to ask again.
-    static func trusted(scope: Scope, fingerprint: String, privateMemory: Set<String>? = nil) -> Bool {
-        let key = key(scope: scope, fingerprint: fingerprint)
+    static func trusted(scope: Scope, fingerprint: String, fault: Fault,
+                        privateMemory: Set<String>? = nil) -> Bool {
+        let key = key(scope: scope, fingerprint: fingerprint, fault: fault)
         if let privateMemory { return privateMemory.contains(key) }
         return defaults.bool(forKey: key)
     }
 
     /// Only ever called from the branch where the user clicked through both alerts.
-    private static func remember(scope: Scope, fingerprint: String, memory: Memory?) {
-        let key = key(scope: scope, fingerprint: fingerprint)
+    private static func remember(scope: Scope, fingerprint: String, fault: Fault, memory: Memory?) {
+        let key = key(scope: scope, fingerprint: fingerprint, fault: fault)
         if let memory { memory.exceptions.insert(key) }
         else { defaults.set(true, forKey: key) }
     }
@@ -362,7 +365,9 @@ import WebKit
             // No certificate to pin an exception to, so there is no safe way to offer one.
             return (.cancelAuthenticationChallenge, nil)
         }
-        if trusted(scope: scope, fingerprint: fp,
+        let h = hints(for: cert)
+        let fault = fault(status: outcome.status, hints: h)
+        if trusted(scope: scope, fingerprint: fp, fault: fault,
                    privateMemory: tab.isPrivate ? memory.exceptions : nil) {
             return (.useCredential, URLCredential(trust: trust))
         }
@@ -371,13 +376,11 @@ import WebKit
             return (.cancelAuthenticationChallenge, nil)
         }
 
-        let status = outcome.status
-        let h = hints(for: cert)
-        guard await ask(host: scope.display, fault: fault(status: status, hints: h), hints: h,
+        guard await ask(host: scope.display, fault: fault, hints: h,
                         fingerprint: fp, tab: tab, web: web, memory: memory) else {
             return (.cancelAuthenticationChallenge, nil)
         }
-        remember(scope: scope, fingerprint: fp, memory: tab.isPrivate ? memory : nil)
+        remember(scope: scope, fingerprint: fp, fault: fault, memory: tab.isPrivate ? memory : nil)
         return (.useCredential, URLCredential(trust: trust))
     }
 
@@ -542,51 +545,54 @@ import WebKit
         let b = String(repeating: "b2", count: 32)
         var out: [(String, Bool)] = []
 
-        out.append(("an unvisited host is not trusted", !trusted(scope: example, fingerprint: a)))
-        remember(scope: example, fingerprint: a, memory: nil)
-        out.append(("a remembered exception reads back", trusted(scope: example, fingerprint: a)))
+        out.append(("an unvisited host is not trusted", !trusted(scope: example, fingerprint: a, fault: .selfSigned)))
+        remember(scope: example, fingerprint: a, fault: .selfSigned, memory: nil)
+        out.append(("a remembered exception reads back", trusted(scope: example, fingerprint: a, fault: .selfSigned)))
         out.append(("host matching is case-insensitive",
                     Scope(profileID: profile, host: "EXAMPLE.com", port: 443) == example))
         // The whole point of pinning the fingerprint: a swapped certificate re-prompts.
+        out.append(("the same certificate failing differently re-prompts",
+                    !trusted(scope: example, fingerprint: a, fault: .revoked)
+                    && !trusted(scope: example, fingerprint: a, fault: .hostname)))
         out.append(("a different certificate for the same host is NOT trusted",
-                    !trusted(scope: example, fingerprint: b)))
-        out.append(("an exception does not cross ports", !trusted(scope: otherPort, fingerprint: a)))
-        out.append(("an exception does not cross profiles", !trusted(scope: otherProfileScope, fingerprint: a)))
+                    !trusted(scope: example, fingerprint: b, fault: .selfSigned)))
+        out.append(("an exception does not cross ports", !trusted(scope: otherPort, fingerprint: a, fault: .selfSigned)))
+        out.append(("an exception does not cross profiles", !trusted(scope: otherProfileScope, fingerprint: a, fault: .selfSigned)))
         scratch.set(true, forKey: legacyPrefix + "example.com|" + a)
-        out.append(("a legacy global exception fails closed", !trusted(scope: otherProfileScope, fingerprint: a)))
+        out.append(("a legacy global exception fails closed", !trusted(scope: otherProfileScope, fingerprint: a, fault: .selfSigned)))
 
         let privateMemory = Memory()
-        remember(scope: example, fingerprint: b, memory: privateMemory)
+        remember(scope: example, fingerprint: b, fault: .selfSigned, memory: privateMemory)
         out.append(("a private exception stays out of persistent preferences",
-                    trusted(scope: example, fingerprint: b, privateMemory: privateMemory.exceptions)
-                    && !trusted(scope: example, fingerprint: b)))
+                    trusted(scope: example, fingerprint: b, fault: .selfSigned, privateMemory: privateMemory.exceptions)
+                    && !trusted(scope: example, fingerprint: b, fault: .selfSigned)))
         out.append(("a private exception does not cross tabs",
-                    !trusted(scope: example, fingerprint: b, privateMemory: [])))
+                    !trusted(scope: example, fingerprint: b, fault: .selfSigned, privateMemory: [])))
 
-        remember(scope: other, fingerprint: b, memory: nil)
+        remember(scope: other, fingerprint: b, fault: .selfSigned, memory: nil)
         remember(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
-                 fingerprint: b, memory: nil)
-        remember(scope: neighbour, fingerprint: a, memory: nil)
-        remember(scope: subdomain, fingerprint: a, memory: nil)
+                 fingerprint: b, fault: .selfSigned, memory: nil)
+        remember(scope: neighbour, fingerprint: a, fault: .selfSigned, memory: nil)
+        remember(scope: subdomain, fingerprint: a, fault: .selfSigned, memory: nil)
         forget(host: "other.example", profileID: profile)
-        out.append(("forget(host:) drops that profile's host exception", !trusted(scope: other, fingerprint: b)))
+        out.append(("forget(host:) drops that profile's host exception", !trusted(scope: other, fingerprint: b, fault: .selfSigned)))
         out.append(("forget(host:) leaves another profile's decision alone",
                     trusted(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
-                            fingerprint: b)))
+                            fingerprint: b, fault: .selfSigned)))
         out.append(("forget(host:) does not eat a host that merely starts the same way",
-                    trusted(scope: neighbour, fingerprint: a)))
+                    trusted(scope: neighbour, fingerprint: a, fault: .selfSigned)))
         out.append(("forget(host:) does not eat a subdomain",
-                    trusted(scope: subdomain, fingerprint: a)))
-        out.append(("forget(host:) leaves unrelated hosts alone", trusted(scope: example, fingerprint: a)))
+                    trusted(scope: subdomain, fingerprint: a, fault: .selfSigned)))
+        out.append(("forget(host:) leaves unrelated hosts alone", trusted(scope: example, fingerprint: a, fault: .selfSigned)))
         forget(profile: otherProfile)
         out.append(("deleting a profile drops only that profile's certificate decisions",
                     !trusted(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
-                             fingerprint: b)
-                    && trusted(scope: example, fingerprint: a)))
+                             fingerprint: b, fault: .selfSigned)
+                    && trusted(scope: example, fingerprint: a, fault: .selfSigned)))
         forgetAll()
         out.append(("forgetAll drops everything",
-                    !trusted(scope: example, fingerprint: a)
-                    && !trusted(scope: subdomain, fingerprint: a)))
+                    !trusted(scope: example, fingerprint: a, fault: .selfSigned)
+                    && !trusted(scope: subdomain, fingerprint: a, fault: .selfSigned)))
 
         let generation = UUID()
         out.append(("a newer navigation rejects a stale prompt answer",

@@ -324,17 +324,7 @@ import WebKit
     }
 }
 
-/// Pre-sandbox Vane wrote to `~/Library/Application Support/Vane`. Under the App Sandbox
-/// `.applicationSupportDirectory` resolves *inside the container* instead, so on the first
-/// sandboxed launch that folder — the history and bookmarks database, the profile list, the
-/// saved session, the whole favicon cache — is suddenly somewhere the app cannot see, and a
-/// user who upgrades looks at an empty browser. Copy it in, once.
-///
-/// ponytail: copy rather than move, so a downgrade to an unsandboxed build finds its data
-/// where it left it. Ceiling: if an unsandboxed Vane is running at the same time, the
-/// sqlite file and its -wal can be copied mid-write; the fix is a `sqlite3_backup`, and it
-/// is not worth it for a one-shot upgrade step. Ceiling: this needs the temporary-exception
-/// entitlement in Vane.entitlements — delete both a release after everyone has launched.
+/// The user's real home, for the read-only browser-import exceptions in Vane.entitlements.
 @MainActor enum LegacyData {
     /// The *real* home directory. `NSHomeDirectory()` is redirected into the container
     /// under the sandbox; the passwd entry is not.
@@ -344,42 +334,6 @@ import WebKit
         }
         return URL(fileURLWithPath: String(cString: dir))
     }()
-
-    static var legacy: URL {
-        realHome.appendingPathComponent("Library/Application Support/Vane", isDirectory: true)
-    }
-
-    /// The file whose presence says the copy has been done. `EraseEverything` writes it
-    /// into the fresh, empty folder it leaves behind: the stamp went with the erased folder,
-    /// and the next launch copied the pre-sandbox data — a Space named "asd" and all — right
-    /// back in.
-    static let stampName = ".migrated-from-legacy"
-
-    /// Runs before anything reads a profile file. A no-op when unsandboxed (the container
-    /// *is* the legacy folder), when it has already run, or when there is nothing to copy.
-    static func migrateIfNeeded(into container: URL) {
-        let fm = FileManager.default
-        // A test instance is not an upgraded install. `VANE_DATA_DIR` exists so a debug
-        // build can run on data of its own; copying the user's real folder into it is
-        // exactly what it is there to prevent — and it is how two Spaces the user had named
-        // "asd" turned up in a data dir that had just been created empty.
-        guard Store.overrideDirectory == nil else { return }
-        guard container.standardizedFileURL != legacy.standardizedFileURL else { return }
-        let stamp = container.appendingPathComponent(stampName)
-        guard !fm.fileExists(atPath: stamp.path) else { return }
-        defer { try? Data(Date.now.description.utf8).write(to: stamp) }
-        guard let names = try? fm.contentsOfDirectory(atPath: legacy.path) else { return }
-        for name in names {
-            // Never the -shm. SQLite's own rule for copying a WAL database is "the database
-            // and the -wal, never the shared-memory index": a copied -shm looks valid but
-            // describes the *old* file, and SQLite answers by ignoring the WAL entirely.
-            // Copying it cost 16 of 63 history rows on the first run of this migration.
-            guard !name.hasSuffix("-shm"), !fm.fileExists(atPath: container.appendingPathComponent(name).path)
-            else { continue }
-            try? fm.copyItem(at: legacy.appendingPathComponent(name),
-                             to: container.appendingPathComponent(name))
-        }
-    }
 }
 
 /// One isolated set of browsing data: its own cookie/website data store, its own
@@ -540,10 +494,6 @@ struct Space: Identifiable, Codable, Equatable {
     init(directory: URL = Store.directory, sandboxed: Bool = false) {
         self.directory = directory
         self.sandboxed = sandboxed
-        // Before profiles.json is read: under the App Sandbox this directory is a fresh,
-        // empty container and the user's real data is still outside it. Nothing else in the
-        // app touches a profile file earlier than this, so this is the whole hook.
-        if !sandboxed { LegacyData.migrateIfNeeded(into: directory) }
         let file = directory.appendingPathComponent("profiles.json")
         if let data = try? Data(contentsOf: file),
            let disk = try? JSONDecoder().decode(Disk.self, from: data),

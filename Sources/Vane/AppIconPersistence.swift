@@ -9,6 +9,39 @@ import Security
 
 enum AppIconPersistence {
     static let serviceName = "io.github.notnaki.vane.IconService"
+
+    /// The wire format is raw premultiplied sRGB RGBA at one fixed size, never an encoded
+    /// image: the unsandboxed helper must not run ImageIO's decoders on bytes it was sent.
+    static let side = 1024   // Retina 512pt, as RasterImage drew before
+    static let pixelBytes = side * side * 4
+
+    static func pixels(from image: NSImage) -> Data? {
+        var data = Data(count: pixelBytes)
+        let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let context = CGContext(data: buffer.baseAddress, width: side, height: side,
+                                          bitsPerComponent: 8, bytesPerRow: side * 4, space: space,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            image.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        return drawn ? data : nil
+    }
+
+    static func image(fromPixels data: Data) -> NSImage? {
+        guard data.count == pixelBytes, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let provider = CGDataProvider(data: data as CFData),
+              let cgImage = CGImage(width: side, height: side, bitsPerComponent: 8, bitsPerPixel: 32,
+                                    bytesPerRow: side * 4, space: space,
+                                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                    provider: provider, decode: nil, shouldInterpolate: true,
+                                    intent: .defaultIntent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: side, height: side))
+    }
     /// Publish the saved image before the caller can quit. The Dock caches its canonical
     /// bundle icon at launch; a Finder stamp alone can leave the first quit on that image.
     @MainActor static func stamp(_ image: NSImage?, at host: URL) -> Bool {

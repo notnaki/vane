@@ -74,13 +74,6 @@ import WebKit
         }
 
         try? FileManager.default.removeItem(at: Store.directory)
-        // The pre-sandbox folder is Vane's data too. If the sandbox lets it go, it goes;
-        // either way the fresh folder gets the migration stamp, so the next launch does not
-        // copy that old data straight back in over the erase.
-        if Store.overrideDirectory == nil {
-            try? FileManager.default.removeItem(at: LegacyData.legacy)
-            try? Data().write(to: Store.directory.appendingPathComponent(LegacyData.stampName))
-        }
         if let dir = Store.overrideDirectory {
             let suite = UserDefaults.suiteName(forDataDir: dir)
             UserDefaults.vane.removePersistentDomain(forName: suite)

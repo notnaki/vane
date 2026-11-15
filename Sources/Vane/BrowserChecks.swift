@@ -869,9 +869,9 @@ import WebKit
                   document.body.append(node); node.remove();
                   if (++ticks === 20) { clearInterval(churn); window.mutationDone = true; }
                 }, 30);
-                """)
+                """, world: TabAudio.world)
             try await Task.sleep(for: .milliseconds(1100))
-            let scans = try await js(tab, "window.mediaScans") as? Int ?? -1
+            let scans = try await js(tab, "window.mediaScans", world: TabAudio.world) as? Int ?? -1
             print("PERF audio scans for 20 unrelated DOM updates: \(scans)")
             try require(scans == 0, "ordinary DOM updates do not rescan the page for media")
 
