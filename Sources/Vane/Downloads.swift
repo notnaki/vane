@@ -149,6 +149,8 @@ import Darwin
         /// Destination on disk. Kept spelled `url` because UI.swift and `reveal` read it.
         @Published var url: URL?
         @Published var source: URL?
+        /// The last redirect target the transfer followed; resume data replays it.
+        fileprivate(set) var transfer: URL?
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -200,17 +202,18 @@ import Darwin
         init(_ download: WKDownload, name: String) {
             self.id = UUID()
             self.started = .now
-            self.name = name
+            self.name = Downloads.filenameWithoutBidiControls(name)
             watch(download)
         }
 
         fileprivate init(record: Record) {
             id = record.id
             started = record.started ?? record.completed ?? .distantPast
-            name = record.name
+            name = Downloads.filenameWithoutBidiControls(record.name)
             url = record.destination
             source = record.source
             sourceMethod = record.sourceMethod
+            transfer = record.transfer
             partialIdentity = record.partialIdentity
             total = record.total
             received = record.received
@@ -246,7 +249,7 @@ import Darwin
                           destinationBookmark: destinationBookmark,
                           destinationBookmarkIsFile: destinationBookmarkIsFile,
                           started: started, sourceMethod: sourceMethod, partialIdentity: partialIdentity,
-                          resumeChecksum: resumeChecksum)
+                          resumeChecksum: resumeChecksum, transfer: transfer)
         }
 
         fileprivate func watch(_ d: WKDownload) {
@@ -322,6 +325,7 @@ import Darwin
         var sourceMethod: String?
         var partialIdentity: FileIdentity?
         var resumeChecksum: String?
+        var transfer: URL?
     }
 
     struct FileIdentity: Codable, Equatable, Sendable {
@@ -834,11 +838,20 @@ import Darwin
     /// A server filename wins over the anchor's download attribute. Otherwise preserve
     /// that attribute, including its extension, rather than the URL's endpoint name.
     nonisolated static func saveAsFilename(anchor: String?, server: String, disposition: String?) -> String {
+        let server = filenameWithoutBidiControls(server)
         if disposition?.range(of: #"(?:^|;)\s*filename\*?\s*="#,
                               options: [.regularExpression, .caseInsensitive]) != nil { return server }
         guard let anchor, !anchor.isEmpty else { return server }
-        let safe = anchor.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "\\", with: "_")
+        let safe = filenameWithoutBidiControls(anchor)
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "\\", with: "_")
         return safe == "." || safe == ".." ? server : safe
+    }
+
+    /// Unicode Bidi_Control characters can disguise a file's extension. Strip them from
+    /// new suggestions and history labels, leaving existing destination URLs untouched.
+    nonisolated static func filenameWithoutBidiControls(_ name: String) -> String {
+        let controls = CharacterSet(charactersIn: "\u{061C}\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}")
+        return name.components(separatedBy: controls).joined()
     }
 
     /// Never overwrite: "report.pdf", then "report 2.pdf". Unchanged behaviour, just lifted
@@ -846,7 +859,7 @@ import Darwin
     /// the user's real ~/Downloads.
     nonisolated static func uniqueDestination(in dir: URL, suggested: String,
                                               fm: FileManager = .default, reserved: [URL] = []) -> URL {
-        let safe = suggested.replacingOccurrences(of: "/", with: ":")
+        let safe = filenameWithoutBidiControls(suggested).replacingOccurrences(of: "/", with: ":")
         var target = dir.appendingPathComponent(safe.isEmpty ? "download" : safe)
         let ext = target.pathExtension
         let stem = target.deletingPathExtension().lastPathComponent
@@ -858,6 +871,21 @@ import Darwin
             n += 1
         }
         return target
+    }
+
+    /// WKDownload can only allow or cancel a redirect, so reject a cleartext target that
+    /// would need upgrading. Local hosts and this profile's explicit exceptions still work.
+    func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse,
+                  newRequest request: URLRequest,
+                  decisionHandler: @escaping @MainActor (WKDownload.RedirectPolicy) -> Void) {
+        guard acceptsRetryOrigin(download), let url = request.url else { decisionHandler(.cancel); return }
+        let policy = Self.redirectPolicy(for: url, profileID: profileID)
+        if policy == .allow, let item = item(for: download) { item.transfer = url; save() }
+        decisionHandler(policy)
+    }
+
+    static func redirectPolicy(for url: URL, profileID: UUID) -> WKDownload.RedirectPolicy {
+        HTTPSOnly.enabled && HTTPSOnly.upgrade(url, profileID: profileID) != nil ? .cancel : .allow
     }
 
     /// Straight to the profile's download folder, never overwriting — unless the profile
@@ -909,6 +937,7 @@ import Darwin
         entry.destinationBookmark = DownloadLocation.bookmark(for: target, profileID: profileID,
                                                              selectedFile: chosenByPanel)
         entry.source = download.originalRequest?.url ?? response.url
+        entry.transfer = response.url
         entry.sourceMethod = download.originalRequest?.httpMethod
         entry.sourceWeb = origin?.web ?? download.webView
         if profileID == Profile.incognito.id {
@@ -950,6 +979,7 @@ import Darwin
     /// with the window until the user has said where the file goes.
     private func askWhereToSave(suggested: String, in directory: URL) -> URL? {
         let panel = NSSavePanel()
+        let suggested = Self.filenameWithoutBidiControls(suggested)
         panel.nameFieldStringValue = suggested.isEmpty ? "download" : suggested
         panel.directoryURL = directory
         panel.canCreateDirectories = true
@@ -1078,7 +1108,7 @@ import Darwin
         item.retryPending = true
         deleteResume(item)
         removePartial(item)
-        resumeWebView(for: item).startDownload(using: URLRequest(url: source)) { [weak self, weak item] download in
+        resumeWebView(for: item).startDownload(using: HTTPSOnly.downloadRequest(source, profileID: profileID)) { [weak self, weak item] download in
             #if DEBUG
             let identity = NativeCallbackIdentity(kind: .retry, itemID: itemID, operation: operation)
             #endif
@@ -1255,7 +1285,19 @@ import Darwin
         return true
     }
 
+    /// Resume data replays the transfer's last request (after any redirect) without
+    /// navigation or redirect policy, so both it and the original source must pass.
+    static func resumeBlocked(source: URL?, transfer: URL?, profileID: UUID) -> Bool {
+        [source, transfer].compactMap { $0 }.contains { HTTPSOnly.blocksDownload($0, profileID: profileID) }
+    }
+
     private func startResume(_ item: Item, data: Data, operation: UUID) {
+        if Self.resumeBlocked(source: item.source, transfer: item.transfer, profileID: profileID) {
+            item.status = .failed
+            item.state = .failed("HTTPS-Only blocks resuming this download over HTTP. Download it again.")
+            save()
+            return
+        }
         item.status = .running
         item.state = .running
         item.pausedByUser = false
@@ -1509,7 +1551,11 @@ import Darwin
     /// while it means 61 seconds is claiming worse.
     nonisolated static func etaText(seconds: Double?) -> String {
         guard let seconds, seconds.isFinite, seconds >= 0 else { return "" }
-        let whole = Int(seconds.rounded())
+        // A finite estimate can still exceed Int (for example a huge Content-Length at
+        // a very low rate). Bound the display range before converting to an integer.
+        let limit = 999.0 * 3600
+        let whole = Int(min(seconds.rounded(), limit))
+        if seconds > limit { return "More than 999 hours left" }
         if whole < 2 { return "About a second left" }
         if whole < 60 { return "\(whole) seconds left" }
         if whole < 90 { return "About a minute left" }

@@ -892,7 +892,7 @@ struct TitleReveal: Equatable, Sendable {
                 let title = web.title
                 let sourceWeb = web
                 let origin = DownloadFeedback.Origin(window: web.window)
-                sourceWeb.startDownload(using: URLRequest(url: url)) { download in
+                sourceWeb.startDownload(using: HTTPSOnly.downloadRequest(url, profileID: profileID)) { download in
                     TidyDownloads.remember(download, pageTitle: title)
                     manager.attach(download, alwaysAsk: true, suggestedFilename: filename, from: sourceWeb, in: origin.window)
                 }
@@ -2297,6 +2297,12 @@ struct TitleReveal: Equatable, Sendable {
         let disposition = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "").lowercased()
         // The server asked for a save, or WebKit has no way to display it.
         let save = disposition.hasPrefix("attachment") || !navigationResponse.canShowMIMEType
+        // A response that becomes a download skips navigation policy (subframes, and
+        // redirects before the download delegate attaches). Refuse cleartext HTTPS-Only
+        // would upgrade.
+        if save, let url = navigationResponse.response.url, HTTPSOnly.blocksDownload(url, profileID: profileID) {
+            decisionHandler(.cancel); return
+        }
         if navigationResponse.isForMainFrame, !save {
             navigationState.receiveDocumentResponse(navigationResponse.response, navigation: responseNavigation)
         }
