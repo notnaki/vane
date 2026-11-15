@@ -11,7 +11,7 @@ import SwiftUI
         // No stored bytes: `load` migrates legacy keys and writes them, so don't memoise this read.
         guard let data = UserDefaults.vane.data(forKey: AIConnections.preferenceKey) else { return AIConnections.load(UserDefaults.vane) }
         if let memo, memo.data == data { return memo.state }
-        let decoded = AIConnections.load(UserDefaults.vane)
+        let decoded = (try? JSONDecoder().decode(AIConnections.self, from: data)) ?? AIConnections()
         memo = (data, decoded)
         return decoded
     }
