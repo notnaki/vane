@@ -576,7 +576,7 @@ import WebKit
                 server.requests["/favicon.ico", default: 0] > before
             }
             let deadline = Date.now.addingTimeInterval(8)
-            while !(await URLSession.shared.allTasks).isEmpty {
+            while !(await missing.favicons.session.allTasks).isEmpty {
                 guard Date.now < deadline else { throw Failure("favicon request did not settle") }
                 try await Task.sleep(for: .milliseconds(25))
             }
@@ -587,7 +587,7 @@ import WebKit
                 server.requests["/icon-discovery/b", default: 0] > discoveryBefore
             }
             _ = try await js(missing, "document.readyState")
-            while !(await URLSession.shared.allTasks).isEmpty {
+            while !(await missing.favicons.session.allTasks).isEmpty {
                 guard Date.now < deadline else { throw Failure("favicon retry did not settle") }
                 try await Task.sleep(for: .milliseconds(25))
             }

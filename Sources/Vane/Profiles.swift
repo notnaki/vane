@@ -696,8 +696,8 @@ struct Space: Identifiable, Codable, Equatable {
 
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
+            Favicons.forget(id, retiring: true)
             Store.forget(id)
-            Favicons.forget(id)
             ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
@@ -730,7 +730,7 @@ struct Space: Identifiable, Codable, Equatable {
         ExternalApps.forgetAll(profileID: id)
         try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
-        try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
+        if sandboxed { try? fm.removeItem(at: Self.faviconDir(for: id, in: directory)) }
         return true
     }
 
@@ -746,6 +746,7 @@ struct Space: Identifiable, Codable, Equatable {
         let nextActiveID = activeID == id ? remaining[0].id : activeID
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
         deletedProfileIDs.insert(id)
+        let faviconRetirement = sandboxed ? nil : Favicons.forget(id, retiring: true)
         profiles = remaining
         activeID = nextActiveID
         // Invalidate documents before yielding to credential/database workers. A stale
@@ -756,11 +757,11 @@ struct Space: Identifiable, Codable, Equatable {
         await Suspension.SpaceState.retire(profileID: id, in: directory)
         Tab.discardPreparedFirstPage(for: id)
         FavouritePreviews.shared.forget(profileID: id)
+        await faviconRetirement?.value
 
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
             await Store.forgetAsync(id)
-            Favicons.forget(id)
             ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
@@ -791,7 +792,7 @@ struct Space: Identifiable, Codable, Equatable {
         ExternalApps.forgetAll(profileID: id)
         try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
-        try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
+        if sandboxed { try? fm.removeItem(at: Self.faviconDir(for: id, in: directory)) }
         return true
     }
 

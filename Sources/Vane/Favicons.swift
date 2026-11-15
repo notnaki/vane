@@ -4,6 +4,20 @@ import CryptoKit
 import ImageIO
 import WebKit
 
+final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(Favicons.redirect(from: response.url, to: request))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+            completionHandler(.performDefaultHandling, nil)
+        } else { completionHandler(.cancelAuthenticationChallenge, nil) }
+    }
+}
+
 /// Owned by mounted leaves, weakly indexed by one profile cache. No artwork or
 /// view is retained here; a host arrival invalidates only its matching consumers.
 @MainActor final class FaviconHostArrival: @MainActor ObservableObject {
@@ -68,28 +82,92 @@ import WebKit
     static var shared: Favicons { cache(for: ProfileManager.shared.active.id) }
 
     private static var caches: [UUID: Favicons] = [:]
+    private static var retirements: [UUID: Task<Void, Never>] = [:]
+    private static var retiredProfiles: Set<UUID> = []
 
     static func cache(for profileID: UUID) -> Favicons {
         if let hit = caches[profileID] { return hit }
         let fresh = Favicons(profileID: profileID)
+        if retiredProfiles.contains(profileID) || retirements[profileID] != nil {
+            fresh.retire()
+            return fresh
+        }
         caches[profileID] = fresh
         return fresh
     }
 
-    static func forget(_ profileID: UUID) {
-        caches[profileID] = nil
-        try? FileManager.default.removeItem(
-            at: ProfileManager.faviconDir(for: profileID, in: Store.directory))
+    @discardableResult
+    static func forget(_ profileID: UUID, retiring: Bool = false) -> Task<Void, Never> {
+        if retiring { retiredProfiles.insert(profileID) }
+        if let running = retirements[profileID] { return running }
+        let directory = ProfileManager.faviconDir(for: profileID, in: Store.directory)
+        guard let cache = caches.removeValue(forKey: profileID) else {
+            try? FileManager.default.removeItem(at: directory)
+            return Task {}
+        }
+        let drained = cache.retire()
+        let task = Task {
+            await drained.value
+            // Each admitted writer is awaited by its owning task. Only after all of
+            // them finish may deletion unlink the directory they could recreate.
+            await Task.detached(priority: .utility) {
+                try? FileManager.default.removeItem(at: directory)
+            }.value
+            retirements[profileID] = nil
+        }
+        retirements[profileID] = task
+        return task
     }
 
     let profileID: UUID
+    let session: URLSession
 
     private let fetchImageData: @Sendable (URL) async -> Data?
 
     init(profileID: UUID = ProfileManager.defaultID,
-         fetch: @escaping @Sendable (URL) async -> Data? = { await Favicons.fetch($0) }) {
+         fetch: (@Sendable (URL) async -> Data?)? = nil) {
         self.profileID = profileID
-        self.fetchImageData = fetch
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration)
+        self.session = session
+        self.fetchImageData = fetch ?? { await Favicons.fetch($0, session: session) }
+    }
+
+    deinit { session.invalidateAndCancel() }
+
+    private var retired = false
+    private var retirement: Task<Void, Never>?
+    private var loads: [UUID: Task<Void, Never>] = [:]
+
+    /// Revoke publication synchronously, then drain even cancellation-insensitive
+    /// decode/disk workers through the tasks that await them.
+    @discardableResult
+    func retire() -> Task<Void, Never> {
+        if let retirement { return retirement }
+        retired = true
+        let work = Array(inflight.values) + Array(diskInflight.values) + Array(loads.values)
+        pending.removeAll()
+        work.forEach { $0.cancel() }
+        memory = FaviconMemoryCache()
+        discoveries.removeAll()
+        misses.removeAll()
+        tabs.removeAllObjects()
+        hostObservers.removeAllObjects()
+        let session = session
+        let task = Task {
+            for task in work { await task.value }
+            // A cancelled fetch may still be entering URLSession. Invalidating only
+            // after it drains avoids Foundation's exception for new tasks on a dead session.
+            session.invalidateAndCancel()
+        }
+        retirement = task
+        return task
     }
 
     /// Bumped when a fetch lands, so views that asked for a nil icon redraw.
@@ -176,7 +254,7 @@ import WebKit
     /// Cached icon if there is one, otherwise nil and a fetch starts; `generation` bumps
     /// when it lands.
     func icon(for url: URL) -> NSImage? {
-        guard let key = Favicons.key(for: url) else { return nil }
+        guard !retired, let key = Favicons.key(for: url) else { return nil }
         if let img = memory[key] { return img }
         guard !missed(key), diskInflight[key] == nil, inflight[key] == nil,
               let fallback = Favicons.fallback(for: url) else { return nil }
@@ -191,6 +269,7 @@ import WebKit
     /// Call on didFinish or restoration. Loaded pages supply their declarations; parked
     /// tabs use the cache and root fallback without starting a WebContent process.
     func load(for tab: Tab) {
+        guard !retired else { return }
         tabs.add(tab)
         if let url = tab.currentURL, url.isFileURL { tab.favicon = Files.icon(for: url); return }
         guard let url = tab.currentURL, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
@@ -201,13 +280,17 @@ import WebKit
         // Keep disk reads and decoding off the main actor, including during restoration.
         let file = profileID == Profile.incognito.id ? nil : dir.appendingPathComponent(key)
         let web = tab.existingWeb
-        Task { @MainActor [weak self, weak tab, weak web] in
+        let id = UUID()
+        loads[id] = Task { @MainActor [weak self, weak tab, weak web] in
+            defer { self?.loads[id] = nil }
+            guard !Task.isCancelled else { return }
             let diskImage = if self?.memory[key] == nil, let file {
                 await Favicons.decoded(file)
             } else { Icon(image: nil) }
             // Neither the page's script reply nor an icon download belongs to the tab's
             // lifetime. Keep it weak across both awaits so Close can release it at once.
-            guard let self, tab?.existingWeb === web, tab?.currentURL == url else { return }
+            guard let self, !self.retired, !Task.isCancelled,
+                  tab?.existingWeb === web, tab?.currentURL == url else { return }
             if let img = self.memory[key] {
                 if tab?.favicon !== img { tab?.favicon = img }
             } else if let image = diskImage.image {
@@ -227,7 +310,8 @@ import WebKit
             guard let web else { return }
             // A failed root probe says nothing about the icons declared by this page.
             let declared = Favicons.declared(try? await web.evaluateJavaScript(Favicons.linkJS))
-            guard tab?.existingWeb === web, tab?.currentURL == url else { return }
+            guard !self.retired, !Task.isCancelled,
+                  tab?.existingWeb === web, tab?.currentURL == url else { return }
             if !declared.isEmpty, self.discoveries[key] == declared, self.memory[key] != nil { return }
             if !declared.isEmpty {
                 self.discoveries[key] = declared
@@ -245,7 +329,8 @@ import WebKit
             }
             let persist = tab?.isPrivate == false
             await self.warm(key: key, urls: candidates, persist: persist, fallback: fallback).value
-            guard tab?.existingWeb === web, tab?.currentURL == url else { return }
+            guard !self.retired, !Task.isCancelled,
+                  tab?.existingWeb === web, tab?.currentURL == url else { return }
             if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
         }
     }
@@ -255,12 +340,13 @@ import WebKit
     /// One fetch per host at a time; a second tab on the same host awaits the same task.
     @discardableResult
     private func warm(key: String, urls: [URL], persist: Bool, fallback: URL?) -> Task<Void, Never> {
+        guard !retired else { return Task {} }
         var request = pending[key] ?? Pending()
         request.append(urls, persist: persist, fallback: fallback)
         pending[key] = request
         if let running = inflight[key] { return running }
         let task = Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, !self.retired, !Task.isCancelled else { return }
             var received: URL?
             defer {
                 self.inflight[key] = nil
@@ -278,9 +364,11 @@ import WebKit
                 let acceptedRevision = self.pending[key]?.revision ?? 0
                 self.pending[key]?.urls.removeFirst()
                 let data = await self.fetchImageData(url)
+                guard !self.retired, !Task.isCancelled else { return }
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
                 guard let data else { continue }
                 let decoded = await Favicons.decoded(data)
+                guard !self.retired, !Task.isCancelled else { return }
                 guard let image = decoded.image else { continue }
                 let previous = self.memory[key]
                 let img = self.memory.store(image, for: key, artwork: decoded.artwork)
@@ -303,6 +391,7 @@ import WebKit
                 // A public fallback does not authorize storing another tab's private-only
                 // declaration. Eligibility follows the successful URL, not the batch.
                 if shouldPersist { await self.writeDisk(key, data) }
+                guard !self.retired, !Task.isCancelled else { return }
                 // A restored row may already be fetching /favicon.ico when its page
                 // supplies better artwork. Let that queued declaration upgrade it.
                 if !isFallback, self.pending[key]?.urls.isEmpty != false { return }
@@ -313,8 +402,8 @@ import WebKit
         return task
     }
 
-    nonisolated static func fetch(_ url: URL, session: URLSession = .shared) async -> Data? {
-        var req = URLRequest(url: url)
+    nonisolated static func fetch(_ url: URL, session: URLSession) async -> Data? {
+        guard !Task.isCancelled, var req = cleanRequest(URLRequest(url: url)) else { return nil }
         req.timeoutInterval = 8
         // An icon is small and already compressed, so asking for it uncompressed costs
         // nothing — and it sidesteps a class of misconfigured server that answers a
@@ -324,7 +413,7 @@ import WebKit
         req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         req.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
         do {
-            let (bytes, response) = try await session.bytes(for: req)
+            let (bytes, response) = try await session.bytes(for: req, delegate: FaviconRequestPolicy())
             // Stop the underlying transfer on every early return, including unknown-length
             // and chunked responses. The old data(for:) buffered everything before checking.
             defer { bytes.task.cancel() }
@@ -340,6 +429,23 @@ import WebKit
             }
             return data.isEmpty ? nil : data
         } catch { return nil }
+    }
+
+    /// A favicon never follows an HTTPS response down to plain HTTP.
+    nonisolated static func redirect(from source: URL?, to request: URLRequest) -> URLRequest? {
+        if source?.scheme?.lowercased() == "https", request.url?.scheme?.lowercased() != "https" { return nil }
+        return cleanRequest(request)
+    }
+
+    nonisolated static func cleanRequest(_ request: URLRequest) -> URLRequest? {
+        guard let scheme = request.url?.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        var clean = request
+        clean.httpShouldHandleCookies = false
+        clean.cachePolicy = .reloadIgnoringLocalCacheData
+        for header in ["Cookie", "Authorization", "Proxy-Authorization"] {
+            clean.setValue(nil, forHTTPHeaderField: header)
+        }
+        return clean
     }
 
     /// The page's own declarations, including touch icons preloaded as images (ManageBac).
@@ -563,12 +669,13 @@ import WebKit
     private func readDisk(_ key: String, fallback: URL) {
         let file = dir.appendingPathComponent(key)
         diskInflight[key] = Task { @MainActor [weak self] in
+            guard !Task.isCancelled else { return }
             // PNG/ICO reads and decode are just as capable of blocking a frame as
             // SVG rasterization. One pending read per host also coalesces row redraws.
             let decoded = await Self.decoded(file)
             guard let self else { return }
             defer { self.diskInflight[key] = nil }
-            guard self.memory[key] == nil else { return }
+            guard !self.retired, !Task.isCancelled, self.memory[key] == nil else { return }
             if let image = decoded.image {
                 let image = self.memory.store(image, for: key, artwork: decoded.artwork)
                 for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
@@ -630,7 +737,7 @@ import WebKit
     }
 
     private func writeDisk(_ key: String, _ data: Data) async {
-        guard profileID != Profile.incognito.id else { return }
+        guard !retired, !Task.isCancelled, profileID != Profile.incognito.id else { return }
         let directory = dir
         await Task.detached(priority: .utility) {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
