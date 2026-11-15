@@ -2288,6 +2288,25 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         expectEqual(try await js(web, "password.value") as? String, "")
     }
 
+    func testHardeningRenamedControlCannotKeepShadowingAncestry() async throws {
+        let (web, _) = try await fixture("""
+            <form action="https://other.example.test/login"><div id="mount"></div></form>
+            <input id="bridge" name="assignedSlot" form="inner">
+            """)
+        _ = try await js(web, """
+            const f = document.createElement('form'); f.id = 'inner'; f.action = '/login';
+            f.innerHTML = '<input id=password type=password>';
+            document.getElementById('mount').append(f);
+            void f.assignedSlot;
+            document.getElementById('bridge').name = 'ordinary';
+            """)
+        // WebKit's past-names map keeps the old lookup alive after the rename.
+        expectEqual(try await js(web, "document.getElementById('inner').assignedSlot === document.getElementById('bridge')") as? Bool, true)
+        _ = try await js(web, "password.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
     func testHardeningShadowedFormMethodsFailClosed() async throws {
         for name in ["getAttribute", "querySelectorAll", "parentNode"] {
             let (web, _) = try await fixture("<form action='/login'><input name=\(name)><input id=password type=password></form>")

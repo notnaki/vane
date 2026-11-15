@@ -21,25 +21,27 @@ import WebKit
       function isForm(el) {
         try { return elementTagName.call(el) === 'FORM'; } catch (_) { return false; }
       }
-      // ponytail: fail closed. A control whose name or id shadows a property read here
-      // can redirect every later read (parentNode, assignedSlot, getAttribute,
-      // querySelectorAll...), so such a form is never trusted, rather than hardening each read.
-      // Properties this script reads from forms and their ancestors. Ordinary field names
-      // (name, action, submit, title, id...) stay usable; they are read through attributes.
-      var shadowable = new Set(['tagName', 'localName', 'nodeName', 'nodeType', 'elements', 'children',
-        'childNodes', 'firstChild', 'parentNode', 'parentElement', 'previousSibling', 'nextSibling',
-        'assignedSlot', 'getRootNode', 'shadowRoot', 'host', 'isConnected', 'ownerDocument', 'contains',
-        'getAttribute', 'hasAttribute', 'attributes', 'querySelector', 'querySelectorAll', 'matches',
-        'closest', 'getBoundingClientRect', 'getClientRects', 'offsetWidth', 'offsetHeight', 'offsetParent',
-        'clientTop', 'clientLeft', 'textContent', 'inert', 'hidden', 'style', 'addEventListener',
-        'removeEventListener', 'dispatchEvent']);
+      // ponytail: fail closed. A named control (current, or remembered by WebKit's past-names
+      // map after a rename) can shadow any property read here: parentNode, assignedSlot,
+      // getAttribute, querySelectorAll... A form whose property no longer returns the native
+      // value is never trusted, rather than hardening each read.
+      var shadowable = ['tagName', 'localName', 'nodeName', 'nodeType', 'elements', 'children', 'childNodes',
+       'firstChild', 'parentNode', 'parentElement', 'previousSibling', 'nextSibling', 'assignedSlot',
+       'getRootNode', 'shadowRoot', 'isConnected', 'ownerDocument', 'contains', 'getAttribute',
+       'hasAttribute', 'attributes', 'querySelector', 'querySelectorAll', 'matches', 'closest',
+       'getBoundingClientRect', 'getClientRects', 'offsetWidth', 'offsetHeight', 'offsetParent',
+       'clientTop', 'clientLeft', 'inert', 'hidden', 'addEventListener', 'removeEventListener',
+       'dispatchEvent'];
+      // Named controls appear as own properties; the native value lives on the form's own
+      // (per-frame, per-world) prototype chain, which the page cannot modify from its world.
       function clobbered(form) {
         try {
-          return Array.from(formElements.call(form)).some(function (el) {
-            return ['name', 'id'].some(function (key) {
-              var value = elementGetAttribute.call(el, key);
-              return !!value && shadowable.has(value);
-            });
+          return shadowable.some(function (name) {
+            for (var proto = Object.getPrototypeOf(form); proto; proto = Object.getPrototypeOf(proto)) {
+              var d = Object.getOwnPropertyDescriptor(proto, name);
+              if (d) return form[name] !== (d.get ? d.get.call(form) : d.value);
+            }
+            return true;
           });
         } catch (_) { return true; }
       }
