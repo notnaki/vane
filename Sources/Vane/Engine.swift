@@ -739,6 +739,16 @@ struct TitleReveal: Equatable, Sendable {
     /// can carry it: WebKit refuses the call on a page the user navigated to themselves.
     var onClose: (() -> Void)?
 
+    // Website popups own tabs without a TabStore and can outlive their opener's window.
+    private static let privateContexts = NSHashTable<Tab>.weakObjects()
+
+    fileprivate static func clearPrivateHTTPSStateIfUnused() {
+        guard !TabStore.all.contains(where: \.isPrivate),
+              !privateContexts.allObjects.contains(where: { !$0.tornDown }) else { return }
+        HTTPSOnly.forgetAll(profileID: Profile.incognito.id)
+        HTTPSOnly.forgetLoopState(profileID: Profile.incognito.id)
+    }
+
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
     let profileID: UUID
@@ -755,6 +765,7 @@ struct TitleReveal: Equatable, Sendable {
         self.isPrivate = isPrivate
         self.profileID = isPrivate ? Profile.incognito.id : profileID
         super.init()
+        if isPrivate { Self.privateContexts.add(self) }
         if let url { go(url) }
     }
 
@@ -789,6 +800,7 @@ struct TitleReveal: Equatable, Sendable {
         cfg.userContentController = Tab.contentController(profileID: self.profileID)
         existingWeb = LinkContextWebView(frame: .zero, configuration: cfg)
         super.init()
+        if isPrivate { Self.privateContexts.add(self) }
         attach()
         // Deliberately no load: WebKit navigates the view it is handed back, and for a popup
         // opened blank and written into by its opener there is nothing to navigate it to.
@@ -1337,6 +1349,7 @@ struct TitleReveal: Equatable, Sendable {
         if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
+        if isPrivate { Self.clearPrivateHTTPSStateIfUnused() }
     }
 
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
@@ -3152,7 +3165,11 @@ struct Stash {
     /// Every live store, oldest first — the parked ones included.
     static let storesChanged = PassthroughSubject<Void, Never>()
     static var all: [TabStore] = [] {
-        didSet { Suspension.updateLifecycle(); storesChanged.send() }
+        didSet {
+            Suspension.updateLifecycle()
+            if oldValue.contains(where: \.isPrivate) { Tab.clearPrivateHTTPSStateIfUnused() }
+            storesChanged.send()
+        }
     }
 
     var profile: Profile {

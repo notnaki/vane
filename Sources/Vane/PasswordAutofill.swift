@@ -13,6 +13,38 @@ import WebKit
     (function () {
       if (window.__vaneFill) return;
       var topWindow = window, topOrigin = window.origin, contexts = new Map(), recentContext = null;
+      // Named form controls can shadow even tagName, action and elements.
+      // Keep the isolated world's native accessors instead of reading form properties.
+      var elementTagName = Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get;
+      var elementGetAttribute = Element.prototype.getAttribute;
+      var formElements = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get;
+      function isForm(el) {
+        try { return elementTagName.call(el) === 'FORM'; } catch (_) { return false; }
+      }
+      // ponytail: fail closed. A named control (current, or remembered by WebKit's past-names
+      // map after a rename) can shadow any property read here: parentNode, assignedSlot,
+      // getAttribute, querySelectorAll... A form whose property no longer returns the native
+      // value is never trusted, rather than hardening each read.
+      var shadowable = ['tagName', 'localName', 'nodeName', 'nodeType', 'elements', 'children', 'childNodes',
+       'firstChild', 'parentNode', 'parentElement', 'previousSibling', 'nextSibling', 'assignedSlot',
+       'getRootNode', 'shadowRoot', 'isConnected', 'ownerDocument', 'contains', 'getAttribute',
+       'hasAttribute', 'attributes', 'querySelector', 'querySelectorAll', 'matches', 'closest',
+       'getBoundingClientRect', 'getClientRects', 'offsetWidth', 'offsetHeight', 'offsetParent',
+       'clientTop', 'clientLeft', 'inert', 'hidden', 'addEventListener', 'removeEventListener',
+       'dispatchEvent'];
+      // Named controls appear as own properties; the native value lives on the form's own
+      // (per-frame, per-world) prototype chain, which the page cannot modify from its world.
+      function clobbered(form) {
+        try {
+          return shadowable.some(function (name) {
+            for (var proto = Object.getPrototypeOf(form); proto; proto = Object.getPrototypeOf(proto)) {
+              var d = Object.getOwnPropertyDescriptor(proto, name);
+              if (d) return form[name] !== (d.get ? d.get.call(form) : d.value);
+            }
+            return true;
+          });
+        } catch (_) { return true; }
+      }
       // Follow only public open roots. Slots participate in ancestor visibility;
       // closed roots never become reachable, even through a previously cached field.
       function composedParent(el) {
@@ -208,10 +240,10 @@ import WebKit
           var inputs = deepQuery(root, 'input');
           if (!inputs.complete) return [];
           // Include native form= associations outside the form's physical subtree.
-          if (root.tagName === 'FORM') {
-            if (root.elements.length > 20000) return [];
+          if (isForm(root)) {
+            if (formElements.call(root).length > 20000) return [];
             var included = new Set(inputs);
-            Array.from(root.elements).forEach(function (el) {
+            Array.from(formElements.call(root)).forEach(function (el) {
               if (el.tagName === 'INPUT' && !included.has(el)) { inputs.push(el); included.add(el); }
             });
             if (inputs.length > 20000) return [];
@@ -224,28 +256,28 @@ import WebKit
             // a different composed form. Inspect both routes, including external
             // controls, before discovery, capture, generation and each secret write.
             var forms = [], starts = [root], visited = new Set();
-            if (root.tagName === 'FORM') {
-              if (root.elements.length > 20000) return false;
-              starts = starts.concat(Array.from(root.elements));
+            if (isForm(root)) {
+              if (formElements.call(root).length > 20000) return false;
+              starts = starts.concat(Array.from(formElements.call(root)));
             }
             for (var start of starts) {
               for (var parent = start; parent; parent = composedParent(parent)) {
                 if (visited.has(parent)) break;
                 visited.add(parent);
                 if (visited.size > 20000) return false;
-                if (parent.tagName !== 'FORM') continue;
+                if (!isForm(parent)) continue;
                 var nested = deepQuery(parent, 'form');
                 if (!nested.complete) return false;
                 forms.push(parent); forms = forms.concat(nested);
               }
             }
             return Array.from(new Set(forms)).every(function (form) {
-              if (form.elements.length > 20000) return false;
-              var action = new URL(form.getAttribute('action') || document.baseURI, document.baseURI);
+              if (formElements.call(form).length > 20000 || clobbered(form)) return false;
+              var action = new URL(elementGetAttribute.call(form, 'action') || document.baseURI, document.baseURI);
               if (action.origin !== topOrigin || action.protocol !== 'https:') return false;
               var overrides = deepQuery(form, '[formaction]');
               if (!overrides.complete) return false;
-              overrides = overrides.concat(Array.from(form.elements).filter(function (el) { return el.hasAttribute('formaction'); }));
+              overrides = overrides.concat(Array.from(formElements.call(form)).filter(function (el) { return el.hasAttribute('formaction'); }));
               return overrides.every(function (button) {
                 var override = new URL(button.getAttribute('formaction') || document.baseURI, document.baseURI);
                 return override.origin === topOrigin && override.protocol === 'https:';
@@ -544,7 +576,7 @@ import WebKit
         credentialListener('submit', function (e) {
           if (!e.isTrusted) return;
           var form = eventField(e);
-          if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
+          if (!isForm(form) || !safeRoot(form)) return;
           submittedAttempt = {
             form: form, parent: form.parentNode,
             before: form.previousSibling, after: form.nextSibling,
