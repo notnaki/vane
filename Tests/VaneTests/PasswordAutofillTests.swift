@@ -2261,6 +2261,92 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         expectEqual(try await js(web, "embedded.contentDocument.getElementById('password').value") as? String, "")
     }
 
+    func testHardeningSyntheticEventsCannotArmChooser() async throws {
+        let (web, capture) = try await fixture("""
+            <textarea id=notes></textarea>
+            <form><input id=user autocomplete=username><input id=password type=password></form>
+            <form><input id=newPassword type=password autocomplete=new-password></form>
+            """)
+        XCTAssertFalse(try XCTUnwrap(web.window).isKeyWindow)
+        _ = try await js(web, "notes.focus()")
+        capture.messages.removeAll()
+        expectEqual(try await js(web, """
+            (() => {
+              let trusted = false;
+              for (const field of [user, password, newPassword]) {
+                for (const name of ['click', 'focusin']) {
+                  const event = new Event(name, {bubbles:true, composed:true});
+                  field.dispatchEvent(event); trusted ||= event.isTrusted;
+                }
+                field.click();
+              }
+              return trusted;
+            })()
+            """) as? Bool, false)
+        // Flush the same ordered message channel before asserting absence.
+        _ = try await js(web, "webkit.messageHandlers.vanepw.postMessage({hardeningBarrier:true}); true", world: Autofill.world)
+        try await wait { capture.messages.contains { $0["hardeningBarrier"] as? Bool == true } }
+        XCTAssertFalse(capture.messages.contains { $0["focus"] as? Bool == true || $0["generate"] as? Bool == true })
+        expectEqual(try await js(web, "document.activeElement.id") as? String, "notes")
+        // A real DOM focus transition still arms the chooser without a key window.
+        _ = try await js(web, "password.focus()")
+        try await wait { capture.messages.contains { $0["focus"] as? Bool == true } }
+    }
+
+    func testHardeningFillRequiresFocusedCredentialAtDelivery() async throws {
+        let (web, _) = try await fixture("<form><input id=user autocomplete=username><input id=password type=password></form><textarea id=notes></textarea>")
+        XCTAssertFalse(try XCTUnwrap(web.window).isKeyWindow)
+        _ = try await js(web, "password.focus()")
+        let raw = try await js(web, "window.__vaneAnchor()", world: Autofill.world) as? String
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(raw?.data(using: .utf8))) as? [String: Any])
+        let target = try XCTUnwrap(body["target"] as? String)
+        _ = try await js(web, "notes.focus()")
+        for automatic in [false, true] {
+            _ = try await js(web, "user.value=''; password.value=''")
+            expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", automatic: automatic, target: target), world: Autofill.world) as? Bool == true)
+        }
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "[user.value,password.value].join('|')") as? String, "|")
+        _ = try await js(web, "user.focus()")
+        expectTrue(try await fill(web))
+        expectEqual(try await js(web, "[user.value,password.value].join('|')") as? String, "ada|fixture-secret")
+    }
+
+    func testHardeningUsernameHandlerCannotMoveFocusBeforeSecretWrite() async throws {
+        let (web, _) = try await fixture("""
+            <form><input id=user autocomplete=username><input id=password type=password></form><textarea id=notes></textarea>
+            <script>user.addEventListener('input',()=>notes.focus());</script>
+            """)
+        _ = try await js(web, "user.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "document.activeElement.id") as? String, "notes")
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
+    func testHardeningClobberedFormTagNameCannotBypassActionCheck() async throws {
+        for action in ["https://other.example.test/login", "http://login.example.test/login"] {
+            let (web, _) = try await fixture("<form id=login action='\(action)'><input name=tagName><input id=password type=password></form>")
+            // Prove this is the DOM clobbering case, not a harmless string attribute.
+            expectEqual(try await js(web, "login.tagName === login.querySelector('[name=tagName]')") as? Bool, true)
+            _ = try await js(web, "password.focus()")
+            expectFalse(try await fill(web))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testHardeningNativeFormGettersPreserveActionAndExternalControls() async throws {
+        let (web, _) = try await fixture("""
+            <form id=login action='/login'><input name=tagName><input name=action><input name=elements><input id=password type=password></form>
+            <button id=submit form=login formaction='https://other.example.test/login'>Go</button>
+            """)
+        _ = try await js(web, "password.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+        _ = try await js(web, "document.getElementById('submit').removeAttribute('formaction')")
+        expectTrue(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "fixture-secret")
+    }
+
     func testEmbeddedGeneratorRechecksFrameFocusBetweenFields() async throws {
         let (web, capture) = try await fixture("<button id=outside>Outside</button><iframe id=embedded srcdoc='<form><input id=newPassword type=password autocomplete=new-password><input id=confirmation type=password autocomplete=new-password></form>'></iframe>")
         try await wait { try await self.js(web, "!!embedded.contentDocument.getElementById('newPassword')") as? Bool == true }

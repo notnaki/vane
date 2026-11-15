@@ -13,6 +13,14 @@ import WebKit
     (function () {
       if (window.__vaneFill) return;
       var topWindow = window, topOrigin = window.origin, contexts = new Map(), recentContext = null;
+      // Named form controls can shadow even tagName, action and elements.
+      // Keep the isolated world's native accessors instead of reading form properties.
+      var elementTagName = Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get;
+      var formAction = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'action').get;
+      var formElements = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get;
+      function isForm(el) {
+        try { return elementTagName.call(el) === 'FORM'; } catch (_) { return false; }
+      }
       // Follow only public open roots. Slots participate in ancestor visibility;
       // closed roots never become reachable, even through a previously cached field.
       function composedParent(el) {
@@ -208,10 +216,10 @@ import WebKit
           var inputs = deepQuery(root, 'input');
           if (!inputs.complete) return [];
           // Include native form= associations outside the form's physical subtree.
-          if (root.tagName === 'FORM') {
-            if (root.elements.length > 20000) return [];
+          if (isForm(root)) {
+            if (formElements.call(root).length > 20000) return [];
             var included = new Set(inputs);
-            Array.from(root.elements).forEach(function (el) {
+            Array.from(formElements.call(root)).forEach(function (el) {
               if (el.tagName === 'INPUT' && !included.has(el)) { inputs.push(el); included.add(el); }
             });
             if (inputs.length > 20000) return [];
@@ -224,28 +232,28 @@ import WebKit
             // a different composed form. Inspect both routes, including external
             // controls, before discovery, capture, generation and each secret write.
             var forms = [], starts = [root], visited = new Set();
-            if (root.tagName === 'FORM') {
-              if (root.elements.length > 20000) return false;
-              starts = starts.concat(Array.from(root.elements));
+            if (isForm(root)) {
+              if (formElements.call(root).length > 20000) return false;
+              starts = starts.concat(Array.from(formElements.call(root)));
             }
             for (var start of starts) {
               for (var parent = start; parent; parent = composedParent(parent)) {
                 if (visited.has(parent)) break;
                 visited.add(parent);
                 if (visited.size > 20000) return false;
-                if (parent.tagName !== 'FORM') continue;
+                if (!isForm(parent)) continue;
                 var nested = deepQuery(parent, 'form');
                 if (!nested.complete) return false;
                 forms.push(parent); forms = forms.concat(nested);
               }
             }
             return Array.from(new Set(forms)).every(function (form) {
-              if (form.elements.length > 20000) return false;
-              var action = new URL(form.getAttribute('action') || document.baseURI, document.baseURI);
+              if (formElements.call(form).length > 20000) return false;
+              var action = new URL(formAction.call(form), document.baseURI);
               if (action.origin !== topOrigin || action.protocol !== 'https:') return false;
               var overrides = deepQuery(form, '[formaction]');
               if (!overrides.complete) return false;
-              overrides = overrides.concat(Array.from(form.elements).filter(function (el) { return el.hasAttribute('formaction'); }));
+              overrides = overrides.concat(Array.from(formElements.call(form)).filter(function (el) { return el.hasAttribute('formaction'); }));
               return overrides.every(function (button) {
                 var override = new URL(button.getAttribute('formaction') || document.baseURI, document.baseURI);
                 return override.origin === topOrigin && override.protocol === 'https:';
@@ -497,8 +505,8 @@ import WebKit
           listen(document, name, handler, true);
           return handler;
         }
-        credentialListener('focusin', function (e) { focused(eventField(e)); });
-        credentialListener('click', function (e) { focused(eventField(e)); });
+        credentialListener('focusin', function (e) { if (e.isTrusted) focused(eventField(e)); });
+        credentialListener('click', function (e) { if (e.isTrusted) focused(eventField(e)); });
         // Everything that means "not interested any more". The list is anchored to a point
         // that stops being true the moment any of these happens, so each one closes it.
         credentialListener('focusout', function (e) {
@@ -544,7 +552,7 @@ import WebKit
         credentialListener('submit', function (e) {
           if (!e.isTrusted) return;
           var form = eventField(e);
-          if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
+          if (!isForm(form) || !safeRoot(form)) return;
           submittedAttempt = {
             form: form, parent: form.parentNode,
             before: form.previousSibling, after: form.nextSibling,
@@ -593,7 +601,8 @@ import WebKit
           discoverFrames(observe()); ready();
         });
         function fill(account, password, automatic, target, continuation) {
-          var p = targetPair();
+          // A cached chooser target is not permission to fill an unfocused login.
+          var p = pairFor(deepActive(document));
           if (!visible(p) || (target && token(p) !== target)) { return false; }
           if (!focusedFrame()) return false;
           // Read-only/hidden account hints are useful for validation, never for writing.
@@ -620,7 +629,7 @@ import WebKit
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
             if (!liveDocument() || !focusedFrame() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
-                rootFor(p.pass) !== root || token(targetPair()) !== expectedTarget ||
+                rootFor(p.pass) !== root || token(pairFor(deepActive(document))) !== expectedTarget ||
                 (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
             if (!current || token(current) !== expectedTarget) return false;
