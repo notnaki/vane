@@ -62,16 +62,20 @@ import SwiftUI
     init(load: @escaping Loader = LibrarySpaceCatalog.read) {
         self.load = load
         registryObservation = TabStore.storesChanged.sink { [weak self] in
-            // Rebind only: a store appearing or leaving changes no protection, and
-            // saved rows already carry their lock flags from disk.
             guard let self, self.observingContents else { return }
+            let before = self.observedStores
             self.observeStores()
+            // A store leaving (window closed, parked store released) can hand its card
+            // back to a saved snapshot that predates its latest shape. New stores only rebind.
+            if !before.isSubset(of: self.observedStores) { self.revokeProtection() }
         }
     }
 
     /// Cards can read any profile's live owner, independently of their hosting window.
     /// Rebind when windows appear/disappear; revoke before the next render or disk read.
+    private var observedStores: Set<ObjectIdentifier> = []
     private func observeStores() {
+        observedStores = Set(TabStore.all.map(ObjectIdentifier.init))
         storeObservations = TabStore.all.flatMap { store in
             [store.sidebarSnapshotChanges.sink { [weak self] in self?.generation &+= 1 },
              // Protection changes revoke retained rows. So does a Space switch: while a
@@ -192,7 +196,7 @@ import SwiftUI
     /// commit; a force-reopen epoch or external revision revokes that editor separately.
     func cancel() {
         observingContents = false
-        storeObservations.removeAll()
+        storeObservations.removeAll(); observedStores = []
         protectionRefresh?.cancel(); protectionRefresh = nil
         request &+= 1
         task?.cancel(); task = nil; requestedKey = nil

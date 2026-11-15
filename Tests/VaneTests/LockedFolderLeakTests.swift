@@ -191,6 +191,29 @@ import XCTest
         catalog.cancel()
     }
 
+    func testClosingOwnerWindowRevokesStaleSavedRows() async throws {
+        let viewer = store()
+        let profile = ProfileManager.shared.create(name: "Closing owner fixture")
+        let owner = store(profile: profile.id)
+        addTeardownBlock { @MainActor in _ = ProfileManager.shared.delete(profile.id) }
+        XCTAssertNotEqual(viewer.profileID, owner.profileID)
+        let page = tab(in: owner, path: "closed-owner")
+        let folder = Folder(name: "Protected", requiresAuthentication: true)
+        owner.pins = Pins(entries: [.init(row: .folder(folder)), .init(row: .tab(page.id.uuidString))])
+        owner.savePins()
+        let catalog = LibrarySpaceCatalog()
+        await catalog.prepare()?.value
+        let space = try XCTUnwrap(ProfileManager.shared.spaces(for: owner.profileID).first)
+        XCTAssertNotNil(catalog.entry(for: space))
+        owner.pins = Pins(entries: [.init(row: .folder(folder)),
+                                    .init(row: .tab(page.id.uuidString), parent: folder.id)])
+        owner.savePins()
+        // Closing the window removes the store without changing its Space.
+        TabStore.all.removeAll { $0 === owner }
+        XCTAssertNil(catalog.entry(for: space), "A departing owner's stale snapshot is revoked")
+        catalog.cancel()
+    }
+
     func testOrdinaryFolderShapeChangeKeepsOpenSpaceEditors() async throws {
         let viewer = store()
         let profile = ProfileManager.shared.create(name: "Editor epoch fixture")
