@@ -238,11 +238,9 @@ import UniformTypeIdentifiers
         addSubview(view)
         needsLayout = true
         if !Motion.reduced {
+            view.wantsLayer = true
             view.alphaValue = 0
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
-                view.animator().alphaValue = 1
-            }
+            view.fade(to: 1, duration: 0.15)
         }
     }
 

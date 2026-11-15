@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftUI
 
 /// Window-local surfaces and accents follow the large primary dot. Interaction
@@ -31,6 +32,22 @@ struct SpaceChromeTheme: Equatable {
     /// or white. Preserve its hue while bounding luminance for both pale and dark UI.
     var accent: Color {
         guard let primary else { return .accentColor }
+        return Self.accents.withLock { known in
+            if let accent = known[primary] { return accent }
+            let accent = Self.accent(for: primary)
+            // A handful of Space colours per session; a live theme drag adds its samples.
+            if known.count >= 256 { known.removeAll(keepingCapacity: true) }
+            known[primary] = accent
+            return accent
+        }
+    }
+
+    /// The window root asks for its tint on every store publication, and each answer is a
+    /// fourteen-step search through colour-space conversions. The answer depends on nothing
+    /// but the primary colour.
+    private static let accents = OSAllocatedUnfairLock<[ThemeColor: Color]>(initialState: [:])
+
+    private static func accent(for primary: ThemeColor) -> Color {
         let luminance = Self.luminance(primary)
         guard luminance < 0.16 || luminance > 0.22 else { return primary.color }
         let target = luminance < 0.16 ? 0.16 : 0.22

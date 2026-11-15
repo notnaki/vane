@@ -4617,6 +4617,18 @@ struct LivePRTitle: View {
     }
 }
 
+/// What a row draws from a tab that the tab does not publish by itself: its tidied name
+/// and where it is. A live row hands these down from the outline's own publications, so
+/// the ink under it is redrawn when they change and left alone when they have not.
+struct SidebarTabFacts: Equatable {
+    let title: String
+    let url: URL?
+    @MainActor init(_ tab: Tab) {
+        title = TidyTitles.title(for: tab)
+        url = tab.currentURL
+    }
+}
+
 struct SidebarTabSurface: View {
     @SidebarObserved var store: TabStore
     let tab: Tab
@@ -4626,6 +4638,7 @@ struct SidebarTabSurface: View {
     var action: () -> Void
     var previewSelected: Bool? = nil
     var previewTicked = false
+    var facts: SidebarTabFacts? = nil
 
     var body: some View {
         // Map window publications to the few values this row draws. The expensive
@@ -4633,7 +4646,8 @@ struct SidebarTabSurface: View {
         SidebarTabPresentation(store: store, tab: tab, held: held, returnHovering: $returnHovering,
             pr: pr, action: action, selected: previewSelected ?? (store.current == tab.id),
             ticked: previewSelected == nil ? store.selection.contains(tab.id) : previewTicked,
-            previewing: previewSelected != nil, renaming: previewSelected == nil && store.renamingTab == tab.id)
+            previewing: previewSelected != nil, renaming: previewSelected == nil && store.renamingTab == tab.id,
+            facts: facts)
     }
 }
 
@@ -4651,6 +4665,8 @@ struct SidebarTabPresentation: View {
     let ticked: Bool
     let previewing: Bool
     let renaming: Bool
+    /// Compared, not read: a change here is what redraws this row. See `SidebarTabFacts`.
+    var facts: SidebarTabFacts? = nil
     @Environment(\.ghostTileMorph) private var morph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -4727,26 +4743,63 @@ struct SidebarTabPresentation: View {
     }
 }
 
+/// Every outline publication reaches every mounted row. This shell maps the window's state
+/// to the few values one row draws; `TabRowContent` and everything under it are rebuilt only
+/// when one of those values, the tab itself or the row's environment actually changes.
 private struct TabRow: View {
     @SidebarObserved var store: TabStore
     @ObservedObject var tab: Tab
     /// Its place in the strip, so a drag can say where it started — see `Landing`.
     var spot: Landing.Spot?
+    /// Part of the spoken state; read here so a refreshed live folder still reaches it.
+    @Environment(\.livePR) private var pr
+
+    var body: some View {
+        let ticked = store.selection.contains(tab.id)
+        TabRowContent(store: store, tab: tab, spot: spot,
+                      selected: store.current == tab.id, ticked: ticked,
+                      // Only a ticked row says or draws how many others are ticked with it.
+                      selectionCount: ticked ? store.selection.count : 0,
+                      renaming: store.renamingTab != nil,
+                      facts: SidebarTabFacts(tab), state: tabState(tab, in: store),
+                      pane: store.split(containing: tab.id) != nil,
+                      muted: TabAudio.isMuted(tab),
+                      nativeDragPreview: store.sidebarDragPreview != nil)
+    }
+}
+
+private struct TabRowContent: View {
+    let store: TabStore
+    @ObservedObject var tab: Tab
+    var spot: Landing.Spot?
+    let selected: Bool
+    let ticked: Bool
+    let selectionCount: Int
+    let renaming: Bool
+    let facts: SidebarTabFacts
+    let state: String
+    let pane: Bool
+    let muted: Bool
+    let nativeDragPreview: Bool
     @State private var dragWidth = Look.sidebarWidth - Look.inset * 2
     @Environment(\.strip) private var strip
     @Environment(\.colorScheme) private var colorScheme
 
     @Environment(\.livePR) private var pr
     @State private var returnHovering = false
+    /// One closure for the row's lifetime. A closure made in `body` is new every time, and
+    /// a new action makes the whole surface under it look changed when only the spoken
+    /// state did — "tab 3 of 21" becomes "of 22" on every row when one tab opens.
+    @State private var click = TabRowClick()
 
     var body: some View {
-        let selected = store.current == tab.id
-        let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
-        let title = TidyTitles.title(for: tab)
-        surface()
+        // Only the model objects: capturing this view would tie its state storage to itself.
+        click.perform = { [store, tab] in Self.select(tab, in: store) }
+        let title = facts.title
+        return surface()
         .inStrip(tab.id, strip)
-        .tabTooltip(title, enabled: store.renamingTab == nil)
+        .tabTooltip(title, enabled: !renaming)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { dragWidth = $0 }
         .onDrag {
             dragPayload(tab, in: store, at: spot,
@@ -4754,7 +4807,7 @@ private struct TabRow: View {
                             .environment(\.colorScheme, colorScheme).environment(\.livePR, pr)),
                         ghostWidth: dragWidth)
         } preview: {
-            if store.sidebarDragPreview == nil || (ticked && store.selection.count > 1) {
+            if !nativeDragPreview || (ticked && selectionCount > 1) {
                 surface(held: true)
                     .frame(width: dragWidth)
                     .environmentObject(store)
@@ -4775,8 +4828,7 @@ private struct TabRow: View {
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
-        .accessibilityValue(tabState(tab, in: store)
-                            + selectionSuffix(ticked, store.selection.count))
+        .accessibilityValue(state + selectionSuffix(ticked, selectionCount))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Activate to show this tab. Rename and other commands are in Actions.")
         .accessibilityAction { store.selection.clear(); store.current = tab.id }
@@ -4808,7 +4860,7 @@ private struct TabRow: View {
         .accessibilityAction(named: "Duplicate Tab") { TabActions.duplicate(tab, in: store) }
         .accessibilityAction(named: "Favourite Tab") { store.move(tab.id, to: .favourite) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
-        .accessibilityAction(named: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab") {
+        .accessibilityAction(named: muted ? "Unmute Tab" : "Mute Tab") {
             TabAudio.toggleMute(tab)
         }
     }
@@ -4816,12 +4868,12 @@ private struct TabRow: View {
     private func surface(held: Bool = false) -> some View {
         SidebarTabSurface(store: store, tab: tab, held: held,
                           returnHovering: held ? .constant(returnHovering) : $returnHovering,
-                          pr: pr, action: select)
+                          pr: pr, action: click.action, facts: facts)
     }
     /// What ⌘W will actually do to this row, in words. See `TabRowGlyph`.
     private var closeVerb: String {
         TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
-                           pane: store.split(containing: tab.id) != nil,
+                           pane: pane,
                            atHome: tab.atHome).verb
     }
 
@@ -4834,7 +4886,7 @@ private struct TabRow: View {
     /// modifier-aware gesture. SwiftUI's tap carries no flags, and the only alternative is a
     /// second hit-testing layer over every row. Ceiling: it reads the *current* state of the
     /// keyboard, so a modifier released inside the same click's few milliseconds is missed.
-    private func select() {
+    private static func select(_ tab: Tab, in store: TabStore) {
         let mods = NSEvent.modifierFlags
         switch TabActions.rowClick(option: mods.contains(.option),
                                    command: mods.contains(.command),
@@ -4865,6 +4917,12 @@ private struct TabRow: View {
         // Favourites and pinned tabs are not "other tabs" — they stay whatever happens.
         store.archiveToday(store.tabs.filter { $0.id != tab.id && $0.kind == .today }.map(\.id))
     }
+}
+
+/// Holds what a click on the row currently means behind a closure that never changes.
+@MainActor private final class TabRowClick {
+    var perform: () -> Void = {}
+    private(set) lazy var action: () -> Void = { [weak self] in self?.perform() }
 }
 
 struct SidebarTabContextMenu: View {

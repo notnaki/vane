@@ -83,7 +83,7 @@ private final class PreviewServer: @unchecked Sendable {
     private func withApplicationLoop(_ body: () async throws -> Void) async throws {
         // Inheriting .prohibited from an earlier fixture fails once run() turns the
         // process regular; admit an explicit policy and restore it after the join.
-        let policy = NSApp.activationPolicy()
+        let policy = NSApplication.shared.activationPolicy()
         defer { NSApp.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?

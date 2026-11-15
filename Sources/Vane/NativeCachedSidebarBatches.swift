@@ -5,7 +5,10 @@ import SwiftUI
 /// Keep row controls in stable native owners, with a diagnostic legacy opt-out.
 @MainActor enum NativeCachedSidebarBatchesExperiment {
     static var enabled: Bool {
-        ProcessInfo.processInfo.environment["VANE_EXPERIMENT_NATIVE_ROW_BATCH_CACHE"] != "0"
+        // Sidebar bodies ask on every update. `ProcessInfo.environment` copies the whole
+        // environment into a dictionary each time; this reads the one live variable.
+        guard let value = getenv("VANE_EXPERIMENT_NATIVE_ROW_BATCH_CACHE") else { return true }
+        return strcmp(value, "0") != 0
     }
     static let provenance = "native-row-batch-stable-owners-v2"
 }
@@ -66,24 +69,62 @@ struct NativeSidebarDisclosureVisibility: VectorArithmetic {
     var changes: [String: CGFloat] = [:]
     static let zero = Self()
     func change(for row: String) -> CGFloat { changes[row, default: 0] }
+    // SwiftUI runs this arithmetic several times for every animation frame. A disclosure
+    // from rest has one empty operand, and the rest is done in place with one hash per row.
     static func + (lhs: Self, rhs: Self) -> Self {
         var result = lhs
-        result.rowCount += rhs.rowCount
-        for (row, value) in rhs.changes {
-            let value = result.change(for: row) + value
-            if value == 0 { result.changes.removeValue(forKey: row) }
-            else { result.changes[row] = value }
-        }
+        result += rhs
         return result
     }
     static func - (lhs: Self, rhs: Self) -> Self {
-        var negative = rhs
-        negative.scale(by: -1)
-        return lhs + negative
+        var result = lhs
+        result -= rhs
+        return result
+    }
+    static func += (lhs: inout Self, rhs: Self) {
+        lhs.rowCount += rhs.rowCount
+        lhs.combine(rhs.changes) { $0 + $1 }
+    }
+    static func -= (lhs: inout Self, rhs: Self) {
+        // The same IEEE results as adding the operand scaled by -1.
+        lhs.rowCount -= rhs.rowCount
+        lhs.combine(rhs.changes) { $0 - $1 }
+    }
+    /// A sum of exactly zero leaves the sparse vector, as does a zero that was never in it.
+    private mutating func combine(_ other: [String: CGFloat], _ operation: (CGFloat, CGFloat) -> CGFloat) {
+        guard !other.isEmpty else { return }
+        // Interpolation combines a vector with a scaled copy of itself: the same rows in
+        // the same storage order. Checking that is a walk; then no row is hashed at all.
+        if changes.count == other.count, changes.keys.elementsEqual(other.keys) {
+            var cancelled = false
+            var index = changes.values.startIndex
+            for delta in other.values {
+                let value = operation(changes.values[index], delta)
+                changes.values[index] = value
+                if value == 0 { cancelled = true }
+                changes.values.formIndex(after: &index)
+            }
+            if cancelled { changes = changes.filter { $0.value != 0 } }
+            return
+        }
+        for (row, delta) in other {
+            if let index = changes.index(forKey: row) {
+                let value = operation(changes.values[index], delta)
+                if value == 0 { changes.remove(at: index) }
+                else { changes.values[index] = value }
+            } else {
+                let value = operation(0, delta)
+                if value != 0 { changes[row] = value }
+            }
+        }
     }
     mutating func scale(by rhs: Double) {
         rowCount *= CGFloat(rhs)
-        changes = changes.mapValues { $0 * CGFloat(rhs) }
+        var index = changes.values.startIndex
+        while index != changes.values.endIndex {
+            changes.values[index] *= CGFloat(rhs)
+            changes.values.formIndex(after: &index)
+        }
     }
     var magnitudeSquared: Double {
         Double(rowCount * rowCount + changes.values.reduce(0) { $0 + $1 * $1 })
@@ -347,18 +388,23 @@ struct NativeSidebarDisclosureLayout {
 
 /// This is the sole interpolation for both the outer extent and native strips.
 /// Per-row components also cover equal-height close/open swaps between folders.
-private struct NativeSidebarDisclosureExtent: AnimatableModifier {
+///
+/// Each interpolated sample is handed to the native bridge as its own value. Writing it
+/// into the environment instead makes AppKit pass a changed environment to every hosting
+/// root under the bridge, and every row and native control in them adopts it again on
+/// every frame of the disclosure.
+private struct NativeSidebarDisclosureExtent<Content: View>: View, Animatable {
     let baseline: Set<String>
     let isSettled: Bool
     var visibility: NativeSidebarDisclosureVisibility
+    let content: (NativeSidebarDisclosureSample) -> Content
     nonisolated var animatableData: NativeSidebarDisclosureVisibility {
         get { visibility }
         set { visibility = newValue }
     }
-    func body(content: Content) -> some View {
+    var body: some View {
         let sample = NativeSidebarDisclosureSample(baseline: baseline, visibility: visibility, isSettled: isSettled)
-        return content
-            .environment(\.nativeSidebarDisclosureSample, sample)
+        return content(sample)
             .frame(height: max(0, sample.visibility.rowCount * (Look.rowHeight + Look.rowGap) - Look.rowGap))
     }
 }
@@ -1740,6 +1786,7 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
     let rows: [SidebarRows.Row]
     let modelIDs: Set<String>
     let revision: UUID
+    let sample: NativeSidebarDisclosureSample
     var protectedRows: Set<String> = []
     var readinessSection: String? = nil
     var owner: TabStore? = nil
@@ -1751,7 +1798,7 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeCachedSidebarBatchesView<Content> { NativeCachedSidebarBatchesView(frame: .zero) }
     func updateNSView(_ view: NativeCachedSidebarBatchesView<Content>, context: Context) {
-        let sample = context.environment.nativeSidebarDisclosureSample
+        let sample: NativeSidebarDisclosureSample? = sample
         // Interpolation only changes placement. Guarded settlement also changes
         // retained membership, so it must rebuild the native groups in configure.
         if context.coordinator.revision == revision && context.coordinator.sample != sample,
@@ -1762,7 +1809,10 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
         }
         context.coordinator.revision = revision
         context.coordinator.sample = sample
-        view.configure(rows: rows, modelIDs: modelIDs, environment: context.environment, protectedRows: protectedRows, readinessSection: readinessSection,
+        // A structural update still reads its sample where it always has.
+        var environment = context.environment
+        environment.nativeSidebarDisclosureSample = sample
+        view.configure(rows: rows, modelIDs: modelIDs, environment: environment, protectedRows: protectedRows, readinessSection: readinessSection,
                        transaction: context.transaction, owner: owner, content: content)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeCachedSidebarBatchesView<Content>, context: Context) -> CGSize? {
@@ -1785,10 +1835,13 @@ struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
         disclosureBaseline.capture(visible, scope: scope)
         let baseline = disclosureBaseline.rows
         let visibility = disclosureBaseline.visibility
-        return NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, revision: UUID(),
-            protectedRows: protectedRows, readinessSection: readinessSection, owner: owner, content: content)
-            .modifier(NativeSidebarDisclosureExtent(baseline: baseline,
-                isSettled: disclosureBaseline.isSettled, visibility: visibility))
+        // One revision per structural update: every interpolated frame of it reuses the same.
+        let revision = UUID()
+        return NativeSidebarDisclosureExtent(baseline: baseline,
+            isSettled: disclosureBaseline.isSettled, visibility: visibility) { sample in
+                NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, revision: revision, sample: sample,
+                    protectedRows: protectedRows, readinessSection: readinessSection, owner: owner, content: content)
+            }
             .transaction { disclosureBaseline.registerCompletion(in: &$0) }
             .vaneMotionPolicy()
     }

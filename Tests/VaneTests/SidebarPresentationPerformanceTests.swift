@@ -130,6 +130,7 @@ import XCTest
                          _ action: () -> Void) async throws {
                 if let operation = ProcessInfo.processInfo.environment["VANE_SIDEBAR_PERF_OPERATION"],
                    operation != name { return }
+                let repeats = ProcessInfo.processInfo.environment["VANE_SIDEBAR_PERF_REPEATS"].flatMap(Int.init) ?? repeats
                 var times: [Double] = []
                 var gaps: [Double] = []
                 try await Task.sleep(for: .milliseconds(400))

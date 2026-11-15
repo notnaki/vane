@@ -313,8 +313,12 @@ private struct TabTooltipModifier: ViewModifier {
     @Environment(\.isEnabled) private var controlEnabled
     @ObservedObject private var dragging = Dragging.shared
     func body(content: Content) -> some View {
+        // The anchor draws nothing. Without the window's Space tint, SwiftUI skips building a
+        // tinted NSAppearance for it on every environment change, which is every frame of a
+        // folder disclosure.
         content.background(TabTooltipAnchor(title: title, hint: hint, shortcut: shortcut, centered: centered,
-            enabled: enabled && controlEnabled && dragging.tab == nil && dragging.folder == nil))
+            enabled: enabled && controlEnabled && dragging.tab == nil && dragging.folder == nil)
+            .tint(nil).accentColor(nil))
     }
 }
 

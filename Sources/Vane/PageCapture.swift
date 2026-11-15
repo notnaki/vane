@@ -393,11 +393,9 @@ import WebKit
             addSubview(host)
             needsLayout = true
             if !Motion.reduced {
+                host.wantsLayer = true
                 host.alphaValue = 0
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.15
-                    host.animator().alphaValue = 1
-                }
+                host.fade(to: 1, duration: 0.15)
             }
         }
     }
