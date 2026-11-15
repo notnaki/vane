@@ -156,9 +156,9 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         scroll.documentView = text
         alert.accessoryView = scroll
         alert.addButton(withTitle: review.installing ? "Install Extension" : review.updating ? "Update Extension" : "Allow and Enable").keyEquivalent = ""
-        let deny = alert.addButton(withTitle: review.installing ? "Cancel" : "Don’t Allow")
-        deny.keyEquivalent = "\r"
-        alert.window.defaultButtonCell = deny.cell as? NSButtonCell
+        // A button holds one key equivalent: Escape denies, as macOS cancel buttons do.
+        // Nothing answers Return, so the key can never grant access.
+        alert.addButton(withTitle: review.installing ? "Cancel" : "Don’t Allow").keyEquivalent = "\u{1b}"
         return alert
     }
 

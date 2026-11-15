@@ -113,6 +113,19 @@ import WebKit
         return .errorOnFailure
     }
 
+    /// The preview delegate's whole navigation decision, including the transport policy
+    /// it hands WebKit, so the applied preferences are testable without a private bridge.
+    static func navigationPolicy(_ url: URL?, profileID: UUID?,
+                                 preferences: WKWebpagePreferences) -> WKNavigationActionPolicy {
+        // Internal cancellation unloads the document while keeping the reusable view.
+        if url?.absoluteString == "about:blank" { return .allow }
+        guard let url, let profileID else { return .cancel }
+        // WebKit also enforces upgrades through server redirects, without silently
+        // retrying plaintext if TLS fails. No preview can grant an HTTP exception.
+        preferences.preferredHTTPSNavigationPolicy = httpsPolicy(url, profileID: profileID)
+        return allowsNavigation(url, profileID: profileID) ? .allow : .cancel
+    }
+
     /// Redirects cannot ask for permission to fall back to plaintext.
     static func allowsNavigation(_ url: URL, profileID: UUID) -> Bool {
         let scheme = url.scheme?.lowercased()
@@ -1114,16 +1127,9 @@ import WebKit
         func webView(_ w: WKWebView, decidePolicyFor action: WKNavigationAction,
                      preferences: WKWebpagePreferences,
                      decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
-            // Internal cancellation unloads the document while keeping the reusable view.
-            if action.request.url?.absoluteString == "about:blank" { decisionHandler(.allow, preferences); return }
-            guard let url = action.request.url, let source = owner?.source else {
-                decisionHandler(.cancel, preferences); return
-            }
-            // WebKit also enforces upgrades through server redirects, without silently
-            // retrying plaintext if TLS fails. No preview can grant an HTTP exception.
-            preferences.preferredHTTPSNavigationPolicy = Previews.httpsPolicy(url, profileID: source.profileID)
-            let allowed = Previews.allowsNavigation(url, profileID: source.profileID)
-            decisionHandler(allowed ? .allow : .cancel, preferences)
+            let policy = Previews.navigationPolicy(action.request.url, profileID: owner?.source?.profileID,
+                                                   preferences: preferences)
+            decisionHandler(policy, preferences)
         }
 
         /// Never turn a preview into a download. Engine.swift routes an attachment to the

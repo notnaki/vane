@@ -37,6 +37,19 @@ import WebKit
         }
     }
 
+    @MainActor func testDeveloperBarIndicatorFollowsTheTabsTrustState() throws {
+        TestEnvironment.prepare()
+        let tab = Tab(url: URL(string: "https://developer.invalid/")!, isPrivate: true)
+        defer { tab.tearDown() }
+        // Synchronous: WebKit's trust/content callbacks hop to the main queue later.
+        XCTAssertEqual(DeveloperMode.securityIndicator(tab).glyph, "lock", "A trusted, fully secure page shows the lock")
+        tab.certificateTrusted = false
+        XCTAssertFalse(["lock", "lock.fill"].contains(DeveloperMode.securityIndicator(tab).glyph), "An untrusted certificate loses the lock")
+        tab.certificateTrusted = true
+        tab.secureContent = false
+        XCTAssertFalse(["lock", "lock.fill"].contains(DeveloperMode.securityIndicator(tab).glyph), "Mixed content loses the lock")
+    }
+
     func testPreviewTransportPolicyUpgradesAndRejectsInsecureRedirects() throws {
         let suite = "vane-preview-security-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -50,6 +63,19 @@ import WebKit
         XCTAssertFalse(Previews.allowsNavigation(http, profileID: profile), "A redirect to plaintext must stop without an interstitial")
         XCTAssertTrue(Previews.allowsNavigation(https, profileID: profile))
         XCTAssertEqual(Previews.httpsPolicy(https, profileID: profile), .errorOnFailure)
+        // The delegate's decision: the policy it applies to WebKit, not just the helpers.
+        let applied = WKWebpagePreferences()
+        applied.preferredHTTPSNavigationPolicy = .keepAsRequested
+        XCTAssertEqual(Previews.navigationPolicy(https, profileID: profile, preferences: applied), .allow)
+        XCTAssertEqual(applied.preferredHTTPSNavigationPolicy, .errorOnFailure, "The upgrade must be applied, not only computed")
+        XCTAssertEqual(Previews.navigationPolicy(http, profileID: profile, preferences: WKWebpagePreferences()), .cancel,
+                       "A redirect to plaintext is cancelled")
+        XCTAssertEqual(Previews.navigationPolicy(https, profileID: nil, preferences: WKWebpagePreferences()), .cancel,
+                       "A preview without a source tab loads nothing")
+        XCTAssertEqual(Previews.navigationPolicy(URL(string: "mailto:x@example.test"), profileID: profile,
+                                                 preferences: WKWebpagePreferences()), .cancel)
+        XCTAssertEqual(Previews.navigationPolicy(URL(string: "about:blank"), profileID: nil,
+                                                 preferences: WKWebpagePreferences()), .allow)
         HTTPSOnly.allow(host: "preview.test", profileID: profile)
         XCTAssertEqual(Previews.httpsPolicy(http, profileID: profile), .keepAsRequested)
         XCTAssertEqual(Previews.httpsPolicy(http, profileID: other), .errorOnFailure)

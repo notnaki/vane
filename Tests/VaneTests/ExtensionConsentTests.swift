@@ -378,8 +378,7 @@ import XCTest
                                                  previous: nil, installing: installing)
             review.updating = !installing
             let alert = ExtensionConsent.makePrompt(review)
-            XCTAssertEqual(alert.buttons.first?.keyEquivalent, "")
-            XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\r")
+            XCTAssertEqual(alert.buttons.map(\.keyEquivalent), ["", "\u{1b}"], "Return must not grant; Escape denies")
         }
     }
 
@@ -395,7 +394,7 @@ import XCTest
         XCTAssertTrue(text.string.contains("All requested access"))
         XCTAssertTrue(text.string.contains("tabs"))
         XCTAssertEqual(alert.buttons.map(\.title), ["Allow and Enable", "Don’t Allow"])
-        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\r")
+        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\u{1b}")
         XCTAssertTrue(ExtensionAccess(permissions: [], sites: []).description.contains("None requested"))
     }
 }
