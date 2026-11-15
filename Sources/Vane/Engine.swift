@@ -2405,6 +2405,8 @@ struct TitleReveal: Equatable, Sendable {
                    !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
                 return
             }
+            // Nor this: the PiP window's ⤢, which wants the tab as well as the video back.
+            if m.body as? String == "return" { PictureInPicture.returnToTab(self); return }
             if let active = PictureInPicture.state(from: m.body) {
                 pictureInPicture = active
                 if active {
