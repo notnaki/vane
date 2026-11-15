@@ -842,7 +842,7 @@ enum Passwords {
             guard deleteOwnedInternetPasswords(profileID: nil, dataDir: dataDir, keychain: keychain) else { return false }
             secretDidChange()
             let integrations = IntegrationTokens.deleteEverything(dataDir: dataDir, keychain: keychain)
-            let ai = AIKeys.deleteEverything(namespace: dataDir.map { UserDefaults.suiteName(forDataDir: $0) }, keychain: keychain)
+            let ai = AIKeys.deleteEverything(namespace: dataDir.map { UserDefaults.suiteName(forDataDir: $0) }, delete: keychain.delete)
             return integrations && ai
         }
     }

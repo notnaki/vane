@@ -64,11 +64,12 @@ enum AIKeys {
 
     /// Delete every account, including orphaned API and ChatGPT credentials, in this
     /// instance's exact service. Neighbouring data-directory namespaces are untouched.
-    static func deleteEverything(namespace: String?, keychain: IntegrationTokens.Keychain = .system) -> Bool {
+    /// A bare delete, not `IntegrationTokens.Keychain`: scripts/check-cloud-ai.sh compiles this file alone.
+    static func deleteEverything(namespace: String?, delete: (CFDictionary) -> OSStatus = SecItemDelete) -> Bool {
         lane.withLock {
             var q = query(account: "", namespace: namespace)
             q.removeValue(forKey: kSecAttrAccount as String)
-            let status = keychain.delete(q as CFDictionary)
+            let status = delete(q as CFDictionary)
             if status == errSecSuccess { NotificationCenter.default.post(name: .vaneSecretsChanged, object: nil) }
             return status == errSecSuccess || status == errSecItemNotFound
         }
