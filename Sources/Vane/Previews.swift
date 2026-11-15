@@ -101,6 +101,24 @@ import WebKit
 
     // MARK: - Eligibility
 
+    /// Resolve speculative loads using the source profile's transport policy.
+    static func requestURL(_ url: URL, profileID: UUID) -> URL {
+        HTTPSOnly.enabled ? (HTTPSOnly.upgrade(url, profileID: profileID) ?? url) : url
+    }
+
+    static func httpsPolicy(_ url: URL, profileID: UUID) -> WKWebpagePreferences.UpgradeToHTTPSPolicy {
+        guard HTTPSOnly.enabled, let host = url.host,
+              !HTTPSOnly.isLocal(host), !HTTPSOnly.isExcepted(host: host, profileID: profileID)
+        else { return .keepAsRequested }
+        return .errorOnFailure
+    }
+
+    /// Redirects cannot ask for permission to fall back to plaintext.
+    static func allowsNavigation(_ url: URL, profileID: UUID) -> Bool {
+        let scheme = url.scheme?.lowercased()
+        return (scheme == "http" || scheme == "https") && requestURL(url, profileID: profileID) == url
+    }
+
     /// The cache key, and the identity a preview is compared by: the url without its
     /// fragment. Two links into the same document differ only in where they scroll to, and
     /// previewing that twice would be two loads of one page.
@@ -335,7 +353,7 @@ import WebKit
             }
             guard !Task.isCancelled, self.latest == id, Previews.enabled,
                   !BatterySaver.shared.isActive else { return }
-            self.navigation = web.load(URLRequest(url: url))
+            self.navigation = web.load(URLRequest(url: Previews.requestURL(url, profileID: tab.profileID)))
             if !tab.isPrivate { self.monitorSession(id) }
             self.paintTask = Task(priority: .background) { [weak self] in await self?.paint(id: id, web: web) }
             // Preparing pixels never speculatively starts inference. Keep its original
@@ -1093,12 +1111,19 @@ import WebKit
 
         /// A preview follows redirects and nothing else. No mailto:, no custom scheme
         /// handing the click to another app, no popup.
-        func webView(_ w: WKWebView, decidePolicyFor action: WKNavigationAction)
-            async -> WKNavigationActionPolicy {
+        func webView(_ w: WKWebView, decidePolicyFor action: WKNavigationAction,
+                     preferences: WKWebpagePreferences,
+                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
             // Internal cancellation unloads the document while keeping the reusable view.
-            if action.request.url?.absoluteString == "about:blank" { return .allow }
-            let scheme = action.request.url?.scheme?.lowercased() ?? ""
-            return scheme == "http" || scheme == "https" ? .allow : .cancel
+            if action.request.url?.absoluteString == "about:blank" { decisionHandler(.allow, preferences); return }
+            guard let url = action.request.url, let source = owner?.source else {
+                decisionHandler(.cancel, preferences); return
+            }
+            // WebKit also enforces upgrades through server redirects, without silently
+            // retrying plaintext if TLS fails. No preview can grant an HTTP exception.
+            preferences.preferredHTTPSNavigationPolicy = Previews.httpsPolicy(url, profileID: source.profileID)
+            let allowed = Previews.allowsNavigation(url, profileID: source.profileID)
+            decisionHandler(allowed ? .allow : .cancel, preferences)
         }
 
         /// Never turn a preview into a download. Engine.swift routes an attachment to the

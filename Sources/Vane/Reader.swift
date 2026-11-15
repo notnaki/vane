@@ -338,14 +338,14 @@ import SwiftUI
     static func esc(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.count + 8)
-        for ch in s {
+        for ch in s.unicodeScalars {
             switch ch {
             case "&": out += "&amp;"
             case "<": out += "&lt;"
             case ">": out += "&gt;"
             case "\"": out += "&quot;"
             case "'": out += "&#39;"
-            default: out.append(ch)
+            default: out.unicodeScalars.append(ch)
             }
         }
         return out

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 import WebKit
 import ExtensionResourceBridge
@@ -19,8 +20,17 @@ import ExtensionResourceBridge
     nonisolated static func isLocal(_ url: URL?) -> Bool {
         guard let h = url?.host()?.lowercased(), !h.isEmpty else { return false }
         if h == "localhost" || h.hasSuffix(".localhost") { return true }
-        if h == "::1" || h == "0.0.0.0" || h.hasPrefix("127.") { return true }
-        return false
+        let host = h.hasPrefix("[") && h.hasSuffix("]") ? String(h.dropFirst().dropLast()) : h
+        if host == "0.0.0.0" { return true }
+        var v4 = in_addr()
+        if inet_pton(AF_INET, host, &v4) == 1 { return UInt32(bigEndian: v4.s_addr) >> 24 == 127 }
+        var v6 = in6_addr(), loopback = in6addr_loopback
+        return inet_pton(AF_INET6, host, &v6) == 1
+            && memcmp(&v6, &loopback, MemoryLayout<in6_addr>.size) == 0
+    }
+
+    static func securityIndicator(_ site: SiteControlModel) -> (glyph: String, label: String) {
+        (site.glyph, site.connection)
     }
 
     private static let base = "developerSites"
@@ -205,8 +215,11 @@ private struct DeveloperBar: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
+        let security = DeveloperMode.securityIndicator(SiteControlModel(tab))
         HStack(spacing: Look.inset) {
-            Image(systemName: tab.currentURL?.scheme == "https" ? "lock.fill" : "lock.open")
+            Image(systemName: security.glyph)
+                .accessibilityLabel(security.label)
+                .help(security.label)
             Text(tab.currentURL?.absoluteString ?? tab.address)
                 .font(Look.small.monospaced().weight(.medium))
                 .lineLimit(1).truncationMode(.middle)
