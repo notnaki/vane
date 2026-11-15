@@ -206,7 +206,15 @@ import WebKit
 
     /// Only WebKit's security origin is authority. Frame request URLs can retain
     /// about:blank or name an opaque/sandboxed document's untrusted source URL.
+    #if DEBUG
+    /// Every offered request, so tests can prove a refused request was actually decided.
+    static var offersForTesting: [(url: String, userInitiated: Bool)] = []
+    #endif
+
     static func offer(_ url: URL, from frame: WKFrameInfo, tab: Tab, userInitiated: Bool) {
+        #if DEBUG
+        offersForTesting.append((url.absoluteString, userInitiated))
+        #endif
         guard let web = tab.existingWeb, frame.webView === web, !tab.suspended,
               let store = TabStore.all.first(where: { $0.active === tab && $0.profileVisible }),
               store.externalApp == nil else { return }

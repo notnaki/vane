@@ -33,6 +33,11 @@ import ExtensionResourceBridge
         (site.glyph, site.connection)
     }
 
+    /// The developer bar's entry point, so the Tab → model mapping is testable.
+    @MainActor static func securityIndicator(_ tab: Tab) -> (glyph: String, label: String) {
+        securityIndicator(SiteControlModel(tab))
+    }
+
     private static let base = "developerSites"
     private static func key(_ profile: UUID) -> String { ProfileManager.defaultsKey(base, profile) }
     private static var defaults: UserDefaults { .vane }
@@ -215,7 +220,7 @@ private struct DeveloperBar: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
-        let security = DeveloperMode.securityIndicator(SiteControlModel(tab))
+        let security = DeveloperMode.securityIndicator(tab)
         HStack(spacing: Look.inset) {
             Image(systemName: security.glyph)
                 .accessibilityLabel(security.label)

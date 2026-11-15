@@ -96,13 +96,32 @@ import XCTest
         XCTAssertEqual(answer, .cancel)
     }
 
-    func testScriptedExternalNavigationWithoutActivationCannotPrompt() async throws {
-        server.pages["/scripted"] = "<script>location.href = 'vane-security-fixture://open';</script>"
+    func testScriptedExternalNavigationWithoutActivationCannotPromptButAUserClickStillDoes() async throws {
+        // The scripted attempt runs during load, so its policy decision precedes the
+        // later click. `offer` ignores requests while a prompt is showing: a prompt for
+        // the scripted URL would block the click instead of being replaced by it.
+        server.pages["/scripted"] = """
+        <a id='go' href='vane-security-fixture://clicked'>Open</a>
+        <script>location.href = 'vane-security-fixture://scripted';</script>
+        """
         let url = try server.url("/scripted")
+        #if DEBUG
+        ExternalApps.offersForTesting.removeAll()
+        #endif
         store.newTab(url)
         let tab = try XCTUnwrap(store.active)
         try await compatibilityWait { tab.web.url == url && !tab.web.isLoading }
-        XCTAssertNil(store.externalApp)
+        // Not vacuous: the scripted request must have reached the decision without activation.
+        #if DEBUG
+        try await compatibilityWait {
+            ExternalApps.offersForTesting.contains { $0.url == "vane-security-fixture://scripted" && !$0.userInitiated }
+        }
+        #endif
+        XCTAssertNil(store.externalApp, "A script without user activation must not prompt")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('go').click()")
+        try await compatibilityWait { self.store.externalApp != nil }
+        XCTAssertEqual(store.externalApp?.url.absoluteString, "vane-security-fixture://clicked",
+                       "Only the user-activated link may prompt; the scripted request must have been refused")
     }
 
     func testGrantsAreScopedToExactOriginProfileAndPrivateTab() throws {
