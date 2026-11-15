@@ -60,10 +60,6 @@ def main():
     assert 'known-limitations' not in sections
     assert 'scripts/classify-worker-ua.py ' not in text
     assert '--suite required' in sections['native']
-    assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'" in sections['native']
-    preflight = sections['native'].split('- name: Owned AppKit loop preflight', 1)[1].split('- name: Native regression tests', 1)[0]
-    assert 'timeout-minutes: 4' in preflight
-    assert 'AppKit loop smoke: delayedHeartbeat=true, completed=true' in preflight
     assert 'APP_REQUIRED: ${{ needs.changes.outputs.app_required }}' in gate
     script = block(gate)
     verify_gate_cases("set -euo pipefail\nfalse\nexit 0", [({}, False)], [])
@@ -157,9 +153,19 @@ def main():
     assert 'scripts/native-test-shards.py verify' in native
     assert 'name: native-loop-logs-${{ matrix.shard }}' in native
     assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '1200'" in native
-    assert "VANE_APPKIT_LOOP_SMOKE: '1'" in native
-    assert 'Native suite primary status=0; cleanup status=0' in native
-    assert native.index('Owned AppKit loop preflight') < native.index('Native regression tests')
+    # A single required job owns the fresh-process smoke. Both paths use the
+    # tested verifier for signals, selected completions and retirement results.
+    assert text.count('- name: Owned AppKit loop preflight') == 1
+    preflight = packaging.split('- name: Owned AppKit loop preflight', 1)[1].split('- name: Checks', 1)[0]
+    assert 'timeout-minutes: 4' in preflight
+    assert "VANE_APPKIT_LOOP_SMOKE: '1'" in preflight
+    assert "VANE_NATIVE_FIXTURE_PRIMARY_TIMEOUT: '90'" in preflight
+    assert '--test VaneTests.NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops' in preflight
+    assert 'scripts/native-test-shards.py verify' in preflight
+    assert 'SWIFT_BACKTRACE:' in preflight and 'SWIFT_BACKTRACE:' in native
+    assert 'grep ' not in preflight + native
+    assert 'name: appkit-loop-log' in packaging
+    assert 'Preserve AppKit loop evidence\n        if: ${{ always() }}' in packaging
     assert 'Preserve native loop failure evidence\n        if: ${{ always() }}' in native
     for command in ('python3 scripts/test-ci-source-state.py',
                     'python3 scripts/test-native-fixture-runner.py', './.build/debug/vane selfcheck --pure',

@@ -129,6 +129,39 @@ class NativeTestShardsTests(unittest.TestCase):
         self.verify(first + second + "*** Signal 5: Backtracing\n" + cleanup, False)
         self.verify("Test Case '-[Other.A testOne]' passed (0.001 seconds).\n" + second + cleanup, False)
 
+    def test_fresh_process_probe_uses_the_same_fail_closed_verifier(self):
+        # The smoke process must not pass on zero tests, a signal, or failed cleanup.
+        test = "VaneTests.NativeApplicationLoopSmokeTests/testOwnedLoopAdmitsAsyncWorkAndStops"
+        passed = "Test Case '-[VaneTests.NativeApplicationLoopSmokeTests testOwnedLoopAdmitsAsyncWorkAndStops]' passed (6.1 seconds).\n"
+        cleanup = "Native suite primary status=0; cleanup status=0\n"
+        log = self.root / "smoke.log"
+        for text, wanted in (
+            (passed + cleanup, True),
+            (cleanup, False),
+            (passed, False),
+            (passed.replace("passed", "failed") + cleanup, False),
+            (passed.replace("passed", "skipped") + cleanup, False),
+            (passed + cleanup.replace("cleanup status=0", "cleanup status=1"), False),
+            (passed + "*** Signal 5: Backtracing\n" + cleanup, False),
+            (passed + cleanup + "\n*** Signal 11: Backtracing from 0x0... done\n", False),
+        ):
+            with self.subTest(text=text):
+                log.write_text(text)
+                result = subprocess.run([sys.executable, str(SCRIPT), "verify", "--test", test,
+                                         "--log", str(log)], capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, wanted, result.stderr)
+
+    def test_probe_selection_rejects_ambiguous_missing_or_malformed_expectations(self):
+        self.plan(["VaneTests.A/testOne"], count=1)
+        log = self.root / "smoke.log"
+        log.write_text("Native suite primary status=0; cleanup status=0\n")
+        for selection in ([], ["--test", "bad"], ["--test", ""],
+                          ["--test", "VaneTests.A/testOne", "--manifest", str(self.root / "shard-1.json")]):
+            with self.subTest(selection=selection):
+                result = subprocess.run([sys.executable, str(SCRIPT), "verify", *selection,
+                                         "--log", str(log)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+
     def test_empty_or_duplicate_manifest_cannot_pass_on_cleanup_alone(self):
         for tests in ([], ["VaneTests.A/test", "VaneTests.A/test"]):
             (self.root / "shard-1.json").write_text(json.dumps({"schema": 1, "tests": tests}))
