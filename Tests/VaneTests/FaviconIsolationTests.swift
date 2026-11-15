@@ -159,6 +159,10 @@ private final class IsolatedFaviconProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertNil(cache.icon(for: URL(string: "https://visited.invalid/")!))
         let stale = Favicons.cache(for: profile)
         XCTAssertNil(stale.icon(for: URL(string: "https://never-contact.invalid/")!))
+        // A live cache is registered and handed back; a retired profile's is never registered.
+        let another = Favicons.cache(for: profile)
+        XCTAssertFalse(another === stale, "A deleted profile must not be given a registered live cache")
         await stale.retire().value
+        await another.retire().value
     }
 }
