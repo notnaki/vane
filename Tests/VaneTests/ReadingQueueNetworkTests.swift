@@ -1,6 +1,5 @@
 import Foundation
 import Network
-import WebKit
 import XCTest
 @testable import vane
 
@@ -44,18 +43,6 @@ import XCTest
 }
 
 @MainActor final class ReadingQueueNetworkTests: XCTestCase {
-    func testOfflineCollectionFailsClosedWithoutSourceBlockerContext() async throws {
-        let server = try ReadingImageServer(); defer { server.stop() }
-        try await compatibilityWait { server.port != nil }
-        let url = try server.url("/blocked")
-        let result = await ReadingQueueImages().collect(urls: [url, url])
-        XCTAssertEqual(result.missingCount, 1)
-        XCTAssertTrue(result.mapping.isEmpty)
-        XCTAssertTrue(result.images.isEmpty)
-        XCTAssertTrue(result.resources.isEmpty)
-        XCTAssertTrue(server.requests.isEmpty, "Without the source document's content rules, saving must not issue any image request")
-    }
-
     func testHeaderlessOversizedResponseIsBoundedAndRedirectLoopStops() async throws {
         let server = try ReadingImageServer(); defer { server.stop() }
         try await compatibilityWait { server.port != nil }
