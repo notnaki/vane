@@ -27,9 +27,7 @@ import WebKit
                 }
                 for suffix in ["blocked.example.evil.com/", "sub.blocked.example.evil.com/",
                                "evilblocked.example/", "blocked.example-evil.com/", "blocked.example%2eevil.com/",
-                               "u@blocked.example.evil.com/", "blocked.example@evil.com/",
-                               "blocked.example:p@evil.com/", "blocked.example:8443@evil.com/",
-                               "sub.blocked.example:p@evil.com/",
+                               "u@blocked.example.evil.com/",
                                "evil.com/?u@blocked.example/", "evil.com/#u@blocked.example/",
                                "evil.com/u@blocked.example/", "evil.com/?u@sub.blocked.example/",
                                "evil.com/#u@sub.blocked.example/"] {
