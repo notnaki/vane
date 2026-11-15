@@ -102,8 +102,9 @@ import WebKit
             ? "from the beginning of time"
             : "from the \(options.range.title.lowercased())"
         let effects = options.cookies ? " You may be signed out and lose offline website work." : ""
-        let recovery = options.history
-            ? " All local recovery points are also deleted, including other profiles and dates. Exported backups are kept." : ""
+        let recovery = options.history && options.range == .everything
+            ? " All local recovery points are also deleted, including other profiles'. Exported backups are kept."
+            : options.history ? " Local recovery points keep their copies." : ""
         return "Clears \(list) \(when).\(effects)\(recovery) Bookmarks and saved passwords are not affected."
     }
 

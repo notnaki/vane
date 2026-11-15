@@ -127,6 +127,27 @@ import XCTest
         XCTAssertFalse(remaining, "Uninstall must delete storage even when the extension is never installed again")
     }
 
+    func testProfileDeletionPurgeDeletesPersistentStorage() async throws {
+        let host = ExtensionHost.host(for: profile)
+        _ = try await install(host)
+        let context = try XCTUnwrap(host.installed.first)
+        let web = WKWebView(frame: .zero, configuration: try XCTUnwrap(context.webViewConfiguration))
+        web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
+        try await compatibilityWait { !web.isLoading && web.title == "Store options" }
+        _ = try await web.callAsyncJavaScript("await browser.storage.local.set({secret:'fixture'}); return true;",
+            arguments: [:], in: nil, contentWorld: .page)
+        web.stopLoading()
+        let stored: (WKWebExtensionController) async -> Bool = { controller in
+            await controller.dataRecords(ofTypes: [.local, .synchronized])
+                .contains { $0.uniqueIdentifier == context.uniqueIdentifier && $0.totalSizeInBytes > 0 }
+        }
+        let before = await stored(host.controller)
+        XCTAssertTrue(before)
+        await ExtensionHost.removePersistentData(for: profile)
+        let after = await stored(host.controller)
+        XCTAssertFalse(after, "Deleting a profile must erase its extensions' storage")
+    }
+
     func testRemoveDuringDownloadCannotResurrectInstallation() async throws {
         let host = ExtensionHost.host(for: profile)
         _ = try await install(host)

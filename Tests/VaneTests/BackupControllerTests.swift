@@ -20,6 +20,15 @@ import XCTest
         XCTAssertFalse(controller.busy)
     }
 
+    func testPartialHistoryClearKeepsRecoveryPoints() async throws {
+        let f = try fixture(), manager = f.seed(), history = f.database(manager.active.id)
+        let recovery = BackupRecovery(library: f.library)
+        _ = try recovery.save(f.library.capture(reason: .automatic))
+        let controller = BackupController(library: f.library, flush: { true }, restart: {})
+        try await controller.clearHistory(history, since: Date().addingTimeInterval(-3600))
+        XCTAssertEqual(try recovery.points().count, 1, "A last-hour clear must not delete every backup")
+    }
+
     func testHistoryClearReportsRecoveryPurgeFailure() async throws {
         let f = try fixture(), history = f.database(f.seed().active.id)
         let recoveryRoot = f.root.appendingPathComponent("Recovery")

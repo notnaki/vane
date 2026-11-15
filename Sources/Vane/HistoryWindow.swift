@@ -15,6 +15,21 @@ import SwiftUI
     private static var profileID: UUID?
     static let refresh = Notification.Name("vane.feel05.historyRefresh")
 
+    /// Every "clear all history" entry point: the live database, then local recovery points.
+    static func clearAll(_ store: Store) async -> Bool {
+        do { try await BackupController.shared.clearHistory(store, since: nil); return true }
+        catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Browsing history could not be completely cleared"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+            return false
+        }
+    }
+
+    static let clearAllText = "Local recovery points are also deleted. Bookmarks, saved passwords and exported backups are not affected."
+
     static func showWriteFailure(_ store: Store) {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -236,10 +251,12 @@ private struct HistoryView: View {
 
             Button("Clear History…") {
                 guard confirm("Clear all browsing history?", "Clear",
-                              "Bookmarks and saved passwords are not affected.") else { return }
-                guard store.clearHistory() else { HistoryWindow.showWriteFailure(store); return }
-                reload()
-                axAnnounce("History cleared.")
+                              HistoryWindow.clearAllText) else { return }
+                Task {
+                    guard await HistoryWindow.clearAll(store) else { return }
+                    reload()
+                    axAnnounce("History cleared.")
+                }
             }
             .buttonStyle(.bordered)
             .controlSize(.large)

@@ -698,6 +698,7 @@ struct Space: Identifiable, Codable, Equatable {
             // Close the sqlite connection and drop the cached objects before the files go.
             Favicons.forget(id, retiring: true)
             Store.forget(id)
+            Task { await ExtensionHost.removePersistentData(for: id) }
             ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
@@ -763,6 +764,7 @@ struct Space: Identifiable, Codable, Equatable {
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
             await Store.forgetAsync(id)
+            await ExtensionHost.removePersistentData(for: id)
             ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }

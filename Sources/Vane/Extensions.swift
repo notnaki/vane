@@ -983,6 +983,17 @@ import WebKit
         }
     }
 
+    /// Profile deletion: `storage.local`/`.sync` live in the controller's own store, which
+    /// neither the code store nor website data removal reaches.
+    static func removePersistentData(for profileID: UUID) async {
+        guard profileID != Profile.incognito.id else { return }
+        let controller = hosts[profileID]?.controller ?? WKWebExtensionController(configuration:
+            controllerIdentifier(for: profileID, dataDirectory: Store.overrideDirectory)
+                .map(WKWebExtensionController.Configuration.init(identifier:)) ?? .default())
+        let records = await controller.dataRecords(ofTypes: persistentExtensionDataTypes)
+        await controller.removeData(ofTypes: persistentExtensionDataTypes, from: records)
+    }
+
     private func removePersistentData(runtimeID: String) {
         let key = DataPurgeKey(profileID: profileID, runtimeID: runtimeID)
         let token = UUID(), controller = controller

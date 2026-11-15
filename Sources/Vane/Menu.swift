@@ -910,11 +910,11 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.clearHistory) {
             let a = NSAlert()
             a.messageText = "Clear all browsing history?"
-            a.informativeText = "Bookmarks and saved passwords are not affected."
+            a.informativeText = HistoryWindow.clearAllText
             a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
             if a.runModal() == .alertFirstButtonReturn {
                 let history = Store.store(for: Windows.current?.profileID ?? ProfileManager.activeProfileID)
-                if !history.clearHistory() { HistoryWindow.showWriteFailure(history) }
+                Task { _ = await HistoryWindow.clearAll(history) }
             }
         },
         .separator(),

@@ -196,6 +196,10 @@ struct BackupCandidate: Identifiable, Sendable {
         guard history.clearHistory(since: since), await history.flushPendingWrites() else {
             throw BackupError.storage(history.lastHistoryError ?? "Browsing history could not be cleared.")
         }
+        // A partial clear keeps recovery points: they also hold other profiles' bookmarks
+        // and Easels, and wiping every backup for "last hour" is a worse loss.
+        // ponytail: scrub visits from points instead of keeping them, if partial clears must reach backups.
+        guard since == nil else { return }
         // Capture and publication share this worker, including iCloud's pre-sync point.
         // Purge after the live clear commits, so an older capture cannot publish later.
         let recovery = BackupRecovery(library: library)
