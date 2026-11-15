@@ -51,6 +51,32 @@ import XCTest
         XCTAssertEqual(reloaded.active.colorHex, "#123456")
     }
 
+    func testBothDeletionPathsRemoveOnlyTheDeletedProfilesPasswordPreferences() async throws {
+        TestEnvironment.prepare()
+        for asynchronous in [false, true] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let manager = ProfileManager(directory: directory, sandboxed: false)
+            let victim = manager.create(name: "Disposable"), survivor = manager.create(name: "Keep")
+            let keys = ["passwordsLastUsed", "passwordsNeverSaved"]
+            defer {
+                for base in keys { for profile in [victim, survivor] {
+                    UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(base, profile.id))
+                } }
+            }
+            for base in keys { for profile in [victim, survivor] {
+                UserDefaults.vane.set(["fixture"], forKey: ProfileManager.defaultsKey(base, profile.id))
+            } }
+            let deleted = if asynchronous { await manager.deleteAsync(victim.id) } else { manager.delete(victim.id) }
+            XCTAssertTrue(deleted)
+            for base in keys {
+                XCTAssertNil(UserDefaults.vane.object(forKey: ProfileManager.defaultsKey(base, victim.id)))
+                XCTAssertNotNil(UserDefaults.vane.object(forKey: ProfileManager.defaultsKey(base, survivor.id)))
+            }
+        }
+    }
+
     func testFailedDeletionDoesNotBecomeAPendingDeleteOnRetry() throws {
         let manager = try manager()
         let victim = manager.create(name: "Keep me")

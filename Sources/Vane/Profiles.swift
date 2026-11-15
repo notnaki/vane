@@ -703,7 +703,7 @@ struct Space: Identifiable, Codable, Equatable {
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
-            for key in ["pinnedTabs", "offerToSavePasswords", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
+            for key in ["pinnedTabs", "offerToSavePasswords", "passwordsLastUsed", "passwordsNeverSaved", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
                         ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
@@ -766,7 +766,7 @@ struct Space: Identifiable, Codable, Equatable {
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
             _ = try? await Passwords.perform { Passwords.deleteAll(profileID: id) }
             SitePermissions.resetAll(profileID: id)
-            for key in ["pinnedTabs", "offerToSavePasswords", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
+            for key in ["pinnedTabs", "offerToSavePasswords", "passwordsLastUsed", "passwordsNeverSaved", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
                         ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))

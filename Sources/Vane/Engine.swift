@@ -128,6 +128,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     var canOpenSplit: (() -> Bool)?
     var saveLink: ((URL, String?) -> Void)?
     private var contextFilename: String?
+    private var contextSourceURL: URL?
     private var originalItems: [(item: NSMenuItem, title: String)] = []
     private var pageContextMenu: PageContextMenu?
     var contextLink: URL? {
@@ -181,11 +182,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         contextLink = nil
     }
 
-    func receiveContextLink(_ body: Any) {
+    func receiveContextLink(_ body: Any, sourceURL: URL? = nil) {
         guard Self.isCurrentEvent(body, armedAt: contextArmedAt,
                                   now: Date().timeIntervalSince1970) else { return }
         contextFilename = (body as? [String: Any])?["filename"] as? String
-        contextLink = Self.link(from: (body as? [String: Any])?["url"] as Any)
+        contextSourceURL = sourceURL
+        let link = Self.link(from: (body as? [String: Any])?["url"] as Any)
+        contextLink = link.flatMap { LinkInteraction.allows($0, from: sourceURL) ? $0 : nil }
     }
 
     /// Rebuild from the original WebKit items when an asynchronous context reply arrives.
@@ -263,6 +266,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     @objc func openLink(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL,
+              LinkInteraction.allows(url, from: contextSourceURL),
               let id = sender.identifier?.rawValue, let destination = Destination(rawValue: id) else { return }
         if destination == .tab { openBackground?(url) }
         else if destination != .split || canOpenSplit?() == true { openDestination?(url, destination) }
@@ -525,6 +529,7 @@ struct TitleReveal: Equatable, Sendable {
     }
     private var certificateDestinationURL: URL?
     private var certificateNavigation: WKNavigation?
+    private var httpsOnlyContinuation: (target: URL, sentinel: URL)?
     @Published var canGoBack = false
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
@@ -1101,6 +1106,7 @@ struct TitleReveal: Equatable, Sendable {
 
     fileprivate func prepareNavigation(to url: URL?, reload: Bool = false) {
         guard !tornDown, !suspended, let url else { return }
+        httpsOnlyContinuation = nil
         if committedURL == nil {
             initialRequestedURL = url
             if !editing { address = url.absoluteString }
@@ -1953,8 +1959,10 @@ struct TitleReveal: Equatable, Sendable {
         // https-only interstitial, which offers a way through; "the secure connection
         // failed" offers none.
         if let http = HTTPSOnly.downgradeOffer(after: error, url: failed, profileID: profileID) {
+            let sentinel = HTTPSOnly.sentinel(for: http)!
             navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: http),
-                                   responseHTML: HTTPSOnly.interstitial(for: http))
+                                   responseHTML: HTTPSOnly.interstitial(for: http, sentinel: sentinel))
+            httpsOnlyContinuation = (http, sentinel)
             expectNavigation(navigationState.simulated)
             return
         }
@@ -2006,6 +2014,7 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        if navigationState.simulated !== navigation { httpsOnlyContinuation = nil }
         DiagnosticLog.shared.record(.navigationCommitted, isPrivate: isPrivate)
         // A canceled provisional load/download leaves the old call document alive.
         // Release its status and floating host only when a document replaces it.
@@ -2142,6 +2151,21 @@ struct TitleReveal: Equatable, Sendable {
 
     private func decideNavigationPolicy(_ w: WKWebView, action navigationAction: WKNavigationAction,
                                        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url, url.scheme?.lowercased() == HTTPSOnly.insecureScheme {
+            decisionHandler(.cancel)
+            guard navigationAction.navigationType == .linkActivated,
+                  navigationAction.sourceFrame.isMainFrame,
+                  displayingNavigationError,
+                  let at = HTTPSOnly.continuationTarget(url, expected: httpsOnlyContinuation,
+                      sourceURL: committedURL,
+                      isMainFrame: navigationAction.targetFrame?.isMainFrame == true),
+                  w.url == at else { return }
+            if HTTPSOnly.confirmAndRemember(at, profileID: profileID) {
+                httpsOnlyContinuation = nil
+                expectNavigation(w.load(URLRequest(url: at)))
+            }
+            return
+        }
         // Vane's own scheme, before anything else: `vane://oauth/github` is where GitHub
         // sends the answer to a live folder's sign-in, and this is the only place in the
         // system that ever reads one. Cancelled unconditionally, whatever the rest of the
@@ -2178,6 +2202,9 @@ struct TitleReveal: Equatable, Sendable {
         }
         if navigationAction.navigationType == .linkActivated,
            let url = navigationAction.request.url {
+            guard LinkInteraction.allows(url, from: navigationAction.sourceFrame.request.url) else {
+                decisionHandler(.cancel); return
+            }
             let target: LinkInteraction.Target = navigationAction.targetFrame.map {
                 $0.isMainFrame ? .main : .subframe
             } ?? .newWindow
@@ -2217,6 +2244,7 @@ struct TitleReveal: Equatable, Sendable {
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             if navigationAction.targetFrame?.isMainFrame == true {
+                if navigationAction.request.url != httpsOnlyContinuation?.target { httpsOnlyContinuation = nil }
                 #if compiler(>=6.4)
                 if #available(macOS 27.0, *) { expectNavigation(navigationAction.mainFrameNavigation) }
                 #endif
@@ -2229,14 +2257,11 @@ struct TitleReveal: Equatable, Sendable {
             expectNavigation(w.load(HTTPSOnly.request(to)))          // a shorter leash than the 60s default
         case .block(let at):
             decisionHandler(.cancel)
+            let sentinel = HTTPSOnly.sentinel(for: at)!
             navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: at),
-                                   responseHTML: HTTPSOnly.interstitial(for: at))
+                                   responseHTML: HTTPSOnly.interstitial(for: at, sentinel: sentinel))
+            httpsOnlyContinuation = (at, sentinel)
             expectNavigation(navigationState.simulated)
-        case .confirm(let at):
-            decisionHandler(.cancel)
-            if HTTPSOnly.confirmAndRemember(at, profileID: profileID) {
-                expectNavigation(w.load(URLRequest(url: at)))
-            }
         }
     }
 
@@ -2324,7 +2349,7 @@ struct TitleReveal: Equatable, Sendable {
         if m.name == SiteBoostScripts.messageName { SiteBoosts.receive(m, tab: self); return }
         if m.name == LinkContextWebView.messageName {
             guard let linkView = existingWeb as? LinkContextWebView else { return }
-            linkView.receiveContextLink(m.body)
+            linkView.receiveContextLink(m.body, sourceURL: m.frameInfo.request.url)
             return
         }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
@@ -2709,6 +2734,8 @@ struct TitleReveal: Equatable, Sendable {
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard w === existingWeb, !tornDown, !suspended,
               !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+        if let url = action.request.url,
+           !LinkInteraction.allows(url, from: action.sourceFrame.request.url) { return nil }
         // `window.open('zoommtg:…')`. Belt and braces around the same test in
         // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
         // here first — and a new tab for a scheme no tab can load is worse than no tab.

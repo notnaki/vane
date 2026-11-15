@@ -137,9 +137,13 @@ import XCTest
 
     func testSignedSafariAppLoadsReviewedIdentityAndRoutesExternalHandoffInRealTab() async throws {
         let host = ExtensionHost.host(for: profile)
+        let commonName = try SafariExtensionSource.verify(appex).commonName
         var reviews = 0
         let accepted = try await host.load(app, installing: true) { request in
-            reviews += 1; XCTAssertTrue(request.installing); return true
+            reviews += 1; XCTAssertTrue(request.installing)
+            XCTAssertTrue(request.verifiedSigner?.contains(team!) == true)
+            XCTAssertTrue(request.verifiedSigner?.contains(commonName) == true)
+            return true
         }
         XCTAssertTrue(accepted); XCTAssertEqual(reviews, 1)
         let context = try XCTUnwrap(host.installed.first)
@@ -179,6 +183,7 @@ import XCTest
         try write(version: "2.0", permissions: ["storage", "cookies"])
         let declined = try await host.refresh(path) { review in
             XCTAssertEqual(review.candidateVersion, "2.0"); XCTAssertTrue(review.updating)
+            XCTAssertTrue(review.verifiedSigner?.contains(team!) == true)
             XCTAssertTrue(review.requested.permissions.contains("cookies")); return false
         }
         XCTAssertFalse(declined)

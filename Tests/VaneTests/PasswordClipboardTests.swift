@@ -21,4 +21,17 @@ import XCTest
         XCTAssertFalse(PasswordClipboard.clearIfUnchanged(board, changeCount: stamp))
         XCTAssertEqual(board.string(forType: .string), "disposable")
     }
+    func testTerminationClearsTheOwnedPasswordButPreservesSubsequentCopies() {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        _ = PasswordClipboard.write("disposable", to: board)
+        PasswordClipboard.clearOnTerminate()
+        XCTAssertNil(board.string(forType: .string))
+        _ = PasswordClipboard.write("disposable", to: board)
+        board.clearContents()
+        board.setString("next owner", forType: .string)
+        PasswordClipboard.clearOnTerminate()
+        XCTAssertEqual(board.string(forType: .string), "next owner")
+    }
+
 }

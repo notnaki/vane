@@ -19,6 +19,18 @@ import WebKit
             && (navigationURL.port ?? 443) == (port > 0 ? port : 443)
     }
 
+    /// A proxy's challenge comes from the system's own proxy settings, not from the page, so it
+    /// is always offered; a server's only for the main document's own origin.
+    static func shouldOfferLogin(_ space: URLProtectionSpace, navigationURL: URL?) -> Bool {
+        if space.isProxy() { return true }
+        guard let navigationURL,
+              let scheme = space.protocol?.lowercased(), ["http", "https"].contains(scheme),
+              navigationURL.scheme?.lowercased() == scheme,
+              navigationURL.host?.lowercased() == space.host.lowercased() else { return false }
+        let defaultPort = scheme == "http" ? 80 : 443
+        return (navigationURL.port ?? defaultPort) == (space.port > 0 ? space.port : defaultPort)
+    }
+
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
     private static var defaults: UserDefaults = .vane
 
@@ -422,6 +434,9 @@ import WebKit
     private static func login(_ challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         let space = challenge.protectionSpace
+        guard shouldOfferLogin(space, navigationURL: tab.certificateNavigationURL ?? web.url) else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
         let alert = NSAlert()
         let defaultPort = space.protocol?.lowercased() == "http" ? 80 : 443
         let site = space.port > 0 && space.port != defaultPort

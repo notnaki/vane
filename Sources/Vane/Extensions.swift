@@ -1069,7 +1069,8 @@ import WebKit
             let request = ExtensionConsent.Review(name: ext.displayName ?? candidate.source.extensionBundleID,
                 requested: requested, previous: previous, installing: installing, limitations: issues,
                 newlySupportedCapabilities: installing ? [] : requested.permissions.intersection(Self.integratedCapabilities).subtracting(oldRecord?.integratedCapabilities ?? []),
-                updating: !installing, currentVersion: oldRecord?.version, candidateVersion: ext.version)
+                updating: !installing, currentVersion: oldRecord?.version, candidateVersion: ext.version,
+                verifiedSigner: "Verified Team ID: \(candidate.source.teamID)\nCertificate: \(candidate.certificateCommonName)")
             if request.needsApproval, !review(request) {
                 try checkLifetime()
                 if folders[path] != nil { failures[path] = "The app update was not approved. Your accepted code, access, identity, and settings are retained. Choose Update from App when ready to review it." }
@@ -2013,6 +2014,9 @@ import WebKit
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         try requireActive(context)
+        if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
+            throw Failure("Extensions cannot navigate to Vane’s internal URLs.")
+        }
         if let requested = configuration.window {
             guard let store = (requested as? ExtWindow)?.store,
                   myStores.contains(where: { $0 === store }) else {
@@ -2032,6 +2036,12 @@ import WebKit
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
         try requireActive(context)
+        guard !configuration.shouldBePrivate || context.hasAccessToPrivateData else {
+            throw Failure("This extension does not have access to private windows.")
+        }
+        guard !configuration.tabURLs.contains(where: { ExternalApps.isOwn($0.scheme) }) else {
+            throw Failure("Extensions cannot navigate to Vane’s internal URLs.")
+        }
         if configuration.windowType == .popup {
             guard !configuration.shouldBePrivate, configuration.windowState == .normal,
                   configuration.tabs.isEmpty, configuration.tabURLs.count == 1,
@@ -2694,6 +2704,10 @@ extension View {
 
     func loadURL(_ url: URL, for context: WKWebExtensionContext,
                  completionHandler: @escaping (Error?) -> Void) {
+        guard !ExternalApps.isOwn(url.scheme) else {
+            completionHandler(ExtensionHost.Failure("Extensions cannot navigate to Vane’s internal URLs."))
+            return
+        }
         guard accessible, let tab else {
             completionHandler(ExtensionHost.Failure("This tab is locked or closed."))
             return
