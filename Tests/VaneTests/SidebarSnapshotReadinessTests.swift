@@ -79,22 +79,23 @@ import XCTest
         }
         let state = SnapshotInteractiveState()
         let current = SnapshotInteractiveProbe.Native(frame: bounds)
-        let detached = SnapshotInteractiveProbe.Native(frame: bounds)
         let foreign = SnapshotInteractiveProbe.Native(frame: bounds)
+        let unsized = SnapshotInteractiveProbe.Native(frame: .zero)
+        // Selection is a descendant search of the exact host: a bridge SwiftUI
+        // updated in another (sizing or retired) graph is never a candidate.
         host.addSubview(current); otherHost.addSubview(foreign)
-        state.register(current)
-        // SwiftUI may update another bridge while sizing/replacing its graph.
-        // Last-updated identity must not replace the probe in the current host.
-        state.register(detached); state.register(foreign)
         XCTAssertTrue(state.probe(in: host) === current)
         XCTAssertTrue(state.probe(in: otherHost) === foreign)
+        host.addSubview(unsized)
+        XCTAssertTrue(state.probe(in: host) === current, "An unsized bridge is not a visible presentation")
         current.removeFromSuperview()
         XCTAssertNil(state.probe(in: host), "A detached native view cannot admit a visible snapshot")
         let replacement = SnapshotInteractiveProbe.Native(frame: bounds)
-        host.addSubview(replacement); state.register(replacement)
-        state.unregister(current)
-        XCTAssertTrue(state.probe(in: host) === replacement,
-                      "Retiring an old graph must not clear the current presentation owner")
+        host.addSubview(replacement)
+        XCTAssertTrue(state.probe(in: host) === replacement)
+        host.addSubview(current)
+        XCTAssertNil(state.probe(in: host), "Two visible bridges cannot identify one presentation owner")
+        XCTAssertNil(state.probe(in: NSView(frame: bounds)), "A host outside any window has no presentation")
     }
 
     func testPointerIntrusionDiscardsThePreviousInteractivePresentation() async throws {
@@ -107,15 +108,20 @@ import XCTest
         do {
             let state = SnapshotInteractiveState()
             var pointer = NSEvent.mouseLocation
+            // Retained so the detachment assertions observe the real old owner.
             var previousHost: NSView?
+            var previousProbe: SnapshotInteractiveProbe.Native?
             var phase = 0
+            var captured = false
             defer {
-                print("Snapshot pointer-intrusion phase=\(phase) registered=\(state.probes.count) attached=\(state.probes.allObjects.filter { $0.window != nil }.count)")
+                // Self-explaining evidence for a stalled or slow admission.
+                if !captured || state.elapsed > 1 { print(state.report(phase: phase)) }
             }
             _ = try await SidebarSnapshot.imageWhenReady(SnapshotInteractiveSurface(state: state),
                                                          pointerLocation: { pointer }) { host in
-                guard let probe = state.probe(in: host), probe.window === host.window,
-                      let setHovered = probe.setHovered else { return false }
+                guard let probe = state.admit(in: host, phase: phase), let setHovered = probe.setHovered else {
+                    return false
+                }
                 if phase == 0 {
                     // Enter a real SwiftUI interaction state before introducing the
                     // pointer. The fixture never changes the user's system cursor.
@@ -125,17 +131,21 @@ import XCTest
                 }
                 if phase == 1 {
                     guard probe.hovered, let window = host.window else { return false }
-                    previousHost = host
+                    previousHost = host; previousProbe = probe
                     pointer = NSPoint(x: window.frame.midX, y: window.frame.midY)
                     phase = 2
                     return false
                 }
                 XCTAssertFalse(host === previousHost, "Relocation must discard the old interaction and its animation graph")
+                XCTAssertFalse(probe === previousProbe, "The replacement graph must own a new native bridge")
                 XCTAssertFalse(probe.hovered, "The replacement surface must start in its idle state")
                 XCTAssertNil(previousHost?.window, "The previous presentation owner must be detached before capture")
+                XCTAssertNil(previousProbe?.window, "The previous interactive bridge must be detached before capture")
+                phase = 3
                 return true
             }
-            XCTAssertEqual(phase, 2)
+            captured = true
+            XCTAssertEqual(phase, 3)
         } catch { failure = error }
         do { try await loop.close() }
         catch {
@@ -240,14 +250,78 @@ import XCTest
 }
 
 @MainActor private final class SnapshotInteractiveState {
-    let probes = NSHashTable<SnapshotInteractiveProbe.Native>.weakObjects()
-    func register(_ probe: SnapshotInteractiveProbe.Native) { probes.add(probe) }
-    func unregister(_ probe: SnapshotInteractiveProbe.Native) { probes.remove(probe) }
+    private let start = ContinuousClock.now
+    private var timeline: [String] = []
+    private var lastObservation = ""
+    private var readyCalls = 0, forcedLayouts = 0
+
+    var elapsed: Double {
+        let duration = ContinuousClock.now - start
+        return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+    }
+
+    /// The probe is found structurally under the exact current host. A
+    /// registration table can name a bridge SwiftUI updated in another graph.
     func probe(in host: NSView) -> SnapshotInteractiveProbe.Native? {
         guard let window = host.window else { return nil }
-        return probes.allObjects.first {
-            $0.window === window && $0.isDescendant(of: host) && $0.bounds.width > 0 && $0.bounds.height > 0
+        let visible = Self.probes(under: host).filter {
+            $0.window === window && $0.bounds.width > 0 && $0.bounds.height > 0
         }
+        return visible.count == 1 ? visible[0] : nil
+    }
+
+    /// Resolve the current host's bridge. SwiftUI applies pending graph
+    /// updates (bridge creation, placement, updateNSView) in the hosting view's
+    /// layout; flag it explicitly instead of waiting for a display cycle.
+    func admit(in host: NSView, phase: Int) -> SnapshotInteractiveProbe.Native? {
+        readyCalls += 1
+        observe(host, phase: phase, note: "ready")
+        if let probe = probe(in: host), phase != 1 || probe.hovered { return probe }
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
+        forcedLayouts += 1
+        observe(host, phase: phase, note: "forced")
+        return probe(in: host)
+    }
+
+    func record(_ event: String, _ probe: SnapshotInteractiveProbe.Native) {
+        append("\(event) \(Self.describe(probe, in: nil))")
+    }
+
+    func report(phase: Int) -> String {
+        "Snapshot pointer-intrusion phase=\(phase) elapsed=\(String(format: "%.3f", elapsed)) "
+            + "readyCalls=\(readyCalls) forcedLayouts=\(forcedLayouts)\n  "
+            + timeline.joined(separator: "\n  ")
+    }
+
+    private func observe(_ host: NSView, phase: Int, note: String) {
+        let probes = Self.probes(under: host).map { Self.describe($0, in: host) }
+        let observation = "phase=\(phase) host=\(Self.id(host)) hostWindow=\(host.window.map(Self.id) ?? "nil") "
+            + "hostBounds=\(host.bounds) needsLayout=\(host.needsLayout) probes=\(probes.count)[\(probes.joined(separator: "; "))]"
+        guard observation != lastObservation else { return }
+        lastObservation = observation
+        append("\(note) \(observation)")
+    }
+
+    private func append(_ line: String) {
+        // Keep the earliest transitions (the stall) and the latest state.
+        if timeline.count >= 60 { timeline.remove(at: 30) }
+        timeline.append("t=\(String(format: "%.3f", elapsed)) \(line)")
+    }
+
+    private static func probes(under view: NSView) -> [SnapshotInteractiveProbe.Native] {
+        ((view as? SnapshotInteractiveProbe.Native).map { [$0] } ?? []) + view.subviews.flatMap { probes(under: $0) }
+    }
+
+    private static func id(_ object: AnyObject) -> String {
+        String(UInt(bitPattern: ObjectIdentifier(object).hashValue), radix: 16)
+    }
+
+    private static func describe(_ probe: SnapshotInteractiveProbe.Native, in host: NSView?) -> String {
+        "probe=\(id(probe)) window=\(probe.window.map(id) ?? "nil") "
+            + "superview=\(probe.superview.map { String(describing: type(of: $0)).prefix(24) } ?? "nil") "
+            + (host.map { "descends=\(probe.isDescendant(of: $0)) " } ?? "")
+            + "bounds=\(probe.bounds) hovered=\(probe.hovered) actuator=\(probe.setHovered != nil)"
     }
 }
 
@@ -271,21 +345,33 @@ private struct SnapshotInteractiveProbe: NSViewRepresentable {
         var hovered = false
         weak var state: SnapshotInteractiveState?
         var setHovered: ((Bool) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            state?.record("moved", self)
+        }
     }
     let state: SnapshotInteractiveState
     @Binding var hovered: Bool
-    func makeNSView(context: Context) -> Native { Native() }
+    func makeNSView(context: Context) -> Native {
+        let view = Native()
+        configure(view)
+        state.record("make", view)
+        return view
+    }
     func updateNSView(_ view: Native, context: Context) {
-        // Each bridge owns its actuator. Admission resolves the attached bridge
-        // under the exact current host, never whichever sizing update ran last.
+        // Each bridge owns its graph's actuator. Admission resolves the bridge
+        // under the exact current host, never whichever update ran last.
+        configure(view)
+        state.record("update", view)
+    }
+    private func configure(_ view: Native) {
         view.state = state
-        state.register(view)
         let binding = $hovered
         view.setHovered = { binding.wrappedValue = $0 }
         view.hovered = hovered
     }
     static func dismantleNSView(_ view: Native, coordinator: ()) {
-        view.state?.unregister(view)
+        view.state?.record("dismantle", view)
         view.setHovered = nil
         view.state = nil
     }

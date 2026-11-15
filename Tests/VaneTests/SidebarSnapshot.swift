@@ -34,6 +34,9 @@ import XCTest
         defer { window.contentView = nil; window.close() }
         var admission = "starting"
         var occlusionRecoveryPending = false
+        // Reported on timeout so a stalled admission names its exact gate:
+        // ready(host) is only consulted after every native condition held.
+        var rebuilds = 0, readyCalls = 0
         do {
             try await compatibilityWait {
                 // The live return tile has its own SwiftUI hover caption. A static
@@ -45,6 +48,7 @@ import XCTest
                     try positionAwayFromPointer(window, pointer: pointerLocation())
                     host = newHost()
                     window.contentView = host
+                    rebuilds += 1
                     return false
                 }
                 // Another fixture can take focus or obscure a still-key window.
@@ -70,15 +74,21 @@ import XCTest
                     window.makeKeyAndOrderFront(nil)
                 }
                 host.layoutSubtreeIfNeeded()
+                let onScreen = NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }
+                let pointerInside = window.frame.contains(pointerLocation())
+                let populated = sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true
+                let admitted = NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+                    && window.isVisible && window.occlusionState.contains(.visible) && onScreen
+                    && NSApp.modalWindow == nil && window.attachedSheet == nil && host.window === window
+                    && !pointerInside && populated
+                if admitted { readyCalls += 1 }
                 admission = "running=\(NSApp.isRunning) active=\(NSApp.isActive) key=\(window.isKeyWindow) "
                     + "owner=\(NSApp.keyWindow === window) visible=\(window.isVisible) "
-                    + "occlusion=\(window.occlusionState.rawValue) attached=\(host.window === window)"
-                return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
-                    && window.isVisible && window.occlusionState.contains(.visible)
-                    && NSScreen.screens.contains { $0.visibleFrame.contains(window.frame) }
-                    && NSApp.modalWindow == nil && window.attachedSheet == nil && host.window === window
-                    && !window.frame.contains(pointerLocation())
-                    && (sidebarScope.map { nativePopulationIsReady(in: host, scope: $0) } ?? true) && ready(host)
+                    + "occlusion=\(window.occlusionState.rawValue) attached=\(host.window === window) "
+                    + "placed=\(onScreen) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil) "
+                    + "pointerInside=\(pointerInside) populated=\(populated) frame=\(window.frame) "
+                    + "host=\(ObjectIdentifier(host)) rebuilds=\(rebuilds) readyCalls=\(readyCalls)"
+                return admitted && ready(host)
             }
         } catch {
             print("Sidebar snapshot admission failed: \(admission)")
