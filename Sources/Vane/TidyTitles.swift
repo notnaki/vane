@@ -311,6 +311,7 @@ import Foundation
 
     private static func dict(_ base: String, _ profileID: UUID) -> [String: String] {
         let key = ProfileManager.defaultsKey(base, profileID)
+        if profileID == Profile.incognito.id { return decoded[key] ?? [:] }
         if let hit = decoded[key] { return hit }
         let d = UserDefaults.vane.dictionary(forKey: key) as? [String: String] ?? [:]
         decoded[key] = d
@@ -321,8 +322,10 @@ import Foundation
         var d = dict(base, profileID)
         d[url] = value
         let key = ProfileManager.defaultsKey(base, profileID)
-        if d.isEmpty { UserDefaults.vane.removeObject(forKey: key) }
-        else { UserDefaults.vane.set(d, forKey: key) }
+        if profileID != Profile.incognito.id {
+            if d.isEmpty { UserDefaults.vane.removeObject(forKey: key) }
+            else { UserDefaults.vane.set(d, forKey: key) }
+        }
         decoded[key] = d
     }
 

@@ -160,6 +160,18 @@ struct WebsiteDataSheet: View {
 @MainActor final class WebsiteDataWindow: NSObject, NSWindowDelegate {
     private static let shared = WebsiteDataWindow()
     private var windows: [ObjectIdentifier: NSWindow] = [:]
+    private var privateWindows: Set<ObjectIdentifier> = []
+
+    /// Private browsing ended: close private inspectors and drop their hosted views,
+    /// which hold the private `WKWebsiteDataStore`.
+    static func closePrivate() {
+        for id in shared.privateWindows {
+            guard let window = shared.windows[id] else { continue }
+            window.close()
+            window.contentView = nil
+        }
+        shared.privateWindows.removeAll()
+    }
 
     static func show(host: String, tab: Tab) {
         let store = tab.web.configuration.websiteDataStore
@@ -180,11 +192,15 @@ struct WebsiteDataSheet: View {
                 return ProfileManager.shared.profiles.contains { $0.id == profileID }
             }, onClose: { [weak window] in window?.close() }))
         shared.windows[ObjectIdentifier(window)] = window
+        if tab.isPrivate { shared.privateWindows.insert(ObjectIdentifier(window)) }
         window.center()
         window.makeKeyAndOrderFront(nil)
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow { windows[ObjectIdentifier(window)] = nil }
+        if let window = notification.object as? NSWindow {
+            windows[ObjectIdentifier(window)] = nil
+            privateWindows.remove(ObjectIdentifier(window))
+        }
     }
 }
