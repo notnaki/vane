@@ -107,10 +107,11 @@ job to succeed. Worker navigator identity is blocking coverage in the normal
 native shards. Jobs intentionally skipped for fast-path changes are handled by
 the gate's fast path.
 
-Main requires GitHub Actions' `checks` status with strict current-base validation,
-including for administrators. Update a PR when main advances and validate the new
-integration before merging. A green feature branch against yesterday's base does
-not validate its combination with another feature merged today.
+Main requires GitHub Actions' `checks` status, including for administrators, but
+not an up-to-date branch, so one merge does not force every open PR to rerun.
+Every merge runs full CI on main, which is where a bad combination of two
+independently green PRs shows up; fix main forward before merging anything else.
+Update a PR only for conflicts or when main changed something it depends on.
 
 Use a small, focused CI preflight before spending time on the full suite for
 non-trivial changes. This is required while diagnosing or repairing CI failures

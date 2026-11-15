@@ -32,7 +32,7 @@ The unmodified Bitwarden Chrome 2026.10.0 package is an opt-in local startup che
 
 Controlled native cases deliberately give the real background WebView a wrong native UA, then capture the selected navigator value at the first classic instruction or module dependency. Additional cases cover generated workers, strict/hashbang semantics, module cycles, canonical dependency updates, nested imports, shared page resources, same-context worker recreation, host restoration, changed and overlapping selections, cancellation, storage and controller/profile ownership. A signed MV3 fixture also checks exact-seal tampering rejection and unchanged accepted bytes. Pure fixtures preserve historical evidence parsing and exercise the complete required-check gate.
 
-Required CI must pass on the minimum supported macOS runtime and the latest integrated target before merge. Main retains strict `checks` protection, including administrators. Native failures and their cleanup evidence remain required; an unchanged passing retry does not repair a failure.
+Required CI must pass on the minimum supported macOS runtime before merge, and again on main after it. Main requires `checks`, including administrators. Native failures and their cleanup evidence remain required; an unchanged passing retry does not repair a failure.
 
 ## Historical native-UA investigation
 

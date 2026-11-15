@@ -248,7 +248,7 @@ Main continues its fresh build, source/routing fixtures, packaging and integrati
 checks. These cover commit-dependent bundle metadata and keep main's compiler cache
 warm for following PRs. The aggregate permits a native skip only for a verified
 app-required push to main; other selected jobs still must succeed. Main-only cache
-saves/pruning, release eligibility, strict branch protection and administrator
+saves/pruning, release eligibility, required `checks` protection and administrator
 enforcement remain in force.
 
 This removes four duplicate macOS jobs per eligible merge and their test stage
