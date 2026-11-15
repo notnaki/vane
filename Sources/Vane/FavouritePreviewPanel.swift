@@ -95,12 +95,9 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             // Metadata updates must not snap an in-progress anchored arrival to its end.
             if targetFrame != frame || Motion.reduced {
                 if !isNew, targetFrame != nil, !Motion.reduced {
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.12
-                        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                        panel.animator().setFrame(frame, display: true)
-                    }
-                } else { panel.setFrame(frame, display: true) }
+                    WindowMotion.animate(panel, frame: frame, duration: 0.12,
+                                         timing: CAMediaTimingFunction(name: .easeOut))
+                } else { WindowMotion.cancel(panel); panel.setFrame(frame, display: true) }
             }
             targetFrame = frame
             if Motion.reduced { panel.alphaValue = 1 }
@@ -110,12 +107,8 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             }
             panel.orderFront(nil)
             if isNew && !Motion.reduced {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.12
-                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    panel.animator().alphaValue = 1
-                    panel.animator().setFrame(frame, display: true)
-                }
+                WindowMotion.animate(panel, frame: frame, alpha: 1, duration: 0.12,
+                                     timing: CAMediaTimingFunction(name: .easeOut))
             }
             if keyboard && (isNew || focusPending) {
                 panel.makeKey()
@@ -133,12 +126,8 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             panel.ignoresMouseEvents = true
             host?.setAccessibilityHidden(true)
             if panel.isKeyWindow { panel.parent?.makeKey() }
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
-                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                panel.animator().alphaValue = 0
-                panel.animator().setFrameOrigin(NSPoint(x: panel.frame.minX - 4, y: panel.frame.minY))
-            }
+            WindowMotion.animate(panel, frame: panel.frame.offsetBy(dx: -4, dy: 0), alpha: 0,
+                                 duration: 0.12, timing: CAMediaTimingFunction(name: .easeIn))
             dismissal = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: .milliseconds(140)) } catch { return }
                 self?.hide()
@@ -151,6 +140,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             if let panel {
                 let owner = panel.parent
                 let restoreKey = panel.isKeyWindow
+                WindowMotion.cancel(panel)
                 owner?.removeChildWindow(panel)
                 panel.orderOut(nil); panel.contentView = nil; panel.close()
                 if restoreKey { owner?.makeKey() }

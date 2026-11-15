@@ -60,7 +60,7 @@ import WebKit
         let reduced = CustomPiPWindow.reducesMotion
         p.alphaValue = reduced ? 1 : 0
         p.orderFrontRegardless()
-        if !reduced { NSAnimationContext.runAnimationGroup { $0.duration = 0.15; p.animator().alphaValue = 1 } }
+        if !reduced { WindowMotion.animate(p, alpha: 1, duration: 0.15) }
         NSAccessibility.post(element: p, notification: .announcementRequested,
                              userInfo: [.announcement: label.stringValue, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         let work = DispatchWorkItem { [weak p] in
@@ -88,8 +88,7 @@ import WebKit
         owner = nil
         guard let p = panel else { return }
         panel = nil
-        if immediately || CustomPiPWindow.reducesMotion { p.orderOut(nil); return }
-        NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; p.animator().alphaValue = 0 },
-                                             completionHandler: { MainActor.assumeIsolated { p.orderOut(nil) } })
+        if immediately || CustomPiPWindow.reducesMotion { WindowMotion.cancel(p); p.orderOut(nil); return }
+        WindowMotion.animate(p, alpha: 0, duration: 0.15) { p.orderOut(nil) }
     }
 }

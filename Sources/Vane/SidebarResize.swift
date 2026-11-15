@@ -236,6 +236,7 @@ final class SidebarResizeHighlightView: NSView {
         fade.toValue = target
         fade.duration = UIAnimation.feedback.duration(0.2)
         fade.timingFunction = CAMediaTimingFunction(name: .linear)
+        fade.pinToDisplayRate(of: window?.screen)
         layer.add(fade, forKey: Self.fadeKey)
     }
 }

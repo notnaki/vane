@@ -145,10 +145,7 @@ import QuartzCore
               let display = NSScreen.screens.first(where: { $0.frame.intersects(sourceFrame) }) else {
             alphaValue = 0
             orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
-                animator().alphaValue = 1
-            }
+            WindowMotion.animate(self, alpha: 1, duration: 0.12)
             return
         }
         entryDestination = destination
@@ -227,14 +224,9 @@ import QuartzCore
             completion()
             return
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            animator().alphaValue = 0
-        } completionHandler: {
-            Task { @MainActor in
-                self.orderOut(nil)
-                completion()
-            }
+        WindowMotion.animate(self, alpha: 0, duration: 0.16) {
+            self.orderOut(nil)
+            completion()
         }
     }
 

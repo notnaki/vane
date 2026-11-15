@@ -126,10 +126,7 @@ enum TabTooltipLayout {
         owner.addChildWindow(panel, ordered: .above)
         panel.orderFront(nil)
         if !Motion.reduced {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = Look.appearDuration
-                panel.animator().alphaValue = 1
-            }
+            WindowMotion.animate(panel, alpha: 1, duration: Look.appearDuration)
         }
     }
 
@@ -177,6 +174,7 @@ enum TabTooltipLayout {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         if let panel {
+            WindowMotion.cancel(panel)
             owner?.removeChildWindow(panel)
             panel.close()
             panel.contentView = nil
