@@ -194,6 +194,22 @@ final class WebHost: NSView {
         if wasEmpty, !offscreen, let web { PageResizeStyle.warm(web) }
     }
 
+    /// A resize owner handing the page back to autoresizing absorbs sub-point edge error.
+    /// AppKit pixel-snaps an autoresized page while an animation gives its host fractional
+    /// widths; an owner that captured the page then restores that offset as if intended,
+    /// and autoresizing keeps it for the page's life. Whole-point insets are deliberate
+    /// and stay, as does a docked inspector's split (a visible WKWebView sibling).
+    func reseat(_ page: WKWebView) {
+        guard page === web, page.superview === self, !page.autoresizingMask.isEmpty,
+              subviews.allSatisfy({ $0 === page || !($0 is WKWebView) || $0.isHidden }) else { return }
+        func snap(_ value: CGFloat, to edge: CGFloat) -> CGFloat { abs(value - edge) < 1 ? edge : value }
+        let frame = page.frame
+        let minX = snap(frame.minX, to: bounds.minX), maxX = snap(frame.maxX, to: bounds.maxX)
+        let minY = snap(frame.minY, to: bounds.minY), maxY = snap(frame.maxY, to: bounds.maxY)
+        let snapped = NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        if snapped != frame { page.frame = snapped }
+    }
+
     func removePage() {
         pageResizeOwnershipWillChange?()
         for page in recent {

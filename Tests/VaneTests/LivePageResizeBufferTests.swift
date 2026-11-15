@@ -24,7 +24,7 @@ import XCTest
         lazy var buffer = LivePageResizeBuffer(window: window, axes: NSSize(width: 1, height: 0),
             presenter: { [unowned self] _, callback in paints.append(callback) },
             deadline: { [unowned self] interval, callback in
-                XCTAssertEqual(interval, 0.25)
+                XCTAssertTrue([LivePageResizeBuffer.paintBudget, LivePageResizeBuffer.layoutBudget].contains(interval))
                 deadlines.append(callback)
             }, now: { [unowned self] in time }, frameDriver: frameDriver, apply: { [unowned self] frame, _ in
                 commits.append(frame.size)
@@ -364,6 +364,66 @@ import XCTest
         XCTAssertEqual(f.commits.count, 2, "An idle frame must not dirty the unchanged window")
     }
 
+    func testHeldWindowDragFitsThePageWithoutWaitingForRelease() {
+        var frame: (@MainActor () -> Void)?
+        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
+        f.buffer.start(); nextPaint(&f.paints)()
+        f.request(720)
+        nextPaint(&f.paints)()
+        frame?()
+        XCTAssertEqual(f.window.frame.width, 720)
+        XCTAssertGreaterThan(f.web.frame.width, 720, "A moving drag keeps painted lookahead")
+        f.time += 0.05
+        frame?()
+        XCTAssertTrue(f.paints.isEmpty, "A short gap between pointer samples keeps the lookahead")
+        f.time += 0.2
+        frame?()
+        XCTAssertEqual(f.web.frame.width, 720, "A held drag lays the page out at the visible width")
+        nextPaint(&f.paints)()
+        frame?(); frame?()
+        XCTAssertTrue(f.paints.isEmpty, "A fitted held page is not repainted every frame")
+        XCTAssertEqual(f.web.frame.width, 720)
+        f.request(740)
+        XCTAssertGreaterThan(f.web.frame.width, 740, "Moving again restores lookahead")
+        nextPaint(&f.paints)()
+        frame?()
+        XCTAssertEqual(f.window.frame.width, 740)
+        f.buffer.finish()
+        for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
+        XCTAssertEqual(f.completions, 1)
+        XCTAssertEqual(f.web.frame.width, 740)
+    }
+
+    func testPressHeldBeforeMovingKeepsThePrimedLookahead() {
+        var frame: (@MainActor () -> Void)?
+        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
+        f.buffer.start(); nextPaint(&f.paints)()
+        let primed = f.web.frame.width
+        XCTAssertGreaterThan(primed, 600)
+        f.time += 0.5
+        frame?(); frame?()
+        XCTAssertTrue(f.paints.isEmpty, "No pointer sample yet: keep the prime for the first outward move")
+        XCTAssertEqual(f.web.frame.width, primed)
+    }
+
+    func testHeldDragSettlesWhenTheVisibleClipStaysWiderThanNominal() {
+        var frame: (@MainActor () -> Void)?
+        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
+        f.buffer.start(); nextPaint(&f.paints)()
+        f.request(720)
+        nextPaint(&f.paints)()
+        frame?()
+        XCTAssertEqual(f.window.frame.width, 720)
+        // A split pane's pixel rounding can leave its clip wider than the nominal share.
+        f.host.setFrameSize(NSSize(width: 720.5, height: f.host.frame.height))
+        f.time += 0.2
+        frame?()
+        for _ in 0..<3 where !f.paints.isEmpty { nextPaint(&f.paints)(); frame?() }
+        frame?(); frame?()
+        XCTAssertTrue(f.paints.isEmpty, "A held drag must not repaint the same clamped viewport every frame")
+        XCTAssertEqual(f.web.frame.width, 720.5, "The held fit covers the wider visible clip")
+    }
+
     func testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick() {
         var frame: (@MainActor () -> Void)?
         var stops = 0
@@ -459,7 +519,7 @@ import XCTest
         let f = Fixture(); defer { f.close() }
         f.buffer.start()
         f.request(640)
-        f.time = 1
+        f.time = LivePageResizeBuffer.paintBudget + 1
         try await compatibilityWait { f.buffer.bypassForDrag }
         XCTAssertEqual(f.deadlines.count, 1, "An overdue reply cannot grant another paint budget")
         XCTAssertEqual(f.window.frame.width, 640)
@@ -915,7 +975,7 @@ import XCTest
                     guard presentations <= 8 else { XCTFail("A deferred native parent cannot trigger a synchronous paint loop"); return }
                     callback()
                 }, deadline: { interval, callback in
-                    XCTAssertEqual(interval, 0.25)
+                    XCTAssertTrue([LivePageResizeBuffer.paintBudget, LivePageResizeBuffer.layoutBudget].contains(interval))
                     deadlines.append(callback)
                 }, now: { f.time }, apply: { _, width in
                     if let width { f.host.resizeLayout.sidebarWidth = width }

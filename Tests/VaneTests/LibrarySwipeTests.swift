@@ -1456,6 +1456,57 @@ import XCTest
         send(window, phase: .ended)
         XCTAssertTrue(store.libraryOpen)
     }
+
+    func testOverlappingSidebarAndLibraryMovesLeaveThePageFillingItsCard() async throws {
+        try await withLibraryApplicationLoop { try await checkOverlappingMovesLeaveThePageFillingItsCard() }
+    }
+
+    /// A buffer that captured the page mid-sidebar-animation restored AppKit's
+    /// pixel-snapped origin, and autoresizing kept that offset for good.
+    private func checkOverlappingMovesLeaveThePageFillingItsCard() async throws {
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        defer { saver.setMode(previousMode) }
+        try XCTSkipIf(Motion.reduced, "Requires animated presentation")
+        let (store, window, _) = fixture(withSpaces: true)
+        Library.open(.archived, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = false
+        let tab = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.palette = nil
+        let root = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = root
+        window.styleMask = [.titled, .fullSizeContentView]
+        window.animationBehavior = .none
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await ResizeNativeWindowAdmission.wait(window, web: tab.web, layout: true)
+        try await compatibilityWait { !tab.web.isLoading }
+        func describe() -> String {
+            "web=\(NSStringFromRect(tab.web.frame)) host=\(tab.web.superview.map { NSStringFromRect($0.bounds) } ?? "nil")"
+        }
+        func settle(_ step: String, _ overlap: @escaping @MainActor () -> Void, after second: @escaping @MainActor () -> Void) async throws {
+            overlap()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { MainActor.assumeIsolated { second() } }
+            var previous = NSRect.null
+            try await compatibilityWait {
+                try await Task.sleep(for: .milliseconds(100))
+                let bounds = tab.web.superview?.bounds ?? .null
+                defer { previous = bounds }
+                return bounds == previous && store.libraryGesture.paint?.isPreparing != true
+            }
+            let host = try XCTUnwrap(tab.web.superview as? WebHost)
+            XCTAssertEqual(tab.web.frame, host.bounds, "\(step): \(describe())")
+            XCTAssertEqual(tab.web.autoresizingMask, [.width, .height], step)
+        }
+        try await settle("show sidebar while Library opens", { store.toggleSidebar() },
+                         after: { Library.open(.archived, in: store) })
+        try await settle("close Library then hide sidebar", { Library.close(store) },
+                         after: { store.toggleSidebar() })
+    }
+
 }
 
 private final class LibraryScrollWindow: NSWindow {
