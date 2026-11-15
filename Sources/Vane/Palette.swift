@@ -252,6 +252,12 @@ enum Palette {
         return min(previous, max(0, rowIDs.count - 1))
     }
 
+    /// ⌘T at rest (#683): the tab in front leads the list, but Return on it does nothing, so
+    /// the row under it — the last tab looked at, ⌃⇥'s answer — starts selected.
+    static func restingIndex(rowIDs: [String], currentID: String?, previousIsTab: Bool) -> Int {
+        rowIDs.first == currentID && currentID != nil && previousIsTab ? 1 : 0
+    }
+
     static func check() -> [(String, Bool)] {
         // Force-unwrapped inside the assertions on purpose: a nil here is the failure the
         // line above it already checks for, so it can only fire if the checks disagree.
@@ -276,6 +282,12 @@ enum Palette {
             ("…capped, so the bar opens as a glance rather than as the whole strip",
              atRest.count == Look.barEmptyTabs + 1 && !atRest.contains("five")),
             ("…and one row to report a problem, always last", atRest.last == "report"),
+            ("⌘T at rest selects the previous tab, not the one in front",
+             restingIndex(rowIDs: ["cur", "prev", "r"], currentID: "cur", previousIsTab: true) == 1),
+            ("…but not the report row when the front tab is the only one",
+             restingIndex(rowIDs: ["cur", "r"], currentID: "cur", previousIsTab: false) == 0),
+            ("…and nothing moves when no tab is in front",
+             restingIndex(rowIDs: ["prev", "r"], currentID: nil, previousIsTab: true) == 0),
             ("a shorter list is not padded", empty(tabs: ["t1"], report: "r") == ["t1", "r"]),
             ("…and a window with no tabs is that one row alone",
              empty(tabs: none, report: "r") == ["r"]),
@@ -1582,6 +1594,12 @@ struct PaletteSizing {
         rows = visible
         index = Palette.selectedIndex(previous: index, selectedID: selectedID,
                                       rowIDs: rows.map(\.id), reset: reset)
+        if reset, mode == .newTab, layout.leading.last?.id == "report" {
+            index = Palette.restingIndex(
+                rowIDs: rows.map(\.id),
+                currentID: store.current.map { Feel03TabContent.rowID($0, owner: store) },
+                previousIsTab: rows.count > 1 && rows[1].kind == "Open tab")
+        }
         guard reset else { return }
         scrollRequest += 1
         axAnnounce(rows.isEmpty ? "No results" : "\(rows.count) result\(rows.count == 1 ? "" : "s")")
