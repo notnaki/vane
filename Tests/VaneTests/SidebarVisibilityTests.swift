@@ -124,6 +124,9 @@ import QuartzCore
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
         window.contentView = host
+        // An earlier fixture in the same process may leave the app hidden; a hidden app's
+        // windows never become visible, so this geometry wait would time out.
+        if NSApp.isHidden { NSApp.unhideWithoutActivation() }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
@@ -137,7 +140,7 @@ import QuartzCore
             TabStore.all.removeAll { $0 === store }
         }
         defer {
-            print("SIDEBAR_DISMISSAL_CONTEXT active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) canKey=\(window.canBecomeKey) policy=\(NSApp.activationPolicy().rawValue)")
+            print("SIDEBAR_DISMISSAL_CONTEXT hidden=\(NSApp.isHidden) active=\(NSApp.isActive) key=\(window.isKeyWindow) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) canKey=\(window.canBecomeKey) policy=\(NSApp.activationPolicy().rawValue)")
         }
         // This geometry fixture requires a visible compositor owner, not keyboard
         // focus. CLI XCTest hosts may remain inactive even with a visible window.
