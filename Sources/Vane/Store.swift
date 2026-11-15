@@ -102,9 +102,16 @@ struct BookmarkImportResult: Equatable, Sendable {
         return fresh
     }
 
-    /// Drop the connection and the files. Called when a profile is deleted.
-    static func forget(_ profileID: UUID) {
+    /// Profile deletion: forget, and make any late opener (a website popup navigating
+    /// after its profile is gone) get a discarding in-memory store, never a new database.
+    /// Separate from `forget` so cleanup elsewhere cannot retire an ID for the process.
+    static func retire(_ profileID: UUID) {
         retiredProfileIDs.insert(profileID)
+        forget(profileID)
+    }
+
+    /// Drop the connection and the files.
+    static func forget(_ profileID: UUID) {
         if retirements[profileID] != nil { return }
         guard let old = cache.removeValue(forKey: profileID) else { removeFiles(profileID); return }
         let waiting = old.hasPendingWrites

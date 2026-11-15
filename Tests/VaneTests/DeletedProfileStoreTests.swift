@@ -6,7 +6,7 @@ import XCTest
         TestEnvironment.prepare()
         let profile = UUID()
         let old = Store.store(for: profile)
-        Store.forget(profile)
+        Store.retire(profile)
         XCTAssertTrue(old.isRetired)
         let late = Store.store(for: profile)
         XCTAssertTrue(late.isRetired)
@@ -16,4 +16,13 @@ import XCTest
         Store.forget(profile)
     }
 
+    /// Cleanup that only forgets a store must not retire its ID for the whole process.
+    func testForgetAloneLeavesTheProfileUsable() {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        _ = Store.store(for: profile)
+        Store.forget(profile)
+        XCTAssertFalse(Store.store(for: profile).isRetired)
+        Store.forget(profile)
+    }
 }

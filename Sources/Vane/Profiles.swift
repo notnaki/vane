@@ -689,7 +689,7 @@ struct Space: Identifiable, Codable, Equatable {
         let nextActiveID = activeID == id ? remaining[0].id : activeID
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
         deletedProfileIDs.insert(id)
-        if !sandboxed { Store.forget(id) }
+        if !sandboxed { Store.retire(id) }
         WebsitePopupWindow.forget(profileID: id)
         profiles = remaining
         activeID = nextActiveID
@@ -750,7 +750,7 @@ struct Space: Identifiable, Codable, Equatable {
         guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
         deletedProfileIDs.insert(id)
         let faviconRetirement = sandboxed ? nil : Favicons.forget(id, retiring: true)
-        if !sandboxed { Store.forget(id) }
+        if !sandboxed { Store.retire(id) }
         WebsitePopupWindow.forget(profileID: id)
         profiles = remaining
         activeID = nextActiveID
