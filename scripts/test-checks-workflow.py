@@ -49,6 +49,14 @@ def verify_gate_cases(script, cases, keys):
 
 
 def main():
+    for workflow in (ROOT / '.github/workflows').glob('*.yml'):
+        for action in re.findall(r'uses:\s*([^\s#]+)', workflow.read_text()):
+            if action.startswith('./'):
+                continue
+            assert re.fullmatch(r'[^@]+@[0-9a-f]{40}', action), (workflow, action, 'external actions require immutable commit pins')
+    release = (ROOT / '.github/workflows/release.yml').read_text()
+    assert re.search(r'^permissions:\n  contents: read$', release, re.MULTILINE)
+    assert re.search(r'^    permissions:\n      contents: write\b', jobs(release)['release'], re.MULTILINE)
     text = WORKFLOW.read_text()
     sections = jobs(text)
     gate = sections['checks']
@@ -124,7 +132,7 @@ def main():
     assert 'BIN_PATH=$(swift build -c debug --show-bin-path)' in build
     assert 'run: ./make-app.sh debug --skip-app-build\n' in build
     assert 'VANE_CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}' in build
-    assert 'uses: actions/cache/restore@v6' in build and 'uses: actions/cache/save@v6' in build
+    assert re.search(r'uses: actions/cache/restore@[0-9a-f]{40}', build) and re.search(r'uses: actions/cache/save@[0-9a-f]{40}', build)
     assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" in build
     assert "hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml')" in build
     assert 'key: swift-debug-v3-' in build
@@ -135,7 +143,7 @@ def main():
     assert 'scripts/ci-build-artifact.py pack' in build
     assert 'name: debug-runtime' in build and 'compression-level: 0' in build
     for section in (native, packaging):
-        assert 'uses: actions/download-artifact@v8' in section
+        assert re.search(r'uses: actions/download-artifact@[0-9a-f]{40}', section)
         assert 'digest-mismatch: warn' in section
         assert 'name: debug-runtime' in section
         assert 'scripts/ci-build-artifact.py restore' in section

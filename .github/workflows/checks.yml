@@ -25,7 +25,7 @@ jobs:
       app_required: ${{ steps.scope.outputs.app_required }}
       native_reused: ${{ steps.reuse.outputs.native_reused || 'false' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -50,7 +50,7 @@ jobs:
     name: CI routing fixtures
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Keep the required aggregate green when native jobs intentionally skip.
       - name: Fast path regressions
@@ -65,7 +65,7 @@ jobs:
     name: Source fixtures
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Source timestamp cache fixture
         run: python3 scripts/test-ci-source-state.py
@@ -100,7 +100,7 @@ jobs:
     if: needs.changes.outputs.app_required == 'true'
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Identify Swift toolchain
         id: toolchain
@@ -116,7 +116,7 @@ jobs:
       # PRs reuse main's cache without leaving a separate archive for every revision.
       - name: Restore Swift debug build
         id: swift-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .build
           key: swift-debug-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**', 'scripts/ci-source-state.py', 'make-app.sh', '.github/workflows/checks.yml') }}
@@ -147,7 +147,7 @@ jobs:
             --archive "$RUNNER_TEMP/vane-debug-runtime.tar.gz"
 
       - name: Share compiled runtime
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: debug-runtime
           path: ${{ runner.temp }}/vane-debug-runtime.tar.gz
@@ -160,7 +160,7 @@ jobs:
 
       - name: Save Swift debug build
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .build
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
@@ -178,10 +178,10 @@ jobs:
     env:
       NATIVE_SHARD: ${{ matrix.shard }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download compiled runtime
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           # Preserve v5's warning policy; the restore step verifies our archive.
           digest-mismatch: warn
@@ -225,7 +225,7 @@ jobs:
 
       - name: Preserve native loop failure evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: native-loop-logs-${{ matrix.shard }}
           overwrite: true
@@ -246,10 +246,10 @@ jobs:
     if: needs.changes.outputs.app_required == 'true'
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download compiled runtime
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           # Preserve v5's warning policy; the restore step verifies our archive.
           digest-mismatch: warn
@@ -315,7 +315,7 @@ jobs:
 
       - name: Preserve AppKit loop evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: appkit-loop-log
           path: ${{ runner.temp }}/vane-appkit-loop-preflight.log
