@@ -97,9 +97,8 @@ import QuartzCore
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
-        app.setActivationPolicy(.accessory)
         defer { app.setActivationPolicy(policy) }
-        let loop = try await NativeFixtureApplicationLoop.acquire()
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
         do { try await exerciseDismissalGeometry() } catch { failure = error }
         do { try await loop.close() }
