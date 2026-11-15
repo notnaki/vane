@@ -890,6 +890,9 @@ private final class StoreConnection {
             // DELETE scrubs current pages; old WAL frames still hold earlier copies.
             // The C API reports SQLITE_BUSY when a reader prevents truncation, unlike
             // sqlite3_exec on the checkpoint PRAGMA, which can succeed with a busy row.
+            // A brief reader (autocomplete) must not turn a committed clear into a failure.
+            sqlite3_busy_timeout(db, 500)
+            defer { sqlite3_busy_timeout(db, 0) }
             guard sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil) == SQLITE_OK else {
                 return historyFailure()
             }

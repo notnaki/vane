@@ -860,7 +860,8 @@ enum Passwords {
         if let group = try? ICloudProvisioning.current().keychainGroup { query[kSecAttrAccessGroup as String] = group }
         var output: CFTypeRef?
         let status = keychain.copy(query as CFDictionary, &output)
-        if status == errSecItemNotFound { return true }
+        // Unentitled (local/dev) builds cannot reach, and so never wrote, a mirror.
+        if status == errSecItemNotFound || status == errSecMissingEntitlement { return true }
         guard status == errSecSuccess, let items = output as? [[String: Any]] else { return false }
         let prefix = "io.github.notnaki.vane.icloud-secrets.v1."
         for item in items {
