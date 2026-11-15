@@ -163,6 +163,7 @@ struct LivePageResizeAnchor {
                 if ownsSizing {
                     assignFrame(size: exact ? prepared : currentVisibleSize)
                     web.autoresizingMask = mask
+                    host.reseat(web)
                 }
                 // A moved page keeps its new owner's native frame and flags.
                 // The old host can retire its clip only while that clip still
@@ -761,6 +762,16 @@ struct LivePageResizeAnchor {
                 $0.currentVisibleSize.width <= $1.width + 0.001 &&
                 $0.currentVisibleSize.height <= $1.height + 0.001
             }) else { return }
+            if zip(pages, desired).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
+                prepare(exact: true)
+            }
+            return
+        }
+        // A held window drag has no growth left to cover. Lay the page out at the
+        // visible width now instead of at release; lookahead centres and clips a
+        // responsive page off the window edge. The next pointer sample refills it.
+        // ponytail: fixed 0.15s hold, measured from pointer samples, not velocity.
+        if frameDriver != nil, hasPresentedViewport, now() - lastTime >= 0.15 {
             if zip(pages, desired).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
                 prepare(exact: true)
             }

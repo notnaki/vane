@@ -364,6 +364,36 @@ import XCTest
         XCTAssertEqual(f.commits.count, 2, "An idle frame must not dirty the unchanged window")
     }
 
+    func testHeldWindowDragFitsThePageWithoutWaitingForRelease() {
+        var frame: (@MainActor () -> Void)?
+        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
+        f.buffer.start(); nextPaint(&f.paints)()
+        f.request(720)
+        nextPaint(&f.paints)()
+        frame?()
+        XCTAssertEqual(f.window.frame.width, 720)
+        XCTAssertGreaterThan(f.web.frame.width, 720, "A moving drag keeps painted lookahead")
+        f.time += 0.05
+        frame?()
+        XCTAssertTrue(f.paints.isEmpty, "A short gap between pointer samples keeps the lookahead")
+        f.time += 0.2
+        frame?()
+        XCTAssertEqual(f.web.frame.width, 720, "A held drag lays the page out at the visible width")
+        nextPaint(&f.paints)()
+        frame?(); frame?()
+        XCTAssertTrue(f.paints.isEmpty, "A fitted held page is not repainted every frame")
+        XCTAssertEqual(f.web.frame.width, 720)
+        f.request(740)
+        XCTAssertGreaterThan(f.web.frame.width, 740, "Moving again restores lookahead")
+        nextPaint(&f.paints)()
+        frame?()
+        XCTAssertEqual(f.window.frame.width, 740)
+        f.buffer.finish()
+        for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
+        XCTAssertEqual(f.completions, 1)
+        XCTAssertEqual(f.web.frame.width, 740)
+    }
+
     func testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick() {
         var frame: (@MainActor () -> Void)?
         var stops = 0
