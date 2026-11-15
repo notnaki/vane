@@ -39,6 +39,7 @@ import SwiftUI
     }
 
     @Published private(set) var generation = 0
+    @Published private(set) var protectionEpoch = 0
     @Published private(set) var loading = false
     @Published private(set) var editEpoch = 0
     // Retain identity rather than storing an ObjectIdentifier that could be reused.
@@ -53,7 +54,50 @@ import SwiftUI
     private weak var observedManager: ProfileManager?
     private var changes: AnyPublisher<Void, Never>?
 
-    init(load: @escaping Loader = LibrarySpaceCatalog.read) { self.load = load }
+    private var registryObservation: AnyCancellable?
+    private var storeObservations: [AnyCancellable] = []
+    private var observingContents = false
+    private var protectionRefresh: Task<Void, Never>?
+
+    init(load: @escaping Loader = LibrarySpaceCatalog.read) {
+        self.load = load
+        registryObservation = TabStore.storesChanged.sink { [weak self] in
+            guard let self, self.observingContents else { return }
+            self.observeStores()
+            self.revokeProtection()
+        }
+    }
+
+    /// Cards can read any profile's live owner, independently of their hosting window.
+    /// Rebind when windows appear/disappear; revoke before the next render or disk read.
+    private func observeStores() {
+        storeObservations = TabStore.all.flatMap { store in
+            [store.sidebarSnapshotChanges.sink { [weak self] in self?.generation &+= 1 },
+             Publishers.Merge3(
+                store.$pins.dropFirst().map { _ in () },
+                store.$todayShape.dropFirst().map { _ in () },
+                store.sidebarRowsProtectionRevoked
+             ).sink { [weak self] in self?.revokeProtection() }]
+        }
+    }
+
+    private func revokeProtection() {
+        guard observingContents else { return }
+        request &+= 1
+        task?.cancel(); task = nil; requestedKey = nil
+        contentValid = false
+        protectionEpoch &+= 1
+        generation &+= 1
+        protectionRefresh?.cancel()
+        // @Published shapes emit in willSet; lockFolder also saves legacy defaults
+        // after revoking its grants. Reload only after that synchronous mutation ends.
+        protectionRefresh = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self, self.observingContents, let manager = self.owner else { return }
+            self.protectionRefresh = nil
+            self.prepare(manager: manager, force: true)
+        }
+    }
 
     /// Read each profile's metadata once, then resolve both shapes from that same
     /// Space. UserDefaults.vane is explicitly thread-safe/nonisolated in Store.swift.
@@ -107,6 +151,10 @@ import SwiftUI
             cancel()
             owner = manager; persisted = []; loadedKey = nil
         }
+        if !observingContents {
+            observingContents = true
+            observeStores()
+        }
         if !force, requestedKey == key { return task }
         if !force, loadedKey == key, contentValid { return nil }
         task?.cancel()
@@ -138,12 +186,15 @@ import SwiftUI
     /// metadata for reopening. A still-current editor may finish its normal disappearance
     /// commit; a force-reopen epoch or external revision revokes that editor separately.
     func cancel() {
+        observingContents = false
+        storeObservations.removeAll()
+        protectionRefresh?.cancel(); protectionRefresh = nil
         request &+= 1
         task?.cancel(); task = nil; requestedKey = nil
         contentValid = false
         if loading { loading = false }
     }
-    deinit { task?.cancel() }
+    deinit { task?.cancel(); protectionRefresh?.cancel() }
 
     func hasSnapshot(manager: ProfileManager = .shared) -> Bool { owner === manager && loadedKey != nil }
 

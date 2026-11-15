@@ -553,6 +553,54 @@ extension Library {
         return label(for: url)
     }
 
+    /// Retained views and menus carry an occurrence, never an enduring disclosure grant.
+    static func canDisclose(_ url: URL, in space: Space, pinned: Bool,
+                            occurrence: LibraryOccurrence?) -> Bool {
+        let kind: TabKind = pinned ? .pinned : .today
+        if let live = owner(of: space.id) {
+            return live.profileID == space.profileID
+                && liveTab(url, kind: kind, occurrence: occurrence, in: live) != nil
+        }
+        guard let current = ProfileManager.shared.spaces(for: space.profileID).first(where: { $0.id == space.id }) else { return false }
+        return removing(url, kind: kind, from: current, occurrence: occurrence) != nil
+    }
+
+    @discardableResult
+    static func copyPageLink(_ url: URL, in space: Space, pinned: Bool,
+                             occurrence: LibraryOccurrence?, pasteboard: NSPasteboard = .general) -> Bool {
+        guard canDisclose(url, in: space, pinned: pinned, occurrence: occurrence) else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(url.absoluteString, forType: .string)
+    }
+
+    static func pageDragProvider(_ url: URL, in space: Space, pinned: Bool,
+                                 occurrence: LibraryOccurrence?) -> NSItemProvider {
+        guard canDisclose(url, in: space, pinned: pinned, occurrence: occurrence) else { return NSItemProvider() }
+        // Publishing during drag start destroys SwiftUI's source row. Recheck on
+        // the queued turn as protection may change before its transfer state is set.
+        DispatchQueue.main.async {
+            guard canDisclose(url, in: space, pinned: pinned, occurrence: occurrence) else { return }
+            LibraryDragging.shared.url = url
+            LibraryDragging.shared.from = space.id
+            LibraryDragging.shared.pinned = pinned
+            LibraryDragging.shared.occurrence = occurrence
+        }
+        return NSItemProvider(object: url.absoluteString as NSString)
+    }
+
+    static func openPage(_ url: URL, in space: Space, pinned: Bool,
+                         occurrence: LibraryOccurrence?, from store: TabStore) {
+        guard canDisclose(url, in: space, pinned: pinned, occurrence: occurrence),
+              let target = show(space, from: store) else { return }
+        if let tab = liveTab(url, kind: pinned ? .pinned : .today, occurrence: occurrence, in: target) {
+            target.current = tab.id
+        } else if occurrence == nil {
+            target.newTab(url)
+        } else { return }
+        close(store)
+        if target !== store { close(target) }
+    }
+
     private struct Removal {
         var space: Space
         var shape: Pins?
@@ -2039,7 +2087,7 @@ private struct SpaceCard: View {
     let space: Space
     let snapshot: LibrarySpaceCatalog.Entry?
     let destinations: [Space]
-    let catalog: LibrarySpaceCatalog
+    @ObservedObject var catalog: LibrarySpaceCatalog
     let editEpoch: Int
     @State private var over = false
     @State private var editing: LibrarySpaceCatalog.Editing?
@@ -2142,6 +2190,8 @@ private struct SpaceCard: View {
                     }
                 }
                 .padding(.horizontal, Look.captionGap * 2)
+                .id(catalog.protectionEpoch)
+                .animation(nil, value: catalog.protectionEpoch)
             }
             .scrollIndicators(.never)
             footer
@@ -2364,6 +2414,12 @@ private struct PageRow: View {
     }
 
     var body: some View {
+        if Library.canDisclose(url, in: space, pinned: pinned, occurrence: occurrence) {
+            content
+        }
+    }
+
+    private var content: some View {
         HStack(spacing: Look.captionGap * 3) {
             CachedFavicon(cache: Favicons.cache(for: space.profileID), url: url) {
                 SiteIcon(icon: $0, size: Look.captionGap * 7)
@@ -2394,9 +2450,9 @@ private struct PageRow: View {
             }
             Divider()
             Button("Copy Link") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                axAnnounce("Link copied.")
+                if Library.copyPageLink(url, in: space, pinned: pinned, occurrence: occurrence) {
+                    axAnnounce("Link copied.")
+                }
             }
         }
         .accessibilityElement(children: .ignore)
@@ -2410,28 +2466,11 @@ private struct PageRow: View {
     /// Clicking a page in another Space goes to that Space first — a page opened out of a
     /// Space it does not belong to would be a tab in the wrong list.
     private func open() {
-        guard let target = Library.show(space, from: store) else { return }
-        if let tab = Library.liveTab(url, kind: pinned ? .pinned : .today, occurrence: occurrence, in: target) {
-            target.current = tab.id
-        } else if occurrence == nil {
-            target.newTab(url)
-        } else { return }
-        Library.close(store)
-        if target !== store { Library.close(target) }
+        Library.openPage(url, in: space, pinned: pinned, occurrence: occurrence, from: store)
     }
 
     private func payload() -> NSItemProvider {
-        // Published on the next turn, not now: a state change inside the drag's own start
-        // re-renders the row under the pointer and SwiftUI drops the drag with it. Same
-        // reason as `dragPayload`. Every drag start overwrites what the last one left.
-        let url = url, from = space.id, pinned = pinned, occurrence = occurrence
-        DispatchQueue.main.async {
-            LibraryDragging.shared.url = url
-            LibraryDragging.shared.from = from
-            LibraryDragging.shared.pinned = pinned
-            LibraryDragging.shared.occurrence = occurrence
-        }
-        return NSItemProvider(object: url.absoluteString as NSString)
+        Library.pageDragProvider(url, in: space, pinned: pinned, occurrence: occurrence)
     }
 }
 

@@ -3,10 +3,10 @@ import XCTest
 @testable import vane
 
 @MainActor final class LockedFolderLeakTests: XCTestCase {
-    private func store() -> TabStore {
+    private func store(profile: UUID = UUID()) -> TabStore {
         TestEnvironment.prepare()
         _ = NSApplication.shared
-        let profile = UUID(), space = Space(name: "Leak fixture", profileID: profile)
+        let space = Space(name: "Leak fixture", profileID: profile)
         XCTAssertTrue(ProfileManager.shared.saveSpaces([space], for: profile))
         let store = TabStore(profileID: profile, space: space, session: [])
         store.folderAuthentication = FolderAuthentication { _, reply in reply(true); return nil }
@@ -128,6 +128,110 @@ import XCTest
             .write(to: file)
         let legacy = try await adapter.capture([.openTabs])
         XCTAssertTrue(legacy.isEmpty)
+    }
+
+    func testLibraryCatalogRevokesRowsWhenAnotherProfileLocksLegacyFolder() async throws {
+        let viewer = store()
+        let profile = ProfileManager.shared.create(name: "Other profile fixture")
+        let owner = store(profile: profile.id)
+        addTeardownBlock { @MainActor in _ = ProfileManager.shared.delete(profile.id) }
+        XCTAssertNotEqual(viewer.profileID, owner.profileID)
+        let page = tab(in: owner, path: "foreign-profile")
+        let folder = Folder(name: "Later locked")
+        owner.pins = Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(page.id.uuidString), parent: folder.id)])
+        owner.savePins()
+        let catalog = LibrarySpaceCatalog()
+        await catalog.prepare()?.value
+        let space = try XCTUnwrap(ProfileManager.shared.spaces(for: owner.profileID).first)
+        XCTAssertNotNil(catalog.entry(for: space))
+        let revision = ProfileManager.shared.spacesRevision
+        let generation = catalog.generation
+        owner.lockFolder(folder.id)
+        XCTAssertEqual(ProfileManager.shared.spacesRevision, revision, "Legacy folder locks need no metadata revision")
+        XCTAssertGreaterThan(catalog.generation, generation, "A foreign owner's protection must invalidate retained cards")
+        XCTAssertNil(catalog.entry(for: space), "Retained saved rows must be revoked synchronously")
+        XCTAssertNil(Library.liveTab(page.currentURL!, kind: .pinned, occurrence: .live(page.id), in: owner))
+        catalog.cancel()
+    }
+
+    func testRetainedLibraryActionsRecheckProtectionBeforeDisclosing() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = ProfileManager.shared.create(name: "Library action fixture")
+        let owner = store(profile: profile.id)
+        addTeardownBlock { @MainActor in _ = ProfileManager.shared.delete(profile.id) }
+        let page = tab(in: owner, path: "retained-actions")
+        let publicPage = tab(in: owner, path: "retained-actions", kind: .today)
+        let url = try XCTUnwrap(page.currentURL)
+        let folder = Folder(name: "Later locked")
+        owner.pins = Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(page.id.uuidString), parent: folder.id)])
+        owner.savePins()
+        let space = try XCTUnwrap(ProfileManager.shared.spaces(for: profile.id).first)
+        let occurrence = LibraryOccurrence.live(page.id)
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally(); LibraryDragging.shared.clear(); owner.libraryOpen = false }
+        LibraryDragging.shared.clear()
+        XCTAssertTrue(Library.copyPageLink(url, in: space, pinned: true, occurrence: occurrence, pasteboard: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), url.absoluteString)
+        XCTAssertFalse(Library.pageDragProvider(url, in: space, pinned: true, occurrence: occurrence).registeredTypeIdentifiers.isEmpty)
+        owner.libraryOpen = true
+        owner.lockFolder(folder.id)
+        pasteboard.clearContents()
+        pasteboard.setString("Unchanged clipboard", forType: .string)
+        XCTAssertFalse(Library.canDisclose(url, in: space, pinned: true, occurrence: occurrence))
+        XCTAssertFalse(Library.copyPageLink(url, in: space, pinned: true, occurrence: occurrence, pasteboard: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Unchanged clipboard")
+        XCTAssertTrue(Library.pageDragProvider(url, in: space, pinned: true, occurrence: occurrence).registeredTypeIdentifiers.isEmpty)
+        Library.openPage(url, in: space, pinned: true, occurrence: occurrence, from: owner)
+        XCTAssertTrue(owner.libraryOpen, "Denied open must not navigate away or dismiss the Library")
+        XCTAssertTrue(Library.copyPageLink(url, in: space, pinned: false, occurrence: .live(publicPage.id), pasteboard: pasteboard))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertNil(LibraryDragging.shared.url, "A queued drag must recheck a lock applied on its starting turn")
+    }
+
+    func testLegacyOpenTabPublicationKeepsPublicDuplicateInOtherSection() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("vane-legacy-leaks-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let suite = "vane-legacy-leaks-\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { UserDefaults.dropScratchSuite(suite); try? FileManager.default.removeItem(at: root) }
+        let manager = ProfileManager(directory: root, sandboxed: true)
+        let profile = manager.active.id
+        let url = URL(string: "https://duplicate.example.test/legacy")!
+        let folder = Folder(name: "Protected", requiresAuthentication: true)
+        var space = manager.createSpace(name: "Legacy", in: profile)
+        space.pinnedTabURLs = [url]; space.tabURLs = [url]
+        XCTAssertTrue(manager.updateSpace(space))
+        XCTAssertNil(manager.spaces(for: profile).first?.layout)
+        defaults.set(try JSONEncoder().encode(Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(url.absoluteString), parent: folder.id)])),
+            forKey: TabStore.shapeKey(.pinned, space: space.id, profileID: profile))
+        let rows = [Session.Entry(id: UUID().uuidString, url: url.absoluteString, title: "Secret pin", kind: .pinned),
+                    Session.Entry(id: UUID().uuidString, url: url.absoluteString, title: "Public Today", kind: .today),
+                    Session.Entry(id: UUID().uuidString, url: url.absoluteString, title: "Public favourite", kind: .favourite)]
+        let bytes = try XCTUnwrap(Session.encode([rows], spaces: [space.id.uuidString]))
+        let file = ProfileManager.sessionURL(for: profile, in: root)
+        try bytes.write(to: file)
+        let adapter = ICloudLibraryAdapter(directory: root, defaults: defaults, deviceID: "fixture", profiles: manager)
+        let items = try await adapter.capture([.openTabs])
+        XCTAssertEqual(try items.map { try $0.decode(ICloudRemoteTab.self).title }, ["Public Today", "Public favourite"])
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+
+        let secretID = UUID(), publicID = UUID()
+        space.layout = SpaceLayout(tabs: [
+            .init(id: secretID, url: url, kind: .pinned, title: "Secret pin"),
+            .init(id: publicID, url: url, kind: .today, title: "Public Today")],
+            pins: Pins(entries: [.init(row: .folder(folder)),
+                .init(row: .tab(secretID.uuidString), parent: folder.id)]), today: Pins(), splits: [], selected: nil)
+        XCTAssertTrue(manager.updateSpace(space))
+        // Session identities can predate the layout; section resolution must precede URL fallback.
+        let fallback = try await adapter.capture([.openTabs])
+        XCTAssertEqual(try fallback.map { try $0.decode(ICloudRemoteTab.self).title }, ["Public Today", "Public favourite"])
     }
 
     func testSaveSheetFiltersTabsNestedFoldersAndSplitsAgainstCurrentProtection() throws {

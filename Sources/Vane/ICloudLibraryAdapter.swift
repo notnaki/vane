@@ -167,18 +167,32 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
     /// Open-tab metadata is a public preview on other Macs. Never publish protected
     /// occurrences, even while this Mac holds an unlock grant. Legacy shapes use URLs.
     private func canPublish(_ row: Session.Entry, in spaces: [Space]) throws -> Bool {
-        for space in spaces {
-            var names = [row.id].compactMap { $0 }
-            if let layout = space.layout {
-                if !layout.tabs.contains(where: { $0.id.uuidString == row.id }) {
-                    names += layout.tabs.filter {
-                        $0.url.absoluteString == row.url || $0.savedURL.absoluteString == (row.home ?? row.url)
-                    }.map { $0.id.uuidString }
-                }
-            } else {
-                names += [row.url, row.home].compactMap { $0 }
+        // Identity resolves the occurrence even when a session has no Space association.
+        let identified = spaces.flatMap { space in
+            (space.layout?.tabs ?? []).filter { $0.id.uuidString == row.id }.map { (space, $0) }
+        }
+        if !identified.isEmpty {
+            for (space, page) in identified {
+                let outline = try shape(page.kind, space: space)
+                if !outline.lockedFolders(for: page.id.uuidString, unlocked: []).isEmpty { return false }
             }
-            for kind in [TabKind.pinned, .today] {
+            return true
+        }
+        // Favourites have no folder outline. A protected pin on the same URL is a
+        // different occurrence, including when this session predates layout identities.
+        if row.kind == .favourite { return true }
+        let kinds = row.kind.map { [$0] } ?? [.pinned, .today]
+        for space in spaces {
+            for kind in kinds {
+                let names: [String]
+                if let layout = space.layout {
+                    names = layout.tabs.filter {
+                        $0.kind == kind && ($0.url.absoluteString == row.url
+                            || $0.savedURL.absoluteString == (row.home ?? row.url))
+                    }.map { $0.id.uuidString }
+                } else {
+                    names = [row.id, row.url, row.home].compactMap { $0 }
+                }
                 let outline = try shape(kind, space: space)
                 if names.contains(where: { !outline.lockedFolders(for: $0, unlocked: []).isEmpty }) { return false }
             }
