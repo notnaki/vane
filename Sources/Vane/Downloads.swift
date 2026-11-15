@@ -150,7 +150,7 @@ import Darwin
         @Published var url: URL?
         @Published var source: URL?
         /// The last redirect target the transfer followed; resume data replays it.
-        fileprivate var transfer: URL?
+        fileprivate(set) var transfer: URL?
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -937,6 +937,7 @@ import Darwin
         entry.destinationBookmark = DownloadLocation.bookmark(for: target, profileID: profileID,
                                                              selectedFile: chosenByPanel)
         entry.source = download.originalRequest?.url ?? response.url
+        entry.transfer = response.url
         entry.sourceMethod = download.originalRequest?.httpMethod
         entry.sourceWeb = origin?.web ?? download.webView
         if profileID == Profile.incognito.id {

@@ -78,6 +78,9 @@ import XCTest
         let first = try await start()
         let second = try await start("/redirect")
         XCTAssertNotEqual(first.url, second.url)
+        // Resume replays the redirected request, so the row keeps where the bytes come from.
+        XCTAssertEqual(second.transfer?.path, "/file")
+        XCTAssertEqual(second.source?.path, "/redirect")
         server.held = false
         try await complete(first, bytes: server.bytes)
         try await complete(second, bytes: server.bytes)
