@@ -164,6 +164,27 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
         guard let bytes = defaults.data(forKey: TabStore.shapeKey(kind, space: space.id, profileID: space.profileID)) else { return Pins() }
         return try JSONDecoder().decode(Pins.self, from: bytes)
     }
+    /// Open-tab metadata is a public preview on other Macs. Never publish protected
+    /// occurrences, even while this Mac holds an unlock grant. Legacy shapes use URLs.
+    private func canPublish(_ row: Session.Entry, in spaces: [Space]) throws -> Bool {
+        for space in spaces {
+            var names = [row.id].compactMap { $0 }
+            if let layout = space.layout {
+                if !layout.tabs.contains(where: { $0.id.uuidString == row.id }) {
+                    names += layout.tabs.filter {
+                        $0.url.absoluteString == row.url || $0.savedURL.absoluteString == (row.home ?? row.url)
+                    }.map { $0.id.uuidString }
+                }
+            } else {
+                names += [row.url, row.home].compactMap { $0 }
+            }
+            for kind in [TabKind.pinned, .today] {
+                let outline = try shape(kind, space: space)
+                if names.contains(where: { !outline.lockedFolders(for: $0, unlocked: []).isEmpty }) { return false }
+            }
+        }
+        return true
+    }
     private func committedSpaces(for profileID: UUID) throws -> [Space] {
         if let cached = spacesCache[profileID], cached.revision == profiles.spacesRevision { return cached.spaces }
         let spaces = try profiles.committedICloudSpaces(for: profileID)
@@ -267,13 +288,17 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
                 }
             }
             if enabled.contains(.openTabs) {
+                let spaces = try committedSpaces(for: pid)
                 let file = ProfileManager.sessionURL(for: pid, in: directory)
                 if FileManager.default.fileExists(atPath: file.path) {
                     guard let loaded = Session.load(file), !loaded.recoveringFile else { throw CocoaError(.fileReadCorruptFile) }
                     for (window, rows) in loaded.snapshot.windows.enumerated() {
+                        let spaceID = loaded.snapshot.spaces.indices.contains(window) ? loaded.snapshot.spaces[window] : nil
+                        let candidates = spaceID.flatMap { id in spaces.first { $0.id == id } }.map { [$0] } ?? spaces
                         for (index, row) in rows.enumerated() where web(URL(string: row.url)) {
+                            guard try canPublish(row, in: candidates) else { continue }
                             let tab = ICloudRemoteTab(id: "\(deviceID)|\(pid)|\(row.id ?? stable("\(window)|\(index)|\(row.url)"))", deviceID: deviceID, deviceName: deviceName, profileID: pid,
-                                spaceID: loaded.snapshot.spaces.indices.contains(window) ? loaded.snapshot.spaces[window] : nil,
+                                spaceID: spaceID,
                                 url: URL(string: row.url)!, title: row.title ?? "", position: index, at: nil)
                             out.append(ICloudItem(category: .openTabs, id: tab.id, profileID: pid, parentID: tab.spaceID?.uuidString, fields: try fields(tab)))
                         }

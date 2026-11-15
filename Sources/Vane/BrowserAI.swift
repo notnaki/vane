@@ -124,15 +124,16 @@ import SwiftUI
         defer { pendingRequests[id] = nil }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
-    private static func reply<T: Decodable>(_ type: T.Type, feature: AIFeature, isPrivate: Bool = false, prompt: String, tokens: Int) async -> T? {
-        guard !isPrivate, ready(for: feature), let connection = state.connection(for: feature), inFlight < 2,
+    private static func reply<T: Decodable>(_ type: T.Type, feature: AIFeature, isPrivate: Bool = false, prompt: String, tokens: Int,
+                                           isCurrent: @escaping @MainActor () -> Bool = { true }) async -> T? {
+        guard !isPrivate, isCurrent(), ready(for: feature), let connection = state.connection(for: feature), inFlight < 2,
               Date.now >= (limitedUntil[connection.id] ?? .distantPast) else { return nil }
         let revision = revision
         inFlight += 1
         defer { inFlight -= 1 }
         do {
             let text = try await complete(connection, prompt: prompt, tokens: tokens, isPrivate: isPrivate) {
-                enabled && revision == self.revision && state.connection(for: feature) == connection
+                isCurrent() && enabled && revision == self.revision && state.connection(for: feature) == connection
             }
             guard enabled, revision == self.revision, state.connection(for: feature) == connection, !Task.isCancelled else { return nil }
             return try JSONDecoder().decode(type, from: Data(text.utf8))
@@ -166,13 +167,15 @@ import SwiftUI
         return answer
     }
 
-    static func shortTitle(for title: String, url: URL, isPrivate: Bool = false) async -> String? {
+    static func shortTitle(for title: String, url: URL, isPrivate: Bool = false,
+                           isCurrent: @escaping @MainActor () -> Bool = { true }) async -> String? {
+        guard isCurrent() else { return nil }
         if state.connection(for: .tabTitles) == nil { return await localReply(feature: .tabTitles) { await AppleAI.shortTitle(for: title, url: url) } }
         guard !isPrivate else { return nil }
         struct Title: Decodable { let text: String }
         let prompt = AppleAI.prompt("Host: \(url.host() ?? "")\nTitle: \(title)", ask:
             #"Return JSON {"text":"short title"}. Consider titles of any length. Use at most four words and 32 characters, selected from the original title. Keep the specific subject; omit site names and marketing text. Finish at a whole word."#, limit: 700)
-        return await reply(Title.self, feature: .tabTitles, isPrivate: isPrivate, prompt: prompt, tokens: 512)?.text
+        return await reply(Title.self, feature: .tabTitles, isPrivate: isPrivate, prompt: prompt, tokens: 512, isCurrent: isCurrent)?.text
     }
 
     static func filename(for suggested: String, pageTitle: String?, sourceURL: URL,

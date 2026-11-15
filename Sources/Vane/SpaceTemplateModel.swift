@@ -26,6 +26,23 @@ import Foundation
     var preview: SpaceLayout? { saving ? draft : selected?.layout }
     var unlocked: Set<UUID> { authentication.grants(for: request.profileID) }
 
+    /// The draft is fixed for save confirmation, but its disclosure permission is live.
+    func canPreview(_ row: String) -> Bool {
+        guard saving else { return true }
+        guard !cancelled, let store, !store.isPrivate, !store.isLittle, !store.isParked,
+              store.profileID == request.profileID, store.currentSpaceID == request.sourceID else { return false }
+        for shape in [store.pins, store.todayShape] {
+            guard let index = shape.index(of: row) else { continue }
+            if shape.entries[index].folder != nil {
+                return shape.ancestors(of: index).allSatisfy {
+                    shape.folder($0)?.requiresAuthentication != true || unlocked.contains($0)
+                }
+            }
+            return shape.lockedFolders(for: row, unlocked: unlocked).isEmpty
+        }
+        return false
+    }
+
     func reload() {
         do {
             templates = try library.load(profile: request.profileID)
