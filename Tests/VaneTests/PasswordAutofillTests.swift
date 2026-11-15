@@ -2261,6 +2261,74 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         expectEqual(try await js(web, "embedded.contentDocument.getElementById('password').value") as? String, "")
     }
 
+    func testHardeningClobberedFormTagNameCannotBypassActionCheck() async throws {
+        for action in ["https://other.example.test/login", "http://login.example.test/login"] {
+            let (web, _) = try await fixture("<form id=login action='\(action)'><input name=tagName><input id=password type=password></form>")
+            // Prove this is the DOM clobbering case, not a harmless string attribute.
+            expectEqual(try await js(web, "login.tagName === login.querySelector('[name=tagName]')") as? Bool, true)
+            _ = try await js(web, "password.focus()")
+            expectFalse(try await fill(web))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testHardeningClobberedAncestryCannotSkipCrossOriginOuterForm() async throws {
+        let (web, _) = try await fixture("""
+            <form action="https://other.example.test/login"><div id="mount"></div></form>
+            <input name="assignedSlot" form="inner">
+            """)
+        _ = try await js(web, """
+            const f = document.createElement('form'); f.id = 'inner'; f.action = '/login';
+            f.innerHTML = '<input id=password type=password>';
+            document.getElementById('mount').append(f);
+            """)
+        expectEqual(try await js(web, "document.getElementById('inner').assignedSlot === document.querySelector('[name=assignedSlot]')") as? Bool, true)
+        _ = try await js(web, "password.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
+    func testHardeningRenamedControlCannotKeepShadowingAncestry() async throws {
+        let (web, _) = try await fixture("""
+            <form action="https://other.example.test/login"><div id="mount"></div></form>
+            <input id="bridge" name="assignedSlot" form="inner">
+            """)
+        _ = try await js(web, """
+            const f = document.createElement('form'); f.id = 'inner'; f.action = '/login';
+            f.innerHTML = '<input id=password type=password>';
+            document.getElementById('mount').append(f);
+            void f.assignedSlot;
+            document.getElementById('bridge').name = 'ordinary';
+            """)
+        // WebKit's past-names map keeps the old lookup alive after the rename.
+        expectEqual(try await js(web, "document.getElementById('inner').assignedSlot === document.getElementById('bridge')") as? Bool, true)
+        _ = try await js(web, "password.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
+    func testHardeningShadowedFormMethodsFailClosed() async throws {
+        for name in ["getAttribute", "querySelectorAll", "parentNode"] {
+            let (web, _) = try await fixture("<form action='/login'><input name=\(name)><input id=password type=password></form>")
+            _ = try await js(web, "password.focus()")
+            expectFalse(try await fill(web))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testHardeningOrdinaryShadowingNamesKeepActionAndExternalControls() async throws {
+        let (web, _) = try await fixture("""
+            <form id=login action='/login'><input name=action><input name=method><input id=password type=password></form>
+            <button id=submit form=login formaction='https://other.example.test/login'>Go</button>
+            """)
+        _ = try await js(web, "password.focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+        _ = try await js(web, "document.getElementById('submit').removeAttribute('formaction')")
+        expectTrue(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "fixture-secret")
+    }
+
     func testEmbeddedGeneratorRechecksFrameFocusBetweenFields() async throws {
         let (web, capture) = try await fixture("<button id=outside>Outside</button><iframe id=embedded srcdoc='<form><input id=newPassword type=password autocomplete=new-password><input id=confirmation type=password autocomplete=new-password></form>'></iframe>")
         try await wait { try await self.js(web, "!!embedded.contentDocument.getElementById('newPassword')") as? Bool == true }
