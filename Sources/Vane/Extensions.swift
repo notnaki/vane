@@ -990,6 +990,8 @@ import WebKit
         let controller = hosts[profileID]?.controller ?? WKWebExtensionController(configuration:
             controllerIdentifier(for: profileID, dataDirectory: Store.overrideDirectory)
                 .map(WKWebExtensionController.Configuration.init(identifier:)) ?? .default())
+        // Stop installs and unload contexts first, so nothing writes after enumeration.
+        forget(profileID)
         let records = await controller.dataRecords(ofTypes: persistentExtensionDataTypes)
         await controller.removeData(ofTypes: persistentExtensionDataTypes, from: records)
     }

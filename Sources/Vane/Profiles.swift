@@ -765,7 +765,6 @@ struct Space: Identifiable, Codable, Equatable {
             // Close the sqlite connection and drop the cached objects before the files go.
             await Store.forgetAsync(id)
             await ExtensionHost.removePersistentData(for: id)
-            ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
             _ = try? await Passwords.perform { Passwords.deleteAll(profileID: id) }
