@@ -7,8 +7,14 @@ struct EaselCrop: View {
     let apply: (Data) -> Void
     @State private var start: CGPoint?
     @State private var end: CGPoint?
+    /// Decoded when the view value is built, not in `body`: each drag sample re-runs `body`.
+    private let decoded: NSImage?
+
+    init(data: Data, apply: @escaping (Data) -> Void) {
+        self.data = data; self.apply = apply; decoded = NSImage(data: data)
+    }
     var body: some View {
-        if let image = NSImage(data: data) {
+        if let image = decoded {
             let scale = min(380 / image.size.width, 230 / image.size.height)
             let width = image.size.width * scale, height = image.size.height * scale
             VStack(alignment: .leading, spacing: 10) {
