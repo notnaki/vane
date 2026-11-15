@@ -20,13 +20,6 @@ import WebKit
       // rather than in Swift because it dies with the video it is about: a navigation takes
       // both away, and coming back to a tab must never yank a PiP window the user opened.
       var autoed = false, minimized = false, presented = null, presentationRequest = 0, presentationEvent = null;
-      // Whether the inline that is about to happen is one *we* asked for. The PiP window's
-      // ⤢ leaves picture-in-picture still playing, which is the user asking for the tab
-      // back; this is how that is told apart from our own auto-exit.
-      var ours = false;
-      // The mode before this one. Leaving *fullscreen* lands in the same listener as
-      // leaving picture-in-picture, still playing, and only the latter is a ⤢.
-      var last = 'inline';
       function biggest() {
         var vs = Array.prototype.slice.call(document.querySelectorAll('video'));
         if (!vs.length) { return null; }
@@ -43,23 +36,13 @@ import WebKit
         presentationRequest++;
         presentationEvent = { request: presentationRequest, mode: mode, video: e.target };
         if (mode === 'picture-in-picture') { presented = e.target; }
-        var mine = ours;
-        ours = false;
-        var from = last;
-        last = mode;
         // Left picture-in-picture by any route — the PiP window's own close button, the
         // page's controls, going fullscreen — so our claim on it is over. Without this a
         // detach the *user* started next would be read as ours and yanked back inline.
         if (mode !== 'picture-in-picture') { autoed = false; }
         webkit.messageHandlers.vanepip.postMessage({mode: mode, source: e.target.getAttribute('data-vane-media-source')});
-        // The PiP window has two buttons and the page cannot see either. WebCore tells them
-        // apart for us: -pipActionStop: (×) pauses the element and *then* exits, while
-        // -pipShouldClose: (⤢) exits still playing. So an inline nobody here asked for, with
-        // the video still running, is the user hitting ⤢ — "put this back and take me to it".
-        // × lands here paused and says nothing extra: the video is home, and no tab switches.
-        if (mode === 'inline' && from === 'picture-in-picture' && !mine && !e.target.paused) {
-          webkit.messageHandlers.vanepip.postMessage('return');
-        }
+        // Pages can cause this same transition. Mode changes report state only;
+        // selecting a tab or activating Vane requires the native return control.
       }, true);
       // Auto picture-in-picture: called on the way out of a tab and on the way back in.
       // Everything it refuses to do is a named reason, so a page that will not detach can
@@ -82,7 +65,6 @@ import WebKit
         }
         minimized = false;
         if (autoed && v.webkitPresentationMode === 'picture-in-picture') {
-          ours = true;
           v.webkitSetPresentationMode('inline');
           autoed = false;
           return 'inline';
@@ -97,7 +79,6 @@ import WebKit
         var v = (presented && presented.isConnected) ? presented : biggest();
         if (!v || !v.webkitSetPresentationMode) { return 'unsupported'; }
         var next = v.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
-        ours = (next === 'inline');
         v.webkitSetPresentationMode(next);
         autoed = false;
         // WebKit can still be completing the previous host's cleanup when the user
@@ -120,7 +101,6 @@ import WebKit
         if (!v || v.webkitPresentationMode !== 'picture-in-picture') { return 'idle'; }
         var playing = !v.paused && !v.ended;
         // Programmatic inline keeps playback and does not request the tab back.
-        ours = true;
         minimized = true;
         autoed = false;
         // A request during the native opening animation can be ignored. Confirm the
@@ -138,7 +118,6 @@ import WebKit
             if (playing && v.paused) { await v.play(); }
             return 'minimized';
           }
-          ours = true;
           v.webkitSetPresentationMode('inline');
           await new Promise(function (resolve) { setTimeout(resolve, 50); });
         }
@@ -436,29 +415,8 @@ import WebKit
             ("a video that arrives later announces itself too",
              script.contains("document.addEventListener('loadedmetadata'")),
             ("the announcement is not mistaken for a mode", state(from: "has-video") == nil),
-            // The ⤢. Both PiP buttons come back as 'inline'; only "still playing" separates
-            // them, and only if our own exits are marked before they happen.
-            ("the request for the tab is not mistaken for a mode", state(from: "return") == nil),
-            ("only a playing video nobody here sent inline asks for the tab",
-             script.contains("if (mode === 'inline' && from === 'picture-in-picture' && !mine && !e.target.paused) {")
-                 && script.contains("webkit.messageHandlers.vanepip.postMessage('return')")),
-            // Esc out of a playing fullscreen video lands in the same listener as the ⤢.
-            ("…and only when it was in picture-in-picture, not fullscreen",
-             script.range(of: "var from = last;").map {
-                 script[$0.upperBound...].prefix(40).contains("last = mode;")
-             } == true),
-            ("the auto exit is marked as ours, so it does not read as the ⤢",
-             script.range(of: "v.webkitSetPresentationMode('inline');").map {
-                 script[..<$0.lowerBound].suffix(40).contains("ours = true;")
-             } == true),
-            ("⌥⌘P going inline is marked as ours too",
-             script.range(of: "v.webkitSetPresentationMode(next);").map {
-                 script[..<$0.lowerBound].suffix(40).contains("ours = (next === 'inline');")
-             } == true),
-            ("the mark is cleared by the mode change it was set for",
-             script.range(of: "var mine = ours;").map {
-                 script[$0.upperBound...].prefix(20).contains("ours = false;")
-             } == true),
+            ("mode changes never request tab activation",
+             !script.contains("webkit.messageHandlers.vanepip.postMessage('return')")),
         ]
     }
 }

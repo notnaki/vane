@@ -44,28 +44,16 @@ import XCTest
 }
 
 @MainActor final class ReadingQueueNetworkTests: XCTestCase {
-    func testOfflineCollectionDoesNotRefetchImagesBlockedInSourceDocument() async throws {
-        TestEnvironment.prepare(); WebKitStartup.prepare()
+    func testOfflineCollectionFailsClosedWithoutSourceBlockerContext() async throws {
         let server = try ReadingImageServer(); defer { server.stop() }
         try await compatibilityWait { server.port != nil }
         let url = try server.url("/blocked")
-        let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
-        let identifier = "reading-image-block-" + UUID().uuidString
-        let rules = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: identifier,
-            encodedContentRuleList: "[{\"trigger\":{\"url-filter\":\".*/blocked\",\"resource-type\":[\"image\"]},\"action\":{\"type\":\"block\"}}]")
-        config.userContentController.add(try XCTUnwrap(rules))
-        let web = WKWebView(frame: .zero, configuration: config)
-        defer { web.stopLoading() }
-        web.loadSimulatedRequest(URLRequest(url: try server.url("/article")), responseHTML: "<img src='\(url.absoluteString)'>")
-        try await compatibilityWait {
-            try await web.evaluateJavaScript("document.readyState === 'complete' && document.images.length === 1 && document.images[0].complete") as? Bool == true
-        }
-        XCTAssertTrue(server.requests.isEmpty)
-        let result = await ReadingQueueImages().collect(urls: [url])
+        let result = await ReadingQueueImages().collect(urls: [url, url])
         XCTAssertEqual(result.missingCount, 1)
         XCTAssertTrue(result.mapping.isEmpty)
-        XCTAssertTrue(server.requests.isEmpty, "Saving must not send a request that the source document's blocker denied")
-        try await WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier)
+        XCTAssertTrue(result.images.isEmpty)
+        XCTAssertTrue(result.resources.isEmpty)
+        XCTAssertTrue(server.requests.isEmpty, "Without the source document's content rules, saving must not issue any image request")
     }
 
     func testHeaderlessOversizedResponseIsBoundedAndRedirectLoopStops() async throws {

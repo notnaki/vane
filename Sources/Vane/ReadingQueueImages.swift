@@ -34,26 +34,11 @@ struct ReadingQueueImages: ReadingQueueImageLoading {
             digest: ReadingArticleCodec.digest(output), pixelWidth: w, pixelHeight: h), data: output)
     }
     func collect(urls: [URL]) async -> ReadingQueueImageResult {
-        var result = ReadingQueueImageResult(), seen = Set<String>()
-        let unique = urls.filter { seen.insert($0.absoluteString).inserted }
-        let deadline = ContinuousClock.now + .seconds(60)
-        var remaining = ReadingArticleCodec.snapshotLimit - ReadingArticleCodec.recordLimit
-        for (index, url) in unique.enumerated() {
-            guard index < 20, !Task.isCancelled, ContinuousClock.now < deadline else {
-                result.missingCount = min(20, result.missingCount + unique.count - index); break
-            }
-            do {
-                let time = min(15.0, Double(ContinuousClock.now.duration(to: deadline).components.seconds))
-                let data = try await Self.download(url, timeout: max(0.1, time))
-                if let raster = Self.raster(data), raster.data.count <= remaining {
-                    remaining -= raster.data.count
-                    result.resources.append(raster.resource)
-                    result.images[raster.resource.name] = raster.data
-                    result.mapping[url.absoluteString] = "images/" + raster.resource.name
-                } else { result.missingCount += 1 }
-            } catch { result.missingCount += 1 }
-        }
-        return result
+        // URLSession has neither the source profile's WebKit content rules nor its
+        // top-document context (including redirect rules). Fail closed until capture
+        // can supply a blocker-enforcing image loader instead of bypassing that policy.
+        let missing = min(20, Set(urls.map(\.absoluteString)).count)
+        return ReadingQueueImageResult(missingCount: missing)
     }
     static func download(_ url: URL, timeout: Double = 15) async throws -> Data {
         guard ReadingArticleCodec.webURL(url.absoluteString) != nil else { throw ReadingQueueFailure.unsupported }

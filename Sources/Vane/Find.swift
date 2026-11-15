@@ -177,7 +177,7 @@ import WebKit
             index = 0
             return
         }
-        let answer = await measure(text, in: web)
+        let answer = await Self.measure(text, in: web)
         guard current() else { return }
         guard let measured = answer, measured.count > 0 else {
             // A page the walker cannot read the way WebKit does — a PDF, a shadow root, an
@@ -192,12 +192,20 @@ import WebKit
     }
 
     /// `[total, position]` off the page, or nil when the page cannot answer.
-    private func measure(_ text: String, in web: WKWebView) async -> (count: Int, index: Int)? {
-        let value = try? await web.evaluateJavaScript(Self.measureScript(text))
-        guard let pair = value as? [Any], pair.count == 2 else { return nil }
-        func number(_ any: Any) -> Int? { (any as? Int) ?? (any as? NSNumber)?.intValue }
-        guard let total = number(pair[0]), let at = number(pair[1]) else { return nil }
-        return (total, at)
+    static func measure(_ text: String, in web: WKWebView) async -> (count: Int, index: Int)? {
+        // The page's prototypes must never see text typed into the native Find bar.
+        return await withCheckedContinuation { continuation in
+            web.evaluateJavaScript(Self.measureScript(text), in: nil, in: .defaultClient) { result in
+                guard let pair = (try? result.get()) as? [Any], pair.count == 2 else {
+                    continuation.resume(returning: nil); return
+                }
+                func number(_ any: Any) -> Int? { (any as? Int) ?? (any as? NSNumber)?.intValue }
+                guard let total = number(pair[0]), let at = number(pair[1]) else {
+                    continuation.resume(returning: nil); return
+                }
+                continuation.resume(returning: (count: total, index: at))
+            }
+        }
     }
 
     /// Dismiss WebKit's find markers as well as its DOM selection. On newer WebKit,
