@@ -6,9 +6,9 @@ import XCTest
     func testLittleVaneHandoffDropsOnlyCrossProfileInteractionState() {
         TestEnvironment.prepare()
         _ = NSApplication.shared
-        let source = TabStore(isPrivate: true, profileID: UUID(), isLittle: true, session: [])
-        let target = TabStore(isPrivate: true, profileID: UUID(), session: [])
-        let same = TabStore(isPrivate: true, profileID: source.profileID, session: [])
+        let source = TabStore(isPrivate: false, profileID: UUID(), isLittle: true, session: [])
+        let target = TabStore(isPrivate: false, profileID: UUID(), session: [])
+        let same = TabStore(isPrivate: false, profileID: source.profileID, session: [])
         defer {
             for store in [source, target, same] {
                 store.tabs.forEach { $0.tearDown() }
