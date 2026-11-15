@@ -12,6 +12,7 @@ actor ICloudExtensionStorageCache {
     }
     private struct State: Codable, Equatable {
         var schema = 1
+        var accountID: String?
         var entries: [String: Entry] = [:]
         var profiles: Set<UUID> = []
         var retiredProfiles: Set<UUID> = []
@@ -74,6 +75,22 @@ actor ICloudExtensionStorageCache {
         } catch let error as ICloudFailure { throw error }
         catch is CancellationError { throw CancellationError() }
         catch { throw ICloudFailure.storage("Extension sync data could not be saved. Pending mutations have not been acknowledged.") }
+    }
+
+    /// Bind only after the transport and journal have validated the Apple Account.
+    /// Legacy/unapplied shadows are recovery data, never local data for a new account.
+    func bindAccount(_ account: String) throws {
+        guard !account.isEmpty else { throw ICloudFailure.accountChanged }
+        let old = try loaded(), identity = ICloudIdentity.digest(account)
+        guard old.accountID != identity else { return }
+        if FileManager.default.fileExists(atPath: file.path) {
+            let archive = file.deletingLastPathComponent().appendingPathComponent(
+                "icloud-extension-storage-account-" + UUID().uuidString + ".json")
+            try FileManager.default.copyItem(at: file, to: archive)
+        }
+        var next = State()
+        next.accountID = identity
+        try save(next)
     }
 
     func inventory(profiles: Set<UUID>, installed: [ICloudExtensionInstallation]) throws {

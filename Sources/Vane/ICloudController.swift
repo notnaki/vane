@@ -292,6 +292,10 @@ import Foundation
             guard admitted(token) else { return }
             try library?.setAccountNamespace(account)
             secrets?.setAccountNamespace(account)
+            for adapter in adapters.compactMap({ $0 as? ICloudExtensionStorageAdapter }) {
+                try await adapter.bindAccount(account)
+                guard admitted(token) else { return }
+            }
             try await capture(enabled, into: journal, admitted: token)
             guard admitted(token) else { return }
             if enabled.contains(where: { !$0.isSecret }) {

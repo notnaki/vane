@@ -11,6 +11,7 @@ import Foundation
     private let open: @MainActor (ICloudExtensionInstallation) async throws -> (any ICloudExtensionStorageSession)?
     private let cache: ICloudExtensionStorageCache
     private var working = false
+    private var accountBound = false
 
     init(directory: URL = Store.directory,
          profileIDs: (@MainActor () -> [UUID])? = nil,
@@ -41,6 +42,16 @@ import Foundation
         }
     }
 
+    func bindAccount(_ account: String) async throws {
+        guard !working else { throw ICloudFailure.unavailable("An extension sync operation is already in progress. Retry after it finishes.") }
+        working = true; defer { working = false }
+        accountBound = false
+        try ICloudApplyContext.check()
+        try await cache.bindAccount(account)
+        try ICloudApplyContext.check()
+        accountBound = true
+    }
+
     static func wake() { ICloudController.requestSyncIfRunning() }
     nonisolated static func item(namespace: ICloudExtensionNamespace, key: String, value: Data) throws -> ICloudItem {
         try ICloudExtensionStorageJSON.item(namespace: namespace, key: key, value: value)
@@ -48,6 +59,7 @@ import Foundation
     private var regularProfiles: Set<UUID> { Set(profiles()).subtracting([Profile.incognito.id]) }
     private func check(_ namespace: ICloudExtensionNamespace? = nil) throws {
         try ICloudApplyContext.check()
+        guard accountBound else { throw ICloudFailure.accountChanged }
         if let namespace {
             guard namespace.profileID != Profile.incognito.id, regularProfiles.contains(namespace.profileID) else { throw CancellationError() }
         }

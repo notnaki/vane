@@ -68,6 +68,13 @@ struct Parked: Equatable, Sendable {
         self.needsRecovery = needsRecovery
     }
 
+    /// Opaque WebKit history and form state belong to the original profile.
+    var withoutInteractionState: Parked {
+        var copy = self
+        copy.state = nil
+        return copy
+    }
+
     /// The same state, filed under a key that is not the page it came from. See
     /// `TabStore.saveCurrentSpace`, the one caller.
     func on(_ page: URL) -> Parked { Parked(title: title, state: state, page: page, needsRecovery: needsRecovery) }

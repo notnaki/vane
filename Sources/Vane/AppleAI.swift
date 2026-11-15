@@ -422,7 +422,7 @@ import FoundationModels
         var seen = Set<Int>()
         var out: [(name: String, ids: [String])] = []
         for g in raw {
-            let picked = g.tabs.filter { ids.indices.contains($0 - 1) && seen.insert($0).inserted }
+            let picked = g.tabs.filter { $0 > 0 && $0 <= ids.count && seen.insert($0).inserted }
             guard !picked.isEmpty, let name = tidyTitle(g.name) else { continue }
             out.append((name: name, ids: picked.map { ids[$0 - 1] }))
         }

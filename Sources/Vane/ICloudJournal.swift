@@ -38,6 +38,8 @@ actor ICloudJournal {
             }
             if saved.schema == 2 { saved.schema = 3 }
             guard saved.schema == 3 else { throw ICloudFailure.unsupportedSchema }
+            guard saved.counter <= ICloudVersion.maximumCounter else { throw ICloudFailure.clockExhausted }
+            for record in saved.records.values { try record.validate() }
             state = saved
         } else { state = State(deviceID: deviceID) }
     }
@@ -52,6 +54,12 @@ actor ICloudJournal {
             state = next
         } catch let error as ICloudFailure { throw error }
         catch { throw ICloudFailure.storage("Vane could not save pending iCloud changes. Your local library has been kept.") }
+    }
+
+    private func advance(_ next: inout State) throws {
+        let (counter, overflow) = next.counter.addingReportingOverflow(1)
+        guard !overflow, counter <= ICloudVersion.maximumCounter else { throw ICloudFailure.clockExhausted }
+        next.counter = counter
     }
 
     func checkpoint() throws { try save(state) }
@@ -99,7 +107,7 @@ actor ICloudJournal {
             }
             var record = next.records[item.key] ?? ICloudRecord(category: item.category, id: item.id,
                 profileID: item.profileID, parentID: item.parentID, fields: [:], deletion: nil)
-            next.counter += 1
+            try advance(&next)
             var vector = record.vector
             vector[next.deviceID] = next.counter
             let version = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
@@ -122,7 +130,7 @@ actor ICloudJournal {
         }
         for (key, old) in next.baseline where enabled.contains(old.category) && captured[key] == nil {
             guard var record = next.records[key], record.deletion == nil else { continue }
-            next.counter += 1
+            try advance(&next)
             var vector = record.vector; vector[next.deviceID] = next.counter
             record.deletion = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
             next.records[key] = record; next.pending.insert(key)
@@ -130,7 +138,7 @@ actor ICloudJournal {
             if next.observedAbsences == nil { next.observedAbsences = [] }
             next.observedAbsences?.insert(key)
         }
-        retireDescendants(in: &next)
+        try retireDescendants(in: &next)
         try save(next)
     }
 
@@ -152,7 +160,7 @@ actor ICloudJournal {
             if merged != remote { next.pending.insert(remote.key) }
             next.counter = max(next.counter, merged.vector.values.max() ?? 0)
         }
-        retireDescendants(in: &next)
+        try retireDescendants(in: &next)
         try save(next)
         return changed
     }
@@ -169,7 +177,7 @@ actor ICloudJournal {
             var record = next.records[item.key] ?? ICloudRecord(category: item.category, id: item.id,
                 profileID: item.profileID, parentID: item.parentID, fields: [:], deletion: nil)
             if record.deletion == nil && record.item != item {
-                next.counter += 1
+                try advance(&next)
                 var vector = record.vector; vector[next.deviceID] = next.counter
                 let version = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
                 for key in Set(record.item.fields.keys).union(item.fields.keys) where record.item.fields[key] != item.fields[key] {
@@ -186,16 +194,16 @@ actor ICloudJournal {
             // Absence is a deletion only when this Mac actually observed the entity
             // immediately before apply. Unknown incoming/placeholder omissions are
             // never evidence of a local deletion.
-            retire(key, in: &next)
+            try retire(key, in: &next)
         }
         for (key, record) in next.records where enabled.contains(.bookmarks) && record.category == .bookmarks
             && record.deletion == nil && readback[key] == nil {
             guard let url = record.item.fields["url"], items.contains(where: {
                 $0.category == .bookmarks && $0.profileID == record.profileID && $0.fields["url"] == url
             }) else { continue }
-            retire(key, in: &next)
+            try retire(key, in: &next)
         }
-        retireDescendants(in: &next)
+        try retireDescendants(in: &next)
         if next.observedAbsences == nil { next.observedAbsences = [] }
         for (key, record) in next.records where enabled.contains(record.category) && record.deletion != nil && readback[key] == nil {
             next.observedAbsences?.insert(key)
@@ -214,7 +222,7 @@ actor ICloudJournal {
     func mergeFences(_ fences: [ICloudDeletionFence]) throws {
         var next = state
         for fence in fences { try addFence(fence, to: &next) }
-        retireDescendants(in: &next)
+        try retireDescendants(in: &next)
         try save(next)
     }
     func observeAncestorInventory(_ inventory: [ICloudDeletionFence]) throws {
@@ -225,7 +233,7 @@ actor ICloudJournal {
             for missing in previous where !present.contains(missing.key) { try addFence(missing, to: &next) }
         }
         next.ancestorInventory = inventory
-        retireDescendants(in: &next)
+        try retireDescendants(in: &next)
         try save(next)
     }
     private func addFence(_ fence: ICloudDeletionFence, to next: inout State) throws {
@@ -236,20 +244,20 @@ actor ICloudJournal {
         if next.records[key]?.deletion != nil { return }
         var record = next.records[key] ?? ICloudRecord(category: category, id: id,
             profileID: fence.profileID, parentID: nil, fields: [:], deletion: nil)
-        next.counter += 1
+        try advance(&next)
         var vector = record.vector; vector[next.deviceID] = next.counter
         record.deletion = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
         next.records[key] = record; next.baseline.removeValue(forKey: key)
     }
 
-    private func retire(_ key: String, in next: inout State) {
+    private func retire(_ key: String, in next: inout State) throws {
         guard var record = next.records[key], record.deletion == nil else { return }
-        next.counter += 1
+        try advance(&next)
         var vector = record.vector; vector[next.deviceID] = next.counter
         record.deletion = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
         next.records[key] = record; next.pending.insert(key); next.baseline.removeValue(forKey: key)
     }
-    private func retireDescendants(in next: inout State) {
+    private func retireDescendants(in next: inout State) throws {
         let parents = next.records.values.filter { $0.deletion != nil && ($0.category == .profiles || $0.category == .spaces) }
         for record in Array(next.records.values) where record.deletion == nil {
             let removedParent = parents.contains { parent in
@@ -259,7 +267,7 @@ actor ICloudJournal {
                 guard let field = record.item.fields["spaceID"], let space = try? JSONDecoder().decode(UUID.self, from: field) else { return false }
                 return space.uuidString.lowercased() == parent.id.lowercased()
             }
-            if removedParent { retire(record.key, in: &next) }
+            if removedParent { try retire(record.key, in: &next) }
         }
     }
     private static func conflictCopy(_ left: ICloudRecord, _ right: ICloudRecord) throws -> ICloudRecord? {

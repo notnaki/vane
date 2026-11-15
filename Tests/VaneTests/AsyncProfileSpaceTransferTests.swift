@@ -9,7 +9,7 @@ import XCTest
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         return ProfileManager(directory: directory, sandboxed: true)
     }
-    func testAsyncProfileTransferPreservesSidecarBeforeRetiringSource() async throws {
+    func testAsyncProfileTransferDropsInteractionStateBeforeRetiringSource() async throws {
         let manager = try manager(), source = manager.active.id
         let destination = manager.create(name: "Destination").id
         var space = manager.createSpace(name: "Move", in: source)
@@ -25,9 +25,22 @@ import XCTest
         XCTAssertEqual(manager.spaces(for: destination).first?.id, space.id)
         let target = Suspension.SpaceState.load(space: space.id, profileID: destination, in: manager.directory)
         XCTAssertEqual(target[url.absoluteString]?.title, "Saved")
-        XCTAssertEqual(target[url.absoluteString]?.state, Data([1, 2, 3]))
+        XCTAssertNil(target[url.absoluteString]?.state)
         XCTAssertTrue(Suspension.SpaceState.load(space: space.id, profileID: source, in: manager.directory).isEmpty)
     }
+    func testSynchronousProfileTransferDropsInteractionState() throws {
+        let manager = try manager(), source = manager.active.id
+        let destination = manager.create(name: "Destination").id
+        let space = manager.createSpace(name: "Move", in: source)
+        let key = "https://transfer.example.test/"
+        XCTAssertTrue(Suspension.SpaceState.save([key: Parked(title: "Saved", state: Data([1, 2, 3]))],
+            space: space.id, profileID: source, in: manager.directory))
+        XCTAssertNotNil(manager.moveSpace(space.id, from: source, to: destination))
+        let target = Suspension.SpaceState.load(space: space.id, profileID: destination, in: manager.directory)
+        XCTAssertEqual(target[key]?.title, "Saved")
+        XCTAssertNil(target[key]?.state)
+    }
+
     func testAsyncTransferWithUnwritableDestinationKeepsSourceInventoryAndState() async throws {
         let manager = try manager(), source = manager.active.id
         let destination = manager.create(name: "Destination").id

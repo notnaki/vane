@@ -77,6 +77,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     /// One open connection per profile, kept for the life of the process.
     private static var cache: [UUID: Store] = [:]
+    private static var retiredProfileIDs = Set<UUID>()
     private static var retirements: [UUID: Task<Void, Never>] = [:]
 
     /// Quit/restore stop new user imports, while late accepted navigation/title changes
@@ -103,6 +104,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     /// Drop the connection and the files. Called when a profile is deleted.
     static func forget(_ profileID: UUID) {
+        retiredProfileIDs.insert(profileID)
         if retirements[profileID] != nil { return }
         guard let old = cache.removeValue(forKey: profileID) else { removeFiles(profileID); return }
         let waiting = old.hasPendingWrites
@@ -200,7 +202,8 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     init(path: String? = nil, profileID: UUID? = nil) {
         self.profileID = profileID
-        let requested = path ?? Self.directory.appendingPathComponent("vane.db").path
+        let retired = profileID.map { Self.retiredProfileIDs.contains($0) } ?? false
+        let requested = retired ? ":memory:" : (path ?? Self.directory.appendingPathComponent("vane.db").path)
         // Named shared memory lets the worker own its handle without moving the UI handle.
         let path = requested == ":memory:" ? "file:vane-\(UUID())?mode=memory&cache=shared" : requested
         connection = StoreConnection(path: path)
@@ -208,6 +211,11 @@ struct BookmarkImportResult: Equatable, Sendable {
         suggestionReader = LocalSuggestionReader(path: path)
         historyReader = LocalSuggestionReader(path: path)
         bookmarkReader = requested == ":memory:" ? nil : LocalSuggestionReader(path: path)
+        if retired {
+            discarding = true
+            lifetime.cancel()
+            connection.close()
+        }
     }
 
     private var gated: Bool { Self.admissionPaused || imports > 0 || replaying || !pending.isEmpty }
