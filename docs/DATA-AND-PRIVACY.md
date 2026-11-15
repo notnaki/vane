@@ -165,6 +165,8 @@ For all regular profiles and saved-library data, use [Backup and restore](#backu
 
 ### Import and export behavior
 
+History CSV prefixes formula-like titles and URLs (including leading control characters) with an apostrophe to prevent spreadsheet formula evaluation. Use history JSON to preserve exact text.
+
 Password exports contain plain text credentials. Delete a CSV export when you no longer
 need it. CSV imports also have a [CLI command](DEVELOPMENT.md#command-line). CSV imports preserve
 existing passwords, keep the first successfully saved duplicate, and report
