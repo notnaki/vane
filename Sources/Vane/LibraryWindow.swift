@@ -2413,13 +2413,9 @@ private struct PageRow: View {
                           in: Library.owner(of: space.id))
     }
 
+    // Display is gated by the catalog's protection revocation; the actions below
+    // recheck current protection when they run.
     var body: some View {
-        if Library.canDisclose(url, in: space, pinned: pinned, occurrence: occurrence) {
-            content
-        }
-    }
-
-    private var content: some View {
         HStack(spacing: Look.captionGap * 3) {
             CachedFavicon(cache: Favicons.cache(for: space.profileID), url: url) {
                 SiteIcon(icon: $0, size: Look.captionGap * 7)

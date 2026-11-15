@@ -155,6 +155,28 @@ import XCTest
         catalog.cancel()
     }
 
+    func testOrdinaryFolderShapeChangeKeepsOpenSpaceEditors() async throws {
+        let viewer = store()
+        let profile = ProfileManager.shared.create(name: "Editor epoch fixture")
+        let owner = store(profile: profile.id)
+        addTeardownBlock { @MainActor in _ = ProfileManager.shared.delete(profile.id) }
+        XCTAssertNotEqual(viewer.profileID, owner.profileID)
+        let page = tab(in: owner, path: "ordinary-folder")
+        let folder = Folder(name: "Ordinary")
+        owner.pins = Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(page.id.uuidString), parent: folder.id)])
+        owner.savePins()
+        let catalog = LibrarySpaceCatalog()
+        await catalog.prepare()?.value
+        let epoch = catalog.editEpoch
+        // An unrelated, unprotected shape change in another profile's window.
+        owner.pins = Pins(entries: [.init(row: .folder(folder))])
+        try await Task.sleep(for: .milliseconds(50))
+        await catalog.prepare()?.value
+        XCTAssertEqual(catalog.editEpoch, epoch, "Re-gating rows must not revoke an open Space editor")
+        catalog.cancel()
+    }
+
     func testRetainedLibraryActionsRecheckProtectionBeforeDisclosing() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

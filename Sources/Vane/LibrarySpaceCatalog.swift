@@ -62,9 +62,10 @@ import SwiftUI
     init(load: @escaping Loader = LibrarySpaceCatalog.read) {
         self.load = load
         registryObservation = TabStore.storesChanged.sink { [weak self] in
+            // Rebind only: a store appearing or leaving changes no protection, and
+            // saved rows already carry their lock flags from disk.
             guard let self, self.observingContents else { return }
             self.observeStores()
-            self.revokeProtection()
         }
     }
 
@@ -73,11 +74,9 @@ import SwiftUI
     private func observeStores() {
         storeObservations = TabStore.all.flatMap { store in
             [store.sidebarSnapshotChanges.sink { [weak self] in self?.generation &+= 1 },
-             Publishers.Merge3(
-                store.$pins.dropFirst().map { _ in () },
-                store.$todayShape.dropFirst().map { _ in () },
-                store.sidebarRowsProtectionRevoked
-             ).sink { [weak self] in self?.revokeProtection() }]
+             // Only protection changes revoke retained rows; ordinary shape edits
+             // (collapse, reorder) must not reload the catalog or reset editors.
+             store.sidebarRowsProtectionRevoked.sink { [weak self] in self?.revokeProtection() }]
         }
     }
 
@@ -95,7 +94,7 @@ import SwiftUI
             await Task.yield()
             guard !Task.isCancelled, let self, self.observingContents, let manager = self.owner else { return }
             self.protectionRefresh = nil
-            self.prepare(manager: manager, force: true)
+            self.prepare(manager: manager, force: true, resetEditors: false)
         }
     }
 
@@ -144,8 +143,10 @@ import SwiftUI
     /// force starts a new open epoch even if only an external writer changed disk.
     /// During refresh retain card metadata, but not saved rows whose lock shape may
     /// have changed. Live-owner cards bypass the saved snapshot on the main actor.
+    /// `resetEditors: false` reloads rows for a protection change without revoking an open
+    /// Space editor: the editor edits Space metadata, not the rows being re-gated.
     @discardableResult func prepare(manager: ProfileManager = .shared,
-                                    force: Bool = false) -> Task<Void, Never>? {
+                                    force: Bool = false, resetEditors: Bool = true) -> Task<Void, Never>? {
         let key = Key(manager)
         if owner !== manager {
             cancel()
@@ -158,7 +159,7 @@ import SwiftUI
         if !force, requestedKey == key { return task }
         if !force, loadedKey == key, contentValid { return nil }
         task?.cancel()
-        if force { editEpoch &+= 1 }
+        if force, resetEditors { editEpoch &+= 1 }
         request &+= 1
         let ticket = request, load = load
         requestedKey = key
