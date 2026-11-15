@@ -73,6 +73,7 @@ import QuartzCore
         animation.toValue = end
         animation.duration = 0.14
         animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+        animation.pinToDisplayRate(of: nil)
         layer.add(animation, forKey: Self.transitionKey)
     }
 

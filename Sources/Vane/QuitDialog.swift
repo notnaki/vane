@@ -112,6 +112,7 @@ import SwiftUI
         fade.toValue = 1
         fade.duration = reduced ? 0.12 : 0.22
         fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        fade.pinToDisplayRate(of: overlay.window?.screen)
         overlayLayer.add(fade, forKey: "quitEntranceFade")
         guard !reduced else { return }
 
@@ -126,6 +127,7 @@ import SwiftUI
         settle.toValue = NSValue(caTransform3D: CATransform3DIdentity)
         settle.duration = 0.22
         settle.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        settle.pinToDisplayRate(of: card.window?.screen)
         cardLayer.add(settle, forKey: "quitEntranceScale")
     }
 

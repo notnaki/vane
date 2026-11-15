@@ -195,9 +195,6 @@ import WebKit
         alphaValue = CustomPiPWindow.reducesMotion ? 1 : 0
         orderFrontRegardless()
         guard !CustomPiPWindow.reducesMotion else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = Look.appearDuration
-            animator().alphaValue = 1
-        }
+        WindowMotion.animate(self, alpha: 1, duration: Look.appearDuration)
     }
 }
