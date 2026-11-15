@@ -272,3 +272,13 @@ kbd { font-family: var(--body); }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* byearc vote toast */
+.toast { position: fixed; z-index: 50; right: var(--gutter); bottom: var(--gutter); max-width: min(360px, calc(100vw - 2 * var(--gutter))); display: grid; grid-template-columns: 1fr auto; gap: 12px 16px; align-items: start; padding: 18px 18px 18px 20px; border: 1px solid var(--line); border-radius: 20px; background: var(--card-1); color: var(--ink); box-shadow: 0 18px 50px #0000004d; font: 15px/1.45 var(--body); opacity: 0; transform: translateY(12px); pointer-events: none; transition: opacity .35s ease, transform .35s ease; }
+.toast[data-shown="true"] { opacity: 1; transform: none; pointer-events: auto; }
+.toast p { margin: 0; color: var(--muted); }
+.toast strong { display: block; margin-bottom: 2px; font: 600 22px/1.1 var(--display); color: var(--ink); }
+.toast-cta { grid-column: 1 / -1; justify-self: start; padding: 9px 16px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 600; text-decoration: none; }
+.toast-close { grid-column: 2; grid-row: 1; width: 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.toast-close:hover { background: var(--card-2); color: var(--ink); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; transform: none; } }

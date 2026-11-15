@@ -114,4 +114,24 @@
       }
     });
   }
+  // byearc toast: a gentle ask to vote for Vane, shown once until dismissed.
+  let seen = false;
+  try { seen = localStorage.byearcToast === 'done'; } catch (error) { /* private mode: show it */ }
+  if (!seen) {
+    const toast = document.createElement('aside');
+    toast.className = 'toast';
+    toast.setAttribute('aria-label', 'Vote for Vane');
+    toast.innerHTML = '<p><strong>Enjoying Vane?</strong> Vote for it and leave a review on byearc.</p>'
+      + '<a class="toast-cta" href="https://byearc.com/browsers/vane" target="_blank" rel="noopener">Vote on byearc</a>'
+      + '<button class="toast-close" type="button" aria-label="Dismiss">&times;</button>';
+    const done = () => {
+      try { localStorage.byearcToast = 'done'; } catch (error) { /* private mode */ }
+      toast.dataset.shown = 'false';
+      setTimeout(() => toast.remove(), 400);
+    };
+    toast.querySelector('.toast-close').addEventListener('click', done);
+    toast.querySelector('.toast-cta').addEventListener('click', done);
+    document.body.append(toast);
+    setTimeout(() => { toast.dataset.shown = 'true'; }, 4000);
+  }
 })();
