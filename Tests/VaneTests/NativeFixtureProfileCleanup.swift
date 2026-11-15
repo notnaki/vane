@@ -24,7 +24,7 @@ import XCTest
             // The normal profile's cached extension controller also owns its named store.
             ExtensionHost.forget(profile)
             await Store.forgetAsync(profile)
-            Favicons.forget(profile)
+            await Favicons.forget(profile).value
             if deferred {
                 ProfileManager.releaseDataStore(for: profile)
                 continue
