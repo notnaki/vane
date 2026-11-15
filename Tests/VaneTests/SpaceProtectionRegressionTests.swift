@@ -138,7 +138,9 @@ import XCTest
         store.pins = Pins(entries: [.init(row: .folder(folder)),
             .init(row: .tab(secret.id.uuidString), parent: folder.id)])
         XCTAssertEqual(Library.cardTitle(url, kind: .today, occurrence: .live(other.id), in: store), "Other public title")
-        XCTAssertEqual(Library.cardTitle(url, kind: .today, occurrence: .live(secret.id), in: store), Library.label(for: url))
+        XCTAssertEqual(Library.cardTitle(url, kind: .pinned, occurrence: .live(secret.id), in: store), Library.label(for: url))
+        // The unprotected pinned/public tabs on the same URL still resolve to their own titles.
+        XCTAssertEqual(Library.cardTitle(url, kind: .today, occurrence: .live(publicTab.id), in: store), "Public title")
         await Library.moveAsync(url, from: source.id, to: target.id, pinned: false, profile: source.profileID,
                                 occurrence: .live(other.id))
         XCTAssertTrue(store.tabs.contains { $0 === secret })
@@ -173,14 +175,49 @@ import XCTest
     func testStaleLegacyOccurrenceCannotSelectReplacement() async throws {
         var (source, target) = spaces()
         let url = URL(string: "https://duplicate.example.test/stale")!
+        let other = URL(string: "https://other.example.test/stale")!
         source.tabURLs = [url, url]
         XCTAssertTrue(ProfileManager.shared.updateSpace(source))
         let captured = source
-        source.tabURLs = [url]
+        // Index 1 still names the same URL, but it is a different row than the card showed.
+        source.tabURLs = [other, url]
         XCTAssertTrue(ProfileManager.shared.updateSpace(source))
         await Library.moveAsync(url, from: source.id, to: target.id, pinned: false, profile: source.profileID,
             occurrence: .saved(space: captured, index: 1, shape: nil))
+        XCTAssertEqual(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == source.id }?.tabURLs, [other, url])
+        XCTAssertEqual(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == target.id }?.tabURLs, [])
+    }
+
+    func testSavedOccurrenceInsideLockedFolderIsRefusedForLegacyAndLayoutSpaces() async throws {
+        var (source, target) = spaces()
+        let url = URL(string: "https://duplicate.example.test/locked-occurrence")!
+        let folder = Folder(name: "Secret", requiresAuthentication: true)
+        // Legacy outline: the only occurrence of the page sits inside a locked folder.
+        source.tabURLs = [url]
+        XCTAssertTrue(ProfileManager.shared.updateSpace(source))
+        try save(Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(url.absoluteString), parent: folder.id)]), kind: .today, space: source)
+        let shape = TabStore.savedShape(.today, space: source.id, profileID: source.profileID)
+        await Library.moveAsync(url, from: source.id, to: target.id, pinned: false, profile: source.profileID,
+            occurrence: .saved(space: source, index: 0, shape: shape))
         XCTAssertEqual(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == source.id }?.tabURLs, [url])
+        XCTAssertEqual(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == target.id }?.tabURLs, [])
+
+        // Layout outline: same page, addressed by index into the layout's pages.
+        let secret = UUID(), open = UUID()
+        source.tabURLs = [url, url]
+        source.layout = SpaceLayout(tabs: [secret, open].map {
+            .init(id: $0, url: url, kind: .today, title: $0.uuidString)
+        }, pins: Pins(), today: Pins(entries: [.init(row: .folder(folder)),
+            .init(row: .tab(secret.uuidString), parent: folder.id), .init(row: .tab(open.uuidString))]),
+            splits: [], selected: open)
+        XCTAssertTrue(ProfileManager.shared.updateSpace(source))
+        let saved = try XCTUnwrap(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == source.id })
+        await Library.moveAsync(url, from: source.id, to: target.id, pinned: false, profile: source.profileID,
+            occurrence: .saved(space: saved, index: 0, shape: TabStore.savedShape(.today, space: source.id, profileID: source.profileID)))
+        let after = try XCTUnwrap(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == source.id })
+        XCTAssertEqual(after.tabURLs, [url, url])
+        XCTAssertEqual(after.layout?.tabs.map(\.id), [secret, open])
         XCTAssertEqual(ProfileManager.shared.spaces(for: source.profileID).first { $0.id == target.id }?.tabURLs, [])
     }
 
