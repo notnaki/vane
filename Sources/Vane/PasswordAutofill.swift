@@ -16,7 +16,7 @@ import WebKit
       // Named form controls can shadow even tagName, action and elements.
       // Keep the isolated world's native accessors instead of reading form properties.
       var elementTagName = Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get;
-      var formAction = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'action').get;
+      var elementGetAttribute = Element.prototype.getAttribute;
       var formElements = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get;
       function isForm(el) {
         try { return elementTagName.call(el) === 'FORM'; } catch (_) { return false; }
@@ -249,7 +249,7 @@ import WebKit
             }
             return Array.from(new Set(forms)).every(function (form) {
               if (formElements.call(form).length > 20000) return false;
-              var action = new URL(formAction.call(form), document.baseURI);
+              var action = new URL(elementGetAttribute.call(form, 'action') || document.baseURI, document.baseURI);
               if (action.origin !== topOrigin || action.protocol !== 'https:') return false;
               var overrides = deepQuery(form, '[formaction]');
               if (!overrides.complete) return false;
@@ -505,8 +505,8 @@ import WebKit
           listen(document, name, handler, true);
           return handler;
         }
-        credentialListener('focusin', function (e) { if (e.isTrusted) focused(eventField(e)); });
-        credentialListener('click', function (e) { if (e.isTrusted) focused(eventField(e)); });
+        credentialListener('focusin', function (e) { focused(eventField(e)); });
+        credentialListener('click', function (e) { focused(eventField(e)); });
         // Everything that means "not interested any more". The list is anchored to a point
         // that stops being true the moment any of these happens, so each one closes it.
         credentialListener('focusout', function (e) {
@@ -601,8 +601,7 @@ import WebKit
           discoverFrames(observe()); ready();
         });
         function fill(account, password, automatic, target, continuation) {
-          // A cached chooser target is not permission to fill an unfocused login.
-          var p = pairFor(deepActive(document));
+          var p = targetPair();
           if (!visible(p) || (target && token(p) !== target)) { return false; }
           if (!focusedFrame()) return false;
           // Read-only/hidden account hints are useful for validation, never for writing.
@@ -629,7 +628,7 @@ import WebKit
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
             if (!liveDocument() || !focusedFrame() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
-                rootFor(p.pass) !== root || token(pairFor(deepActive(document))) !== expectedTarget ||
+                rootFor(p.pass) !== root || token(targetPair()) !== expectedTarget ||
                 (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
             if (!current || token(current) !== expectedTarget) return false;
