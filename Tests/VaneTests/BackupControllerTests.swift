@@ -8,6 +8,47 @@ import XCTest
         addTeardownBlock { await MainActor.run { f.cleanup() } }
         return f
     }
+    func testHistoryClearFlushesLiveHistoryThenPurgesRecoveryPoints() async throws {
+        let f = try fixture(), manager = f.seed(), history = f.database(manager.active.id)
+        history.record(URL(string: "https://private-history.invalid")!, title: "private visit")
+        let recovery = BackupRecovery(library: f.library)
+        _ = try recovery.save(f.library.capture(reason: .automatic))
+        let controller = BackupController(library: f.library, flush: { true }, restart: {})
+        try await controller.clearHistory(history, since: nil)
+        XCTAssertTrue(history.history().isEmpty)
+        XCTAssertTrue(try recovery.points().isEmpty)
+        XCTAssertFalse(controller.busy)
+    }
+
+    func testHistoryClearReportsRecoveryPurgeFailure() async throws {
+        let f = try fixture(), history = f.database(f.seed().active.id)
+        let recoveryRoot = f.root.appendingPathComponent("Recovery")
+        try FileManager.default.createDirectory(at: recoveryRoot, withIntermediateDirectories: true)
+        try Data("not a directory".utf8).write(to: recoveryRoot.appendingPathComponent("Points"))
+        let controller = BackupController(library: f.library, flush: { true }, restart: {})
+        do { try await controller.clearHistory(history, since: nil); XCTFail("Purge failure must reach the caller") }
+        catch {}
+        XCTAssertFalse(controller.busy)
+    }
+
+    func testHistoryClearRefusesToOverlapAnInFlightRecoveryCapture() async throws {
+        let f = try fixture(), history = f.database(f.seed().active.id)
+        history.record(URL(string: "https://keep-history.invalid")!, title: "keep")
+        var release: CheckedContinuation<Bool, Never>?
+        let controller = BackupController(library: f.library, flush: {
+            await withCheckedContinuation { release = $0 }
+        }, restart: {})
+        let capture = Task { await controller.retryRecovery() }
+        while release == nil { await Task.yield() }
+        do { try await controller.clearHistory(history, since: nil); XCTFail("Wait for capture before clearing") }
+        catch {}
+        XCTAssertEqual(history.history().count, 1)
+        release?.resume(returning: true)
+        await capture.value
+        try await controller.clearHistory(history, since: nil)
+        XCTAssertTrue(try BackupRecovery(library: f.library).points().isEmpty)
+    }
+
     func testFlushFailureDoesNotExportStaleData() async throws {
         let f = try fixture(), output = f.root.appendingPathComponent("export.vanebackup")
         let controller = BackupController(library: f.library, flush: { false }, restart: {})

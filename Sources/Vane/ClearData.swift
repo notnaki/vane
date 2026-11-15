@@ -58,7 +58,8 @@ import WebKit
     ///
     /// "Cookies and site data" is not just cookies: a site that has been logged out of by
     /// deleting its cookie and left holding its localStorage token has not been logged out
-    /// of. Caches are separate because clearing them costs a slow reload and nothing else.
+    /// of. Site-managed CacheStorage can also hold identifiers; HTTP resource caches
+    /// remain separate because clearing them costs a slow reload.
     static func dataTypes(cookies: Bool, cache: Bool) -> Set<String> {
         var types: Set<String> = []
         if cookies {
@@ -70,6 +71,7 @@ import WebKit
                 WKWebsiteDataTypeFileSystem,
                 WKWebsiteDataTypeWebSQLDatabases,
                 WKWebsiteDataTypeServiceWorkerRegistrations,
+                WKWebsiteDataTypeFetchCache,
             ])
         }
         if cache {
@@ -100,32 +102,38 @@ import WebKit
             ? "from the beginning of time"
             : "from the \(options.range.title.lowercased())"
         let effects = options.cookies ? " You may be signed out and lose offline website work." : ""
-        return "Clears \(list) \(when).\(effects) Bookmarks and saved passwords are not affected."
+        let recovery = options.history
+            ? " All local recovery points are also deleted, including other profiles and dates. Exported backups are kept." : ""
+        return "Clears \(list) \(when).\(effects)\(recovery) Bookmarks and saved passwords are not affected."
     }
 
     /// Do it. History is Vane's own database; cookies, storage and caches belong to the
     /// profile's `WKWebsiteDataStore`, which is why this cannot be one call.
     static func clear(_ options: Options, profileID: UUID, now: Date = .now, completion: @escaping (Bool) -> Void) {
-        let since = options.range.since(now)
-        if options.history {
-            let history = Store.store(for: profileID)
-            guard history.clearHistory(since: options.range == .everything ? nil : since) else {
-                HistoryWindow.showWriteFailure(history)
-                completion(false)
-                return
+        Task { @MainActor in
+            let since = options.range.since(now)
+            if options.history {
+                do {
+                    try await BackupController.shared.clearHistory(Store.store(for: profileID),
+                        since: options.range == .everything ? nil : since)
+                } catch {
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Browsing data could not be completely cleared"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                    completion(false)
+                    return
+                }
             }
-        }
-        // App-opening permissions are shared preferences, not profile website storage.
-        // Clearing this profile must not reset permissions used by another profile.
-        let types = dataTypes(cookies: options.cookies, cache: options.cache)
-        guard !types.isEmpty else { completion(true); return }
-        let store = ProfileManager.dataStore(for: profileID)
-        FavouritePreviews.shared.beginClearing(profileID: profileID)
-        store.removeData(ofTypes: types, modifiedSince: since) {
-            Task { @MainActor in
-                FavouritePreviews.shared.endClearing(profileID: profileID)
-                completion(true)
-            }
+            // Shared app-opening permissions are not profile website storage.
+            let types = dataTypes(cookies: options.cookies, cache: options.cache)
+            guard !types.isEmpty else { completion(true); return }
+            let store = ProfileManager.dataStore(for: profileID)
+            FavouritePreviews.shared.beginClearing(profileID: profileID)
+            await store.removeData(ofTypes: types, modifiedSince: since)
+            FavouritePreviews.shared.endClearing(profileID: profileID)
+            completion(true)
         }
     }
 

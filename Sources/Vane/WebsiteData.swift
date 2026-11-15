@@ -63,13 +63,15 @@ enum WebsiteDataCategory {
 @MainActor final class WebKitWebsiteDataBackend: WebsiteDataBackend {
     private let store: WKWebsiteDataStore
     private let owner = UUID()
+    private let profileID: UUID
     private enum StoreKey: Hashable {
         case named(UUID), defaultStore, ephemeral(ObjectIdentifier)
     }
     private static var clearing: Set<StoreKey> = []
     private let key: StoreKey
-    init(store: WKWebsiteDataStore) {
+    init(store: WKWebsiteDataStore, profileID: UUID) {
         self.store = store
+        self.profileID = profileID
         key = store.identifier.map(StoreKey.named)
             ?? (store.isPersistent ? .defaultStore : .ephemeral(ObjectIdentifier(store)))
     }
@@ -101,9 +103,9 @@ enum WebsiteDataCategory {
         }
         // Retain the store and its lock even if the user closes the view mid-operation.
         // WebKit provides no error argument here. The controller verifies a new snapshot.
-        FavouritePreviews.shared.beginClearing(profileID: owner)
+        FavouritePreviews.shared.beginClearing(profileID: profileID)
         store.removeData(ofTypes: types, for: entry.records) { [self] in
-            FavouritePreviews.shared.endClearing(profileID: owner)
+            FavouritePreviews.shared.endClearing(profileID: profileID)
             Self.clearing.remove(key)
             completion(.success(()))
         }
@@ -145,7 +147,7 @@ enum WebsiteDataCategory {
 
     convenience init(profileID: UUID, store: WKWebsiteDataStore, isValid: @escaping () -> Bool,
                      initialHost: String? = nil) {
-        self.init(profileID: profileID, backend: WebKitWebsiteDataBackend(store: store),
+        self.init(profileID: profileID, backend: WebKitWebsiteDataBackend(store: store, profileID: profileID),
                   isValid: isValid, initialHost: initialHost)
     }
 

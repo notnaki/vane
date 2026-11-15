@@ -7,6 +7,28 @@ import XCTest
         addTeardownBlock { await MainActor.run { f.cleanup() } }
         return f
     }
+    func testPurgeDeletesDamagedAndUnrecognisedPointsButKeepsManualExport() throws {
+        let f = try fixture(), recovery = BackupRecovery(library: f.library)
+        let archive = try f.library.capture(reason: .automatic)
+        _ = try recovery.save(archive)
+        let damaged = f.root.appendingPathComponent("Recovery/Points/unrecognised.vanebackup")
+        try Data("private history".utf8).write(to: damaged)
+        let exported = f.root.appendingPathComponent("manual.vanebackup")
+        try BackupCodec.write(archive, to: exported)
+        try recovery.removeAllPoints()
+        XCTAssertTrue(try recovery.points().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: damaged.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exported.path))
+    }
+
+    func testPurgeReportsDeletionFailure() throws {
+        let f = try fixture(), recovery = BackupRecovery(library: f.library)
+        _ = try recovery.save(f.library.capture(reason: .automatic))
+        let failing = BackupRecovery(library: f.library, remover: { _ in throw CocoaError(.fileWriteNoPermission) })
+        XCTAssertThrowsError(try failing.removeAllPoints())
+        XCTAssertEqual(try recovery.points().count, 1)
+    }
+
     func testUnchangedContentDoesNotCreateAnotherAutomaticPoint() throws {
         let f = try fixture(), recovery = BackupRecovery(library: f.library)
         XCTAssertNotNil(try recovery.automaticPointIfChanged(f.library.capture(reason: .automatic)))

@@ -188,6 +188,21 @@ struct BackupCandidate: Identifiable, Sendable {
             await reloadPointsAsync()
         }
     }
+    func clearHistory(_ history: Store, since: Date?) async throws {
+        guard start("Clearing history and recovery points…") else {
+            throw BackupError.storage("A backup or restore is running. Wait for it to finish before clearing history.")
+        }
+        defer { finish() }
+        guard history.clearHistory(since: since), await history.flushPendingWrites() else {
+            throw BackupError.storage(history.lastHistoryError ?? "Browsing history could not be cleared.")
+        }
+        // Capture and publication share this worker, including iCloud's pre-sync point.
+        // Purge after the live clear commits, so an older capture cannot publish later.
+        let recovery = BackupRecovery(library: library)
+        try await worker.run { try recovery.removeAllPoints() }
+        Motion.list { points = []; preview = nil; recoveryError = nil }
+    }
+
     func retryRecovery() async { await automaticRecovery(force: true) }
     func automaticRecovery(force: Bool = false, now: Date = .now) async {
         guard !busy, !restorePending, force || BackupSchedule.isDue(lastAttempt: lastAttempt, now: now) else { return }

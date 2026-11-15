@@ -55,6 +55,18 @@ struct BackupRecovery: Sendable {
             $0.date == $1.date ? $0.id.uuidString > $1.id.uuidString : $0.date > $1.date
         }
     }
+    /// Purge even damaged or unrecognised point files: unreadable snapshots can still
+    /// contain history. Manual exports live outside this directory.
+    nonisolated func removeAllPoints() throws {
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        try BackupIO.directory(root)
+        guard FileManager.default.fileExists(atPath: pointRoot.path) else { return }
+        try BackupIO.directory(pointRoot)
+        for url in try FileManager.default.contentsOfDirectory(at: pointRoot, includingPropertiesForKeys: nil) {
+            try remover(url)
+        }
+    }
+
     @discardableResult func save(_ archive: BackupArchive) throws -> BackupPoint {
         try BackupCodec.validate(archive)
         if archive.damage == nil { _ = try library.validate(archive) }

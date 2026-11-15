@@ -103,6 +103,30 @@ import XCTest
         XCTAssertEqual(host.entries.first?.version, "1.2")
     }
 
+    func testUninstallDeletesPersistentStorageWithoutReinstallationIncludingDisabledExtension() async throws {
+        let host = ExtensionHost.host(for: profile)
+        _ = try await install(host)
+        let context = try XCTUnwrap(host.installed.first)
+        let web = WKWebView(frame: .zero, configuration: try XCTUnwrap(context.webViewConfiguration))
+        web.load(URLRequest(url: try XCTUnwrap(context.optionsPageURL)))
+        try await compatibilityWait { !web.isLoading && web.title == "Store options" }
+        _ = try await web.callAsyncJavaScript("await browser.storage.local.set({secret:'fixture'}); await browser.storage.sync.set({secret:'fixture'}); return true;",
+            arguments: [:], in: nil, contentWorld: .page)
+        web.stopLoading()
+        try host.disable(source.key)
+        let before = await host.controller.dataRecords(ofTypes: [.local, .synchronized])
+        XCTAssertTrue(before.contains { $0.uniqueIdentifier == context.uniqueIdentifier && $0.totalSizeInBytes > 0 })
+        try host.remove(folder: source.key)
+        let deadline = ContinuousClock.now + .seconds(5)
+        var remaining = true
+        repeat {
+            let records = await host.controller.dataRecords(ofTypes: [.local, .synchronized])
+            remaining = records.contains { $0.uniqueIdentifier == context.uniqueIdentifier && $0.totalSizeInBytes > 0 }
+            if remaining { try await Task.sleep(for: .milliseconds(20)) }
+        } while remaining && ContinuousClock.now < deadline
+        XCTAssertFalse(remaining, "Uninstall must delete storage even when the extension is never installed again")
+    }
+
     func testRemoveDuringDownloadCannotResurrectInstallation() async throws {
         let host = ExtensionHost.host(for: profile)
         _ = try await install(host)

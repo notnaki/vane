@@ -123,6 +123,24 @@ import XCTest
         XCTAssertTrue(FileManager.default.fileExists(atPath: archive.appendingPathComponent(kept.lastPathComponent).path))
     }
 
+    func testProfilePreferenceCleanupRemovesArchiveAndEverySpaceShapeOnlyForThatProfile() throws {
+        let domain = "vane.profile-cleanup.test.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { UserDefaults.dropScratchSuite(domain) }
+        for victim in [UUID(), ProfileManager.defaultID] {
+            let survivor = UUID()
+            let bases = ["archivedTabs", "pinShape", "todayShape", "pinShape.\(UUID())", "todayShape.\(UUID())"]
+            for base in bases {
+                for id in [victim, survivor] { defaults.set(Data("private titles".utf8), forKey: ProfileManager.defaultsKey(base, id)) }
+            }
+            ProfileManager.removeArchivedPreferences(for: victim, defaults: defaults)
+            for base in bases {
+                XCTAssertNil(defaults.object(forKey: ProfileManager.defaultsKey(base, victim)), base)
+                XCTAssertNotNil(defaults.object(forKey: ProfileManager.defaultsKey(base, survivor)), base)
+            }
+        }
+    }
+
     func testUnreadableProfileListIsVisibleAndRetryCannotOverwriteIt() throws {
         let manager = try manager()
         let file = manager.directory.appendingPathComponent("profiles.json")
