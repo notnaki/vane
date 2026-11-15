@@ -13,6 +13,7 @@ import XCTest
     func testDeletingProfileClosesOnlyItsWebsitePopups() async throws {
         let loop = try await NativeFixtureApplicationLoop.acquire()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let manager = ProfileManager(directory: directory, sandboxed: true)
         let victim = manager.create(name: "Delete")
         let config = WKWebViewConfiguration()
