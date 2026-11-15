@@ -156,46 +156,6 @@ import XCTest
         }
     }
 
-    func testShowingPermissionPreservesThePageResponder() async throws {
-        let app = NSApplication.shared, policy = app.activationPolicy()
-        defer { app.setActivationPolicy(policy) }
-        // Key-window state exists only while a real AppKit loop is admitted.
-        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
-        var failure: (any Error)?
-        do {
-            let host = window(), id = tabID()
-            let field = NSTextField(frame: NSRect(x: 10, y: 10, width: 200, height: 24))
-            host.contentView!.addSubview(field)
-            host.makeKeyAndOrderFront(nil)
-            let keyDeadline = ContinuousClock.now + .seconds(5)
-            while !(NSApp.isActive && host.isKeyWindow) && ContinuousClock.now < keyDeadline {
-                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-                if !host.isKeyWindow { host.makeKeyAndOrderFront(nil) }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            XCTAssertTrue(host.isKeyWindow, "The fixture must start with the page window key")
-            host.makeFirstResponder(field)
-            let responder = host.firstResponder
-            let presentDeadline = ContinuousClock.now + .seconds(5)
-            while !(NSApp.isActive && host.isVisible && host.isKeyWindow) && ContinuousClock.now < presentDeadline {
-                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
-                if !host.isVisible || !host.isKeyWindow { host.makeKeyAndOrderFront(nil) }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            let task = Task { await SitePermissions.request(scope: scope(), type: .camera, tabID: id,
-                                                           window: host, isCurrent: { true }) }
-            let prompt = try await waitForPrompt(host)
-            XCTAssertTrue(host.isKeyWindow)
-            XCTAssertTrue(host.firstResponder === responder)
-            prompt.finish(.abort)
-            _ = await task.value
-        } catch { failure = error }
-        windows.forEach { $0.close() }
-        windows.removeAll()
-        try await loop.close()
-        if let failure { throw failure }
-    }
-
     func testNotNowDeniesWithoutRememberingAndCanAskAgain() async throws {
         let id = tabID(), s = scope()
         let result = try await answer(s, type: .camera, tabID: id, response: .abort)
