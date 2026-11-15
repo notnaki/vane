@@ -100,19 +100,21 @@ enum BackupSQLite {
                 var closed = false
                 defer { if !closed { sqlite3_close(destination) } }
                 guard sqlite3_exec(destination, """
-                    CREATE TABLE visits(id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
+                    CREATE TABLE visits(id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL, sync_id TEXT);
                     CREATE INDEX visits_at ON visits(at DESC);
                     CREATE INDEX visits_url ON visits(url);
                     CREATE INDEX visits_url_at ON visits(url, at);
-                    CREATE TABLE bookmarks(id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL, folder_id TEXT);
+                    CREATE TABLE bookmarks(id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL, folder_id TEXT, sync_id TEXT);
                     CREATE TABLE bookmark_folders(id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL, created_at REAL NOT NULL);
                     CREATE UNIQUE INDEX bookmark_folders_name ON bookmark_folders(name COLLATE NOCASE);
                     BEGIN;
                     """, nil, nil, nil) == SQLITE_OK else {
                     throw BackupError.storage("Could not create the restored database schema.")
                 }
-                for (table, columns) in tables {
+                for (table, base) in tables {
                     var input: OpaquePointer?, output: OpaquePointer?
+                    // Keep iCloud identities so a restored, synced history does not duplicate.
+                    let columns = base + (syncable.contains(table) && hasColumn(source, table, "sync_id") ? ["sync_id"] : [])
                     let names = columns.joined(separator: ",")
                     let placeholders = columns.map { _ in "?" }.joined(separator: ",")
                     defer { sqlite3_finalize(input); sqlite3_finalize(output) }
@@ -179,6 +181,29 @@ enum BackupSQLite {
         guard sqlite3_step(statement) == SQLITE_ROW else { throw BackupError.invalid("Could not count saved data.") }
         return Int(sqlite3_column_int64(statement, 0))
     }
+    private static let syncable: Set<String> = ["bookmarks", "visits"]
+    private static func hasColumn(_ db: OpaquePointer, _ table: String, _ column: String) -> Bool {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &st, nil) == SQLITE_OK, let st else { return false }
+        defer { sqlite3_finalize(st) }
+        while sqlite3_step(st) == SQLITE_ROW {
+            if let name = sqlite3_column_text(st, 1), String(cString: name) == column { return true }
+        }
+        return false
+    }
+    /// Every row of `sql`'s single column must satisfy `valid`.
+    private static func check(_ db: OpaquePointer, _ sql: String, _ message: String,
+                              _ valid: (OpaquePointer) -> Bool) throws {
+        var rows: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &rows, nil) == SQLITE_OK, let rows else { throw BackupError.invalid(message) }
+        defer { sqlite3_finalize(rows) }
+        var status = sqlite3_step(rows)
+        while status == SQLITE_ROW {
+            guard valid(rows) else { throw BackupError.invalid(message) }
+            status = sqlite3_step(rows)
+        }
+        guard status == SQLITE_DONE else { throw BackupError.invalid(message) }
+    }
     private static func verify(_ db: OpaquePointer) throws {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "PRAGMA quick_check", -1, &statement, nil) == SQLITE_OK,
@@ -212,6 +237,16 @@ enum BackupSQLite {
                 status = sqlite3_step(rows)
             }
             guard status == SQLITE_DONE else { throw BackupError.invalid("Could not read saved timestamps.") }
+            if syncable.contains(table), hasColumn(db, table, "sync_id") {
+                try check(db, "SELECT sync_id FROM \(table)", "Invalid saved sync identities.") {
+                    let type = sqlite3_column_type($0, 0)
+                    return type == SQLITE_NULL || (type == SQLITE_TEXT && sqlite3_column_bytes($0, 0) <= 128)
+                }
+            }
+        }
+        // Position allocation adds one to the maximum; keep it far from Int64's end.
+        try check(db, "SELECT position FROM bookmark_folders", "Invalid saved folder positions.") {
+            sqlite3_column_type($0, 0) == SQLITE_INTEGER && (0...Int64(Int32.max)).contains(sqlite3_column_int64($0, 0))
         }
     }
     private static func withData<T>(_ data: Data, _ body: (OpaquePointer) throws -> T) throws -> T {

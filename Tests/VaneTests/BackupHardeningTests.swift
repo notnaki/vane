@@ -130,6 +130,34 @@ import SQLite3
         try execute("INSERT INTO visits(url,title,at) VALUES('https://new.example','New',126); DELETE FROM visits;", at: restored)
         XCTAssertEqual(try strings("SELECT url FROM visits", at: restored), [])
     }
+    func testRestoreKeepsICloudSyncIdentities() throws {
+        let source = try fixture(), target = try fixture()
+        let url = ProfileManager.dbURL(for: ProfileManager.defaultID, in: source.root)
+        _ = source.database(ProfileManager.defaultID)
+        try execute("""
+            ALTER TABLE visits ADD COLUMN sync_id TEXT;
+            ALTER TABLE bookmarks ADD COLUMN sync_id TEXT;
+            INSERT INTO visits(id,url,title,at,sync_id) VALUES(9,'https://past.example','Past',125,'visit-identity');
+            INSERT INTO bookmarks(id,url,title,at,sync_id) VALUES(7,'https://saved.example','Saved',124,'bookmark-identity');
+            """, at: url)
+        try restore(source, into: target)
+        let restored = ProfileManager.dbURL(for: ProfileManager.defaultID, in: target.root)
+        XCTAssertEqual(try strings("SELECT sync_id FROM visits WHERE id=9", at: restored), ["visit-identity"])
+        XCTAssertEqual(try strings("SELECT sync_id FROM bookmarks WHERE id=7", at: restored), ["bookmark-identity"])
+    }
+    func testRestoreValidationRejectsOverflowingFolderPositionsAndBadSyncIdentities() throws {
+        for sql in ["INSERT INTO bookmark_folders VALUES('f','Folder',9223372036854775807,1)",
+                    "INSERT INTO bookmark_folders VALUES('f','Folder',-1,1)",
+                    "INSERT INTO bookmark_folders VALUES('f','Folder','top',1)",
+                    "ALTER TABLE visits ADD COLUMN sync_id TEXT; INSERT INTO visits(url,title,at,sync_id) VALUES('https://e.example','E',1,x'00')"] {
+            let f = try fixture()
+            _ = f.database(ProfileManager.defaultID)
+            try execute(sql, at: ProfileManager.dbURL(for: ProfileManager.defaultID, in: f.root))
+            var archive = try f.library.capture(reason: .manual, allowDamaged: true)
+            archive.damage = nil
+            XCTAssertThrowsError(try f.library.validate(archive), sql)
+        }
+    }
     func testRestoreValidationRejectsNonFiniteAndNonNumericTimestamps() throws {
         for (table, column) in [("visits", "at"), ("bookmarks", "at"), ("bookmark_folders", "created_at")] {
             for value in ["1e999", "-1e999", "'invalid'"] {
