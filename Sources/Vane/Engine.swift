@@ -742,11 +742,13 @@ struct TitleReveal: Equatable, Sendable {
     // Website popups own tabs without a TabStore and can outlive their opener's window.
     private static let privateContexts = NSHashTable<Tab>.weakObjects()
 
+    /// The last private window, tab or website popup is gone: end the private session.
     fileprivate static func clearPrivateHTTPSStateIfUnused() {
         guard !TabStore.all.contains(where: \.isPrivate),
               !privateContexts.allObjects.contains(where: { !$0.tornDown }) else { return }
         HTTPSOnly.forgetAll(profileID: Profile.incognito.id)
         HTTPSOnly.forgetLoopState(profileID: Profile.incognito.id)
+        PrivateBrowsing.endSession()
     }
 
     let isPrivate: Bool
@@ -3173,9 +3175,6 @@ struct Stash {
         didSet {
             Suspension.updateLifecycle()
             if oldValue.contains(where: \.isPrivate) { Tab.clearPrivateHTTPSStateIfUnused() }
-            if oldValue.contains(where: \.isPrivate), !all.contains(where: \.isPrivate) {
-                PrivateBrowsing.endSession()
-            }
         }
     }
 

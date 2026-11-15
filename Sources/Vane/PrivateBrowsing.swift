@@ -7,5 +7,6 @@ import Foundation
         DownloadLibrary.endPrivateSession()
         TidyTitles.forget(Profile.incognito.id)
         DeveloperMode.clearPrivateState()
+        WebsiteDataWindow.closePrivate()
     }
 }

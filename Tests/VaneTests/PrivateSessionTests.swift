@@ -19,6 +19,22 @@ import XCTest
         XCTAssertFalse(DeveloperMode.wants(url, profile: id))
     }
 
+    func testStandalonePrivateTabKeepsSessionUntilItTearsDown() {
+        // A website popup owns a private Tab without a TabStore.
+        let id = Profile.incognito.id
+        let url = URL(string: "https://private-popup.example/secret")!
+        defer { PrivateBrowsing.endSession() }
+        XCTAssertFalse(TabStore.all.contains(where: \.isPrivate))
+        let popup = Tab(url: nil, isPrivate: true, profileID: id)
+        TidyTitles.rename(url, in: id, to: "Popup name")
+        let window = TabStore(isPrivate: true)
+        TabStore.all.removeAll { $0 === window }
+        XCTAssertEqual(TidyTitles.override(for: url, in: id), "Popup name",
+                       "Closing the last private window must not end a session a popup still uses")
+        popup.tearDown()
+        XCTAssertNil(TidyTitles.override(for: url, in: id))
+    }
+
     func testSessionEndRemovesLegacyPrivateOverridesAndPreservesRegularOverrides() {
         let id = Profile.incognito.id, regular = UUID()
         let url = URL(string: "https://legacy-private.example/secret")!
