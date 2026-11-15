@@ -74,9 +74,13 @@ import SwiftUI
     private func observeStores() {
         storeObservations = TabStore.all.flatMap { store in
             [store.sidebarSnapshotChanges.sink { [weak self] in self?.generation &+= 1 },
-             // Only protection changes revoke retained rows; ordinary shape edits
-             // (collapse, reorder) must not reload the catalog or reset editors.
-             store.sidebarRowsProtectionRevoked.sink { [weak self] in self?.revokeProtection() }]
+             // Protection changes revoke retained rows. So does a Space switch: while a
+             // store owns a Space its card reads the live shape, so the saved snapshot can
+             // be stale (e.g. a tab moved into an unlocked protected folder) exactly when
+             // the card falls back to it. Ordinary shape edits reload nothing.
+             Publishers.Merge(store.sidebarRowsProtectionRevoked,
+                              store.$currentSpaceID.dropFirst().removeDuplicates().map { _ in () })
+                .sink { [weak self] in self?.revokeProtection() }]
         }
     }
 

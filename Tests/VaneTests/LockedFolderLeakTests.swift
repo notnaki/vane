@@ -155,6 +155,42 @@ import XCTest
         catalog.cancel()
     }
 
+    func testSpaceSwitchRefreshesSavedRowsAfterTabMovedIntoProtectedFolder() async throws {
+        let viewer = store()
+        let profile = ProfileManager.shared.create(name: "Membership fixture")
+        let owner = store(profile: profile.id)
+        addTeardownBlock { @MainActor in _ = ProfileManager.shared.delete(profile.id) }
+        XCTAssertNotEqual(viewer.profileID, owner.profileID)
+        let page = tab(in: owner, path: "moved-into-protected")
+        let folder = Folder(name: "Protected", requiresAuthentication: true)
+        owner.pins = Pins(entries: [.init(row: .folder(folder)), .init(row: .tab(page.id.uuidString))])
+        owner.savePins()
+        let other = Space(name: "Elsewhere", profileID: owner.profileID, tabURLs: [])
+        XCTAssertTrue(ProfileManager.shared.updateSpace(other))
+        let catalog = LibrarySpaceCatalog()
+        await catalog.prepare()?.value
+        let space = try XCTUnwrap(ProfileManager.shared.spaces(for: owner.profileID).first)
+        let epoch = catalog.editEpoch
+        // A permitted move into the protected folder sends no protection-revoked signal.
+        owner.pins = Pins(entries: [.init(row: .folder(folder)),
+                                    .init(row: .tab(page.id.uuidString), parent: folder.id)])
+        owner.savePins()
+        // Leaving for an existing Space makes the card fall back to saved rows,
+        // with no Space metadata revision to invalidate the snapshot.
+        owner.switchTo(space: other)
+        XCTAssertNil(Library.owner(of: space.id))
+        XCTAssertNil(catalog.entry(for: space), "The stale snapshot is revoked on the switch")
+        try await Task.sleep(for: .milliseconds(50))
+        await catalog.prepare()?.value
+        let saved = try XCTUnwrap(catalog.entry(for: space)?.pinned)
+        // Saved legacy shapes key tabs by URL.
+        let url = try XCTUnwrap(page.currentURL?.absoluteString)
+        XCTAssertEqual(saved.entries.first { $0.row == .tab(url) || $0.row == .tab(page.id.uuidString) }?.parent, folder.id,
+                       "Saved rows must carry the new protected membership once the owner goes away")
+        XCTAssertEqual(catalog.editEpoch, epoch)
+        catalog.cancel()
+    }
+
     func testOrdinaryFolderShapeChangeKeepsOpenSpaceEditors() async throws {
         let viewer = store()
         let profile = ProfileManager.shared.create(name: "Editor epoch fixture")
