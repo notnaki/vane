@@ -93,6 +93,14 @@ private final class IsolatedFaviconProtocol: URLProtocol, @unchecked Sendable {
         await cache.retire().value
     }
 
+    func testRedirectNeverDowngradesHTTPSToHTTP() {
+        let secure = URL(string: "https://favicon-unit.invalid/icon")!
+        let plain = URLRequest(url: URL(string: "http://favicon-unit.invalid/icon")!)
+        XCTAssertNil(Favicons.redirect(from: secure, to: plain))
+        XCTAssertNotNil(Favicons.redirect(from: secure, to: URLRequest(url: URL(string: "https://cdn.invalid/icon")!)))
+        XCTAssertNotNil(Favicons.redirect(from: URL(string: "http://favicon-unit.invalid/icon")!, to: plain))
+    }
+
     func testRedirectDelegateAppliesCookieAndCredentialPolicyAgain() {
         TestEnvironment.prepare()
         let cache = Favicons(profileID: UUID())

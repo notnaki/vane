@@ -7,7 +7,7 @@ import WebKit
 final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(Favicons.cleanRequest(request))
+        completionHandler(Favicons.redirect(from: response.url, to: request))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
@@ -429,6 +429,12 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
             }
             return data.isEmpty ? nil : data
         } catch { return nil }
+    }
+
+    /// A favicon never follows an HTTPS response down to plain HTTP.
+    nonisolated static func redirect(from source: URL?, to request: URLRequest) -> URLRequest? {
+        if source?.scheme?.lowercased() == "https", request.url?.scheme?.lowercased() != "https" { return nil }
+        return cleanRequest(request)
     }
 
     nonisolated static func cleanRequest(_ request: URLRequest) -> URLRequest? {
