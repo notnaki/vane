@@ -130,4 +130,28 @@ import XCTest
         HTTPSOnly.enabled = false
         XCTAssertEqual(Downloads.redirectPolicy(for: URL(string: "http://other.example/file")!, profileID: profile), .allow)
     }
+
+    func testResumeAndResponseDownloadsAreBlockedForUnexceptedHTTP() throws {
+        let suite = "vane-download-block-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let previous = HTTPSOnly.defaults
+        HTTPSOnly.defaults = defaults
+        defer { HTTPSOnly.defaults = previous; defaults.removePersistentDomain(forName: suite) }
+        let profile = UUID()
+        let plain = URL(string: "http://download.example/file")!
+        HTTPSOnly.enabled = true
+        XCTAssertTrue(HTTPSOnly.blocksDownload(plain, profileID: profile))
+        XCTAssertFalse(HTTPSOnly.blocksDownload(URL(string: "https://download.example/file")!, profileID: profile))
+        XCTAssertFalse(HTTPSOnly.blocksDownload(URL(string: "http://127.0.0.1/file")!, profileID: profile))
+        // Revoking an exception after a download started blocks its resume.
+        HTTPSOnly.allow(host: "download.example", profileID: profile)
+        XCTAssertFalse(HTTPSOnly.blocksDownload(plain, profileID: profile))
+        HTTPSOnly.forget(host: "download.example", profileID: profile)
+        XCTAssertTrue(HTTPSOnly.blocksDownload(plain, profileID: profile))
+        // Private browsing keeps its own exceptions.
+        HTTPSOnly.allow(host: "download.example", profileID: profile)
+        XCTAssertTrue(HTTPSOnly.blocksDownload(plain, profileID: Profile.incognito.id))
+        HTTPSOnly.enabled = false
+        XCTAssertFalse(HTTPSOnly.blocksDownload(plain, profileID: profile))
+    }
 }

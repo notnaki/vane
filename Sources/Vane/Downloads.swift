@@ -1279,6 +1279,13 @@ import Darwin
     }
 
     private func startResume(_ item: Item, data: Data, operation: UUID) {
+        // Resume data replays the original request without navigation or redirect policy.
+        if let source = item.source, HTTPSOnly.blocksDownload(source, profileID: profileID) {
+            item.status = .failed
+            item.state = .failed("HTTPS-Only blocks resuming this download over HTTP. Download it again.")
+            save()
+            return
+        }
         item.status = .running
         item.state = .running
         item.pausedByUser = false
