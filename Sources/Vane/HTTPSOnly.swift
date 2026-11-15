@@ -170,11 +170,9 @@ import WebKit
     /// When each host was last sent to https. Two different questions are asked of it, with
     /// two different windows — see `loopWindow` and `attemptHorizon`.
     ///
-    /// ponytail: one map for the whole app, not one per tab. Two tabs opening the same http
-    /// host inside ten seconds means the second one sees the first one's attempt and stops on
-    /// the interstitial. Rare, recoverable (the interstitial offers the way through), and the
-    /// alternative is threading a Tab identity through a policy function that has none.
-    private static var attempts: [String: Date] = [:]
+    /// Shared only within a browsing session: each profile and incognito have independent
+    /// histories, so a probe host cannot observe another session's upgrade attempts.
+    private static var attempts: [UUID: [String: Date]] = [:]
 
     /// Short on purpose. A redirect back to http comes back inside one round trip; a user who
     /// types the same http address again a minute later deserves a fresh attempt rather than
@@ -206,18 +204,22 @@ import WebKit
     /// and comes straight back through `decidePolicyFor`. Without this latch, `.block` renders
     /// a page whose own load is blocked, which renders a page whose own load is blocked.
     /// Measured, not theorised: the harness caught it by never finding the link on the page.
-    private static var showing: String?
+    private static var showing: [UUID: String] = [:]
 
-    static func forgetLoopState() { attempts = [:]; showing = nil }
+    static func forgetLoopState(profileID: UUID? = nil) {
+        guard let profileID else { attempts = [:]; showing = [:]; return }
+        attempts[profileID] = nil
+        showing[profileID] = nil
+    }
 
-    private static func recentlyUpgraded(_ host: String, now: Date) -> Bool {
-        guard let at = attempts[canonical(host)] else { return false }
+    private static func recentlyUpgraded(_ host: String, profileID: UUID, now: Date) -> Bool {
+        guard let at = attempts[profileID]?[canonical(host)] else { return false }
         return now.timeIntervalSince(at) < loopWindow
     }
 
-    private static func noteUpgrade(_ host: String, now: Date) {
-        attempts = attempts.filter { now.timeIntervalSince($0.value) < attemptHorizon }
-        attempts[canonical(host)] = now
+    private static func noteUpgrade(_ host: String, profileID: UUID, now: Date) {
+        attempts[profileID] = (attempts[profileID] ?? [:]).filter { now.timeIntervalSince($0.value) < attemptHorizon }
+        attempts[profileID, default: [:]][canonical(host)] = now
     }
 
     /// The other half of "stop and ask". A redirect back to http is only one way https can
@@ -240,12 +242,12 @@ import WebKit
                NSURLErrorSecureConnectionFailed, NSURLErrorNetworkConnectionLost].contains(e.code)
         else { return nil }
         guard url.scheme?.lowercased() == "https", let host = url.host,
-              let at = attempts[canonical(host)], now.timeIntervalSince(at) < attemptHorizon,
+              let at = attempts[profileID]?[canonical(host)], now.timeIntervalSince(at) < attemptHorizon,
               !isExcepted(host: host, profileID: profileID) else { return nil }
         guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         c.scheme = "http"
         guard let http = c.url else { return nil }
-        showing = http.absoluteString      // the interstitial's own load must get through
+        showing[profileID] = http.absoluteString      // the interstitial's own load must get through
         return http
     }
 
@@ -268,16 +270,16 @@ import WebKit
         guard let url else { return .allow }
         // One shot, spent immediately: the interstitial we just asked for is allowed to load
         // at the url it is about, and nothing else is.
-        if showing == url.absoluteString { showing = nil; return .allow }
+        if showing[profileID] == url.absoluteString { showing[profileID] = nil; return .allow }
         guard enabled, isMainFrame else { return .allow }
         guard let up = upgrade(url, profileID: profileID) else { return .allow }
         guard let host = url.host else { return .allow }
         // We already sent this host to https and here it is back on http. Stop.
-        if recentlyUpgraded(host, now: now) {
-            showing = url.absoluteString
+        if recentlyUpgraded(host, profileID: profileID, now: now) {
+            showing[profileID] = url.absoluteString
             return .block(url)
         }
-        noteUpgrade(host, now: now)
+        noteUpgrade(host, profileID: profileID, now: now)
         return .upgrade(up)
     }
 
@@ -442,11 +444,13 @@ import WebKit
         incognitoExceptions = []
         defaults = scratch
         let realAttempts = attempts
+        let realShowing = showing
         forgetLoopState()
         defer {
             defaults = real
             incognitoExceptions = realIncognitoExceptions
             attempts = realAttempts
+            showing = realShowing
             UserDefaults.dropScratchSuite(suite)
         }
 
@@ -612,7 +616,7 @@ import WebKit
         out.append(("only the host that actually came back on http is blocked",
                     bBounce == .block(u("http://b.example/"))))
         out.append(("blocking one host in a chain leaves the earlier hop unblocked",
-                    { attempts["a.example"] = nil
+                    { attempts[p]?["a.example"] = nil
                       return decide(url: u("http://a.example/"), isMainFrame: true, profileID: p,
                                     now: t0.addingTimeInterval(0.5))
                           == .upgrade(u("https://a.example/")) }()))
