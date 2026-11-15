@@ -83,7 +83,11 @@ struct BackupLibrary: @unchecked Sendable {
                 }
                 connections.connections[index] = connection
             }
-            incoming[AIConnections.preferenceKey] = try JSONEncoder().encode(connections)
+            // Write only what the backup carried (or its materialized legacy settings);
+            // an absent key restores as absent.
+            if incoming[AIConnections.preferenceKey] != nil || !connections.connections.isEmpty {
+                incoming[AIConnections.preferenceKey] = try JSONEncoder().encode(connections)
+            }
             // A backup can carry code, but cannot grant permission to run it in the
             // destination profile. Exact rollback retains the user's original approval.
             let boostKey = SiteBoostStore.key(ProfileManager.defaultID)
