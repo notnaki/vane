@@ -72,6 +72,13 @@ import XCTest
             try XCTUnwrap(views(NSButton.self, in: content).first { $0.title == "Continue" }).performClick(nil)
         case .returnKey, .returnAfterSelection:
             if case .returnAfterSelection = action { picker.selectItem(at: 1) }
+            // Key equivalents are only delivered to the key window of the active app.
+            NSApp.activate(ignoringOtherApps: true)
+            sheet.makeKeyAndOrderFront(nil)
+            let keyDeadline = Date.now.addingTimeInterval(2)
+            while !(NSApp.isActive && sheet.isKeyWindow) && Date.now < keyDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
             let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
                 modifierFlags: [], timestamp: 0, windowNumber: sheet.windowNumber, context: nil,
                 characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))

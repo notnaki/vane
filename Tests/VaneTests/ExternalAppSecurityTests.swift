@@ -57,6 +57,8 @@ import XCTest
         try await compatibilityWait { self.store.externalApp != nil }
         XCTAssertEqual(store.externalApp?.host, "localhost", "An embedded site must not be credited to the parent")
         XCTAssertEqual(store.externalApp?.originLabel, "http://localhost:\(server.port!)")
+        XCTAssertEqual(store.externalApp?.embeddedOn, ExternalApps.Scope(url: parent, profileID: tab.profileID)?.origin,
+                       "The prompt must also name the top-level page hosting the embedded frame")
     }
 
     func testNavigationDismissesAnOldAppRequest() async throws {

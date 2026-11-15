@@ -8,32 +8,41 @@ import XCTest
 
     func testInstallConsentRequiresItsTabToRemainActive() async throws {
         TestEnvironment.prepare()
-        _ = NSApplication.shared
+        let app = NSApplication.shared, policy = app.activationPolicy()
+        defer { app.setActivationPolicy(policy) }
+        // Key-window state exists only while a real AppKit loop is admitted.
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .regular)
         let profile = UUID()
-        let store = TabStore(profileID: profile, session: [])
-        let tab = store.newBlankTab(focus: false)
-        store.current = tab.id
-        let web = tab.web
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = web
-        window.makeKeyAndOrderFront(nil)
-        defer {
-            store.tabs.forEach { $0.tearDown() }
-            TabStore.all.removeAll { $0 === store }
-            window.close()
-        }
-        let document = URL(string: "https://chromewebstore.google.com/detail/fixture/\(id)")!
-        web.loadHTMLString("<title>Consent owner fixture</title>", baseURL: document)
-        try await compatibilityWait { window.isKeyWindow && web.title == "Consent owner fixture" && !web.isLoading }
-        XCTAssertTrue(ChromeWebStorePage.canReview(tab: tab, web: web, document: web.url))
-        _ = store.newBlankTab()
-        XCTAssertFalse(ChromeWebStorePage.canReview(tab: tab, web: web, document: web.url))
-        store.tabs.forEach { $0.tearDown() }
-        TabStore.all.removeAll { $0 === store }
-        window.close()
+        var failure: (any Error)?
+        do {
+            let store = TabStore(profileID: profile, session: [])
+            let tab = store.newBlankTab(focus: false)
+            store.current = tab.id
+            let web = tab.web
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = web
+            window.makeKeyAndOrderFront(nil)
+            defer {
+                store.tabs.forEach { $0.tearDown() }
+                TabStore.all.removeAll { $0 === store }
+                window.close()
+            }
+            let document = URL(string: "https://chromewebstore.google.com/detail/fixture/\(id)")!
+            web.loadHTMLString("<title>Consent owner fixture</title>", baseURL: document)
+            try await compatibilityWait {
+                if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+                if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+                return window.isKeyWindow && web.title == "Consent owner fixture" && !web.isLoading
+            }
+            XCTAssertTrue(ChromeWebStorePage.canReview(tab: tab, web: web, document: web.url))
+            _ = store.newBlankTab()
+            XCTAssertFalse(ChromeWebStorePage.canReview(tab: tab, web: web, document: web.url))
+        } catch { failure = error }
         try await NativeFixtureProfileCleanup.release([profile])
+        try await loop.close()
+        if let failure { throw failure }
     }
 
     func testInstallMessagesRequireCurrentMainFrameStoreDocument() throws {
