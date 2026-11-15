@@ -85,3 +85,16 @@ import XCTest
         try await Task.sleep(for: .milliseconds(20))
     }
 }
+
+/// Re-assert a window's foreground prerequisite while a bounded admission waits.
+/// An earlier fixture can leave the app hidden, or another process can take
+/// focus after a one-shot order-front; a single request is then never retried.
+@MainActor func reassertForeground(_ window: NSWindow, key: Bool = true) {
+    if NSApp.isHidden { NSApp.unhideWithoutActivation() }
+    if key {
+        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+        if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+    } else if !window.isVisible || !window.occlusionState.contains(.visible) {
+        window.orderFrontRegardless()
+    }
+}
