@@ -616,6 +616,9 @@ import WebKit
     }
 
     func remove(folder path: String) throws {
+        let runtimeID = loaded.first(where: { $0.path == path })?.context.uniqueIdentifier
+            ?? records[path].map { $0.safari?.runtimeID ?? $0.store?.id ?? $0.identity.lowercased() }
+            ?? contextIdentifiers[path]?.lowercased()
         cancelOperation(path)
         try deactivate(path)
         if let record = records[path] {
@@ -645,6 +648,7 @@ import WebKit
         disabled.remove(path)
         saveManagement()
         setPins(pins.filter { $0 != path })
+        if let runtimeID { removePersistentData(runtimeID: runtimeID) }
     }
 
     func disable(_ path: String) throws {
@@ -977,6 +981,38 @@ import WebKit
             }
             throw error
         }
+    }
+
+    /// Profile deletion: `storage.local`/`.sync` live in the controller's own store, which
+    /// neither the code store nor website data removal reaches.
+    static func removePersistentData(for profileID: UUID) async {
+        guard profileID != Profile.incognito.id else { return }
+        let controller = hosts[profileID]?.controller ?? WKWebExtensionController(configuration:
+            controllerIdentifier(for: profileID, dataDirectory: Store.overrideDirectory)
+                .map(WKWebExtensionController.Configuration.init(identifier:)) ?? .default())
+        // Stop installs and unload contexts first, so nothing writes after enumeration.
+        forget(profileID)
+        let records = await controller.dataRecords(ofTypes: persistentExtensionDataTypes)
+        await controller.removeData(ofTypes: persistentExtensionDataTypes, from: records)
+    }
+
+    private func removePersistentData(runtimeID: String) {
+        let key = DataPurgeKey(profileID: profileID, runtimeID: runtimeID)
+        let token = UUID(), controller = controller
+        let previous = Self.dataPurges[key]?.task
+        let task = Task { @MainActor in
+            if let previous { await previous.value }
+            let records = await controller.dataRecords(ofTypes: Self.persistentExtensionDataTypes)
+                .filter { $0.uniqueIdentifier == runtimeID }
+            await controller.removeData(ofTypes: Self.persistentExtensionDataTypes, from: records)
+            let errors = records.flatMap(\.errors)
+            if !errors.isEmpty {
+                warn("Extension data could not be completely erased", ExtensionDiagnostics.describe(errors))
+            }
+            if Self.dataPurges[key]?.token == token { Self.dataPurges[key] = nil }
+        }
+        // Register before yielding: a same-identity reinstall must await this deletion.
+        Self.dataPurges[key] = DataPurge(token: token, task: task)
     }
 
     private func waitForDataPurge(_ runtimeID: String, checkLifetime: () throws -> Void) async throws {

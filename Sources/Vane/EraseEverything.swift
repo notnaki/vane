@@ -36,21 +36,30 @@ import WebKit
         guard alert.runModal() == .alertFirstButtonReturn, accepts(field.stringValue) else { return }
         withExtendedLifetime(watcher) {}
         Task {
-            await wipe()
-            relaunch()
-            // `exit`, not `terminate`: the will-terminate path saves the session and writes
-            // the crash marker, which would put two of the files straight back.
-            exit(0)
+            do {
+                try await wipe()
+                relaunch()
+                // `exit`, not `terminate`: termination saves would recreate erased files.
+                exit(0)
+            } catch {
+                let failure = NSAlert()
+                failure.alertStyle = .critical
+                failure.messageText = "Vane could not erase everything"
+                failure.informativeText = "Some data may already have been removed. " + error.localizedDescription
+                    + " Vane has not reset or restarted. Resolve the problem and try again."
+                failure.runModal()
+            }
         }
     }
 
     /// Web data first — its removal is asynchronous and has to finish before the process
     /// goes — then the keychain, then the files and the preferences.
-    static func wipe() async {
+    static func wipe() async throws {
         FavouritePreviews.shared.preferencesChanged()
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         for id in ProfileManager.shared.profiles.map(\.id) {
             FavouritePreviews.shared.beginClearing(profileID: id)
+            defer { FavouritePreviews.shared.endClearing(profileID: id) }
             await ProfileManager.dataStore(for: id).removeData(ofTypes: types, modifiedSince: .distantPast)
             if let sid = ProfileManager.dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory) {
                 try? await WKWebsiteDataStore.remove(forIdentifier: sid)
@@ -60,7 +69,9 @@ import WebKit
 
         // Scoped erasure removes this instance's web passwords and dedicated native
         // integration tokens, including its default profile, without touching neighbours.
-        try? await Passwords.perform { Passwords.deleteEverything() }
+        guard try await Passwords.perform({ Passwords.deleteEverything() }) else {
+            throw BackupError.storage("Passwords or sign-in credentials could not be deleted from Keychain.")
+        }
 
         try? FileManager.default.removeItem(at: Store.directory)
         // The pre-sandbox folder is Vane's data too. If the sandbox lets it go, it goes;

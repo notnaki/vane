@@ -835,15 +835,15 @@ enum Passwords {
 
     /// Erasing one instance must leave every other data directory's credentials alone.
     /// Enumerate metadata first, then delete exact owned references, including legacy tokens.
-    static func deleteEverything(dataDir: String? = Store.overrideDirectory,
-                                 keychain: IntegrationTokens.Keychain = .system) {
+    @discardableResult static func deleteEverything(dataDir: String? = Store.overrideDirectory,
+                                 keychain: IntegrationTokens.Keychain = .system) -> Bool {
         return serialized {
             defer { invalidate() }
-            guard deleteOwnedInternetPasswords(profileID: nil, dataDir: dataDir, keychain: keychain) else { return }
+            guard deleteOwnedInternetPasswords(profileID: nil, dataDir: dataDir, keychain: keychain) else { return false }
             secretDidChange()
-            if !IntegrationTokens.deleteEverything(dataDir: dataDir, keychain: keychain) {
-                NSLog("[vane] Native integration credentials could not be erased")
-            }
+            let integrations = IntegrationTokens.deleteEverything(dataDir: dataDir, keychain: keychain)
+            let ai = AIKeys.deleteEverything(namespace: dataDir.map { UserDefaults.suiteName(forDataDir: $0) }, delete: keychain.delete)
+            return integrations && ai
         }
     }
 

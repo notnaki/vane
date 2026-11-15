@@ -5,6 +5,10 @@ import XCTest
 
 @MainActor final class WebsiteDataTests: XCTestCase {
     override func setUp() async throws { TestEnvironment.prepare() }
+    func testCookiesOnlyClearIncludesCacheStorage() {
+        XCTAssertTrue(BrowsingData.dataTypes(cookies: true, cache: false).contains(WKWebsiteDataTypeFetchCache))
+    }
+
     func testCookiesAndSiteDataIncludesFileSystemStorage() {
         XCTAssertTrue(BrowsingData.dataTypes(cookies: true, cache: false).contains(WKWebsiteDataTypeFileSystem))
     }

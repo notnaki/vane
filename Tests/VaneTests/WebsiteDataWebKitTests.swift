@@ -207,12 +207,12 @@ import XCTest
 
     func testForeignRecordsAreRejectedAndConcurrentRemovalIsReported() async throws {
         if try await runInFreshHost(#function) { return }
-        let (_, first) = store()
-        let (_, other) = store()
+        let (profile, first) = store()
+        let (otherProfile, other) = store()
         await cookie("same.invalid", in: first)
         await cookie("same.invalid", in: other)
-        let backend = WebKitWebsiteDataBackend(store: first)
-        let neighbour = WebKitWebsiteDataBackend(store: other)
+        let backend = WebKitWebsiteDataBackend(store: first, profileID: profile)
+        let neighbour = WebKitWebsiteDataBackend(store: other, profileID: otherProfile)
         let entries = try await withCheckedThrowingContinuation { continuation in
             backend.fetch { continuation.resume(with: $0) }
         }
@@ -223,18 +223,59 @@ import XCTest
         let untouched = await cookies(other)
         XCTAssertEqual(untouched.map(\.domain), ["same.invalid"])
 
-        let secondView = WebKitWebsiteDataBackend(store: first)
+        let secondView = WebKitWebsiteDataBackend(store: first, profileID: profile)
         let secondEntries = try await withCheckedThrowingContinuation { continuation in
             secondView.fetch { continuation.resume(with: $0) }
         }
+        let preview = try XCTUnwrap(FavouritePreviewContext(profileID: profile, url: URL(string: "https://github.com/")!))
+        let owner = UUID()
+        FavouritePreviews.shared.request(preview, owner: owner, privateSession: true)
+        XCTAssertEqual(FavouritePreviews.shared.owner, owner)
+        defer { FavouritePreviews.shared.forget(profileID: profile) }
         var finished = false
         backend.remove(row, types: [WKWebsiteDataTypeCookies]) { _ in finished = true }
+        XCTAssertNil(FavouritePreviews.shared.owner, "Per-site removal must invalidate the real profile preview")
         var pendingError: Error?
         secondView.remove(try XCTUnwrap(secondEntries.first), types: [WKWebsiteDataTypeCookies]) {
             if case .failure(let error) = $0 { pendingError = error }
         }
         XCTAssertNotNil(pendingError)
         try await compatibilityWait { finished }
+    }
+
+    func testCookiesOnlyClearRemovesPersistedCacheStorageMarker() async throws {
+        if try await runInFreshHost(#function) { return }
+        let (profile, persistent) = store()
+        let server = try CompatibilityServer()
+        defer { server.stop() }
+        try await compatibilityWait { server.port != nil }
+        server.pages["/cache-storage"] = "<title>Cache storage fixture</title>"
+        let url = try server.url("/cache-storage")
+        func open() async throws -> WKWebView {
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = persistent
+            let web = WKWebView(frame: .zero, configuration: configuration)
+            web.load(URLRequest(url: url))
+            try await compatibilityWait { !web.isLoading && web.title == "Cache storage fixture" }
+            return web
+        }
+        var web: WKWebView? = try await open()
+        _ = try await web!.callAsyncJavaScript("const cache = await caches.open('tracking'); await cache.put('/marker', new Response('retained-id')); return true;",
+            arguments: [:], in: nil, contentWorld: .page)
+        web!.stopLoading(); web = nil
+        web = try await open()
+        let before = try await web!.callAsyncJavaScript("return await (await (await caches.open('tracking')).match('/marker')).text();",
+            arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(before as? String, "retained-id", "The marker must survive reopening before the clear")
+        web!.stopLoading(); web = nil
+        let success = await withCheckedContinuation { continuation in
+            BrowsingData.clear(.init(history: false, cookies: true, cache: false), profileID: profile) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(success)
+        web = try await open()
+        let after = try await web!.callAsyncJavaScript("return await caches.has('tracking');", arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual(after as? Bool, false)
+        web!.stopLoading(); web = nil
     }
 
     func testBulkClearPreservesAnotherProfileAndExplicitAppPermissions() async throws {

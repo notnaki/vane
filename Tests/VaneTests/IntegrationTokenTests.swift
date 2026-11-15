@@ -250,6 +250,37 @@ final class IntegrationTokenTests: XCTestCase {
         found(foreign.read())
     }
 
+    func testEraseReportsEnumerationAndCredentialDeletionFailures() {
+        let keychain = TokenKeychain()
+        keychain.copyStatus = errSecInteractionNotAllowed
+        XCTAssertFalse(Passwords.deleteEverything(dataDir: directory, keychain: keychain.operations))
+        keychain.copyStatus = nil
+        keychain.items.append([kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "io.github.notnaki.vane.ai." + UserDefaults.suiteName(forDataDir: directory),
+            kSecAttrAccount as String: "orphan-chatgpt", kSecAttrSynchronizable as String: false])
+        keychain.deleteStatus = errSecAuthFailed
+        XCTAssertFalse(Passwords.deleteEverything(dataDir: directory, keychain: keychain.operations))
+        XCTAssertEqual(keychain.items.count, 1)
+        keychain.deleteStatus = nil
+        XCTAssertTrue(Passwords.deleteEverything(dataDir: directory, keychain: keychain.operations))
+        XCTAssertTrue(keychain.items.isEmpty)
+    }
+
+    func testEraseRemovesEveryAIAccountOnlyInItsExactService() {
+        let keychain = TokenKeychain()
+        let service = "io.github.notnaki.vane.ai." + UserDefaults.suiteName(forDataDir: directory)
+        for name in [service, service + ".neighbor", "io.github.notnaki.vane.ai"] {
+            for account in ["orphan-api", "orphan-chatgpt"] {
+                keychain.items.append([kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: name, kSecAttrAccount as String: account,
+                    kSecAttrSynchronizable as String: false, kSecValueData as String: Data("fixture".utf8)])
+            }
+        }
+        Passwords.deleteEverything(dataDir: directory, keychain: keychain.operations)
+        XCTAssertEqual(keychain.items.count, 4)
+        XCTAssertFalse(keychain.items.contains { $0[kSecAttrService as String] as? String == service })
+    }
+
     func testPasswordProfileDeleteRemovesNativeTokenWithoutDeletingNeighbor() {
         let keychain = TokenKeychain(), own = store(keychain), foreign = store(keychain, profile: UUID())
         XCTAssertTrue(own.save(account: "fixture", password: "old-fixture"))

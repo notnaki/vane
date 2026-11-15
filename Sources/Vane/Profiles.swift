@@ -698,11 +698,13 @@ struct Space: Identifiable, Codable, Equatable {
             // Close the sqlite connection and drop the cached objects before the files go.
             Favicons.forget(id, retiring: true)
             Store.forget(id)
+            Task { await ExtensionHost.removePersistentData(for: id) }
             ExtensionHost.forget(id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
+            Self.removeArchivedPreferences(for: id)
             for key in ["pinnedTabs", "offerToSavePasswords", "passwordsLastUsed", "passwordsNeverSaved", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
                         ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
@@ -762,11 +764,12 @@ struct Space: Identifiable, Codable, Equatable {
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
             await Store.forgetAsync(id)
-            ExtensionHost.forget(id)
+            await ExtensionHost.removePersistentData(for: id)
             do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
             catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
             _ = try? await Passwords.perform { Passwords.deleteAll(profileID: id) }
             SitePermissions.resetAll(profileID: id)
+            Self.removeArchivedPreferences(for: id)
             for key in ["pinnedTabs", "offerToSavePasswords", "passwordsLastUsed", "passwordsNeverSaved", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
                         ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
@@ -794,6 +797,18 @@ struct Space: Identifiable, Codable, Equatable {
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         if sandboxed { try? fm.removeItem(at: Self.faviconDir(for: id, in: directory)) }
         return true
+    }
+
+    static func removeArchivedPreferences(for id: UUID, defaults: UserDefaults = .vane) {
+        defaults.removeObject(forKey: defaultsKey("archivedTabs", id))
+        let suffix = suffix(id)
+        for base in ["pinShape", "todayShape"] {
+            defaults.removeObject(forKey: defaultsKey(base, id))
+            for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(base + ".") && key.hasSuffix(suffix) {
+                let space = String(key.dropFirst(base.count + 1).dropLast(suffix.count))
+                if UUID(uuidString: space) != nil { defaults.removeObject(forKey: key) }
+            }
+        }
     }
 
     /// Cookies, localStorage, IndexedDB, caches — everything WebKit keeps for a profile.
