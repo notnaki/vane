@@ -594,9 +594,10 @@ extension Library {
               let target = show(space, from: store) else { return }
         if let tab = liveTab(url, kind: pinned ? .pinned : .today, occurrence: occurrence, in: target) {
             target.current = tab.id
-        } else if occurrence == nil {
+        } else {
+            // Disclosure passed above; a pin that wandered off this page reopens it, as before.
             target.newTab(url)
-        } else { return }
+        }
         close(store)
         if target !== store { close(target) }
     }
