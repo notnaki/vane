@@ -31,6 +31,21 @@ import XCTest
         XCTAssertEqual(probe["words"], result.words)
         return result
     }
+    func testEscapingTreatsMarkupScalarsSeparatelyFromCombiningMarks() {
+        XCTAssertEqual(Reader.esc("&\u{301}<\u{301}>\u{301}\"\u{301}'\u{301}"),
+                       "&amp;\u{301}&lt;\u{301}&gt;\u{301}&quot;\u{301}&#39;\u{301}")
+    }
+
+    func testCombiningQuoteCannotCreateReaderImageHandler() async throws {
+        let alt = "\"\u{301} onerror=alert(1) data-tail=\""
+        let markup = Reader.render([.init(e: "img", a: ["src": "https://reader.test/missing.png", "alt": alt])], base: nil)
+        let web = try await fixture(markup)
+        let handler = try await web.evaluateJavaScript("document.querySelector('img').hasAttribute('onerror')") as? Bool
+        let renderedAlt = try await web.evaluateJavaScript("document.querySelector('img').getAttribute('alt')") as? String
+        XCTAssertEqual(handler, false)
+        XCTAssertEqual(renderedAlt, alt)
+    }
+
     func testPageJSONSerializerCannotForgeReaderExtraction() async throws {
         let web = try await fixture("""
             <article><h1>Original article</h1><p>ORIGINAL \(prose)</p></article>

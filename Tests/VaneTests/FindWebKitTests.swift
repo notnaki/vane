@@ -52,6 +52,24 @@ import XCTest
         if let failure { throw failure }
     }
 
+    func testPagePrototypesCannotObserveFindQuery() async throws {
+        try await withFixture { _, tab, find in
+            _ = try await tab.web.evaluateJavaScript("""
+                window.capturedFindQueries = [];
+                const original = String.prototype.toLowerCase;
+                String.prototype.toLowerCase = function () {
+                    capturedFindQueries.push(String(this));
+                    return original.call(this);
+                };
+                true;
+                """)
+            await find.run("needle", in: tab, fresh: true)
+            XCTAssertEqual(find.count, 2)
+            let queries = try await tab.web.evaluateJavaScript("capturedFindQueries") as? [String]
+            XCTAssertEqual(queries, [], "The measurement must use an isolated world's prototypes")
+        }
+    }
+
     func testClosingFindInvalidatesSearchInFlightAndKeepsQuery() async throws {
         try await withFixture { store, tab, find in
             let boundary = HeldNativeFindSearch()
