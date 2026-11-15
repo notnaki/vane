@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import WebKit
 import XCTest
 @testable import vane
@@ -22,6 +23,13 @@ import XCTest
         store = nil; server = nil
     }
 
+    private final class FrameProbe: NSObject, WKScriptMessageHandler {
+        var frame: WKFrameInfo?
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            frame = message.frameInfo
+        }
+    }
+
     func testEmbeddedAppRequestNamesItsOwnOrigin() async throws {
         try await embeddedRequest(popup: false)
     }
@@ -32,22 +40,25 @@ import XCTest
 
     private func embeddedRequest(popup: Bool) async throws {
         let launch = popup ? "window.open('vane-security-fixture://open', '_blank')" : "location.href = 'vane-security-fixture://open'"
-        server.pages["/child"] = """
-        <script>addEventListener('message', () => { \(launch); });</script>
-        """
+        server.pages["/child"] = "<script>window.webkit.messageHandlers.fixtureFrame.postMessage('ready');</script>"
         let child = try server.url("/child", host: "localhost")
         server.pages["/parent"] = "<iframe src='\(child.absoluteString)'></iframe>"
         let parent = try server.url("/parent")
         store.newTab(parent)
         let tab = try XCTUnwrap(store.active)
+        let frameProbe = FrameProbe()
+        tab.web.configuration.userContentController.add(frameProbe, name: "fixtureFrame")
+        defer { tab.web.configuration.userContentController.removeScriptMessageHandler(forName: "fixtureFrame") }
         tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        try await compatibilityWait { tab.web.url == parent && !tab.web.isLoading }
+        try await compatibilityWait { tab.web.url == parent && !tab.web.isLoading && frameProbe.frame != nil }
         let parentScope = ExternalApps.Scope(url: parent, profileID: tab.profileID, privateTabID: tab.id)
         ExternalApps.allow(scope: parentScope, scheme: "vane-security-fixture")
-        _ = try await tab.web.evaluateJavaScript("document.querySelector('iframe').contentWindow.postMessage('open', '*')")
+        _ = try await tab.web.callAsyncJavaScript(launch, arguments: [:], in: frameProbe.frame, contentWorld: .page)
         try await compatibilityWait { self.store.externalApp != nil }
         XCTAssertEqual(store.externalApp?.host, "localhost", "An embedded site must not be credited to the parent")
         XCTAssertEqual(store.externalApp?.originLabel, "http://localhost:\(server.port!)")
+        XCTAssertEqual(store.externalApp?.embeddedOn, ExternalApps.Scope(url: parent, profileID: tab.profileID)?.origin,
+                       "The prompt must also name the top-level page hosting the embedded frame")
     }
 
     func testNavigationDismissesAnOldAppRequest() async throws {
@@ -64,6 +75,34 @@ import XCTest
         XCTAssertNil(store.externalApp, "A new document cannot approve the previous document's app request")
         ExternalApps.answer(stale, .always, in: store)
         XCTAssertFalse(ExternalApps.remembered(scope: stale.scope, scheme: stale.scheme))
+    }
+
+    func testReturnCancelsAnExternalAppCard() async throws {
+        let scope = ExternalApps.Scope(url: URL(string: "https://meeting.invalid"), profileID: UUID())
+        let prompt = ExternalApps.Prompt(url: URL(string: "mailto:fixture@example.invalid")!, scope: scope,
+                                        tabID: UUID(), documentID: UUID(), scheme: "mailto",
+                                        app: URL(fileURLWithPath: "/System/Applications/Mail.app"), name: "Mail")
+        var answer: ExternalApps.Answer?
+        let host = NSHostingController(rootView: ExternalAppCard(prompt: prompt) { answer = $0 })
+        let window = NSWindow(contentViewController: host)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        defer { window.close() }
+        host.view.layoutSubtreeIfNeeded()
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        XCTAssertTrue(window.performKeyEquivalent(with: event))
+        XCTAssertEqual(answer, .cancel)
+    }
+
+    func testScriptedExternalNavigationWithoutActivationCannotPrompt() async throws {
+        server.pages["/scripted"] = "<script>location.href = 'vane-security-fixture://open';</script>"
+        let url = try server.url("/scripted")
+        store.newTab(url)
+        let tab = try XCTUnwrap(store.active)
+        try await compatibilityWait { tab.web.url == url && !tab.web.isLoading }
+        XCTAssertNil(store.externalApp)
     }
 
     func testGrantsAreScopedToExactOriginProfileAndPrivateTab() throws {

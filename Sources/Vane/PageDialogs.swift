@@ -56,6 +56,14 @@ struct PageDialogPolicy {
         return clipped.count < message.count ? clipped + "…" : message
     }
 
+    static func sourceLabel(host: String, mainFrame: Bool, topLevelURL: URL?, profileID: UUID) -> String {
+        guard mainFrame else {
+            let origin = SitePermissions.Scope(url: topLevelURL, profileID: profileID)?.origin
+            return origin.map { "An embedded page on “\($0)” says" } ?? "An embedded page says"
+        }
+        return host.isEmpty ? "A page with an opaque origin says" : "\(host) says"
+    }
+
     /// Calls back exactly once. It answers false without a sheet when the tab can't show
     /// one, such as a tab in the background or a window already showing a sheet.
     static func present(message: String, frame: WKFrameInfo, tab: Tab, web: WKWebView,
@@ -70,7 +78,8 @@ struct PageDialogPolicy {
         let request = Pending(window: window, completion: completion)
         let alert = request.alert
         // Names the frame's own site, so an embedded frame can't pass as the page around it.
-        alert.messageText = site.isEmpty ? "This page says" : "\(site) says"
+        alert.messageText = sourceLabel(host: site, mainFrame: frame.isMainFrame,
+            topLevelURL: web.backForwardList.currentItem?.url ?? web.url, profileID: tab.profileID)
         alert.informativeText = clipped(message)
         alert.addButton(withTitle: "OK")
         if cancellable { alert.addButton(withTitle: "Cancel") }

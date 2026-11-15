@@ -75,6 +75,16 @@ import XCTest
         try await wait { self.window.attachedSheet == nil }
     }
 
+    func testOpaqueEmbeddedDialogNamesTheTopLevelOrigin() async throws {
+        let (_, result) = try await open("(() => { const f = document.createElement('iframe'); f.src = 'data:text/html,<script>alert(\"Embedded fixture\")</script>'; document.body.append(f); return 'added'; })()")
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let labels = views(NSTextField.self, in: try XCTUnwrap(sheet.contentView)).map(\.stringValue)
+        XCTAssertTrue(labels.contains { $0.contains("embedded page") && $0.contains("https://dialog.example") })
+        XCTAssertFalse(labels.contains("This page says"))
+        try button("OK", in: sheet).performClick(nil)
+        _ = try await result.value
+    }
+
     func testAlertWaitsForTheUserWithOnlyOneButton() async throws {
         let (sheet, result) = try await open("(alert('Saved'), 'continued')")
         XCTAssertFalse(views(NSButton.self, in: try XCTUnwrap(sheet.contentView)).contains { $0.title == "Cancel" })

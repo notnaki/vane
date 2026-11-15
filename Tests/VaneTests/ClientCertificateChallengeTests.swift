@@ -23,7 +23,7 @@ import XCTest
         required init?(coder: NSCoder) { fatalError("Unused") }
     }
 
-    private enum Action { case choose, cancel, navigate, close, cancelTask }
+    private enum Action { case choose, cancel, returnKey, returnAfterSelection, navigate, close, cancelTask }
 
     private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { views(type, in: $0) }
@@ -63,12 +63,26 @@ import XCTest
             XCTFail("Expected the native certificate chooser"); return
         }
         let picker = try XCTUnwrap(views(NSPopUpButton.self, in: content).first)
+        XCTAssertEqual(picker.indexOfSelectedItem, -1, "Discovery must not select an identity")
         XCTAssertEqual(picker.numberOfItems, 2)
         XCTAssertTrue(picker.itemTitle(at: 1).contains(second.id.prefix(12)))
         switch action {
         case .choose:
             picker.selectItem(at: 1)
             try XCTUnwrap(views(NSButton.self, in: content).first { $0.title == "Continue" }).performClick(nil)
+        case .returnKey, .returnAfterSelection:
+            if case .returnAfterSelection = action { picker.selectItem(at: 1) }
+            // Key equivalents are only delivered to the key window of the active app.
+            NSApp.activate(ignoringOtherApps: true)
+            sheet.makeKeyAndOrderFront(nil)
+            let keyDeadline = Date.now.addingTimeInterval(2)
+            while !(NSApp.isActive && sheet.isKeyWindow) && Date.now < keyDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [], timestamp: 0, windowNumber: sheet.windowNumber, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+            XCTAssertTrue(sheet.performKeyEquivalent(with: event))
         case .cancel:
             try XCTUnwrap(views(NSButton.self, in: content).first { $0.title == "Cancel" }).performClick(nil)
         case .navigate:
@@ -94,6 +108,8 @@ import XCTest
     }
 
     func testChoosingSecondIdentityAnswersTheNativeChallenge() async throws { try await exercise(.choose) }
+    func testReturnAfterSelectingStillCancels() async throws { try await exercise(.returnAfterSelection) }
+    func testReturnDoesNotSendAnIdentity() async throws { try await exercise(.returnKey) }
     func testCancelDoesNotSendAnIdentity() async throws { try await exercise(.cancel) }
     func testNavigationDismissesAndRejectsThePendingChooser() async throws { try await exercise(.navigate) }
     func testClosingTabDismissesAndRejectsThePendingChooser() async throws { try await exercise(.close) }

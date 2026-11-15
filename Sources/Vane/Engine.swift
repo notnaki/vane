@@ -2212,7 +2212,9 @@ struct TitleReveal: Equatable, Sendable {
         // Credit the initiating frame's security origin, never the top-level URL.
         if let url = navigationAction.request.url, ExternalApps.isExternal(url.scheme) {
             decisionHandler(.cancel)
-            ExternalApps.offer(url, from: navigationAction.sourceFrame, tab: self)
+            ExternalApps.offer(url, from: navigationAction.sourceFrame, tab: self,
+                               userInitiated: navigationAction.navigationType == .linkActivated
+                                   || (Popup.readsGesture && Popup.userInitiated(navigationAction)))
             return
         }
         if navigationAction.navigationType == .linkActivated,
@@ -2761,7 +2763,9 @@ struct TitleReveal: Equatable, Sendable {
         // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
         // here first — and a new tab for a scheme no tab can load is worse than no tab.
         if let url = action.request.url, ExternalApps.isExternal(url.scheme) {
-            ExternalApps.offer(url, from: action.sourceFrame, tab: self)
+            ExternalApps.offer(url, from: action.sourceFrame, tab: self,
+                               userInitiated: action.navigationType == .linkActivated
+                                   || (Popup.readsGesture && Popup.userInitiated(action)))
             return nil
         }
         // The popup blocker. A click (or a key) behind it always opens; otherwise the site's

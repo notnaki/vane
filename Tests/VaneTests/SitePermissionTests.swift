@@ -137,8 +137,8 @@ import XCTest
         XCTAssertEqual(result, .deny)
     }
 
-    func testPopoverKeyboardShortcutsResolveAllowAndDismissal() async throws {
-        for (key, code, expected) in [("\r", UInt16(36), WKPermissionDecision.grant),
+    func testPopoverReturnAndEscapeNeverGrantPermission() async throws {
+        for (key, code, expected) in [("\r", UInt16(36), WKPermissionDecision.deny),
                                        ("\u{1b}", UInt16(53), WKPermissionDecision.deny)] {
             let host = window(), id = tabID(), s = scope()
             let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,

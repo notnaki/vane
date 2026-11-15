@@ -319,11 +319,14 @@ import WebKit
                     + (tab.isPrivate ? " Your choice won’t be remembered by Vane." : " Vane will remember your choice for this site during this session.")
                 let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26), pullsDown: false)
                 picker.addItems(withTitles: candidates.map(\.title))
+                picker.select(nil)
                 picker.setAccessibilityLabel("Client certificate")
                 alert.accessoryView = picker
                 alert.window.initialFirstResponder = picker
-                alert.addButton(withTitle: "Continue")
-                alert.addButton(withTitle: "Cancel")
+                alert.addButton(withTitle: "Continue").keyEquivalent = ""
+                let cancel = alert.addButton(withTitle: "Cancel")
+                cancel.keyEquivalent = "\r"
+                alert.window.defaultButtonCell = cancel.cell as? NSButtonCell
                 guard current(), await present(alert, tab: tab, web: web, memory: memory) == .alertFirstButtonReturn,
                       candidates.indices.contains(picker.indexOfSelectedItem) else { return nil }
                 return candidates[picker.indexOfSelectedItem].id
