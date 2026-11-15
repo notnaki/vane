@@ -1009,6 +1009,8 @@ import Darwin
             finish(i, error: "The downloaded file is unavailable or unreadable. Retry the download.", resumeData: nil)
             return
         }
+        Self.quarantine(destination, source: i.source, page: i.sourceWeb?.url,
+                        isPrivate: profileID == Profile.incognito.id)
         TidyDownloads.tidy(download, in: self)      // before unwatch() nils out item.download
         i.unwatch()
         i.state = .done
@@ -1022,6 +1024,24 @@ import Darwin
         deleteResume(i)
         save()
         InteractionSounds.play(.complete)
+    }
+
+    /// Explicit rather than trusting WKDownload's defaults: Gatekeeper and "downloaded from"
+    /// need the agent, type and (outside private windows) where the file came from.
+    @discardableResult
+    nonisolated static func quarantine(_ file: URL, source: URL?, page: URL?, isPrivate: Bool) -> Bool {
+        var properties: [String: Any] = [
+            kLSQuarantineAgentNameKey as String: "Vane",
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
+        ]
+        if let id = Bundle.main.bundleIdentifier { properties[kLSQuarantineAgentBundleIdentifierKey as String] = id }
+        func web(_ url: URL?) -> URL? { ["http", "https"].contains(url?.scheme?.lowercased() ?? "") ? url : nil }
+        if !isPrivate {
+            if let source = web(source) { properties[kLSQuarantineDataURLKey as String] = source }
+            if let page = web(page) { properties[kLSQuarantineOriginURLKey as String] = page }
+        }
+        do { try (file as NSURL).setResourceValue(properties, forKey: .quarantinePropertiesKey); return true }
+        catch { NSLog("[vane] could not quarantine download: %@", error.localizedDescription); return false }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {

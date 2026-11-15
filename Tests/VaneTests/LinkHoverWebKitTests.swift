@@ -21,20 +21,21 @@ extension Previews {
         }
     }
 
-    private func script(_ source: String, handler: String, baseURL: URL? = nil) async throws -> (WKWebView, Capture) {
+    private func script(_ source: String, handler: String, world: WKContentWorld = .page,
+                        baseURL: URL? = nil) async throws -> (WKWebView, Capture) {
         let capture = Capture()
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
-        config.userContentController.add(capture, name: handler)
+        config.userContentController.add(capture, contentWorld: world, name: handler)
         config.userContentController.addUserScript(WKUserScript(source: source,
-            injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world))
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 500, height: 300), configuration: config)
         web.loadHTMLString("<a id='link' href='https://example.com/article'><span id='child'>Read</span></a>", baseURL: baseURL)
         try await wait { !web.isLoading }
         try await js(web, "if (!document.getElementById('link')) throw new Error('fixture not ready');")
         addTeardownBlock { @MainActor in
             web.stopLoading()
-            config.userContentController.removeScriptMessageHandler(forName: handler)
+            config.userContentController.removeScriptMessageHandler(forName: handler, contentWorld: world)
         }
         return (web, capture)
     }
@@ -57,7 +58,7 @@ extension Previews {
     }
 
     func testStatusScriptTracksTargetsAndClearsOnScrollAndClick() async throws {
-        let (web, capture) = try await script(StatusBar.script, handler: StatusBar.messageName)
+        let (web, capture) = try await script(StatusBar.script, handler: StatusBar.messageName, world: StatusBar.world)
         try await js(web, "document.getElementById('child').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
         try await wait { capture.messages.count == 1 }
         XCTAssertEqual(StatusBar.hover(from: capture.messages[0]), .init(url: "https://example.com/article", target: .main))
@@ -72,8 +73,19 @@ extension Previews {
         XCTAssertNil(StatusBar.hover(from: capture.messages[4]))
     }
 
+    func testPageCannotSeeOrSpoofTheStatusHandler() async throws {
+        let (web, capture) = try await script(StatusBar.script, handler: StatusBar.messageName, world: StatusBar.world)
+        try await js(web, """
+        if (window.webkit && webkit.messageHandlers && webkit.messageHandlers.\(StatusBar.messageName))
+          throw new Error('status handler is visible to the page');
+        if (window.__vaneHover) throw new Error('status runtime is visible to the page');
+        """)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(capture.messages.isEmpty)
+    }
+
     func testNamedPopupAndExistingFrameHaveDifferentHoverTargets() async throws {
-        let (web, capture) = try await script(StatusBar.script, handler: StatusBar.messageName)
+        let (web, capture) = try await script(StatusBar.script, handler: StatusBar.messageName, world: StatusBar.world)
         try await js(web, "document.getElementById('link').target='details'; document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
         try await wait { capture.messages.count == 1 }
         XCTAssertEqual(StatusBar.hover(from: capture.messages[0])?.target, .newWindow)

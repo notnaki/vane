@@ -93,8 +93,8 @@ import XCTest
         """#
         let scripts: [(String, String, WKContentWorld)] = [
             ("autofill", Autofill.script, Autofill.world),
-            ("media", MediaTray.script, .page), ("audio", TabAudio.script, .page),
-            ("hover", StatusBar.script, .page), ("previews", Previews.syntheticScript, Previews.world),
+            ("media", MediaTray.script, .page), ("audio", TabAudio.script, TabAudio.world),
+            ("hover", StatusBar.script, StatusBar.world), ("previews", Previews.syntheticScript, Previews.world),
             ("drafts", DraftProtection.script, DraftProtection.world),
             ("boosts", SiteBoostScripts.runtime, SiteBoostScripts.world)
         ]
@@ -200,7 +200,7 @@ import XCTest
     }
 
     func testAudioDiscoveryStopsWhenUnmutedAndRestartsForNewPlayers() async throws {
-        let (web, _) = try await fixture(script: TabAudio.script, name: TabAudio.messageName)
+        let (web, _) = try await fixture(script: TabAudio.script, name: TabAudio.messageName, world: TabAudio.world)
         let queries = try await js(web, """
         __vaneMute(true);
         __vaneMute(false);
@@ -212,7 +212,7 @@ import XCTest
             await Promise.resolve();
         }
         return __queries;
-        """) as? Int
+        """, world: TabAudio.world) as? Int
         XCTAssertEqual(queries, 0, "Unmuting must stop inspecting unrelated DOM updates")
 
         _ = try await js(web, """
@@ -221,21 +221,21 @@ import XCTest
         wrapper.innerHTML = '<video id="replacement"></video><audio id="sound"></audio>';
         document.body.append(wrapper);
         return true;
-        """)
+        """, world: TabAudio.world)
         let deadline = Date.now.addingTimeInterval(3)
         var muted = false
         while !muted && Date.now < deadline {
-            muted = try await js(web, "return document.getElementById('replacement').muted && document.getElementById('sound').muted;") as? Bool == true
+            muted = try await js(web, "return document.getElementById('replacement').muted && document.getElementById('sound').muted;", world: TabAudio.world) as? Bool == true
             if !muted { try await Task.sleep(for: .milliseconds(20)) }
         }
         XCTAssertTrue(muted, "New nested players must inherit mute after re-enabling it")
-        _ = try await js(web, "__vaneMute(false); return true;")
-        let unmuted = try await js(web, "return !document.getElementById('replacement').muted && !document.getElementById('sound').muted;") as? Bool
+        _ = try await js(web, "__vaneMute(false); return true;", world: TabAudio.world)
+        let unmuted = try await js(web, "return !document.getElementById('replacement').muted && !document.getElementById('sound').muted;", world: TabAudio.world) as? Bool
         XCTAssertEqual(unmuted, true)
     }
 
     func testMutedAudioDiscoveryCoalescesBeforeInspectingMoreSubtrees() async throws {
-        let (web, _) = try await fixture(script: TabAudio.script, name: TabAudio.messageName)
+        let (web, _) = try await fixture(script: TabAudio.script, name: TabAudio.messageName, world: TabAudio.world)
         let queries = try await js(web, """
         __vaneMute(true);
         __queries = 0;
@@ -246,20 +246,20 @@ import XCTest
             await Promise.resolve();
         }
         return __queries;
-        """) as? Int
+        """, world: TabAudio.world) as? Int
         XCTAssertLessThanOrEqual(try XCTUnwrap(queries), 1,
                                 "One queued reconciliation already covers the entire mutation burst")
         let deadline = Date.now.addingTimeInterval(3)
         var muted = false
         while !muted && Date.now < deadline {
-            muted = try await js(web, "return document.getElementById('replacement').muted;") as? Bool == true
+            muted = try await js(web, "return document.getElementById('replacement').muted;", world: TabAudio.world) as? Bool == true
             if !muted { try await Task.sleep(for: .milliseconds(20)) }
         }
         XCTAssertTrue(muted)
     }
 
     func testAudioEventsDoNotSearchTheDocument() async throws {
-        let (web, _) = try await fixture(script: TabAudio.script, name: TabAudio.messageName,
+        let (web, _) = try await fixture(script: TabAudio.script, name: TabAudio.messageName, world: TabAudio.world,
                                          html: "<body><audio id='first'></audio><video id='second'></video></body>")
         let queries = try await js(web, """
         __queries = 0;
@@ -268,7 +268,7 @@ import XCTest
             document.getElementById('second').dispatchEvent(new Event('pause'));
         }
         return __queries;
-        """) as? Int
+        """, world: TabAudio.world) as? Int
         XCTAssertEqual(queries, 0, "Repeated media events must not search an unchanged large DOM")
     }
 

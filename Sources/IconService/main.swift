@@ -29,9 +29,7 @@ final class IconService: NSObject, NSXPCListenerDelegate, VaneIconPersisting {
             dispatchPrecondition(condition: .onQueue(.main))
             var image: NSImage?
             if let data {
-                guard data.count <= 20 * 1024 * 1024,
-                      let decoded = NSImage(data: data), decoded.size.width > 0,
-                      decoded.size.height > 0 else { reply(false); return }
+                guard let decoded = AppIconPersistence.image(fromPixels: data) else { reply(false); return }
                 image = decoded
             }
             reply(AppIconPersistence.stamp(image, at: host))

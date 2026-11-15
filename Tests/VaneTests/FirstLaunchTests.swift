@@ -63,16 +63,6 @@ import XCTest
         }
     }
 
-    func testLegacyInstallationSkipsWelcomeAndIsolatedInstallationIgnoresIt() throws {
-        let (defaults, directory) = try fixture()
-        let legacy = directory.appendingPathComponent("legacy")
-        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
-        try Data().write(to: legacy.appendingPathComponent("vane.db"))
-        XCTAssertFalse(FirstLaunchState(defaults: defaults).prepare(directory: directory, legacy: legacy))
-        let (isolatedDefaults, isolated) = try fixture()
-        XCTAssertTrue(FirstLaunchState(defaults: isolatedDefaults).prepare(directory: isolated))
-    }
-
     func testMissingDirectoryIsFreshButUnreadableStorageIsNot() throws {
         let (defaults, directory) = try fixture()
         XCTAssertTrue(FirstLaunchState(defaults: defaults).prepare(directory: directory.appendingPathComponent("new")))

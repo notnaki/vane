@@ -75,13 +75,10 @@ import AppKit
         UserDefaults.vane.set(name, forKey: key)
         guard canPersist else { return false }
         if isSandboxed {
-            // Send a bounded raster payload while still on the main actor.
+            // Send fixed-size raw pixels while still on the main actor.
             let data: Data?
             if let image {
-                let plate = RasterImage.make(size: NSSize(width: 512, height: 512)) { bounds in
-                    image.draw(in: bounds)
-                }
-                guard let encoded = plate?.tiffRepresentation else {
+                guard let encoded = AppIconPersistence.pixels(from: image) else {
                     enqueuePersistence { false }
                     return false
                 }

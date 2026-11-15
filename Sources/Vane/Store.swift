@@ -153,8 +153,7 @@ struct BookmarkImportResult: Equatable, Sendable {
     }
 
     /// The data dir a second instance was pointed at, if any. A debug build running beside
-    /// the real app gets its own everything: files here, preferences in `UserDefaults.vane`,
-    /// and no copy of the user's pre-sandbox folder (see `LegacyData.migrateIfNeeded`).
+    /// the real app gets its own everything: files here and preferences in `UserDefaults.vane`.
     nonisolated static var overrideDirectory: String? {
         ProcessInfo.processInfo.environment["VANE_DATA_DIR"]
     }

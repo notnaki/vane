@@ -846,7 +846,7 @@ struct TitleReveal: Equatable, Sendable {
                                     forMainFrameOnly: true, in: MeetCall.world))
         c.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: false, in: TabAudio.world))
         // Media controls must run in the frame that owns the player. Empty frames post
         // no retained state; capture listeners do no work until a media event arrives.
         c.addUserScript(
@@ -856,7 +856,7 @@ struct TitleReveal: Equatable, Sendable {
         // status capsule, which is not worth two mouse listeners in every advert on the page.
         c.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: true))
+                         forMainFrameOnly: true, in: StatusBar.world))
         // Document *start* and every frame: the listeners have to be in place before a page
         // can autofocus its search box, and a comment box is as often in an iframe as not.
         c.addUserScript(
@@ -912,9 +912,9 @@ struct TitleReveal: Equatable, Sendable {
                                                     name: MeetCall.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: Previews.world,
                                                     name: Previews.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: TabAudio.world, name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: StatusBar.world, name: StatusBar.messageName)
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: PageFocus.world,
                                                     name: PageFocus.messageName)
@@ -1289,9 +1289,9 @@ struct TitleReveal: Equatable, Sendable {
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MeetCall.messageName, contentWorld: MeetCall.world)
-        old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName, contentWorld: TabAudio.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
-        old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName, contentWorld: StatusBar.world)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PageFocus.messageName, contentWorld: PageFocus.world)
         if let host = old.superview as? WebHost { host.remove(old) }

@@ -13,7 +13,7 @@ import XCTest
         let certificateScope = try XCTUnwrap(CertificateTrust.Scope(profileID: profileID, host: "accounts.example", port: 8443))
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let certificateKey = "certException.v2." + (try encoder.encode(certificateScope)).base64EncodedString()
-            + "|" + String(repeating: "a", count: 64)
+            + "|" + String(repeating: "a", count: 64) + "|selfSigned"
         let site = try XCTUnwrap(SitePermissions.Scope(scheme: "https", host: "accounts.example", port: 8443, profileID: profileID))
         let profile = profileID.uuidString.lowercased()
         let access = ExtensionAccess(permissions: ["tabs", "scripting"], sites: ["https://accounts.example/*"])

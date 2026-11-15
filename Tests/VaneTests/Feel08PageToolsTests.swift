@@ -121,7 +121,7 @@ import XCTest
     }
 
     func testRepeatedInstallationAddsNoListenersObserversOrMessages() async throws {
-        for (script, name, world) in [(TabAudio.script, TabAudio.messageName, WKContentWorld.page),
+        for (script, name, world) in [(TabAudio.script, TabAudio.messageName, TabAudio.world),
             (MediaTray.script, MediaTray.messageName, .page),
             (Autofill.script, "vanepw", Autofill.world),
             (DraftProtection.script, DraftProtection.messageName, DraftProtection.world),
@@ -231,26 +231,26 @@ import XCTest
     }
 
     func testAudioEventBurstDeliversLatestStateOnce() async throws {
-        let (web, capture) = try await fixture(TabAudio.script, name: TabAudio.messageName,
+        let (web, capture) = try await fixture(TabAudio.script, name: TabAudio.messageName, world: TabAudio.world,
             html: "<body><video id=player></video></body>")
         _ = try await js(web, """
         const player=document.getElementById('player');
         Object.defineProperties(player,{paused:{value:false},ended:{value:false},volume:{value:0.5,writable:true}});
         player.dispatchEvent(new Event('play')); return true;
-        """)
+        """, world: TabAudio.world)
         try await compatibilityWait { capture.messages.last?["volume"] as? Double == 0.5 }
         capture.messages.removeAll()
         _ = try await js(web, """
         const player=document.getElementById('player');
         for(let i=0;i<200;i++) { player.volume=i/200; player.dispatchEvent(new Event('volumechange')); }
         player.volume=0.7; player.dispatchEvent(new Event('volumechange')); return true;
-        """)
+        """, world: TabAudio.world)
         try await compatibilityWait { capture.messages.last?["volume"] as? Double == 0.7 }
         XCTAssertEqual(capture.messages.count, 1)
     }
 
     func testMutedAudioPageCacheCancelsDiscoveryAndRemutesNestedReplacement() async throws {
-        let (web, _) = try await fixture(TabAudio.script, name: TabAudio.messageName)
+        let (web, _) = try await fixture(TabAudio.script, name: TabAudio.messageName, world: TabAudio.world)
         let result = try await js(web, """
         __vaneMute(true);
         const wrapper=document.createElement('div'); wrapper.innerHTML='<section><video id=replacement></video><audio></audio></section>';
@@ -263,7 +263,7 @@ import XCTest
         const muted=[...wrapper.getElementsByTagName('video'),...wrapper.getElementsByTagName('audio')].every(e=>e.muted);
         __vaneMute(false);
         return {sleeping,deliveries,muted,remaining:__work.observers};
-        """) as? [String: Any]
+        """, world: TabAudio.world) as? [String: Any]
         XCTAssertEqual(result?["sleeping"] as? Int, 0)
         XCTAssertEqual(result?["deliveries"] as? Int, 0)
         XCTAssertEqual(result?["muted"] as? Bool, true)
@@ -308,25 +308,27 @@ import XCTest
             "Discovery should inspect added subtrees, not their large existing parents")
     }
 
-    func testAudioInstallationDoesNotTrustPageOwnedCommandName() async throws {
-        let (web, capture) = try await fixture("window.__vaneMute = {siteOwned:true};" + TabAudio.script,
-            name: TabAudio.messageName, html: "<body><video id=player></video></body>")
+    func testAudioRuntimeIsInvisibleToThePageAndIgnoresItsCommandName() async throws {
+        let (web, capture) = try await fixture(TabAudio.script, name: TabAudio.messageName, world: TabAudio.world,
+            html: "<body><script>window.__vaneMute = {siteOwned:true};</script><video id=player></video></body>")
+        let page = try await js(web, """
+        return {owned: window.__vaneMute && window.__vaneMute.siteOwned === true,
+                handler: !!(window.webkit && webkit.messageHandlers && webkit.messageHandlers.\(TabAudio.messageName))};
+        """) as? [String: Any]
+        XCTAssertEqual(page?["owned"] as? Bool, true, "The page keeps its own global untouched")
+        XCTAssertEqual(page?["handler"] as? Bool, false, "The audio handler must not fingerprint Vane in the page world")
         let result = try await js(web, """
         const player=document.getElementById('player');
-        const callable=typeof window.__vaneMute==='function';
-        if (callable) window.__vaneMute(true);
+        window.__vaneMute(true);
         const muted=player.muted;
-        if (callable) window.__vaneMute(false);
+        window.__vaneMute(false);
         Object.defineProperties(player,{paused:{value:false},ended:{value:false},volume:{value:0.7}});
         player.dispatchEvent(new Event('play'));
-        return {callable,muted};
-        """) as? [String: Any]
-        XCTAssertEqual(result?["callable"] as? Bool, true, "A page's command-name collision must not suppress Vane installation")
+        return {muted};
+        """, world: TabAudio.world) as? [String: Any]
         XCTAssertEqual(result?["muted"] as? Bool, true)
-        if result?["callable"] as? Bool == true {
-            try await compatibilityWait { capture.messages.last?["volume"] as? Double == 0.7 }
-            XCTAssertEqual(capture.messages.last?["playing"] as? Bool, true)
-        }
+        try await compatibilityWait { capture.messages.last?["volume"] as? Double == 0.7 }
+        XCTAssertEqual(capture.messages.last?["playing"] as? Bool, true)
     }
 
 }

@@ -9,11 +9,9 @@ import SwiftUI
 
     init(defaults: UserDefaults) { self.defaults = defaults }
 
-    func prepare(directory: URL, legacy: URL? = nil) -> Bool {
+    func prepare(directory: URL) -> Bool {
         if let saved = defaults.string(forKey: Self.key) { return saved == "pending" }
-        guard let fresh = Self.isFresh(directory),
-              let legacyFresh = legacy.map(Self.isFresh) ?? .some(true) else { return false }
-        let shouldShow = fresh && legacyFresh
+        guard let shouldShow = Self.isFresh(directory) else { return false }
         defaults.set(shouldShow ? "pending" : "completed", forKey: Self.key)
         return shouldShow
     }
@@ -41,8 +39,7 @@ import SwiftUI
     static var isPresenting: Bool { presentation != nil }
 
     static func prepare() {
-        needed = state.prepare(directory: Store.directory,
-                               legacy: Store.overrideDirectory == nil ? LegacyData.legacy : nil)
+        needed = state.prepare(directory: Store.directory)
     }
 
     @discardableResult static func presentIfNeeded() -> Bool {

@@ -27,6 +27,9 @@ import WebKit
 /// those by hand, which is why it is the fallback.
 @MainActor enum TabAudio {
     static let messageName = "vaneaudio"
+    /// Isolated: in the page's world any frame could post fake playing/muted state, and
+    /// `webkit.messageHandlers.vaneaudio` would fingerprint Vane.
+    static let world = WKContentWorld.world(name: "vane-tab-audio")
 
     /// `_WKMediaMutedState`'s audio bit. Capture and screen-capture have their own bits and
     /// are none of our business — muting a tab must not revoke its microphone.
@@ -338,7 +341,7 @@ import WebKit
     private static func apply(_ tab: Tab) {
         let on = isMuted(tab)
         if setPageMuted(tab.web, on) { return }
-        tab.web.evaluateJavaScript(muteCommand(for: tab.id))
+        tab.web.evaluateJavaScript(muteCommand(for: tab.id), in: nil, in: world)
     }
 
     /// What the fallback sends the page. Pure, so the navigation assertion in `check()` is
