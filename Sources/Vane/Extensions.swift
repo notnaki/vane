@@ -228,7 +228,7 @@ import WebKit
     private var workerIdentityUpdate: Task<Void, Never>?
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
-    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
+    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus", "webRequestBlocking"]
     private var metadataIcons: [String: NSImage] = [:]
     private struct LegacyMetadata {
         var version: String
@@ -1220,9 +1220,15 @@ import WebKit
     private func publish(_ context: WKWebExtensionContext, at path: String) {
         revokeICloudStorageLeases(path)
         loaded.append((path, context))
-        if ExtensionFilterBridge.recognizes(context.webExtension) {
+        let blockingApproved: () -> Bool = { [weak self] in
+            guard let record = self?.records[path] else { return false }
+            return ExtensionFilterBridge.hasBlockingPermission(required: record.required,
+                                                               approvedCapabilities: record.integratedCapabilities)
+        }
+        if ExtensionFilterBridge.recognizes(context.webExtension), blockingApproved() {
             filterBridges[ObjectIdentifier(context)] = ExtensionFilterBridge(profileID: profileID, context: context,
-                background: backgroundViews.object(forKey: context), changed: { [weak self] in self?.objectWillChange.send() })
+                background: backgroundViews.object(forKey: context), blockingApproved: blockingApproved,
+                changed: { [weak self] in self?.objectWillChange.send() })
         }
         ICloudExtensionStorageAdapter.wake()
         scheduleWorkerIdentityUpdate()
