@@ -70,6 +70,11 @@ actor ICloudJournal {
     }
     func setEpochs(_ epochs: [ICloudCategory: String]) throws { var next = state; next.epochs = epochs; try save(next) }
 
+    /// Whether binding `account` would reset this journal for a different account.
+    func resets(for account: String) -> Bool {
+        state.accountID != nil && state.accountID != ICloudIdentity.digest(account)
+    }
+
     /// True when the journal reset for a different account.
     @discardableResult
     func bindAccount(_ account: String, allowMerge: Bool) throws -> Bool {
