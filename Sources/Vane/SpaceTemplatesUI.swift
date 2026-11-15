@@ -58,7 +58,7 @@ struct SpaceTemplatesSheet: View {
                                 Button("Authenticate…") { model.unlockPreview() }.disabled(model.busy)
                             }.font(.callout)
                         }
-                        WorkspaceContentsPreview(layout: layout, unlocked: model.unlocked)
+                        WorkspaceContentsPreview(layout: layout, unlocked: model.unlocked, canPreview: model.canPreview)
                         if layout.omitted > 0 {
                             Text("\(layout.omitted) blank, file, or local document tab(s) are excluded.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -181,6 +181,7 @@ struct WorkspaceContentsPreview: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let layout: SpaceLayout
     let unlocked: Set<UUID>
+    var canPreview: (String) -> Bool = { _ in true }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -211,8 +212,8 @@ struct WorkspaceContentsPreview: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace contents preview")
     }
-    private func accessible(_ id: String) -> Bool {
-        layout.pins.lockedFolders(for: id, unlocked: unlocked).isEmpty
+    func accessible(_ id: String) -> Bool {
+        canPreview(id) && layout.pins.lockedFolders(for: id, unlocked: unlocked).isEmpty
             && layout.today.lockedFolders(for: id, unlocked: unlocked).isEmpty
     }
     private func title(_ page: SpaceLayout.Page) -> String {
@@ -224,7 +225,7 @@ struct WorkspaceContentsPreview: View {
         ForEach(shape.entries) { entry in
             // Show a locked folder's own label, never its descendants.
             let ancestors = shape.ancestors(of: shape.index(of: entry.id) ?? 0)
-            if ancestors.allSatisfy({ shape.folder($0)?.requiresAuthentication != true || unlocked.contains($0) }) {
+            if canPreview(entry.id), ancestors.allSatisfy({ shape.folder($0)?.requiresAuthentication != true || unlocked.contains($0) }) {
                 HStack(alignment: .top, spacing: 8) {
                     if let folder = entry.folder {
                         Label(folder.name, systemImage: folder.requiresAuthentication == true ? "lock" : "folder")

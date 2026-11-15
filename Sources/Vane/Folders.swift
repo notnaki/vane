@@ -1236,13 +1236,15 @@ extension TabStore {
         Motion.list {
             for tab in tabs where moving.contains(tab.id.uuidString) {
                 tab.kind = want
-                TidyTitles.refresh(tab)
             }
             // The rows have changed section, so the strip is grouped by section again before
             // either order is read off the shapes.
             normaliseSections()
             self[keyPath: source] = shapes.from
             self[keyPath: dest] = shapes.to
+            for tab in tabs where moving.contains(tab.id.uuidString) && !isTabLocked(tab.id) {
+                TidyTitles.refresh(tab)
+            }
             applyOrder(kind(of: source))
             applyOrder(want)
         }

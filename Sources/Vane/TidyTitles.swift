@@ -561,23 +561,38 @@ import Foundation
     /// pinned at (`named`), so tidying here would spend an inference on a name nothing will
     /// ever show. At home the two urls are the same one, which is every call that matters —
     /// a tab is refreshed as it is pinned.
-    static func refresh(_ tab: Tab) {
+    private static func isLocked(_ tab: Tab) -> Bool {
+        TabStore.all.contains { $0.profileID == tab.profileID && $0.isTabLocked(tab.id) }
+    }
+
+    @discardableResult
+    static func refresh(_ tab: Tab,
+                        generate: (@MainActor (String, URL) async -> String?)? = nil) -> Task<Void, Never>? {
         guard enabled, tab.stays, !tab.isPrivate, tab.atHome,
-              let url = tab.currentURL, url.scheme?.hasPrefix("http") == true else { return }
+              !isLocked(tab),
+              let url = tab.currentURL, url.scheme?.hasPrefix("http") == true else { return nil }
         let key = url.absoluteString
-        guard dict(cacheKey, tab.profileID)[key] == nil else { return }
+        guard dict(cacheKey, tab.profileID)[key] == nil else { return nil }
         let raw = tab.title
-        guard !raw.isEmpty, raw != "New Tab" else { return }
+        guard !raw.isEmpty, raw != "New Tab" else { return nil }
         let profileID = tab.profileID
         let aiRevision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
-        Task { @MainActor [weak tab] in
-            guard let out = await tidy(title: raw, url: url),
+        return Task { @MainActor [weak tab] in
+            guard let tab, !isLocked(tab) else { return }
+            let generation = generate ?? { [weak tab] title, url in
+                await BrowserAI.shortTitle(for: title, url: url, isCurrent: {
+                    guard let tab else { return false }
+                    return !isLocked(tab)
+                })
+            }
+            guard let out = await tidy(title: raw, url: url, generate: generation),
+                  !isLocked(tab),
                   aiRevision == UserDefaults.vane.integer(forKey: "aiSettingsRevision"),
                   dict(cacheKey, profileID)[key] == nil else { return }
             // Read *before* the cache is written, because `title(for:)` reads the cache: this
             // is the name the row is showing at this instant, and it is what the shimmer
             // fades out from under the new one.
-            let was = tab.map(title(for:)) ?? ""
+            let was = title(for: tab)
             var cache = dict(cacheKey, profileID)
             // ponytail: no LRU. A pinned strip is a handful of urls; if it ever gets absurd,
             // throwing the whole cache away costs one re-run per pin and zero code.
@@ -588,8 +603,8 @@ import Foundation
             put(cacheKey, profileID, key, out.text)
             // A name the model wrote is an event about the row and is announced as one; the
             // cheap answer is just a title and arrives the way titles always have.
-            if out.fromModel, let tab { tab.noteAITitle(replacing: was) }
-            else { tab?.objectWillChange.send() }
+            if out.fromModel { tab.noteAITitle(replacing: was) }
+            else { tab.objectWillChange.send() }
         }
     }
 

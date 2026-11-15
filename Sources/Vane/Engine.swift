@@ -3169,10 +3169,12 @@ struct Stash {
     /// True while this store is behind another profile's in the same window.
     var isParked: Bool { parkedIn != nil }
     /// Every live store, oldest first — the parked ones included.
+    static let storesChanged = PassthroughSubject<Void, Never>()
     static var all: [TabStore] = [] {
         didSet {
             Suspension.updateLifecycle()
             if oldValue.contains(where: \.isPrivate) { Tab.clearPrivateHTTPSStateIfUnused() }
+            storesChanged.send()
         }
     }
 

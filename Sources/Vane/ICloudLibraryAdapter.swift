@@ -164,6 +164,41 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
         guard let bytes = defaults.data(forKey: TabStore.shapeKey(kind, space: space.id, profileID: space.profileID)) else { return Pins() }
         return try JSONDecoder().decode(Pins.self, from: bytes)
     }
+    /// Open-tab metadata is a public preview on other Macs. Never publish protected
+    /// occurrences, even while this Mac holds an unlock grant. Legacy shapes use URLs.
+    private func canPublish(_ row: Session.Entry, in spaces: [Space]) throws -> Bool {
+        // Identity resolves the occurrence even when a session has no Space association.
+        let identified = spaces.flatMap { space in
+            (space.layout?.tabs ?? []).filter { $0.id.uuidString == row.id }.map { (space, $0) }
+        }
+        if !identified.isEmpty {
+            for (space, page) in identified {
+                let outline = try shape(page.kind, space: space)
+                if !outline.lockedFolders(for: page.id.uuidString, unlocked: []).isEmpty { return false }
+            }
+            return true
+        }
+        // Favourites have no folder outline. A protected pin on the same URL is a
+        // different occurrence, including when this session predates layout identities.
+        if row.kind == .favourite { return true }
+        let kinds = row.kind.map { [$0] } ?? [.pinned, .today]
+        for space in spaces {
+            for kind in kinds {
+                let names: [String]
+                if let layout = space.layout {
+                    names = layout.tabs.filter {
+                        $0.kind == kind && ($0.url.absoluteString == row.url
+                            || $0.savedURL.absoluteString == (row.home ?? row.url))
+                    }.map { $0.id.uuidString }
+                } else {
+                    names = [row.id, row.url, row.home].compactMap { $0 }
+                }
+                let outline = try shape(kind, space: space)
+                if names.contains(where: { !outline.lockedFolders(for: $0, unlocked: []).isEmpty }) { return false }
+            }
+        }
+        return true
+    }
     private func committedSpaces(for profileID: UUID) throws -> [Space] {
         if let cached = spacesCache[profileID], cached.revision == profiles.spacesRevision { return cached.spaces }
         let spaces = try profiles.committedICloudSpaces(for: profileID)
@@ -267,13 +302,17 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
                 }
             }
             if enabled.contains(.openTabs) {
+                let spaces = try committedSpaces(for: pid)
                 let file = ProfileManager.sessionURL(for: pid, in: directory)
                 if FileManager.default.fileExists(atPath: file.path) {
                     guard let loaded = Session.load(file), !loaded.recoveringFile else { throw CocoaError(.fileReadCorruptFile) }
                     for (window, rows) in loaded.snapshot.windows.enumerated() {
+                        let spaceID = loaded.snapshot.spaces.indices.contains(window) ? loaded.snapshot.spaces[window] : nil
+                        let candidates = spaceID.flatMap { id in spaces.first { $0.id == id } }.map { [$0] } ?? spaces
                         for (index, row) in rows.enumerated() where web(URL(string: row.url)) {
+                            guard try canPublish(row, in: candidates) else { continue }
                             let tab = ICloudRemoteTab(id: "\(deviceID)|\(pid)|\(row.id ?? stable("\(window)|\(index)|\(row.url)"))", deviceID: deviceID, deviceName: deviceName, profileID: pid,
-                                spaceID: loaded.snapshot.spaces.indices.contains(window) ? loaded.snapshot.spaces[window] : nil,
+                                spaceID: spaceID,
                                 url: URL(string: row.url)!, title: row.title ?? "", position: index, at: nil)
                             out.append(ICloudItem(category: .openTabs, id: tab.id, profileID: pid, parentID: tab.spaceID?.uuidString, fields: try fields(tab)))
                         }
