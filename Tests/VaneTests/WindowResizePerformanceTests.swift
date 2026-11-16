@@ -481,7 +481,7 @@ import XCTest
                         store?.sidebarPeeking = true
                         try await Task.sleep(for: .milliseconds(600))
                     }
-                    // VANE_RESIZE_PERF_PAGE=heavy: ~50k nodes, the document and six
+                    // VANE_RESIZE_PERF_PAGE=heavy: about 34k elements, the document and six
                     // viewport-sized inner scrollers all at their ends, so every
                     // buffered size clamps and restores each of them.
                     if environment["VANE_RESIZE_PERF_PAGE"] == "heavy", let web = window.contentView.flatMap(Self.page) {
