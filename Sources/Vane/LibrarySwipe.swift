@@ -109,7 +109,8 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                         // installed, including split panes rounded to whole pixels.
                         LibraryPaintBridge(paint: paint, target: targetProgress,
                             startLeading: pageLeading(at: 0), endLeading: pageLeading(at: 1),
-                            targetLeading: pageLeading(at: targetProgress), currentLeading: leading)
+                            targetLeading: pageLeading(at: targetProgress), currentLeading: leading,
+                            animating: targetProgress != (gesture.progress ?? (libraryOpen ? 1 : 0)))
                             .frame(width: 0, height: 0)
                     }
             }

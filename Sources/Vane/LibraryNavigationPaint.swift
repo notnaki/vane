@@ -19,7 +19,18 @@ extension EnvironmentValues {
 /// covers it. Shrinking clips use existing paint; growth waits for presentation.
 @MainActor final class LibraryNavigationPaint: ObservableObject {
     let owner = UUID()
-    @Published private(set) var progress: CGFloat
+    @Published private(set) var progress: CGFloat {
+        didSet { if progress != oldValue { didPublishPhase() } }
+    }
+    /// While a slide animates, accept at most one phase per display frame. Each
+    /// accepted phase renders, and that render advances the animation and requests
+    /// the next phase; drained at once, those renders chained back to back and kept
+    /// the main thread busy between frames. Finger samples are never held back.
+    private var pacesPhases = false
+    private var publishedThisFrame = false
+    private var deferredDrain = false
+    private var deferral = 0
+    private var stopPublicationFrames: (() -> Void)?
     private weak var marker: NSView?
     private var generation = UUID()
     private var queued = false
@@ -63,7 +74,8 @@ extension EnvironmentValues {
         schedule()
     }
 
-    func request(_ value: CGFloat, marker: NSView, startLeading: CGFloat, endLeading: CGFloat, targetLeading: CGFloat, currentLeading: CGFloat) {
+    func request(_ value: CGFloat, marker: NSView, startLeading: CGFloat, endLeading: CGFloat, targetLeading: CGFloat, currentLeading: CGFloat, animating: Bool = false) {
+        pacesPhases = animating
         let value = min(1, max(0, value))
         if self.marker !== marker || requestedProgress != value { retirePaint() }
         self.marker = marker
@@ -77,8 +89,47 @@ extension EnvironmentValues {
         if requestedProgress != progress || buffer != nil || arrival != nil { schedule() }
     }
 
+    isolated deinit {
+        stopPublicationFrames?()
+        stopArrivalFrames?()
+    }
+
+    private func didPublishPhase() {
+        guard pacesPhases else { return }
+        publishedThisFrame = true
+        guard stopPublicationFrames == nil, let window = marker?.window else { return }
+        stopPublicationFrames = SidebarResizePublication.displayFrames(for: window)({ [weak self] in
+            self?.publicationFrameDidPass()
+        })
+    }
+
+    private func publicationFrameDidPass() {
+        publishedThisFrame = false
+        guard deferredDrain else {
+            stopPublicationFrames?(); stopPublicationFrames = nil
+            return
+        }
+        deferredDrain = false
+        schedule()
+    }
+
     private func schedule() {
         guard !queued else { return }
+        if pacesPhases, publishedThisFrame, stopPublicationFrames != nil {
+            guard !deferredDrain else { return }
+            deferredDrain = true
+            deferral &+= 1
+            let token = deferral
+            // The display clock normally lands this first. Keep a bound in case the
+            // screen stops delivering frames, so a landing still reaches rest; the
+            // next phase then starts a link on the window's current screen.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self, self.deferredDrain, self.deferral == token else { return }
+                self.stopPublicationFrames?(); self.stopPublicationFrames = nil
+                self.publicationFrameDidPass()
+            }
+            return
+        }
         queued = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -242,6 +293,8 @@ extension EnvironmentValues {
     }
 
     func cancel() {
+        stopPublicationFrames?(); stopPublicationFrames = nil
+        publishedThisFrame = false; deferredDrain = false
         bufferToken = UUID()
         buffer?.cancel(); buffer = nil; finishingBuffer = false
         requestedProgress = progress
@@ -274,10 +327,12 @@ struct LibraryPaintBridge: NSViewRepresentable {
     let endLeading: CGFloat
     let targetLeading: CGFloat
     let currentLeading: CGFloat
+    /// The slide is interpolating toward its model value, rather than following fingers.
+    let animating: Bool
     func makeNSView(context: Context) -> LibraryPaintView { LibraryPaintView() }
     func updateNSView(_ view: LibraryPaintView, context: Context) {
         view.paint = paint; view.target = min(1, max(0, target))
-        paint.request(target, marker: view, startLeading: startLeading, endLeading: endLeading, targetLeading: targetLeading, currentLeading: currentLeading)
+        paint.request(target, marker: view, startLeading: startLeading, endLeading: endLeading, targetLeading: targetLeading, currentLeading: currentLeading, animating: animating)
     }
     func makeCoordinator() -> LibraryNavigationPaint { paint }
     static func dismantleNSView(_ view: LibraryPaintView, coordinator: LibraryNavigationPaint) { coordinator.cancel() }
