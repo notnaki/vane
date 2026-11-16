@@ -1710,7 +1710,11 @@ private final class NativeBatchMouseObservation {
     /// Present an owner at the section's current pose. Returns whether SwiftUI has rows to place.
     @discardableResult private func place(_ entry: Entry, slots: [NativeSidebarOwnedSlot]) -> Bool {
         if let move = carrierMove(entry, slots: slots) {
-            entry.carrier.place(entry.host, size: batchSize(for: slots, rest: disclosureRest), offset: move.offset, edge: move.edge)
+            // SwiftUI snaps a placed row to the pixel grid and clips relative to it; match both.
+            let scale = window?.backingScaleFactor ?? 2
+            let offset = (move.offset * scale).rounded() / scale
+            entry.carrier.place(entry.host, size: batchSize(for: slots, rest: disclosureRest), offset: offset,
+                                edge: move.edge.map { offset + $0 - move.offset })
             return pose(entry, sample: disclosureRestSample, frame: disclosureRest)
         }
         entry.carrier.place(entry.host, size: batchSize(for: slots, rest: nil))
