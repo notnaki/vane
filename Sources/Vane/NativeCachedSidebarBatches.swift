@@ -854,6 +854,11 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     private var rollingHeaders: [String: String] = [:]
     private var occupiedRows: [String: NSRect] = [:]
     var revealEdge: ((String) -> CGFloat?)?
+    /// No stale-size relayout inside a buffered window commit; see `BufferedResizeLayout`.
+    override var needsLayout: Bool {
+        get { super.needsLayout }
+        set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
+    }
     func record(_ anchor: NativeSidebarRowLayoutView) {
         guard occupiedRows[anchor.rowID] != nil else { return }
         rowAnchors[anchor.rowID] = WeakRow(anchor)

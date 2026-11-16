@@ -146,8 +146,9 @@ final class VaneWindow: NSWindow {
 
     private func commitPreparedResize(_ frame: NSRect, display: Bool) {
         committingResize = true
-        defer { committingResize = false }
         super.setFrame(frame, display: false)
+        committingResize = false
+        BufferedResizeLayout.release()
         if display { viewsNeedDisplay = true }
     }
 
@@ -1133,6 +1134,11 @@ extension VaneWindow {
 @MainActor final class BrowserHostingView<Content: View>: NSHostingView<Content> {
     private var applyingFrame = false
 
+    override var needsLayout: Bool {
+        get { super.needsLayout }
+        set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
         super.setFrameSize(newSize)
@@ -1142,6 +1148,31 @@ extension VaneWindow {
         applyingFrame = true
         defer { applyingFrame = false }
         super.layout()
+    }
+}
+
+/// `NSWindow.setFrame` resizes the theme frame, lays the view tree out, and only
+/// then resizes the content view. The first step's safe-area and window-geometry
+/// notifications dirty every hosting root, so that layout ran SwiftUI's graphs at
+/// the old size before the real pass at the new one: a quarter of the main thread
+/// per live-resize frame. While the buffer installs its own frame, hosting roots
+/// hold those requests; the window re-asserts them once the frame is in place, so
+/// the display cycle lays the tree out once, at the new size, in the same commit.
+@MainActor enum BufferedResizeLayout {
+    private final class Held { weak var view: NSView?; init(_ view: NSView) { self.view = view } }
+    private static var held: [Held] = []
+
+    /// True when `view`'s layout request waits for `release()`.
+    static func hold(_ view: NSView) -> Bool {
+        guard (view.window as? VaneWindow)?.isCommittingBufferedPageResize == true else { return false }
+        if !held.contains(where: { $0.view === view }) { held.append(Held(view)) }
+        return true
+    }
+
+    static func release() {
+        let views = held
+        held.removeAll()
+        views.forEach { $0.view?.needsLayout = true }
     }
 }
 
