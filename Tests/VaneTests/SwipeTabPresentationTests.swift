@@ -51,7 +51,7 @@ import SwiftUI
 
     func testDeveloperTapeRendersOpaqueBlackBetweenYellowDashes() throws {
         let renderer = ImageRenderer(content: DeveloperTabBorder().frame(width: 228, height: 36))
-        let image = try XCTUnwrap(renderer.cgImage)
+        let image = try XCTUnwrap(renderer.cpuImage)
         let bitmap = NSBitmapImageRep(cgImage: image)
         var black = 0, yellow = 0
         for x in 20..<208 {
@@ -73,7 +73,7 @@ import SwiftUI
         for width: CGFloat in [180, 223, 228, 250, 320] {
             let renderer = ImageRenderer(content: DeveloperTabBorder().frame(width: width, height: 36))
             renderer.scale = scale
-            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
             var previous: Bool?, run = 0
             // The path closes at the right edge's midpoint; sample the straight
             // section on both sides of that seam at subpixel resolution.

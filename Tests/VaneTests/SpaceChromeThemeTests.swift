@@ -16,7 +16,7 @@ final class SpaceChromeThemeTests: XCTestCase {
                 .frame(width: 90, height: 30)
                 .background(Color.white)
                 .environment(\.colorScheme, scheme))
-            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
             for x in [15, 45, 75] {
                 let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: 15)?.usingColorSpace(.sRGB))
                 XCTAssertEqual(pixel.redComponent, 0, accuracy: 0.001)
@@ -67,7 +67,7 @@ final class SpaceChromeThemeTests: XCTestCase {
                         .frame(width: 12, height: 12)
                         .background(Color(white: 0.5))
                         .environment(\.colorScheme, scheme))
-                    let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                    let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
                     let pixel = try XCTUnwrap(bitmap.colorAt(x: 6, y: 6)?.usingColorSpace(.sRGB))
                     XCTAssertEqual(pixel.redComponent, pixel.greenComponent, accuracy: 0.01,
                                    "Interaction overlays must stay gray for primary \(hex)")
@@ -82,7 +82,7 @@ final class SpaceChromeThemeTests: XCTestCase {
             let theme = SpaceChromeTheme(primary: ThemeColor(hex: hex))
             for fill in [theme.bubble, theme.barFill] {
                 let renderer = ImageRenderer(content: Rectangle().fill(fill).frame(width: 12, height: 12))
-                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
                 let pixel = try XCTUnwrap(bitmap.colorAt(x: 6, y: 6)?.usingColorSpace(.sRGB))
                 let rgb = [pixel.redComponent, pixel.greenComponent, pixel.blueComponent]
                 XCTAssertLessThan(try XCTUnwrap(rgb.max()), 0.18,
@@ -126,7 +126,7 @@ final class SpaceChromeThemeTests: XCTestCase {
                     .environment(\.colorScheme, scheme)
                     .frame(width: 72, height: 46)
                     .background(scheme == .dark ? Color.black : Color.white))
-                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
                 let edge = try XCTUnwrap(bitmap.colorAt(x: 1, y: 23)?.usingColorSpace(.sRGB))
                 XCTAssertGreaterThan(edge.redComponent - edge.greenComponent, 0.3,
                                      "The red favicon must supply the outline in space \(hex)")

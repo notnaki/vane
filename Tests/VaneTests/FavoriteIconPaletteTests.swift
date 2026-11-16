@@ -72,7 +72,7 @@ import XCTest
                     .transaction { $0.disablesAnimations = true }
                     .frame(width: 72, height: 46)
                     .background(scheme == .dark ? Color.black : Color.white))
-                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
                 return bitmap
             }
             let resting = try render(selected: false)

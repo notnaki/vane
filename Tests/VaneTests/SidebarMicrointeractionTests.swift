@@ -101,7 +101,7 @@ import XCTest
             VStack { FolderIcon(open: true).frame(width: 28, height: 28); Text("Open") }
         }.font(.system(size: 12)).foregroundStyle(.white).frame(width: 240, height: 90).background(.black))
         renderer.scale = 2
-        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
         try bitmap.representation(using: .png, properties: [:])?.write(to:
             URL(fileURLWithPath: directory).appendingPathComponent("folder-states.png"))
     }

@@ -35,11 +35,25 @@ import XCTest
         XCTAssertFalse(emoji.isTemplate, "Emoji must keep its color in native menus")
         XCTAssertNotNil(Spaces.iconImage("leaf"))
         let render = ImageRenderer(content: SpaceIcon("👩🏽‍💻").font(.system(size: 24)).frame(width: 48, height: 48))
-        let image = try XCTUnwrap(render.cgImage)
+        let image = try XCTUnwrap(render.cpuImage)
         let pixels = NSBitmapImageRep(cgImage: image)
         XCTAssertTrue((0..<pixels.pixelsHigh).contains { y in
             (0..<pixels.pixelsWide).contains { x in (pixels.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 }
         }, "A nonnil but empty image does not establish emoji rendering")
+    }
+
+    func testCPUImageKeepsTheRendererScaleAndOrientation() throws {
+        let renderer = ImageRenderer(content: VStack(spacing: 0) {
+            Color(.sRGB, red: 1, green: 0, blue: 0).frame(height: 5)
+            Color(.sRGB, red: 0, green: 0, blue: 1).frame(height: 7)
+        }.frame(width: 10))
+        renderer.scale = 2
+        let pixels = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
+        XCTAssertEqual([pixels.pixelsWide, pixels.pixelsHigh], [20, 24])
+        let top = try XCTUnwrap(pixels.colorAt(x: 10, y: 0))
+        let bottom = try XCTUnwrap(pixels.colorAt(x: 10, y: 23))
+        XCTAssertEqual([top.redComponent, top.greenComponent, top.blueComponent, top.alphaComponent], [1, 0, 0, 1])
+        XCTAssertEqual([bottom.redComponent, bottom.greenComponent, bottom.blueComponent, bottom.alphaComponent], [0, 0, 1, 1])
     }
     func testSpacePickerAndPasswordPreferenceFitNativeWidth() async throws {
         TestEnvironment.prepare()

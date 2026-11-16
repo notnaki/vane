@@ -12,7 +12,7 @@ import XCTest
         })
         renderer.proposedSize = ProposedViewSize(width: 0, height: 24)
 
-        let image = try XCTUnwrap(renderer.cgImage)
+        let image = try XCTUnwrap(renderer.cpuImage)
         XCTAssertGreaterThanOrEqual(image.width, 240,
             "The field must reserve both sides before accepting a narrow proposal")
         let bitmap = NSBitmapImageRep(cgImage: image)
@@ -29,7 +29,7 @@ import XCTest
             })
             renderer.proposedSize = ProposedViewSize(width: 600, height: 24)
 
-            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
             let center = try XCTUnwrap(bitmap.colorAt(x: 300, y: 12))
             XCTAssertGreaterThan(center.greenComponent, 0.4)
             XCTAssertLessThan(center.redComponent, 0.1)

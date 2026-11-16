@@ -382,7 +382,7 @@ import XCTest
                         renderer.scale = scale
                         var expected: CGImage?
                         NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
-                            expected = renderer.cgImage
+                            expected = renderer.cpuImage
                         }
                         let reference = NSBitmapImageRep(cgImage: try XCTUnwrap(expected))
                         var alphaActual = 0.0, alphaExpected = 0.0, difference = 0.0, colorDifference = 0.0
@@ -398,6 +398,7 @@ import XCTest
                             }
                         }
                         let label = "\(scheme) scale=\(scale) count=\(count) icons=\(showIcons) \(icon) emphasis=\(emphasis)"
+                        XCTAssertGreaterThan(alphaExpected, 0, "Reference artwork must not be blank: \(label)")
                         XCTAssertEqual(alphaActual, alphaExpected, accuracy: max(1, alphaExpected * 0.04), label)
                         XCTAssertLessThan(difference, max(2, alphaExpected * 0.15), label)
                         XCTAssertLessThan(colorDifference, max(6, alphaExpected * 0.45), label)

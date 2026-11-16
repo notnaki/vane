@@ -53,7 +53,7 @@ import XCTest
                                         (ColorScheme.light, Color.black, 0.0)] {
             let renderer = ImageRenderer(content: SiteIcon(icon: image)
                 .foregroundStyle(ink).environment(\.colorScheme, scheme))
-            let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
             let pixel = try XCTUnwrap(rendered.colorAt(x: 8, y: 8)?.usingColorSpace(.deviceRGB))
             XCTAssertEqual(pixel.redComponent, expected, accuracy: 0.02)
             XCTAssertEqual(pixel.greenComponent, expected, accuracy: 0.02)
@@ -75,7 +75,7 @@ import XCTest
         let image = try await cachedIcon(foreground: .systemGreen, background: .systemGreen)
         let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
         renderer.scale = 2
-        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
         XCTAssertEqual(bitmap.pixelsWide, 32)
         XCTAssertEqual(bitmap.pixelsHigh, 32)
         XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 0, y: 0)).alphaComponent, 0, accuracy: 0.02)
@@ -101,7 +101,7 @@ import XCTest
         for scale in [1.0, 2.0] {
             let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
             renderer.scale = scale
-            let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
             let edge = try XCTUnwrap(rendered.colorAt(x: 0, y: Int(4 * scale)))
             XCTAssertEqual(edge.alphaComponent, 1, accuracy: 0.02,
                            "Transparent logos must retain their own silhouette at scale \(scale)")
@@ -129,7 +129,7 @@ import XCTest
         }
         let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
         renderer.scale = 1
-        let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
         XCTAssertEqual(try XCTUnwrap(rendered.colorAt(x: 0, y: 4)).alphaComponent,
                        1, accuracy: 0.02,
                        "A solid Retina variant must not crop the transparent normal-scale logo")
