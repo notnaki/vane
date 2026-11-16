@@ -2834,6 +2834,8 @@ private struct SpaceRow: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.sidebarDropMarker) private var dropMarker
     @ChromeObserved var store: TabStore
+    /// Another window renaming or re-iconing this Space publishes only here.
+    @ProfileChromeObserved private var profiles = ProfileManager.shared
     @State private var icons = false
     @State private var theme = false
     @State private var live = false
@@ -3263,6 +3265,8 @@ private struct SpaceDots: View {
     let layout: SpaceStripLayout
     let footer: SpaceFooterProgress
     @ChromeObserved var store: TabStore
+    /// Another window renaming or re-iconing a Space publishes only here.
+    @ProfileChromeObserved private var profiles = ProfileManager.shared
     @EnvironmentObject private var gesture: SpaceGesture
     /// *Which* dot's panel is open, not merely whether one is. Every dot draws its own
     /// `.popover`, so on one shared flag all of them asked to present at once and SwiftUI

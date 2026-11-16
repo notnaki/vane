@@ -2894,7 +2894,9 @@ struct Stash {
     lazy var sidebarObservation = SidebarObservation(store: self)
     lazy var chromeObservation = ChromeObservation(store: self)
     /// Above zero while `current` or `selection` is being published. `ChromeObservation`
-    /// skips exactly those; whatever their observers go on to change publishes as usual.
+    /// skips exactly those, and `didSet` publishes as usual. A `$current`/`$selection` sink
+    /// runs inside the window, so a store write it makes synchronously is hidden from chrome:
+    /// defer such writes to the next turn.
     private(set) var selectionPublications = 0
     var sharingReady = false
     var sharedUpdateQueued = false
