@@ -45,12 +45,16 @@ final class VaneWindow: NSWindow {
 
     override var contentView: NSView? {
         willSet {
-            if newValue !== contentView { livePageResizeBuffer?.cancel() }
+            if newValue !== contentView {
+                keyViewLoopStale = false
+                livePageResizeBuffer?.cancel()
+            }
         }
     }
 
     override func orderOut(_ sender: Any?) {
         resizeAnchor = nil
+        keyViewLoopStale = false
         livePageResizeBuffer?.cancel()
         super.orderOut(sender)
     }
@@ -194,13 +198,16 @@ final class VaneWindow: NSWindow {
         return preparePageResize(frame: target, display: true) ? frame.size : size
     }
 
-    func endPageResize() {
+    /// A window that is closing, miniaturising, changing its content or entering
+    /// full screen ends the drag without the rebuild; its chrome is not resized.
+    func endPageResize(rebuildingKeyViewLoop: Bool = true) {
         resizeAnchor = nil
         if let previous = keyViewLoopBeforeLiveResize {
             keyViewLoopBeforeLiveResize = nil
             autorecalculatesKeyViewLoop = previous
             keyViewLoopStale = true
         }
+        if !rebuildingKeyViewLoop { keyViewLoopStale = false }
         livePageResizeBuffer?.finish()
         resizePreparation?.endLiveResize()
         rebuildStaleKeyViewLoop()
@@ -216,13 +223,24 @@ final class VaneWindow: NSWindow {
         keyViewLoopStale = false
         let size = view.frame.size
         // Two points, so a centred control still moves a whole one.
+        isRebuildingKeyViewLoop = true
         view.setFrameSize(NSSize(width: size.width + 2, height: size.height + 2))
         view.setFrameSize(size)
+        isRebuildingKeyViewLoop = false
+        let held = heldPageHosts
+        heldPageHosts = []
+        held.forEach { $0.applyHeldFrame() }
     }
+
+    /// The chrome moves and returns within one turn. Every `WebHost` sits it out
+    /// and then takes the last frame it was given, which is the one it has, so no
+    /// page sees a viewport it was never shown at.
+    private(set) var isRebuildingKeyViewLoop = false
+    var heldPageHosts: [WebHost] = []
 
     override func close() {
         _ = cancelSidebarResize()
-        endPageResize()
+        endPageResize(rebuildingKeyViewLoop: false)
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.close()
@@ -230,7 +248,7 @@ final class VaneWindow: NSWindow {
 
     override func miniaturize(_ sender: Any?) {
         _ = cancelSidebarResize()
-        endPageResize()
+        endPageResize(rebuildingKeyViewLoop: false)
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.miniaturize(sender)
@@ -238,7 +256,7 @@ final class VaneWindow: NSWindow {
 
     override func toggleFullScreen(_ sender: Any?) {
         _ = cancelSidebarResize()
-        endPageResize()
+        endPageResize(rebuildingKeyViewLoop: false)
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.toggleFullScreen(sender)

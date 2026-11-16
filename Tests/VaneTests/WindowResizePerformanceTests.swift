@@ -111,6 +111,127 @@ import XCTest
         }
     }
 
+    /// Rebuilding the loop after the release resizes the window's root and back.
+    /// No page may follow that: no `resize` event, ResizeObserver callback, media
+    /// query flip, frame at another size, or lost bottom-of-page scroll position.
+    func testKeyViewLoopRebuildAfterReleaseIsInvisibleToThePage() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            struct Probe: Decodable { var size: String, resize: [String], observed: Int, flips: Int, painted: [String], bottom: Double }
+            @MainActor func read() async throws -> Probe {
+                let json = try await web.evaluateJavaScript("""
+                    JSON.stringify({size: innerWidth + 'x' + innerHeight, resize: __probe.resize, observed: __probe.observed,
+                        flips: __probe.flips, painted: __probe.painted,
+                        bottom: document.documentElement.scrollHeight - innerHeight - scrollY})
+                    """) as? String
+                return try JSONDecoder().decode(Probe.self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            // Counts from here on, with a media query one pixel above the current
+            // width and the page scrolled to its end.
+            @MainActor func arm() async throws {
+                try await Task.sleep(for: .milliseconds(300))
+                _ = try await web.evaluateJavaScript("""
+                    __probe.resize = []; __probe.observed = 0; __probe.flips = 0; __probe.painted = [];
+                    __probe.query = matchMedia('(min-width: ' + (innerWidth + 1) + 'px)');
+                    __probe.query.addEventListener('change', () => __probe.flips++);
+                    scrollTo(0, document.documentElement.scrollHeight); 0
+                    """)
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            _ = try await web.evaluateJavaScript("""
+                const p = window.__probe = {resize: [], observed: 0, flips: 0, painted: []};
+                addEventListener('resize', () => p.resize.push(innerWidth + 'x' + innerHeight));
+                new ResizeObserver(() => p.observed++).observe(document.documentElement);
+                let last = innerWidth + 'x' + innerHeight;
+                (function frame() {
+                    const size = innerWidth + 'x' + innerHeight;
+                    if (size !== last) { last = size; p.painted.push(size) }
+                    requestAnimationFrame(frame)
+                })(); 0
+                """)
+
+            // A real drag: the page ends at the released size, having arrived once.
+            try await arm()
+            _ = try await self.drag(window, speed: 100, travel: 120, corner: true, returns: false)
+            try await Task.sleep(for: .milliseconds(500))
+            let dragged = try await read()
+            XCTAssertGreaterThan(dragged.resize.count, 0, "The drag must resize the page")
+            XCTAssertEqual(dragged.resize.last, dragged.size)
+            XCTAssertEqual(dragged.resize.filter { $0 == dragged.size }.count, 1,
+                           "The page reached its released size once: \(dragged.resize)")
+            XCTAssertEqual(dragged.painted.last, dragged.size)
+            XCTAssertEqual(dragged.painted.filter { $0 == dragged.size }.count, 1,
+                           "The page painted its released size once: \(dragged.painted)")
+
+            // A press and release that moves nothing still defers and rebuilds the
+            // loop. The buffer shows the page its lookahead size and back, as it
+            // does without the rebuild; nothing may follow that.
+            try await arm()
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            XCTAssertTrue(window.autorecalculatesKeyViewLoop)
+            try await Task.sleep(for: .milliseconds(300))
+            window.endPageResize()
+            try await compatibilityWait { !window.isPreparingPageResize }
+            try await Task.sleep(for: .milliseconds(500))
+            let rebuilt = try await read()
+            XCTAssertEqual(rebuilt.size, dragged.size)
+            XCTAssertLessThanOrEqual(rebuilt.resize.count, 2, "\(rebuilt.resize)")
+            XCTAssertLessThanOrEqual(rebuilt.resize.filter { $0 == rebuilt.size }.count, 1, "\(rebuilt.resize)")
+            XCTAssertLessThanOrEqual(rebuilt.observed, 2)
+            XCTAssertLessThanOrEqual(rebuilt.flips, 2)
+            XCTAssertLessThanOrEqual(rebuilt.painted.count, 2, "\(rebuilt.painted)")
+            XCTAssertLessThanOrEqual(rebuilt.painted.filter { $0 == rebuilt.size }.count, 1, "\(rebuilt.painted)")
+            // Only the lookahead's own extra height may have scrolled out of reach.
+            @MainActor func height(_ size: String?) -> Double { size?.split(separator: "x").last.flatMap { Double($0) } ?? 0 }
+            let lookahead = rebuilt.resize.isEmpty ? 0 : height(rebuilt.resize.first) - height(rebuilt.size)
+            XCTAssertEqual(rebuilt.bottom, lookahead, accuracy: 0.5)
+        }
+    }
+
+    /// A drag cut short by the window miniaturising, closing or losing its content
+    /// restores the window's setting without resizing its chrome.
+    func testCancelledResizeDoesNotResizeTheChrome() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, root in
+            var sizes: [NSSize] = []
+            let observer = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification,
+                                                                  object: root, queue: nil) { _ in
+                MainActor.assumeIsolated { sizes.append(root.frame.size) }
+            }
+            defer { NotificationCenter.default.removeObserver(observer) }
+            root.postsFrameChangedNotifications = true
+            // An ordinary release does: there and back.
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            window.endPageResize()
+            try await compatibilityWait { !window.isPreparingPageResize }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(sizes.count, 2)
+            XCTAssertEqual(sizes.last, root.frame.size)
+            sizes = []
+
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            XCTAssertTrue(window.autorecalculatesKeyViewLoop)
+            window.endPageResize(rebuildingKeyViewLoop: false)
+            try await compatibilityWait { !window.isPreparingPageResize }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertFalse(window.autorecalculatesKeyViewLoop)
+            XCTAssertEqual(sizes, [])
+
+            // Released, with the rebuild still waiting on the buffer, then replaced.
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            window.endPageResize()
+            let content = window.contentView
+            window.contentView = nil
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(sizes, [])
+            window.contentView = content
+        }
+    }
+
+    private static func page(_ view: NSView) -> WKWebView? {
+        if let web = view as? WKWebView, !web.isHiddenOrHasHiddenAncestor { return web }
+        return view.subviews.lazy.compactMap(page).first
+    }
+
     /// Opt-in diagnostics: VANE_UI_PERFORMANCE=1 in a release build. No wall-clock
     /// assertions. Each drag prints its own frame-interval and main-thread-gap
     /// percentiles; each configuration then prints them pooled over its drags

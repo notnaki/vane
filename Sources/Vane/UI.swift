@@ -171,7 +171,30 @@ final class WebHost: NSView {
         super.willRemoveSubview(subview)
     }
 
+    /// The window resizes its chrome and back to rebuild the key-view loop after a
+    /// live resize. That is not a viewport change: the page keeps its frame, and
+    /// takes the last one asked of it (normally the one it has) once that is over.
+    private var heldFrame: NSRect?
+
+    private func holdsFrame(_ change: (inout NSRect) -> Void) -> Bool {
+        guard let window = window as? VaneWindow, window.isRebuildingKeyViewLoop else { return false }
+        if heldFrame == nil { heldFrame = frame; window.heldPageHosts.append(self) }
+        heldFrame.map { var next = $0; change(&next); heldFrame = next }
+        return true
+    }
+
+    func applyHeldFrame() {
+        guard let held = heldFrame else { return }
+        heldFrame = nil
+        if held != frame { frame = held }
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        if !holdsFrame({ $0.origin = newOrigin }) { super.setFrameOrigin(newOrigin) }
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
+        guard !holdsFrame({ $0.size = newSize }) else { return }
         let previous = frame.size
         let wasEmpty = frame.width <= 0 || frame.height <= 0
         // Sidebar/split drags have no native window proposal. Reactivate the
