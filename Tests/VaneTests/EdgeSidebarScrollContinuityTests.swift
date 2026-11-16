@@ -227,11 +227,13 @@ import XCTest
                 let start = ProcessInfo.processInfo.systemUptime
                 NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: dx))
                 host.layoutSubtreeIfNeeded()
+                let handled = ProcessInfo.processInfo.systemUptime
                 if ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1" {
                     print("SCROLLED_LIBRARY_LAYOUT offset=\(offset) dx=\(dx) ms=\((ProcessInfo.processInfo.systemUptime - start) * 1000)")
                 }
                 XCTAssertNotNil(store.librarySwipeProgress, "Library must actually claim the edge gesture")
                 let acceptBy = ContinuousClock.now + .milliseconds(150)
+                var caughtUp: Double?
                 repeat {
                     XCTAssertEqual(live.documentVisibleRect.minY, offset, accuracy: 1)
                     XCTAssertEqual(live.contentView.bounds.size, size)
@@ -239,10 +241,21 @@ import XCTest
                     let shown = sidebarTravel()
                     XCTAssertTrue(shown >= min(previous, travel) - 1 && shown <= max(previous, travel) + 1,
                                   "The sidebar may only move from the last accepted phase toward the fingers: \(shown)")
-                    guard pending(host) else { break }
+                    if caughtUp == nil, abs(shown - travel) <= 1 {
+                        caughtUp = (ProcessInfo.processInfo.systemUptime - handled) * 1000
+                    }
+                    guard caughtUp == nil || pending(host) else { break }
                     try await Task.sleep(for: .milliseconds(2))
                     host.layoutSubtreeIfNeeded()
                 } while ContinuousClock.now < acceptBy
+                // Finger samples are never held back (#677): after the event's own layout
+                // the sidebar reaches the fingers in one to three display frames (the
+                // claim phase prepares its buffer first). The page buffer may take longer
+                // to cover the new viewport (WebKit paint), bounded separately above.
+                let frameMs = 1000 / Double(window.screen?.maximumFramesPerSecond ?? 60)
+                let caught = try XCTUnwrap(caughtUp, "The sidebar must reach the fingers")
+                XCTAssertLessThanOrEqual(caught, frameMs * 3.5,
+                                         "The sidebar must reach the fingers within three display frames")
                 XCTAssertFalse(pending(host), "Library paint must accept the finger phase within a few display frames")
                 accepted = travel
                 for _ in 0..<4 {
