@@ -136,10 +136,7 @@ extension SearchEngine {
     /// `customSearchEngines` precisely so a user's bang never appears in the Search Engine
     /// picker and can never become `Search.current` by accident.
     static var custom: [Bang] {
-        get {
-            guard let data = defaults.data(forKey: "customBangs") else { return [] }
-            return (try? JSONDecoder().decode([Bang].self, from: data)) ?? []
-        }
+        get { Search.stored("customBangs") }
         set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "customBangs") }
     }
 

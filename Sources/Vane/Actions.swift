@@ -74,6 +74,8 @@ extension PaletteCommand {
     /// listed at all until a letter is typed.
     @MainActor static func all(for store: TabStore, strip: [Space]? = nil,
                                ownSpaces: [Space]? = nil) -> [PaletteCommand] {
+        // Read once: every read scans the window's tabs, and this runs on each keystroke.
+        let active = store.active
         var out: [PaletteCommand] = [
             PaletteCommand(.newTab, icon: "plus"),
             PaletteCommand(.reopenClosedTab, icon: "arrow.uturn.left"),
@@ -89,7 +91,7 @@ extension PaletteCommand {
 
         // The page in front of you. Everything here needs somewhere to act, and a window
         // showing nothing has nowhere.
-        if let tab = store.active, tab.easelID == nil {
+        if let tab = active, tab.easelID == nil {
             out += [
                 PaletteCommand(.copyPageURL, icon: "link", title: "Copy URL"),
                 PaletteCommand("Copy URL as Markdown", icon: "doc.on.clipboard") {
@@ -152,7 +154,7 @@ extension PaletteCommand {
                 })
             }
         }
-        if let tab = store.active, tab.easelID != nil {
+        if let tab = active, tab.easelID != nil {
             out += [
                 PaletteCommand(.closeTab, icon: "archivebox"),
                 PaletteCommand("Duplicate Easel", icon: "plus.square.on.square") {
@@ -170,14 +172,14 @@ extension PaletteCommand {
         // and a private window has no Spaces — neither has anything for these to act on.
         if !store.isLittle {
             out.append(PaletteCommand(.toggleSidebar, icon: "sidebar.left"))
-            if store.active != nil {
+            if active != nil {
                 out += [
-                    PaletteCommand(store.active?.kind == .pinned ? "Unpin Tab" : "Pin Tab",
-                                   icon: store.active?.kind == .pinned ? "pin.slash" : "pin",
+                    PaletteCommand(active?.kind == .pinned ? "Unpin Tab" : "Pin Tab",
+                                   icon: active?.kind == .pinned ? "pin.slash" : "pin",
                                    command: .pinTab),
-                    PaletteCommand(store.active?.kind == .favourite
+                    PaletteCommand(active?.kind == .favourite
                                        ? "Unfavourite Tab" : "Favourite Tab",
-                                   icon: store.active?.kind == .favourite ? "star.slash" : "star",
+                                   icon: active?.kind == .favourite ? "star.slash" : "star",
                                    command: .favouriteTab),
                     PaletteCommand(.addSplit, icon: "rectangle.split.2x1"),
                 ]
@@ -221,7 +223,7 @@ extension PaletteCommand {
             }
             // Arc's "Move to Space ▸" is a submenu, and a search bar has no submenus — so it
             // is one row per Space, which is also the row typing the Space's name lands on.
-            if let tab = store.active, TabAddress.restorable(tab.currentURL) {
+            if let tab = active, TabAddress.restorable(tab.currentURL) {
                 for space in (ownSpaces ?? store.spaces) where space.id != store.currentSpaceID {
                     out.append(PaletteCommand("Move Tab to \(space.name)",
                                               icon: space.icon ?? "square.on.square",

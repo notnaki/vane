@@ -1654,8 +1654,9 @@ private struct PaletteSuggestionWatch: View, Equatable {
                 // typing two letters means a search far more often than "Archive Tab" — but
                 // they are always *there*, from the first character on. Archived tabs and Spaces
                 // are places, so they are searched the moment there is something to search with.
-                let places = Palette.rankPages(typed, archiveRows() + spaceRows(),
-                                               title: \.title, url: \.matchURL)
+                // Ranked as places; rows are built only for those the 24-row tail can show.
+                let places = Palette.rankPages(typed, placeSources(), title: \.title, url: \.url)
+                    .prefix(24).map(placeRow)
                 // Only a strong match leads, and only one: a search is what two typed letters
                 // mean far more often than "Switch to Tab", so the tabs that merely fuzz-match
                 // wait until after what the engine completes the words to.
@@ -1895,29 +1896,47 @@ private struct PaletteSuggestionWatch: View, Equatable {
         }
     }
 
-    /// Tabs that have left the sidebar but not the browser. Return puts one back where it
-    /// was, which is what the Library's rows do — this is the same list, searchable.
-    private func archiveRows() -> [PaletteRow] {
-        guard !store.isPrivate else { return [] }
-        let archive = Archive.shared(for: store.profileID)
-        return archive.entries.map { entry in
-            PaletteRow(id: "archived:" + entry.url, icon: "archivebox",
-                       // Visible icon leaves load artwork after ranking and the row cap.
-                       title: entry.title.isEmpty ? entry.url : entry.title,
-                       detail: entry.url, matchURL: entry.url,
-                       trailing: "Restore Tab", kind: "Archived tab") { _ in
-                Windows.current?.unarchive(entry)
+    /// An archived tab or a Space as the bar searches it, before it is made into a row.
+    private enum PlaceSource {
+        case archived(Archive.Entry), space(Space)
+        var title: String {
+            switch self {
+            case .archived(let entry): entry.title.isEmpty ? entry.url : entry.title
+            case .space(let space): space.name
+            }
+        }
+        var url: String {
+            switch self {
+            case .archived(let entry): entry.url
+            case .space: ""
             }
         }
     }
 
-    /// Every Space on the strip, by name — every profile's, because that is what the strip
-    /// is. Arc switches Space from the bar, and typing the name of the Space you want is
-    /// faster than counting ⌃1…⌃9. Not offered in a Little Arc, which has no Space to
-    /// leave and no strip to switch.
-    private func spaceRows() -> [PaletteRow] {
-        guard !store.isPrivate, !store.isLittle else { return [] }
-        return catalogStrip.filter { $0.id != store.currentSpaceID }.map { space in
+    /// Tabs that have left the sidebar but not the browser — up to `Archive.limit` of them —
+    /// then every Space on the strip, by name: every profile's, because that is what the
+    /// strip is. Arc switches Space from the bar, and typing the name of the Space you want
+    /// is faster than counting ⌃1…⌃9. A private window has no archive and no strip; a
+    /// Little Arc has no Space to leave.
+    private func placeSources() -> [PlaceSource] {
+        guard !store.isPrivate else { return [] }
+        let archived = Archive.shared(for: store.profileID).entries.map(PlaceSource.archived)
+        guard !store.isLittle else { return archived }
+        return archived + catalogStrip.filter { $0.id != store.currentSpaceID }.map(PlaceSource.space)
+    }
+
+    /// Return on an archived tab puts it back where it was, which is what the Library's
+    /// rows do — this is the same list, searchable.
+    private func placeRow(_ place: PlaceSource) -> PaletteRow {
+        switch place {
+        case .archived(let entry):
+            PaletteRow(id: "archived:" + entry.url, icon: "archivebox",
+                       // Visible icon leaves load artwork after ranking and the row cap.
+                       title: place.title, detail: entry.url, matchURL: entry.url,
+                       trailing: "Restore Tab", kind: "Archived tab") { _ in
+                Windows.current?.unarchive(entry)
+            }
+        case .space(let space):
             PaletteRow(id: "space:" + space.id.uuidString, icon: space.icon ?? "square.stack",
                        title: space.name, detail: "Space",
                        trailing: "Switch to Space", kind: "Space") { _ in
