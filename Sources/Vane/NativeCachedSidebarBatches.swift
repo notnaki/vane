@@ -890,8 +890,6 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     }
 }
 
-/// Immutable ownership can produce interleaved roots after a reorder. Empty
-/// slots are not controls and must pass pointer/drop hits to the actual row root.
 #if DEBUG
 /// What SwiftUI itself answers for a row host, for the test that holds its shortcut to it.
 @MainActor protocol NativeSidebarRowHostFocusProbe { var hostedAcceptsFirstResponder: Bool { get } }
@@ -899,6 +897,8 @@ extension NativeSidebarBatchHostingView: NativeSidebarRowHostFocusProbe {
     var hostedAcceptsFirstResponder: Bool { hostedAnswer }
 }
 #endif
+/// Immutable ownership can produce interleaved roots after a reorder. Empty
+/// slots are not controls and must pass pointer/drop hits to the actual row root.
 @MainActor private final class NativeSidebarBatchHostingView<Content: View>: NSHostingView<NativeSidebarBatchRoot<Content>> {
     private final class WeakRow {
         weak var view: NativeSidebarRowLayoutView?

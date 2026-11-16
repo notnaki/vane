@@ -209,7 +209,7 @@ import XCTest
         }
         let uncovered = anchors(host)
         XCTAssertTrue(covered.allSatisfy { anchor in uncovered.contains { $0 === anchor } },
-                      "Closing the Library disables its press anchors in place")
+                      "Closing the Library keeps its press anchors in place")
     }
 
     func testOpeningEaselReleasesDepartingLibrarySearchFocus() async throws {
