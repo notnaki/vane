@@ -933,10 +933,16 @@ extension NativeSidebarBatchHostingView: NativeSidebarRowHostFocusProbe {
     /// root already carries: asking SwiftUI makes it update this owner's whole graph,
     /// once per owner, for every responder change while the sidebar is covered.
     override var acceptsFirstResponder: Bool {
-        if !rootView.inherited.isEnabled { return false }
+        // …and under a Library still sliding over it, before that disable is applied.
+        if !rootView.inherited.isEnabled || LibrarySidebarCover.hidesSidebar(in: window) { return false }
         return super.acceptsFirstResponder
     }
     fileprivate var hostedAnswer: Bool { super.acceptsFirstResponder }
+    /// Keyboard navigation hands a row its focus directly, without asking first.
+    override func becomeFirstResponder() -> Bool {
+        if LibrarySidebarCover.hidesSidebar(in: window) { return false }
+        return super.becomeFirstResponder()
+    }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         // Destinations and reveal edges are the section's; during a disclosure the

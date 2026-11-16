@@ -5053,8 +5053,13 @@ struct Stash {
 
     /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
     @Published var libraryOpen = false {
-        didSet { librarySwipeMonitor.cancelPendingActivation(toward: libraryOpen) }
+        didSet {
+            librarySwipeMonitor.cancelPendingActivation(toward: libraryOpen)
+            if libraryOpen != oldValue { librarySidebarCover.follow(self) }
+        }
     }
+    /// The sidebar's disabled state, which follows `libraryOpen` once an animated slide has landed.
+    let librarySidebarCover = LibrarySidebarCover()
     /// Only the navigation layout observes per-sample gesture updates.
     let libraryGesture = LibraryGesture()
     var librarySwipeProgress: CGFloat? {

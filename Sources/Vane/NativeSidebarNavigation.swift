@@ -174,6 +174,14 @@ import SwiftUI
         print("NATIVE_NAV \(message())")
     }
 
+    /// Whether `view` is a section's rows or anything inside them.
+    static func owns(_ view: NSView) -> Bool {
+        navigations.contains { navigation in
+            guard let container = navigation.value?.container else { return false }
+            return view === container || view.isDescendant(of: container)
+        }
+    }
+
     func configure(rows: [String], container: NSView,
                    prepareRow: ((String?) -> Void)? = nil,
                    nativeRows: @escaping () -> [(String, NSView)]) {
@@ -413,7 +421,8 @@ import SwiftUI
     }
     private func deliverPending() {
         guard let pending, pending.delivered == nil, let container, let window = container.window else { return }
-        guard pending.lease.isCurrent(in: window) else {
+        // A request still queued when the Library covers the sidebar has nowhere to land.
+        guard pending.lease.isCurrent(in: window), !LibrarySidebarCover.hidesSidebar(in: window) else {
             self.pending = nil
             prepareRow?(nil)
             return

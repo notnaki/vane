@@ -377,6 +377,13 @@ final class VaneWindow: NSWindow {
         centreTrafficLights()
     }
 
+    /// Nothing under a Library takes the keyboard, including while its panel is still
+    /// sliding over a sidebar that has not been disabled yet.
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        guard MainActor.assumeIsolated({ LibrarySidebarCover.admits(responder, in: self) }) else { return false }
+        return super.makeFirstResponder(responder)
+    }
+
     /// WebKit offers unhandled DOM keys back to AppKit asynchronously. A page can
     /// act on a key (for example YouTube's L) without preventing its default, so
     /// reaching the window is not evidence that the user's shortcut was invalid.

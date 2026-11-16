@@ -703,7 +703,9 @@ private struct BrowserWindowContent: View {
             // Press anchors stay mounted, inert, through a disable: covering the sidebar
             // otherwise removes one native view per control and re-adds it on the way back.
             .environment(\.sidebarRetainsControls, true)
-            .disabled(!visible || store.palette != nil || store.libraryOpen)
+            // Covered by the Library once its slide has landed; see LibrarySidebarCover.
+            .modifier(LibrarySidebarCoverGate(cover: store.librarySidebarCover,
+                                              blocked: !visible || store.palette != nil))
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
                 libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
