@@ -12,6 +12,8 @@ struct MaxPane: View {
     @AppStorage("aiSettingsRevision", store: .vane) private var revision = 0
 
     @State private var showsConnections = false
+    /// Keychain-backed, so computed on appear and settings changes rather than per body.
+    @State private var blocked: Set<AIFeature> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -95,11 +97,15 @@ struct MaxPane: View {
             .padding(.vertical, 22)
             .frame(maxWidth: .infinity)
         }
+        .onAppear { refreshBlocked() }
+        .onChange(of: revision) { refreshBlocked() }
     }
 
     private func unavailable(_ feature: AIFeature) -> Bool {
-        _ = revision
-        return !enabled || !BrowserAI.ready(for: feature)
+        !enabled || blocked.contains(feature)
+    }
+    private func refreshBlocked() {
+        blocked = Set(AIFeature.allCases.filter { BrowserAI.unavailableReason(for: $0) != nil })
     }
 }
 
@@ -203,12 +209,15 @@ private struct MaxBannerEdge: Shape {
 }
 
 private enum MaxArtwork {
-    static func image(_ name: String) -> Image {
+    /// Bundled files never change, so each is decoded once per launch rather than per body.
+    @MainActor private static var cache: [URL: NSImage] = [:]
+    @MainActor static func image(_ name: String) -> Image {
         if let url = AppResources.bundle.url(forResource: name, withExtension: "png", subdirectory: "MaxAssets"),
-           let image = NSImage(contentsOf: url) {
-            Image(nsImage: image)
+           let image = cache[url] ?? NSImage(contentsOf: url) {
+            cache[url] = image
+            return Image(nsImage: image)
         } else {
-            Image(systemName: "photo")
+            return Image(systemName: "photo")
         }
     }
 }
