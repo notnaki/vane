@@ -87,15 +87,22 @@ import XCTest
             window.recalculateKeyViewLoop()
             window.selectNextKeyView(nil)
             try await Task.sleep(for: .milliseconds(150))
-            // Eager: an ordinary resize out and back, outside any live resize.
+            // Eager: an ordinary resize to the size the drag will end at, outside any
+            // live resize. The drag ends there too, so a loop never rebuilt after it
+            // would still carry the starting geometry and differ.
             let frame = window.frame
-            window.setFrame(NSRect(x: frame.minX, y: frame.minY - 50, width: frame.width + 150, height: frame.height + 50), display: true)
+            window.setFrame(NSRect(origin: frame.origin, size: NSSize(width: frame.width + 120, height: frame.height + 40)), display: true)
             try await Task.sleep(for: .milliseconds(200))
-            window.setFrame(frame, display: true)
-            try await Task.sleep(for: .milliseconds(200))
+            window.selectNextKeyView(nil)
+            try await Task.sleep(for: .milliseconds(150))
             let eager = loop()
             XCTAssertGreaterThan(eager.count, 3, "The fixture must have a key-view loop to compare")
-            _ = try await self.drag(window, speed: 100, travel: 120, corner: true)
+            window.setFrame(frame, display: true)
+            try await Task.sleep(for: .milliseconds(200))
+            window.selectNextKeyView(nil)
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertNotEqual(loop(), eager, "The starting loop must differ, or the comparison proves nothing")
+            _ = try await self.drag(window, speed: 100, travel: 120, corner: true, returns: false)
             try await Task.sleep(for: .milliseconds(200))
             window.selectNextKeyView(nil)
             try await Task.sleep(for: .milliseconds(150))
@@ -187,7 +194,7 @@ import XCTest
     /// the main thread finishes a frame, so the app rather than the fixture sets
     /// the cadence. Out and back along the right edge (and bottom, for a corner).
     private func drag(_ window: VaneWindow, speed: Double, travel: Double, corner: Bool = false, laps: Int = 1,
-                      beforeRelease: () -> Void = {}) async throws -> Drag {
+                      returns: Bool = true, beforeRelease: () -> Void = {}) async throws -> Drag {
         let baseline = window.frame
         let record = ResizeLayoutRecord()
         let observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
@@ -204,7 +211,8 @@ import XCTest
                 guard !record.finished else { return }
                 let elapsed = min(CACurrentMediaTime() - began, duration)
                 let phase = elapsed >= duration ? 0 : elapsed.truncatingRemainder(dividingBy: lap)
-                let offset = (phase < lap / 2 ? phase : lap - phase) * speed
+                // One way, a drag ends `travel` past where it began instead of returning.
+                let offset = returns ? (phase < lap / 2 ? phase : lap - phase) * speed : travel * elapsed / duration
                 let size = NSSize(width: (baseline.width + CGFloat(offset)).rounded(),
                                   height: corner ? (baseline.height + CGFloat(offset / 3)).rounded() : baseline.height)
                 let accepted = window.proposedPageResize(size)
@@ -222,7 +230,8 @@ import XCTest
         let ended = CACurrentMediaTime()
         beforeRelease()
         window.endPageResize()
-        try await compatibilityWait { !window.isPreparingPageResize && abs(window.frame.width - baseline.width) < 1 }
+        let target = baseline.width + (returns ? 0 : CGFloat(travel))
+        try await compatibilityWait { !window.isPreparingPageResize && abs(window.frame.width - target) < 1 }
         return Drag(began: began, ended: ended, changes: record.changes)
     }
 
