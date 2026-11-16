@@ -81,11 +81,12 @@ import XCTest
 
     func testRepeatedDismissalDoesNotRepublishClearedSearchState() {
         let store = window()
-        var publications = 0
-        let subscription = store.objectWillChange.sink { publications += 1 }
-        defer { subscription.cancel() }
+        var publications = 0, windowPublications = 0
+        let subscription = store.suggestionState.objectWillChange.sink { publications += 1 }
+        let window = store.objectWillChange.sink { windowPublications += 1 }
+        defer { subscription.cancel(); window.cancel() }
         store.clearSuggestions()
-        XCTAssertEqual(publications, 0, "Dismissing an empty search must not invalidate window chrome")
+        XCTAssertEqual(publications, 0, "Dismissing an empty search must not republish search state")
         store.suggestions = [Suggestion(url: "https://result.example", title: "Result", bookmarked: false)]
         store.suggestionIndex = 0
         publications = 0
@@ -97,6 +98,7 @@ import XCTest
         for _ in 0..<3 { store.clearSuggestions() }
         XCTAssertEqual(publications, cleared,
                        "Close, presentation removal and fade completion share one cleared state")
+        XCTAssertEqual(windowPublications, 0, "Search results must not invalidate window chrome")
     }
 
     func testLateSuggestionsKeepTheKeyboardDestinationSelected() {

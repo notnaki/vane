@@ -3068,17 +3068,44 @@ struct Stash {
             }
         }
     }
-    @Published var suggestions: [Suggestion] = []
+    /// The search bar's suggestion state publishes on its own object. Every keystroke
+    /// rewrites it; as `TabStore` properties each write re-ran every view observing the
+    /// window — the page card, the sidebar's housekeeping row, the title sync.
+    @MainActor final class SuggestionState: ObservableObject {
+        @Published var suggestions: [Suggestion] = []
+        @Published var suggestionsPending = false
+        @Published var historyPending = false
+        @Published var enginePending = false
+        @Published var suggestionIndex = -1
+    }
+    let suggestionState = SuggestionState()
+
+    var suggestions: [Suggestion] {
+        get { suggestionState.suggestions }
+        set { suggestionState.suggestions = newValue }
+    }
     /// True from a query's first keystroke until both its history and engine halves are in.
     /// `suggestions` is always the current query's; the bar reads this to know whether an
     /// empty list is an answer or still on its way.
-    @Published private(set) var suggestionsPending = false
+    private(set) var suggestionsPending: Bool {
+        get { suggestionState.suggestionsPending }
+        set { suggestionState.suggestionsPending = newValue }
+    }
     /// Each half on its own: an empty history answer has arrived even while the engine is
     /// still on its way, and must not read as "history still coming".
-    @Published private(set) var historyPending = false
-    @Published private(set) var enginePending = false
+    private(set) var historyPending: Bool {
+        get { suggestionState.historyPending }
+        set { suggestionState.historyPending = newValue }
+    }
+    private(set) var enginePending: Bool {
+        get { suggestionState.enginePending }
+        set { suggestionState.enginePending = newValue }
+    }
     /// -1 means "no suggestion highlighted" — Enter then uses what was typed.
-    @Published var suggestionIndex = -1
+    var suggestionIndex: Int {
+        get { suggestionState.suggestionIndex }
+        set { suggestionState.suggestionIndex = newValue }
+    }
 
     var pickedSuggestion: Suggestion? {
         suggestions.indices.contains(suggestionIndex) ? suggestions[suggestionIndex] : nil

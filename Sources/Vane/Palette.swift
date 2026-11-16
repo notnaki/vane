@@ -605,6 +605,9 @@ struct CommandField: NSViewRepresentable {
     /// What `text` completes to. The field shows it with the untyped tail selected, so the
     /// next character types over the tail and a delete removes it.
     var completion: String? = nil
+    /// The field is its own previous and next key view. Only for a field whose `onKey`
+    /// swallows Tab and Shift-Tab, so keyboard navigation never asks it for a neighbour.
+    var closedKeyLoop = false
     /// Return true to swallow the key; false lets the field editor have it.
     let onKey: (Key) -> Bool
 
@@ -615,6 +618,12 @@ struct CommandField: NSViewRepresentable {
     final class BarField: NSTextField {
         var onForget: () -> Bool = { false }
         var onMount: (() -> Void)?
+        var closedKeyLoop = false
+        /// AppKit's password AutoFill check asks a newly focused text field for its
+        /// neighbours. Answering that without a nearby key view searches every candidate in
+        /// the window — the whole sidebar — on each ⌘T. The bar's answer is always "none".
+        override var nextValidKeyView: NSView? { closedKeyLoop ? self : super.nextValidKeyView }
+        override var previousValidKeyView: NSView? { closedKeyLoop ? self : super.previousValidKeyView }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if window != nil { onMount?() }
@@ -631,6 +640,7 @@ struct CommandField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let f = BarField(string: text)
+        f.closedKeyLoop = closedKeyLoop
         context.coordinator.watchSelection(of: f)
         f.onForget = { [weak coordinator = context.coordinator] in
             coordinator?.parent.onKey(.forget) ?? false
@@ -667,6 +677,7 @@ struct CommandField: NSViewRepresentable {
             }
         }
         context.coordinator.showsCompletion = shown != text
+        (f as? BarField)?.closedKeyLoop = closedKeyLoop
         if f.font != font { f.font = font }
         if let textColor, f.textColor != textColor { f.textColor = textColor }
         // The prompt is not fixed for the life of the field: ⇥ turns the bar into an
@@ -979,8 +990,15 @@ private struct PaletteTabWatch: View, Equatable {
     @EnvironmentObject private var store: TabStore
     @ObservedObject var tabs: ChangeWatch
     @Binding var changes: Int
+    private let identity: ObjectIdentifier
 
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.tabs === rhs.tabs }
+    init(tabs: ChangeWatch, changes: Binding<Int>) {
+        self.tabs = tabs
+        _changes = changes
+        identity = ObjectIdentifier(tabs)
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
     var body: some View {
         let sources = PaletteView.sources(for: store)
@@ -994,6 +1012,31 @@ private struct PaletteTabWatch: View, Equatable {
             .onChange(of: content.map(\.id)) {
                 tabs.watch(sources.flatMap { $0.element.accessibleTabs })
             }
+    }
+}
+
+/// Bumps `changes` when the window's suggestions or their pending halves change. They
+/// publish on their own object, so typing does not re-run every view observing the window.
+private struct PaletteSuggestionWatch: View, Equatable {
+    @ObservedObject var state: TabStore.SuggestionState
+    @Binding var changes: Int
+    private let identity: ObjectIdentifier
+
+    init(state: TabStore.SuggestionState, changes: Binding<Int>) {
+        self.state = state
+        _changes = changes
+        identity = ObjectIdentifier(state)
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
+
+    var body: some View {
+        Color.clear
+            .accessibilityHidden(true)
+            .onChange(of: state.suggestions) { changes += 1 }
+            .onChange(of: state.suggestionsPending) { changes += 1 }
+            .onChange(of: state.historyPending) { changes += 1 }
+            .onChange(of: state.enginePending) { changes += 1 }
     }
 }
 
@@ -1050,6 +1093,7 @@ private struct PaletteTabWatch: View, Equatable {
     /// Observed by `PaletteTabWatch`, not here, so a tab's progress never re-runs this body.
     @State private var tabs = ChangeWatch()
     @State private var tabChanges = 0
+    @State private var suggestionChanges = 0
     // `.vane`, the store Search Settings writes through, so a `VANE_DATA_DIR` instance
     // reads its own choices rather than the regular app's.
     @AppStorage(Look.barVisibleRowsKey, store: .vane) private var visibleRows = Look.barVisibleRows
@@ -1127,7 +1171,10 @@ private struct PaletteTabWatch: View, Equatable {
                     }
             }
         }
-        .background { PaletteTabWatch(tabs: tabs, changes: $tabChanges).equatable() }
+        .background {
+            PaletteTabWatch(tabs: tabs, changes: $tabChanges).equatable()
+            PaletteSuggestionWatch(state: store.suggestionState, changes: $suggestionChanges).equatable()
+        }
         .vaneMotionPolicy()
         .onDisappear {
             acceptingInput = false
@@ -1184,10 +1231,7 @@ private struct PaletteTabWatch: View, Equatable {
         // Completions land later than the keystroke that asked for them; the list has to
         // grow under the user without moving what they had already arrowed onto. The same
         // goes for a tab that renames itself or gets its favicon while the bar is up.
-        .onChange(of: store.suggestions) { refresh(reset: false, rebuildLocal: false) }
-        .onChange(of: store.suggestionsPending) { refresh(reset: false, rebuildLocal: false) }
-        .onChange(of: store.historyPending) { refresh(reset: false, rebuildLocal: false) }
-        .onChange(of: store.enginePending) { refresh(reset: false, rebuildLocal: false) }
+        .onChange(of: suggestionChanges) { refresh(reset: false, rebuildLocal: false) }
         // Tab content or the set of tabs changed (see `PaletteTabWatch`).
         .onChange(of: tabChanges) { refresh(reset: false) }
         .onChange(of: tabSpaceID) { refresh() }
@@ -1239,7 +1283,9 @@ private struct PaletteTabWatch: View, Equatable {
     }
 
     private func bar(listHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // Once per pass: matching a word against every engine name is not free.
+        let bangCandidate = bangCandidate
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.barRowInset) {
                 Group {
                     if sidebarAddress, !actionsOnly, activeBang == nil, let icon = store.active?.favicon {
@@ -1279,7 +1325,7 @@ private struct PaletteTabWatch: View, Equatable {
                                      : Look.Typography.input.native,
                                  focusRequest: fieldFocusRequest,
                                  canFocus: { acceptingInput }, completion: completion?.text,
-                                 onKey: key)
+                                 closedKeyLoop: true, onKey: key)
                 }
                 if let candidate = bangCandidate {
                     Button { enterBang(candidate) } label: {
