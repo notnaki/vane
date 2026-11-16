@@ -112,7 +112,9 @@ import XCTest
                     + "placed=\(onScreen) modal=\(NSApp.modalWindow != nil) sheet=\(window.attachedSheet != nil) "
                     + "pointerInside=\(pointerInside) populated=\(populated) frame=\(window.frame) "
                     + "host=\(ObjectIdentifier(host)) rebuilds=\(rebuilds) readyCalls=\(readyCalls) "
-                    + "representations=\(representations)"
+                    + "representations=\(representations) "
+                    + "frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil") "
+                    + "menuBar=\(NSWorkspace.shared.menuBarOwningApplication?.bundleIdentifier ?? "nil")"
                 return admitted && ready(host)
             }
         } catch {

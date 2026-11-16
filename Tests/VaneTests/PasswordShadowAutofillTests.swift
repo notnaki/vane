@@ -78,9 +78,11 @@ import XCTest
         let config = WKWebViewConfiguration(), capture = Capture()
         config.websiteDataStore = .nonPersistent()
         // No case here inspects pixels. CI's paravirtual GPU stalls for seconds at a time,
-        // and an accelerated WebContent paint flush blocks its main thread on it; every
-        // evaluateJavaScript reply then queued 13.8s behind MetalContext::flush. Paint into
-        // CPU bitmaps so DOM outcomes never wait on that GPU.
+        // and an accelerated WebContent paint flush blocks its main thread on it, so every
+        // evaluateJavaScript reply queues behind MetalContext::flush (13.8s observed). Paint
+        // into CPU bitmaps so DOM outcomes never wait on that GPU.
+        _ = try XCTUnwrap(config.preferences.responds(to: NSSelectorFromString("_setAcceleratedDrawingEnabled:")) ? config.preferences : nil,
+                          "WebKit accelerated-drawing preference is unavailable")
         config.preferences.setValue(false, forKey: "acceleratedDrawingEnabled")
         config.userContentController.add(capture, contentWorld: Autofill.world, name: "vanepw")
         if !tracking.isEmpty {
