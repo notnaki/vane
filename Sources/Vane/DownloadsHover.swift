@@ -101,7 +101,7 @@ struct RecentLibraryPreview: View {
                             close()
                             switch item {
                             case .easel(let board): _ = store.openEasel(board.id)
-                            case .space(let space): store.switchTo(space: space)
+                            case .space(let space): store.selectSpace(space)
                             case .archived(let entry): store.restore(entry)
                             case .history(let visit):
                                 if let url = URL(string: visit.url) { store.newTab(url) }

@@ -225,7 +225,7 @@ struct SpaceName: View {
         ChromeMenuItem(title: space.name, symbol: space.icon ?? "cloud",
                        shortcut: n < 9 ? "⌃\(n + 1)" : "",
                        checked: store.currentSpaceID == space.id) {
-            store.switchTo(space: space); rebuild()
+            store.selectSpace(space); rebuild()
         }
     } + [ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus", startsGroup: true) {
         store.beginCreatingSpace(); rebuild()
@@ -1867,6 +1867,30 @@ private struct SpaceSwipe: ViewModifier {
         travelled = (0, 0)
         last = 0
         list = []
+    }
+
+    /// A keyboard or menu switch arriving while a captured slide is mounted (travelling,
+    /// or finished and waiting for the live rows to acknowledge it) or a finger swipe is
+    /// under way. Retire it as creating a Space does: no captured rows outlive the switch,
+    /// and the rest of a finger gesture is consumed rather than landing beside the
+    /// commanded Space.
+    func yieldToCommandSwitch(in store: TabStore) {
+        guard store.spaceSwiping
+                || (store.window?.contentView as? BrowserWindowHost)?.spaceSlide != nil else { return }
+        // Only a finger this monitor owns has a tail to consume. A slide a command or
+        // click started has none, and marking the window would swallow precise scrolling
+        // until some later gesture began.
+        if claim == .mine, let window = store.window { Self.committedSwipes.add(window) }
+        interruptLanding()
+        forget()
+        (store.window?.contentView as? BrowserWindowHost)?.cancelSpaceSlide()
+        Motion.spaceHandoff {
+            store.spaceGesture.withPresentationUpdate {
+                store.spaceDrag = 0
+                store.spacePull = 0
+                store.spaceSwiping = false
+            }
+        }
     }
 
     /// A new owner revokes both the compositor completion and any queued page activation.
