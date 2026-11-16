@@ -479,7 +479,9 @@ import XCTest
             Library.toggle(.archived, in: store)
             XCTAssertTrue(store.libraryOpen)
             XCTAssertFalse(store.librarySidebarCover.covered, "The press must land inside the slide")
-            try await Task.sleep(for: .milliseconds(40))
+            // Escape still reaches the form's cancel action once the Library's search field
+            // has the keyboard; that field swallows Return, so Return goes before it takes it.
+            if keyCode == 53 { try await Task.sleep(for: .milliseconds(40)) }
             NSApp.sendEvent(try key(keyCode, characters, in: window))
             try await Task.sleep(for: .milliseconds(50))
             XCTAssertTrue(store.creatingSpace, "Key \(keyCode) must not press the covered form's buttons")
