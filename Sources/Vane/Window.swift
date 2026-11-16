@@ -21,6 +21,8 @@ final class VaneWindow: NSWindow {
     private var sidebarResizePublication: SidebarResizePublication?
     /// The window's own setting while a live resize defers key-view-loop rebuilds.
     private var keyViewLoopBeforeLiveResize: Bool?
+    /// A drag deferred rebuilds that SwiftUI has not yet made up for.
+    private var keyViewLoopStale = false
 
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
@@ -100,6 +102,7 @@ final class VaneWindow: NSWindow {
                 self.sidebarResizePublication = nil
                 self.livePageResizeBuffer = nil
                 self.sidebarDrag = false
+                self.rebuildStaleKeyViewLoop()
             })
         guard let buffer = livePageResizeBuffer, let root = contentView else {
             livePageResizeBuffer?.cancel()
@@ -170,6 +173,7 @@ final class VaneWindow: NSWindow {
             completion: { [weak self] in
                 guard let self, self.liveResizeOwner == owner else { return }
                 self.livePageResizeBuffer = nil
+                self.rebuildStaleKeyViewLoop()
             })
         livePageResizeBuffer?.start()
         resizePreparation?.beginLiveResize()
@@ -192,14 +196,28 @@ final class VaneWindow: NSWindow {
 
     func endPageResize() {
         resizeAnchor = nil
-        livePageResizeBuffer?.finish()
-        resizePreparation?.endLiveResize()
         if let previous = keyViewLoopBeforeLiveResize {
             keyViewLoopBeforeLiveResize = nil
             autorecalculatesKeyViewLoop = previous
-            // Rebuilt once, when the next key view is next asked for.
-            recalculateKeyViewLoop()
+            keyViewLoopStale = true
         }
+        livePageResizeBuffer?.finish()
+        resizePreparation?.endLiveResize()
+        rebuildStaleKeyViewLoop()
+    }
+
+    /// SwiftUI orders its loop by its own focus items, which AppKit's
+    /// `recalculateKeyViewLoop()` does not reproduce, and it rebuilds only when a
+    /// focusable view moves. So once the drag's buffer has retired, move them: one
+    /// undisplayed resize of the content view and back, as a last drag frame would.
+    private func rebuildStaleKeyViewLoop() {
+        guard keyViewLoopStale, keyViewLoopBeforeLiveResize == nil, livePageResizeBuffer == nil,
+              let view = contentView else { return }
+        keyViewLoopStale = false
+        let size = view.frame.size
+        // Two points, so a centred control still moves a whole one.
+        view.setFrameSize(NSSize(width: size.width + 2, height: size.height + 2))
+        view.setFrameSize(size)
     }
 
     override func close() {

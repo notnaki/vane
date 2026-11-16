@@ -70,43 +70,44 @@ import XCTest
     }
 
     /// Deferring the rebuild must leave the loop SwiftUI's own eager updates would
-    /// have: the same views, in the same order, as after an unbuffered resize.
+    /// have: the same views, in the same order, and the same Tab cycle through them.
     func testDeferredKeyViewLoopMatchesAnEagerlyMaintainedOne() async throws {
         try await withFixture(count: 20, sidebarShown: true) { window, _ in
-            func loop() -> [String] {
+            @MainActor func chain(_ next: @MainActor (NSView) -> NSView?) -> [String] {
                 var views: [String] = [], seen = Set<ObjectIdentifier>()
-                var view = window.contentView?.nextKeyView
-                while let next = view, seen.insert(ObjectIdentifier(next)).inserted, views.count < 2000 {
-                    let frame = next.convert(next.bounds, to: nil)
-                    views.append("\(type(of: next)) \(Int(frame.minX.rounded())),\(Int((window.frame.height - frame.maxY).rounded())) \(Int(frame.width.rounded()))x\(Int(frame.height.rounded()))")
-                    view = next.nextKeyView
+                var view = window.contentView.flatMap(next)
+                while let current = view, seen.insert(ObjectIdentifier(current)).inserted, views.count < 2000 {
+                    let frame = current.convert(current.bounds, to: nil)
+                    views.append("\(type(of: current)) \(Int(frame.minX.rounded())),\(Int((window.frame.height - frame.maxY).rounded())) \(Int(frame.width.rounded()))x\(Int(frame.height.rounded()))")
+                    view = next(current)
                 }
                 return views
             }
-            // AppKit rebuilds a stale loop when the next key view is asked for.
-            window.recalculateKeyViewLoop()
-            window.selectNextKeyView(nil)
-            try await Task.sleep(for: .milliseconds(150))
-            // Eager: an ordinary resize to the size the drag will end at, outside any
-            // live resize. The drag ends there too, so a loop never rebuilt after it
-            // would still carry the starting geometry and differ.
+            // The whole loop, then the cycle Tab walks from no first responder.
+            @MainActor func loops() async throws -> [[String]] {
+                try await Task.sleep(for: .milliseconds(200))
+                return [chain { $0.nextKeyView }, chain { $0.nextValidKeyView }]
+            }
+            // Eager: ordinary resizes, outside any live resize, along the drag's path
+            // to the size it will end at. SwiftUI orders its loop by the frames that
+            // led there (one jump to the same size orders it differently), and a drag
+            // that never rebuilt would still carry the starting geometry.
             let frame = window.frame
-            window.setFrame(NSRect(origin: frame.origin, size: NSSize(width: frame.width + 120, height: frame.height + 40)), display: true)
-            try await Task.sleep(for: .milliseconds(200))
-            window.selectNextKeyView(nil)
-            try await Task.sleep(for: .milliseconds(150))
-            let eager = loop()
-            XCTAssertGreaterThan(eager.count, 3, "The fixture must have a key-view loop to compare")
+            for step in 1...12 {
+                let offset = CGFloat(step * 10)
+                window.setFrame(NSRect(origin: frame.origin, size: NSSize(width: frame.width + offset, height: frame.height + (offset / 3).rounded())), display: true)
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let eager = try await loops()
+            XCTAssertGreaterThan(eager[0].count, 3, "The fixture must have a key-view loop to compare")
+            XCTAssertGreaterThan(eager[1].count, 3, "The fixture must have a Tab cycle to compare")
             window.setFrame(frame, display: true)
-            try await Task.sleep(for: .milliseconds(200))
-            window.selectNextKeyView(nil)
-            try await Task.sleep(for: .milliseconds(150))
-            XCTAssertNotEqual(loop(), eager, "The starting loop must differ, or the comparison proves nothing")
+            let start = try await loops()
+            XCTAssertNotEqual(start[0], eager[0], "The starting loop must differ, or the comparison proves nothing")
             _ = try await self.drag(window, speed: 100, travel: 120, corner: true, returns: false)
-            try await Task.sleep(for: .milliseconds(200))
-            window.selectNextKeyView(nil)
-            try await Task.sleep(for: .milliseconds(150))
-            XCTAssertEqual(loop(), eager)
+            let deferred = try await loops()
+            XCTAssertEqual(deferred[0], eager[0])
+            XCTAssertEqual(deferred[1], eager[1])
         }
     }
 
