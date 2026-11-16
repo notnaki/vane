@@ -53,15 +53,21 @@ enum Palette {
     /// query is how the title, the host, or a word of the title begins (a word only once the
     /// query is three characters, so a single letter does not claim every tab).
     static func strong(_ query: String, title: String, url: String) -> Bool {
+        strongMatcher(query)(title, url)
+    }
+
+    /// `strong` with the query parsed once, for testing every open tab against it.
+    static func strongMatcher(_ query: String) -> (_ title: String, _ url: String) -> Bool {
         // A page controls its title. It must never displace a destination the user typed,
         // even when that title is an exact copy of the requested URL.
-        guard !Search.isExplicitNavigation(query), !Search.isJavaScriptURL(query) else { return false }
+        guard !Search.isExplicitNavigation(query), !Search.isJavaScriptURL(query) else { return { _, _ in false } }
         let match = SearchMatch(query)
-        guard !match.query.isEmpty,
-              let score = match.page(title: title, url: url, fuzzy: false) else { return false }
-        return score >= SearchMatch.prefixFloor
-            || (match.query.count >= 3 && score >= SearchMatch.wordFloor)
-
+        guard !match.query.isEmpty else { return { _, _ in false } }
+        let words = match.query.count >= 3
+        return { title, url in
+            guard let score = match.page(title: title, url: url, fuzzy: false) else { return false }
+            return score >= SearchMatch.prefixFloor || (words && score >= SearchMatch.wordFloor)
+        }
     }
 
     /// Visible tab metadata comes from the actual address, never from the page title.
@@ -965,6 +971,32 @@ struct PaletteSizing {
     }
 }
 
+/// Notices that a listed tab changed — its content, ownership or order, or the set of tabs
+/// itself — and bumps `changes`. A leaf of its own so the comparison runs only when a
+/// window or a tab publishes: in `PaletteView.body` it walked every open tab on each
+/// keystroke and arrow press, which do not change a tab.
+private struct PaletteTabWatch: View, Equatable {
+    @EnvironmentObject private var store: TabStore
+    @ObservedObject var tabs: ChangeWatch
+    @Binding var changes: Int
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.tabs === rhs.tabs }
+
+    var body: some View {
+        let sources = PaletteView.sources(for: store)
+        let content = sources.flatMap { number, owner in
+            owner.accessibleTabs.map { Feel03TabContent($0, owner: owner, windowNumber: number) }
+        }
+        Color.clear
+            .accessibilityHidden(true)
+            .onChange(of: content) { changes += 1 }
+            // Tabs opened or closed while the bar is up: watch the new set, and list it.
+            .onChange(of: content.map(\.id)) {
+                tabs.watch(sources.flatMap { $0.element.accessibleTabs })
+            }
+    }
+}
+
 /// The search bar: one centred sheet over the page for typing a url, a search, a question
 /// for an assistant, or the name of a tab.
 ///
@@ -1015,7 +1047,9 @@ struct PaletteSizing {
     @State private var completionAllowed = false
     @State private var firstLetterVisits: (query: String, urls: [String]) = ("", [])
     /// Every open tab, in every window: a title or favicon arriving redraws the row for it.
-    @StateObject private var tabs = ChangeWatch()
+    /// Observed by `PaletteTabWatch`, not here, so a tab's progress never re-runs this body.
+    @State private var tabs = ChangeWatch()
+    @State private var tabChanges = 0
     // `.vane`, the store Search Settings writes through, so a `VANE_DATA_DIR` instance
     // reads its own choices rather than the regular app's.
     @AppStorage(Look.barVisibleRowsKey, store: .vane) private var visibleRows = Look.barVisibleRows
@@ -1093,6 +1127,7 @@ struct PaletteSizing {
                     }
             }
         }
+        .background { PaletteTabWatch(tabs: tabs, changes: $tabChanges).equatable() }
         .vaneMotionPolicy()
         .onDisappear {
             acceptingInput = false
@@ -1153,9 +1188,8 @@ struct PaletteSizing {
         .onChange(of: store.suggestionsPending) { refresh(reset: false, rebuildLocal: false) }
         .onChange(of: store.historyPending) { refresh(reset: false, rebuildLocal: false) }
         .onChange(of: store.enginePending) { refresh(reset: false, rebuildLocal: false) }
-        // ChangeWatch invalidates the body on a tab notification; compare only
-        // result/action content before rebuilding, including store-driven changes.
-        .onChange(of: currentTabContent) { refresh(reset: false) }
+        // Tab content or the set of tabs changed (see `PaletteTabWatch`).
+        .onChange(of: tabChanges) { refresh(reset: false) }
         .onChange(of: tabSpaceID) { refresh() }
         // Space metadata changes between queries still update the open palette.
         .onReceive(spaceCatalog.metadataChanges(manager: profileManager)) { _ in
@@ -1169,8 +1203,6 @@ struct PaletteSizing {
         }
         .onChange(of: store.previewSpace) { refresh(reset: false) }
         .onChange(of: store.currentSpaceID) { refresh(reset: false) }
-        // Tabs opened or closed while the bar is up: watch the new set, and list it.
-        .onChange(of: allTabs.map(\.id)) { tabs.watch(allTabs); refresh(reset: false) }
     }
 
     private var catalogStrip: [Space] {
@@ -1188,7 +1220,7 @@ struct PaletteSizing {
         return spaceCatalog.spaces(for: store.profileID, manager: profileManager, preview: store.previewSpace)
     }
 
-    private var sources: [(offset: Int, element: TabStore)] {
+    static func sources(for store: TabStore) -> [(offset: Int, element: TabStore)] {
         TabStore.all.enumerated().filter { _, other in
             Palette.tabSourceAllowed(profileID: store.profileID, isPrivate: store.isPrivate,
                 ownWindow: other === store, sourceProfileID: other.profileID,
@@ -1196,12 +1228,7 @@ struct PaletteSizing {
         }
     }
 
-    private var allTabs: [Tab] { sources.flatMap { $0.element.accessibleTabs } }
-    private var currentTabContent: [Feel03TabContent] {
-        sources.flatMap { number, owner in
-            owner.accessibleTabs.map { Feel03TabContent($0, owner: owner, windowNumber: number) }
-        }
-    }
+    private var allTabs: [Tab] { Self.sources(for: store).flatMap { $0.element.accessibleTabs } }
 
     /// Seed the native field on its first creation, before onAppear updates State.
     /// This lets focus select the address without delaying the field by a frame.
@@ -1551,14 +1578,15 @@ struct PaletteSizing {
         let selectedID = selectedRow?.id
         if rebuildLocal {
             var fresh = Feel03PaletteLayout<PaletteRow>()
-            func matchingTabs() -> [PaletteRow] {
-                Palette.rankPages(query, tabRows(), title: \.title, url: \.matchURL)
+            // Ranked as tabs; only the rows that can be shown are built.
+            func matchingTabs() -> [TabSource] {
+                Palette.rankPages(query, tabSources(), title: \.tab.title, url: \.tab.address)
             }
             if actionsOnly {
                 // ⇥: the catalogue and nothing else, so the bar reads as one list of verbs.
                 fresh.leading = commandRows()
             } else if mode == .tabs {
-                fresh.leading = Array(matchingTabs().prefix(24))
+                fresh.leading = matchingTabs().prefix(24).map(tabRow)
             } else if activeBang != nil {
                 fresh.leading = typedRow().map { [$0] } ?? []
                 fresh.acceptsSuggestions = !fresh.leading.isEmpty
@@ -1579,13 +1607,13 @@ struct PaletteSizing {
                 // wait until after what the engine completes the words to.
                 // A tab row's detail is "address — Window n" when there are several windows.
                 let tabs = matchingTabs()
-                let strong = tabs.filter {
-                    Palette.strong(typed, title: $0.title, url: $0.matchURL)
-                }
-                let strongIDs = Set(strong.map(\.id))
-                let weak = tabs.filter { !strongIDs.contains($0.id) }
-                let ordered = strong + weak
+                let isStrong = Palette.strongMatcher(typed)
+                let strongFlags = tabs.map { isStrong($0.tab.title, $0.tab.address) }
+                let strong = zip(tabs, strongFlags).filter(\.1).map(\.0)
+                let weak = zip(tabs, strongFlags).filter { !$0.1 }.map(\.0)
                 let lead = min(strong.count, 1)
+                // Nothing past the lead and the 24-row tail is ever shown.
+                let ordered = (strong + weak).prefix(lead + 24).map(tabRow)
                 let commands = Palette.commandSections(typed, commands: commandRows(), title: \.title)
                 // "chatgpt news" names an assistant, so asking it is what Return does — but as
                 // its own "Ask ChatGPT" row, with a real "Search" row right under it.
@@ -1637,7 +1665,7 @@ struct PaletteSizing {
         let urls = Palette.completionSources(
             typed: typed, history: store.suggestions.filter { !$0.completion }.map(\.url),
             held: store.suggestionsPending ? heldSuggestions.map(\.detail) : [],
-            firstLetter: firstLetterVisits, tabs: tabRows().map(\.matchURL))
+            firstLetter: firstLetterVisits, tabs: tabSources().map(\.tab.address))
         return Palette.completeHost(typed, urls: urls)
     }
 
@@ -1751,10 +1779,17 @@ struct PaletteSizing {
         }
     }
 
+    /// An open tab as the bar searches it, before it is made into a row.
+    private struct TabSource {
+        let tab: Tab
+        let owner: TabStore
+        let place: String
+    }
+
     /// Other ordinary windows in this profile are searchable. Private and Little Vane
     /// tabs are visible only in their own window; private searches never read other windows.
-    private func tabRows() -> [PaletteRow] {
-        var out: [PaletteRow] = []
+    private func tabSources() -> [TabSource] {
+        var out: [TabSource] = []
         let manyWindows = TabStore.all.count > 1
         for (w, other) in TabStore.all.enumerated()
         where Palette.tabSourceAllowed(profileID: store.profileID, isPrivate: store.isPrivate,
@@ -1762,9 +1797,13 @@ struct PaletteSizing {
                                        sourcePrivate: other.isPrivate, sourceLittle: other.isLittle)
             && (tabSpaceID == nil || other.currentSpaceID == tabSpaceID) {
             let place = manyWindows ? "Window \(w + 1)" : ""
-            out += other.accessibleTabs.map { tabRow($0, in: other, place: place) }
+            out += other.accessibleTabs.map { TabSource(tab: $0, owner: other, place: place) }
         }
         return out
+    }
+
+    private func tabRow(_ source: TabSource) -> PaletteRow {
+        tabRow(source.tab, in: source.owner, place: source.place)
     }
 
     /// Only another tab or window needs a switch label; the current page needs no verb.
