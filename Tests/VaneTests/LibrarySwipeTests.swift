@@ -148,6 +148,70 @@ import XCTest
                       "The invisible search field must release page keyboard input; holder=\(String(describing: window.firstResponder)) page=\(String(describing: store.activePageResponder)) webWindow=\(tab.web.window != nil) palette=\(store.palette != nil)")
     }
 
+    /// A covered sidebar's row hosts answer focus eligibility themselves, to spare a
+    /// forced graph update per host. That answer must be the one SwiftUI would give.
+    /// Covering and uncovering also keeps every press anchor, disabled, instead of
+    /// removing and re-adding a native view per control.
+    func testCoveredSidebarKeepsSwiftUIFocusAnswersAndItsPressAnchors() async throws {
+        let (store, window, _) = fixture(withSpaces: true)
+        store.tabs = (0..<12).map { index in
+            let tab = Tab(profileID: store.profileID)
+            tab.kind = .today
+            tab.park(url: URL(string: "about:blank#focus-\(index)")!, Parked(title: "Focus fixture \(index)"))
+            return tab
+        }
+        store.syncShapes()
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
+        func rowHosts(_ view: NSView) -> [NSView] {
+            view.subviews.flatMap { ($0 is any NativeSidebarRowHostFocusProbe ? [$0] : []) + rowHosts($0) }
+        }
+        func settle() async throws {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(700))
+            host.layoutSubtreeIfNeeded()
+        }
+        func anchors(_ view: NSView) -> [Feel02PressAnchorView] {
+            view.subviews.flatMap { ($0 as? Feel02PressAnchorView).map { [$0] } ?? anchors($0) }
+        }
+        let resting = anchors(host)
+        XCTAssertFalse(resting.isEmpty, "The fixture mounts pressable controls")
+        XCTAssertFalse(rowHosts(host).isEmpty, "The fixture mounts sidebar rows")
+        for view in rowHosts(host) {
+            XCTAssertEqual(view.acceptsFirstResponder,
+                           (view as! any NativeSidebarRowHostFocusProbe).hostedAcceptsFirstResponder)
+        }
+        Library.open(.archived, in: store)
+        try await settle()
+        XCTAssertFalse(rowHosts(host).isEmpty, "The covered sidebar keeps its rows mounted")
+        for view in rowHosts(host) {
+            XCTAssertFalse((view as! any NativeSidebarRowHostFocusProbe).hostedAcceptsFirstResponder,
+                           "SwiftUI offers nothing to focus in a disabled section")
+            XCTAssertFalse(view.acceptsFirstResponder)
+        }
+        let covered = anchors(host)
+        XCTAssertTrue(resting.allSatisfy { anchor in covered.contains { $0 === anchor } },
+                      "Opening the Library disables press anchors in place")
+        XCTAssertTrue(covered.contains { !$0.enabled }, "The covered sidebar's anchors are inert")
+        Library.close(store)
+        try await settle()
+        for view in rowHosts(host) {
+            XCTAssertEqual(view.acceptsFirstResponder,
+                           (view as! any NativeSidebarRowHostFocusProbe).hostedAcceptsFirstResponder)
+        }
+        let uncovered = anchors(host)
+        XCTAssertTrue(covered.allSatisfy { anchor in uncovered.contains { $0 === anchor } },
+                      "Closing the Library keeps its press anchors in place")
+    }
+
     func testOpeningEaselReleasesDepartingLibrarySearchFocus() async throws {
         let (store, window, _) = fixture(withSpaces: true)
         _ = store.newBlankTab(loading: URL(string: "about:blank"))
@@ -784,6 +848,8 @@ import XCTest
         store.palette = nil
         let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
             .environmentObject(ProfileManager.shared))
+        // As the app's root: the window supplies the frame, with no separate size queries.
+        host.sizingOptions = []
         window.contentView = host
         window.level = .floating
         window.makeKeyAndOrderFront(nil)
@@ -791,26 +857,54 @@ import XCTest
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(500))
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let mounted = descendants(host)
+        print("LIBRARY_SWIPE_VIEWS native=\(mounted.count) rows=\(mounted.filter { $0 is NativeSidebarRowLayoutView }.count) hosts=\(mounted.filter { String(describing: type(of: $0)).contains("HostingView") }.count)")
         print("LIBRARY_SWIPE_WINDOW visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) active=\(NSApp.isActive) frame=\(window.frame) screens=\(NSScreen.screens.map(\.frame))")
         // Force native layout even when this desktop session occludes test windows.
         // These timings measure main-thread update work, not displayed frame rate.
         var lastTick = ProcessInfo.processInfo.systemUptime
         var maxGap = 0.0
+        // Every main-thread gap and display-frame interval of a whole open or close,
+        // pooled over the visits: the hitch is the tail, which a maximum of one visit hides.
+        var phase: String?
+        var phaseStart = 0.0
+        var lastFrame = 0.0
+        var gaps: [String: [Double]] = [:], frames: [String: [Double]] = [:]
+        func begin(_ name: String, opening: Bool) {
+            phase = "\(name) opening=\(opening)"
+            phaseStart = ProcessInfo.processInfo.systemUptime
+            lastFrame = phaseStart
+            lastTick = phaseStart
+            maxGap = 0
+        }
         let timer = Timer(timeInterval: 0.001, repeats: true) { _ in
             MainActor.assumeIsolated {
                 let now = ProcessInfo.processInfo.systemUptime
-                maxGap = max(maxGap, now - lastTick)
+                let gap = now - lastTick
+                maxGap = max(maxGap, gap)
                 lastTick = now
+                guard let phase else { return }
+                gaps[phase, default: []].append(gap * 1000)
+                if gap > 0.012 {
+                    print("LIBRARY_SLOW tabs=\(count) phase=\(phase) at_ms=\((now - gap - phaseStart) * 1000) gap_ms=\(gap * 1000)")
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         defer { timer.invalidate() }
-        for visit in 0..<3 {
+        let stopFrames = SidebarResizePublication.displayFrames(for: window)({
+            let now = ProcessInfo.processInfo.systemUptime
+            if let phase { frames[phase, default: []].append((now - lastFrame) * 1000) }
+            lastFrame = now
+        })
+        defer { stopFrames() }
+        let visits = ProcessInfo.processInfo.environment["VANE_LIBRARY_PERF_VISITS"].flatMap(Int.init) ?? 3
+        for visit in 0..<visits {
             for opening in [true, false] {
                 var publications = 0
                 let observation = store.objectWillChange.sink { publications += 1 }
-                maxGap = 0
-                lastTick = ProcessInfo.processInfo.systemUptime
+                begin("drag", opening: opening)
                 send(window, phase: .began)
                 let start = ProcessInfo.processInfo.systemUptime
                 send(window, dx: opening ? 15 : -15)
@@ -833,8 +927,7 @@ import XCTest
                         to: host.layer?.presentation()).x
                 }
                 let releasedAt = try panelX()
-                maxGap = 0
-                lastTick = ProcessInfo.processInfo.systemUptime
+                begin("landing", opening: opening)
                 let release = lastTick
                 send(window, phase: .ended)
                 let handler = (ProcessInfo.processInfo.systemUptime - release) * 1000
@@ -847,6 +940,7 @@ import XCTest
                 }
                 print("LIBRARY_LANDING tabs=\(count) visit=\(visit) opening=\(opening) from_x=\(releasedAt) first_motion_ms=\(firstMotion ?? -1) handler_ms=\(handler) max_gap_ms=\(maxGap * 1000)")
                 try await Task.sleep(for: .milliseconds(100))
+                phase = nil
             }
         }
         // ⇧⌘L and the footer glyph publish the destination before the first frame,
@@ -856,11 +950,10 @@ import XCTest
         func clickPanelX() throws -> CGFloat {
             try XCTUnwrap(marker.layer?.presentation()).convert(.zero, to: host.layer?.presentation()).x
         }
-        for visit in 0..<3 {
+        for visit in 0..<visits {
             for opening in [true, false] {
                 let before = try clickPanelX()
-                maxGap = 0
-                lastTick = ProcessInfo.processInfo.systemUptime
+                begin("click", opening: opening)
                 let start = lastTick
                 Library.toggle(.archived, in: store)
                 let handler = (ProcessInfo.processInfo.systemUptime - start) * 1000
@@ -878,6 +971,7 @@ import XCTest
                 XCTAssertEqual(store.libraryOpen, opening)
                 print("LIBRARY_CLICK tabs=\(count) visit=\(visit) opening=\(opening) first_motion_ms=\(firstMotion ?? -1) handler_ms=\(handler) start_gap_ms=\(startGap * 1000) motion_gap_ms=\(maxGap * 1000)")
                 try await Task.sleep(for: .milliseconds(100))
+                phase = nil
             }
         }
         // The activation alone, with no slide: what a swipe pays after its panel
@@ -887,10 +981,10 @@ import XCTest
         try await Task.sleep(for: .milliseconds(300))
         for visit in 0..<activations {
             for opening in [true, false] {
-                maxGap = 0
-                lastTick = ProcessInfo.processInfo.systemUptime
+                begin("activation", opening: opening)
                 Library.toggle(.archived, in: store)
                 try await Task.sleep(for: .milliseconds(200))
+                phase = nil
                 XCTAssertEqual(store.libraryOpen, opening)
                 print("LIBRARY_ACTIVATION tabs=\(count) visit=\(visit) opening=\(opening) max_gap_ms=\(maxGap * 1000)")
             }
@@ -902,6 +996,15 @@ import XCTest
             store.objectWillChange.send()
             try await Task.sleep(for: .milliseconds(100))
             print("LIBRARY_PUBLICATION tabs=\(count) visit=\(visit) max_gap_ms=\(maxGap * 1000)")
+        }
+        func percentiles(_ values: [Double]) -> String {
+            let sorted = values.sorted()
+            guard let last = sorted.last else { return "n=0" }
+            func at(_ p: Double) -> Double { sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] }
+            return "n=\(sorted.count) mean=\(sorted.reduce(0, +) / Double(sorted.count)) p50=\(at(0.5)) p95=\(at(0.95)) p99=\(at(0.99)) max=\(last)"
+        }
+        for phase in gaps.keys.sorted() {
+            print("LIBRARY_FRAMES tabs=\(count) phase=\(phase) frame_ms[\(percentiles(frames[phase] ?? []))] gap_ms[\(percentiles(gaps[phase] ?? []))]")
         }
         XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000)
     }
