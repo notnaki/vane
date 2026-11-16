@@ -58,7 +58,9 @@ struct LibraryScrollView<Content: View>: View {
                                     content: $0.contentSize.height, offset: $0.contentOffset.y,
                                     visibleHeight: $0.visibleRect.height)
         } action: { old, new in
-            metrics = new
+            // Nothing reads the metrics of content that fits; do not re-evaluate
+            // for every viewport height of a window resize.
+            if new.scrolls || metrics.scrolls { metrics = new }
             if !new.scrolls {
                 interaction = LibraryScrollbarInteraction()
                 dragOrigin = nil

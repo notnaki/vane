@@ -19,6 +19,8 @@ final class VaneWindow: NSWindow {
     private var liveResizeOwner = UUID()
     private var sidebarDrag = false
     private var sidebarResizePublication: SidebarResizePublication?
+    /// The window's own setting while a live resize defers key-view-loop rebuilds.
+    private var keyViewLoopBeforeLiveResize: Bool?
 
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
@@ -171,6 +173,14 @@ final class VaneWindow: NSWindow {
             })
         livePageResizeBuffer?.start()
         resizePreparation?.beginLiveResize()
+        // Every frame of a vertical resize moves focusable chrome, and SwiftUI then
+        // rebuilds the whole key-view loop at once in a window that does not
+        // recalculate its own: a quarter of the main thread per frame, growing with
+        // the tab count. Let it mark the loop stale instead, until the drag ends.
+        if keyViewLoopBeforeLiveResize == nil {
+            keyViewLoopBeforeLiveResize = autorecalculatesKeyViewLoop
+            autorecalculatesKeyViewLoop = true
+        }
     }
 
     func proposedPageResize(_ size: NSSize) -> NSSize {
@@ -184,6 +194,12 @@ final class VaneWindow: NSWindow {
         resizeAnchor = nil
         livePageResizeBuffer?.finish()
         resizePreparation?.endLiveResize()
+        if let previous = keyViewLoopBeforeLiveResize {
+            keyViewLoopBeforeLiveResize = nil
+            autorecalculatesKeyViewLoop = previous
+            // Rebuilt once, when the next key view is next asked for.
+            recalculateKeyViewLoop()
+        }
     }
 
     override func close() {
@@ -1186,6 +1202,12 @@ private final class BrowserPaletteLayer: NSView {
 
 private final class BrowserPaletteHost: NSHostingView<AnyView> {
     weak var store: TabStore?
+
+    /// No stale-size relayout inside a buffered window commit; see `BufferedResizeLayout`.
+    override var needsLayout: Bool {
+        get { super.needsLayout }
+        set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard store?.palette != nil else { return nil }
