@@ -222,9 +222,11 @@ final class VaneWindow: NSWindow {
               let view = contentView else { return }
         keyViewLoopStale = false
         let size = view.frame.size
-        // Two points, so a centred control still moves a whole one.
+        // Two points, so a centred control still moves a whole one. Inward: a
+        // larger viewport would clamp every scroll view sitting at its end, and
+        // shrinking back would not undo it.
         isRebuildingKeyViewLoop = true
-        view.setFrameSize(NSSize(width: size.width + 2, height: size.height + 2))
+        view.setFrameSize(NSSize(width: size.width - 2, height: size.height - 2))
         view.setFrameSize(size)
         isRebuildingKeyViewLoop = false
         let held = heldPageHosts

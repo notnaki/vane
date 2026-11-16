@@ -190,6 +190,33 @@ import XCTest
 
     /// A drag cut short by the window miniaturising, closing or losing its content
     /// restores the window's setting without resizing its chrome.
+    /// The release's key-view-loop rebuild must not move a scroll view sitting at
+    /// its end: a grown viewport clamps the offset, and shrinking back keeps it.
+    func testReleaseKeepsScrollViewsAtTheirEnd() async throws {
+        try await withFixture(count: 120, sidebarShown: true) { window, _ in
+            func scrollViews(_ view: NSView) -> [NSScrollView] {
+                (view as? NSScrollView).map { [$0] } ?? [] + view.subviews.flatMap(scrollViews)
+            }
+            let scrolling = scrollViews(window.contentView!).filter {
+                ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 20
+            }
+            XCTAssertFalse(scrolling.isEmpty, "The fixture must have a scrolling sidebar")
+            for view in scrolling {
+                let end = (view.documentView?.frame.height ?? 0) - view.contentView.bounds.height
+                view.contentView.scroll(to: NSPoint(x: 0, y: view.documentView?.isFlipped == true ? end : 0))
+                view.reflectScrolledClipView(view.contentView)
+            }
+            try await Task.sleep(for: .milliseconds(200))
+            let before = scrolling.map(\.contentView.bounds.origin)
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            window.endPageResize()
+            try await compatibilityWait { !window.isPreparingPageResize }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(scrolling.map(\.contentView.bounds.origin), before,
+                           "Press and release on the resize edge must leave every scroll view where it was")
+        }
+    }
+
     func testCancelledResizeDoesNotResizeTheChrome() async throws {
         try await withFixture(count: 20, sidebarShown: true) { window, root in
             var sizes: [NSSize] = []
