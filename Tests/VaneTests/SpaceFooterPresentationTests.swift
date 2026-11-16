@@ -398,6 +398,7 @@ import XCTest
                             }
                         }
                         let label = "\(scheme) scale=\(scale) count=\(count) icons=\(showIcons) \(icon) emphasis=\(emphasis)"
+                        XCTAssertGreaterThan(alphaExpected, 0, "Reference artwork must not be blank: \(label)")
                         XCTAssertEqual(alphaActual, alphaExpected, accuracy: max(1, alphaExpected * 0.04), label)
                         XCTAssertLessThan(difference, max(2, alphaExpected * 0.15), label)
                         XCTAssertLessThan(colorDifference, max(6, alphaExpected * 0.45), label)
