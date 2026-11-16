@@ -717,6 +717,9 @@ struct LivePageResizeAnchor {
         let desired = sizes(latest)
         let hasCoverage = covered(desired)
         if hasCoverage { publish() }
+#if DEBUG
+        if !hasCoverage { ResizeTimingDiagnostics.record("buffer.uncovered") }
+#endif
         guard active else { return }
         if ending, hasCoverage, !releaseLayoutFlushed {
             // Publication deliberately coalesces native host layout during the

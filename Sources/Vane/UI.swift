@@ -171,7 +171,30 @@ final class WebHost: NSView {
         super.willRemoveSubview(subview)
     }
 
+    /// The window resizes its chrome and back to rebuild the key-view loop after a
+    /// live resize. That is not a viewport change: the page keeps its frame, and
+    /// takes the last one asked of it (normally the one it has) once that is over.
+    private var heldFrame: NSRect?
+
+    private func holdsFrame(_ change: (inout NSRect) -> Void) -> Bool {
+        guard let window = window as? VaneWindow, window.isRebuildingKeyViewLoop else { return false }
+        if heldFrame == nil { heldFrame = frame; window.heldPageHosts.append(self) }
+        heldFrame.map { var next = $0; change(&next); heldFrame = next }
+        return true
+    }
+
+    func applyHeldFrame() {
+        guard let held = heldFrame else { return }
+        heldFrame = nil
+        if held != frame { frame = held }
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        if !holdsFrame({ $0.origin = newOrigin }) { super.setFrameOrigin(newOrigin) }
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
+        guard !holdsFrame({ $0.size = newSize }) else { return }
         let previous = frame.size
         let wasEmpty = frame.width <= 0 || frame.height <= 0
         // Sidebar/split drags have no native window proposal. Reactivate the
@@ -1084,12 +1107,19 @@ private struct Sidebar: View {
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ProfileChromeObserved private var previewProfiles = ProfileManager.shared
-    @State private var sidebarHeight: CGFloat = 0
+    /// Only the hover preview is sized from the sidebar's height. Storing it as
+    /// state rebuilt the whole sidebar on every frame of a vertical window
+    /// resize; the box is always current, and the revision re-evaluates this
+    /// view only while the preview is up.
+    private final class Height { var value: CGFloat = 0 }
+    @State private var sidebarHeight = Height()
+    @State private var previewHeightRevision = 0
 
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
     private var previewHeight: CGFloat {
-        min(CGFloat(previewItems.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap,
-            max(0, sidebarHeight - Look.footer - Look.footerInset - Look.topInset - 48))
+        _ = previewHeightRevision
+        return min(CGFloat(previewItems.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap,
+                   max(0, sidebarHeight.value - Look.footer - Look.footerInset - Look.topInset - 48))
     }
     /// Preferences and their renderer, and both ends of a row/tile morph, belong
     /// to the same hosting graph. Footer and address-pill anchors stay outside.
@@ -1175,7 +1205,10 @@ private struct Sidebar: View {
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                    value: downloadsHover.isVisible)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sidebarHeight = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+            sidebarHeight.value = $0
+            if downloadsHover.isVisible { previewHeightRevision &+= 1 }
+        }
         .onAppear { _ = preparePreview() }
         .onChange(of: store.currentSpaceID) { downloadsHover.dismiss() }
         .onChange(of: store.profileID) { downloadsHover.dismiss(); _ = preparePreview() }
@@ -3477,6 +3510,21 @@ struct SidebarScrollCutoffs: Equatable {
     }
 }
 
+/// Short content still fills the scroll viewport. Only this frame observes the
+/// viewport's height: as state of the layout it rebuilt the header and every
+/// section on each frame of a vertical window resize.
+private final class SidebarViewportHeight: ObservableObject {
+    @Published var height: CGFloat = 0
+}
+
+private struct SidebarViewportMinimumHeight: ViewModifier {
+    @ObservedObject var viewport: SidebarViewportHeight
+
+    func body(content: Content) -> some View {
+        content.frame(minHeight: viewport.height, alignment: .top)
+    }
+}
+
 /// The settled sidebar and its swipe preview share the fixed heading and scroll viewport.
 struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var initialOffset: CGFloat = 0
@@ -3491,17 +3539,21 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     // Native row owners already provide the section's complete fixed extent.
     // Measure the few surrounding siblings eagerly instead of estimating them.
     @Environment(\.nativeCachedSidebarBatches) private var cachesNativeGroupedSectionRows
-    @State private var scrollHeight: CGFloat = 0
+    /// Held, not observed: only `SidebarViewportMinimumHeight` follows it.
+    @State private var viewport = SidebarViewportHeight()
     @State private var cutoffs = SidebarScrollCutoffs()
     @State private var measuredCutoffs = false
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
+        #if DEBUG
+        let _ = ResizeTimingDiagnostics.record("sidebar.body.sections")
+        #endif
         VStack(spacing: Look.rowGap) {
             header()
             ScrollView {
                 rowStack
-                    .frame(minHeight: scrollHeight, alignment: .top)
+                    .modifier(SidebarViewportMinimumHeight(viewport: viewport))
                     .background {
                         if allowsWindowDrag { WindowDragArea() }
                     }
@@ -3526,7 +3578,7 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             }
             .overlay(alignment: .top) { cutoffLine(visible: cutoffs.top) }
             .overlay(alignment: .bottom) { cutoffLine(visible: cutoffs.bottom) }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport.height = $0 }
         }
     }
 

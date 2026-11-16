@@ -19,6 +19,10 @@ final class VaneWindow: NSWindow {
     private var liveResizeOwner = UUID()
     private var sidebarDrag = false
     private var sidebarResizePublication: SidebarResizePublication?
+    /// The window's own setting while a live resize defers key-view-loop rebuilds.
+    private var keyViewLoopBeforeLiveResize: Bool?
+    /// A drag deferred rebuilds that SwiftUI has not yet made up for.
+    private var keyViewLoopStale = false
 
     /// A second close command cancels the pending close; a command after its
     /// publication may proceed as a normal reopen.
@@ -41,12 +45,16 @@ final class VaneWindow: NSWindow {
 
     override var contentView: NSView? {
         willSet {
-            if newValue !== contentView { livePageResizeBuffer?.cancel() }
+            if newValue !== contentView {
+                keyViewLoopStale = false
+                livePageResizeBuffer?.cancel()
+            }
         }
     }
 
     override func orderOut(_ sender: Any?) {
         resizeAnchor = nil
+        keyViewLoopStale = false
         livePageResizeBuffer?.cancel()
         super.orderOut(sender)
     }
@@ -98,6 +106,7 @@ final class VaneWindow: NSWindow {
                 self.sidebarResizePublication = nil
                 self.livePageResizeBuffer = nil
                 self.sidebarDrag = false
+                self.rebuildStaleKeyViewLoop()
             })
         guard let buffer = livePageResizeBuffer, let root = contentView else {
             livePageResizeBuffer?.cancel()
@@ -168,9 +177,18 @@ final class VaneWindow: NSWindow {
             completion: { [weak self] in
                 guard let self, self.liveResizeOwner == owner else { return }
                 self.livePageResizeBuffer = nil
+                self.rebuildStaleKeyViewLoop()
             })
         livePageResizeBuffer?.start()
         resizePreparation?.beginLiveResize()
+        // Every frame of a vertical resize moves focusable chrome, and SwiftUI then
+        // rebuilds the whole key-view loop at once in a window that does not
+        // recalculate its own: a quarter of the main thread per frame, growing with
+        // the tab count. Let it mark the loop stale instead, until the drag ends.
+        if keyViewLoopBeforeLiveResize == nil {
+            keyViewLoopBeforeLiveResize = autorecalculatesKeyViewLoop
+            autorecalculatesKeyViewLoop = true
+        }
     }
 
     func proposedPageResize(_ size: NSSize) -> NSSize {
@@ -180,15 +198,51 @@ final class VaneWindow: NSWindow {
         return preparePageResize(frame: target, display: true) ? frame.size : size
     }
 
-    func endPageResize() {
+    /// A window that is closing, miniaturising, changing its content or entering
+    /// full screen ends the drag without the rebuild; its chrome is not resized.
+    func endPageResize(rebuildingKeyViewLoop: Bool = true) {
         resizeAnchor = nil
+        if let previous = keyViewLoopBeforeLiveResize {
+            keyViewLoopBeforeLiveResize = nil
+            autorecalculatesKeyViewLoop = previous
+            keyViewLoopStale = true
+        }
+        if !rebuildingKeyViewLoop { keyViewLoopStale = false }
         livePageResizeBuffer?.finish()
         resizePreparation?.endLiveResize()
+        rebuildStaleKeyViewLoop()
     }
+
+    /// SwiftUI orders its loop by its own focus items, which AppKit's
+    /// `recalculateKeyViewLoop()` does not reproduce, and it rebuilds only when a
+    /// focusable view moves. So once the drag's buffer has retired, move them: one
+    /// undisplayed resize of the content view and back, as a last drag frame would.
+    private func rebuildStaleKeyViewLoop() {
+        guard keyViewLoopStale, keyViewLoopBeforeLiveResize == nil, livePageResizeBuffer == nil,
+              let view = contentView else { return }
+        keyViewLoopStale = false
+        let size = view.frame.size
+        // Two points, so a centred control still moves a whole one. Inward: a
+        // larger viewport would clamp every scroll view sitting at its end, and
+        // shrinking back would not undo it.
+        isRebuildingKeyViewLoop = true
+        view.setFrameSize(NSSize(width: size.width - 2, height: size.height - 2))
+        view.setFrameSize(size)
+        isRebuildingKeyViewLoop = false
+        let held = heldPageHosts
+        heldPageHosts = []
+        held.forEach { $0.applyHeldFrame() }
+    }
+
+    /// The chrome moves and returns within one turn. Every `WebHost` sits it out
+    /// and then takes the last frame it was given, which is the one it has, so no
+    /// page sees a viewport it was never shown at.
+    private(set) var isRebuildingKeyViewLoop = false
+    var heldPageHosts: [WebHost] = []
 
     override func close() {
         _ = cancelSidebarResize()
-        endPageResize()
+        endPageResize(rebuildingKeyViewLoop: false)
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.close()
@@ -196,7 +250,7 @@ final class VaneWindow: NSWindow {
 
     override func miniaturize(_ sender: Any?) {
         _ = cancelSidebarResize()
-        endPageResize()
+        endPageResize(rebuildingKeyViewLoop: false)
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.miniaturize(sender)
@@ -204,7 +258,7 @@ final class VaneWindow: NSWindow {
 
     override func toggleFullScreen(_ sender: Any?) {
         _ = cancelSidebarResize()
-        endPageResize()
+        endPageResize(rebuildingKeyViewLoop: false)
         livePageResizeBuffer?.cancel()
         resizePreparation?.cancel()
         super.toggleFullScreen(sender)
@@ -1186,6 +1240,12 @@ private final class BrowserPaletteLayer: NSView {
 
 private final class BrowserPaletteHost: NSHostingView<AnyView> {
     weak var store: TabStore?
+
+    /// No stale-size relayout inside a buffered window commit; see `BufferedResizeLayout`.
+    override var needsLayout: Bool {
+        get { super.needsLayout }
+        set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard store?.palette != nil else { return nil }

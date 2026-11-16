@@ -84,6 +84,12 @@ import SwiftUI
     override func accessibilityParent() -> Any? {
         boundaryAccessibilityParent ?? super.accessibilityParent()
     }
+
+    /// No stale-size relayout inside a buffered window commit; see `BufferedResizeLayout`.
+    override var needsLayout: Bool {
+        get { super.needsLayout }
+        set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
+    }
 }
 
 /// The anchor stays in SwiftUI's native hierarchy. Its owned host is a sibling,
