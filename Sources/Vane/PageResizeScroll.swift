@@ -38,28 +38,29 @@ import WebKit
         const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
         const deadline = performance.now() + 4;
         for (let el, n = 0; (el = walker.nextNode()) && (++n % 256 || performance.now() < deadline);) note(el);
-        // Layout clamps a position to the end of its range: one that sits there,
-        // short of where it was, was clamped and still wants to go back. One that
-        // moved forward to the end was put there (a log following its content)
-        // and means the end, which in a viewport laid out ahead is short of the
-        // visible one. Anything else is a real scroll to that position.
+        // Layout clamps a position to the end of its range, so a clamp is exactly
+        // a move backward that sits at the end: it still wants to go back. Every
+        // other move backward is a real scroll (a carousel realigning to the new
+        // width, the page jumping, the user scrolling up) and is where it wants
+        // to be. One that moved forward to the end was put there (a log following
+        // its content) and means the end, which in a viewport laid out ahead is
+        // short of the visible one.
         // A scroll's event runs after the resize event of the same frame, by
         // which time the range it was made in is gone. So a resize settles what
-        // moved first: forward from the end was following it; backward may be a
-        // clamp and keeps what it wanted.
+        // moved first, and there forward from the end was following it.
+        // ponytail: a scroller the page itself empties below its position mid-drag
+        // reads as clamped and returns if the content does, until tracking stops.
         const settle = (el, resizing) => {
           const record = wants.get(el);
           if (!record) { wants.set(el, read(el)); return; }
           axes.forEach((axis, i) => {
             const state = record[i], at = el[axis[0]];
             if (at === state.at) return;
-            const forward = Math.abs(at) > Math.abs(state.at);
-            if (atEnd(el, axis)) {
-              if (Math.abs(at) >= Math.abs(state.want)) state.want = at && Math.sign(at) * Infinity;
-              state.end = true;
-            } else if (resizing && forward && state.end) state.want = Math.sign(at) * Infinity;
-            else if (forward || !resizing) { state.want = at; state.end = false; }
+            const forward = Math.abs(at) > Math.abs(state.at), end = atEnd(el, axis);
+            if (forward && (end ? state.end || Math.abs(at) >= Math.abs(state.want) : resizing && state.end)) state.want = Math.sign(at) * Infinity;
+            else if (!end) state.want = at;
             state.at = at;
+            state.end = end;
           });
         };
         const scrolled = event => {
@@ -75,17 +76,19 @@ import WebKit
               const want = isFinite(record[i].want) ? record[i].want : Math.sign(record[i].want) * el[axis[1]];
               return Math.abs(el[axis[0]]) < Math.abs(want) ? want : el[axis[0]];
             });
-            if (left === el.scrollLeft && top === el.scrollTop) continue;
-            el.scrollTo({ left, top, behavior: 'instant' });
+            if (left !== el.scrollLeft || top !== el.scrollTop) el.scrollTo({ left, top, behavior: 'instant' });
             axes.forEach((axis, i) => { record[i].at = el[axis[0]]; record[i].end = atEnd(el, axis); });
           }
         };
         // Once with the new viewport laid out, and again after the page's own
         // resize handlers have sized what they size.
         const resized = () => { if (wants.size) { restore(); requestAnimationFrame(restore); } };
+        // A page hidden mid-drag (into the back/forward cache) never hears its end.
         const stop = () => {
+          clearTimeout(state.timer);
           document.removeEventListener('scroll', scrolled, true);
           removeEventListener('resize', resized);
+          removeEventListener('pagehide', stop);
           delete globalThis.__vaneResizeScroll;
         };
         state = globalThis.__vaneResizeScroll = { timer: 0, end() {
@@ -95,6 +98,7 @@ import WebKit
         } };
         document.addEventListener('scroll', scrolled, { capture: true, passive: true });
         addEventListener('resize', resized);
+        addEventListener('pagehide', stop);
       } catch (_) { }
     })()
     """
