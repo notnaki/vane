@@ -113,4 +113,50 @@ import XCTest
         }
     }
 
+
+    /// The autosave reads each tab once and base64-encodes on the persistence lane. The
+    /// quit/backup boundary (`flushPersistence`) must still find every row's exact state,
+    /// and a later capture must see the tab's new state rather than the previous one's.
+    func testEnqueuedCaptureWritesEachTabsStateAndForgetsItAfterwards() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let manager = ProfileManager.shared
+        let profile = manager.create(name: "Session capture fixture").id
+        let space = Space(name: "Capture", profileID: profile)
+        XCTAssertTrue(manager.saveSpaces([space], for: profile))
+        let urls = (0..<3).map { URL(string: "https://capture.invalid/\($0)")! }
+        let states = (0..<3).map { Data(repeating: UInt8($0 + 1), count: 64) }
+        let store = TabStore(profileID: profile, space: space, session: [])
+        defer {
+            let owned = store.everyTab
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(owned)
+            Store.forget(profile)
+            manager.delete(profile)
+        }
+        _ = store.restore(urls, as: .today, parked: Dictionary(uniqueKeysWithValues: zip(urls, states).map {
+            ($0.absoluteString, Parked(title: "Saved", state: $1))
+        }))
+        func written() throws -> [String: Data] {
+            let file = ProfileManager.sessionURL(for: profile, in: Store.directory)
+            let rows = try XCTUnwrap(Session.load(file)).snapshot.windows.flatMap { $0 }
+            return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+                row.state.flatMap { Data(base64Encoded: $0) }.map { (row.url, $0) }
+            })
+        }
+        XCTAssertTrue(Session.enqueueSave())
+        XCTAssertNil(Tab.captureSnapshots, "The per-capture snapshot memo ends with the capture")
+        let flushed = await Session.flushPersistence()
+        XCTAssertTrue(flushed)
+        XCTAssertEqual(try written(), Dictionary(uniqueKeysWithValues: zip(urls.map(\.absoluteString), states)))
+
+        let changed = Data(repeating: 9, count: 64)
+        let tab = try XCTUnwrap(store.tabs.first { $0.currentURL == urls[0] })
+        tab.park(url: urls[0], Parked(title: "Saved", state: changed))
+        XCTAssertTrue(Session.enqueueSave())
+        let reflushed = await Session.flushPersistence()
+        XCTAssertTrue(reflushed)
+        XCTAssertEqual(try written()[urls[0].absoluteString], changed)
+    }
 }

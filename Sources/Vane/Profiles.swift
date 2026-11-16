@@ -952,6 +952,17 @@ struct Space: Identifiable, Codable, Equatable {
         // Views ask on every store publication. The file stays the only source of truth:
         // its identity, size and both timestamps are checked on each call, taken before the
         // read, so any writer — this process or another — is seen by the next caller.
+        let stamp = spacesStamp(profileID)
+        if let stamp, let known = decodedSpaces[profileID], known.stamp == stamp { return known.spaces }
+        decodedSpaces[profileID] = nil
+        guard let data = try? Data(contentsOf: Self.spacesURL(for: profileID, in: directory)),
+              let all = try? JSONDecoder().decode([Space].self, from: data) else { return [] }
+        let owned = all.filter { $0.profileID == profileID }
+        if let stamp { decodedSpaces[profileID] = (stamp, owned, owned.count == all.count) }
+        return owned
+    }
+
+    private func spacesStamp(_ profileID: UUID) -> SpacesFileStamp? {
         let path: String
         if let known = spacesPaths[profileID] { path = known }
         else {
@@ -959,18 +970,10 @@ struct Space: Identifiable, Codable, Equatable {
             spacesPaths[profileID] = path
         }
         var info = stat()
-        let stamp = stat(path, &info) == 0
-            ? SpacesFileStamp(inode: info.st_ino, size: info.st_size,
-                              modified: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec,
-                              changed: info.st_ctimespec.tv_sec, changedNanoseconds: info.st_ctimespec.tv_nsec)
-            : nil
-        if let stamp, let known = decodedSpaces[profileID], known.stamp == stamp { return known.spaces }
-        decodedSpaces[profileID] = nil
-        guard let data = try? Data(contentsOf: Self.spacesURL(for: profileID, in: directory)),
-              let all = try? JSONDecoder().decode([Space].self, from: data) else { return [] }
-        let owned = all.filter { $0.profileID == profileID }
-        if let stamp { decodedSpaces[profileID] = (stamp, owned) }
-        return owned
+        guard stat(path, &info) == 0 else { return nil }
+        return SpacesFileStamp(inode: info.st_ino, size: info.st_size,
+                               modified: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                               changed: info.st_ctimespec.tv_sec, changedNanoseconds: info.st_ctimespec.tv_nsec)
     }
 
     private struct SpacesFileStamp: Equatable {
@@ -981,7 +984,8 @@ struct Space: Identifiable, Codable, Equatable {
         let changed: Int
         let changedNanoseconds: Int
     }
-    private var decodedSpaces: [UUID: (stamp: SpacesFileStamp, spaces: [Space])] = [:]
+    /// `complete`: the file held no foreign rows, so `spaces` is the whole decoded document.
+    private var decodedSpaces: [UUID: (stamp: SpacesFileStamp, spaces: [Space], complete: Bool)] = [:]
     /// `directory` never changes, so neither does where a profile's Spaces are kept.
     private var spacesPaths: [UUID: String] = [:]
 
@@ -1006,8 +1010,16 @@ struct Space: Identifiable, Codable, Equatable {
         let destination = Self.spacesURL(for: profileID, in: directory)
         // Compare the actual committed metadata with the normalized owned snapshot.
         // Missing/unreadable data and repaired layouts/foreign records are changes.
-        let previous = (try? Data(contentsOf: destination)).flatMap {
-            try? JSONDecoder().decode([Space].self, from: $0)
+        // The stat-stamped decode `spaces(for:)` keeps is the same document, unless it
+        // was filtered; callers like `updateSpace` have just read it, so skip a re-decode.
+        let previous: [Space]?
+        if let stamp = spacesStamp(profileID), let known = decodedSpaces[profileID],
+           known.stamp == stamp, known.complete {
+            previous = known.spaces
+        } else {
+            previous = (try? Data(contentsOf: destination)).flatMap {
+                try? JSONDecoder().decode([Space].self, from: $0)
+            }
         }
         let target = SaveFailure.Target.spaces(profileID)
         // The committed document has already been decoded without filtering foreign
