@@ -26,6 +26,7 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var graphDetaches = 0
     var graphEvictions = 0
     var rootUpdates = 0
+    var environmentAdoptions = 0
     var rangeChanges = 0
     var protectionOwnerTreeScans = 0
     var detachedProtectionOwnerTreeScans = 0
@@ -752,11 +753,35 @@ private struct NativeSidebarRowLayoutAnchor: NSViewRepresentable {
     }
 }
 
+/// A host's root: the bridged environment outside, its rows inside. An update that
+/// changes only the environment replaces `inherited` and keeps the same `rows`, which
+/// compare equal, so SwiftUI hands the rows their new environment without rebuilding one.
 private struct NativeSidebarBatchRoot<Content: View>: View {
+    var inherited: EnvironmentValues
+    let rows: NativeSidebarBatchRows<Content>
+    var body: some View {
+        rows.equatable()
+            .nativeSidebarPublicEnvironment(inherited)
+            // Apply the incoming structural transaction only when placement changes.
+            // Replaying it on every later descendant update would impose stale motion
+            // policy on hover, disclosure and control feedback inside the cached root.
+            .animation(placementAnimation, value: rows.slots.map(\.id))
+            .animation(placementAnimation, value: rows.slots.map(\.index))
+    }
+    private var placementAnimation: Animation? {
+        if rows.disclosureFrame != nil { return nil }
+        return NativeSidebarPlacementMotion.animation(transaction: rows.transaction,
+            reduceMotion: inherited.accessibilityReduceMotion, reducedByPolicy: Motion.reduced)
+    }
+}
+
+private struct NativeSidebarBatchRows<Content: View>: View, Equatable {
+    /// One per built value: only a copy of the same rows is equal to them.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.stamp == rhs.stamp }
+    let stamp: UInt64
     let slots: [NativeSidebarOwnedSlot]
     let total: Int
     let generation: UInt64
-    let inherited: EnvironmentValues
     let transaction: Transaction
     let disclosureSample: NativeSidebarDisclosureSample?
     let disclosureFrame: NativeSidebarDisclosureLayout.Frame?
@@ -791,12 +816,6 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .nativeSidebarPublicEnvironment(inherited)
-        // Apply the incoming structural transaction only when placement changes.
-        // Replaying it on every later descendant update would impose stale motion
-        // policy on hover, disclosure and control feedback inside the cached root.
-        .animation(placementAnimation, value: slots.map(\.id))
-        .animation(placementAnimation, value: slots.map(\.index))
     }
     private func position(of slot: NativeSidebarOwnedSlot) -> CGFloat {
         if let position = disclosureFrame?.position(for: slot.id) { return position }
@@ -805,11 +824,6 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     private func clipTop(of slot: NativeSidebarOwnedSlot) -> CGFloat? {
         return disclosureFrame?.clipTop(for: slot.id)
             .map { $0 * (Look.rowHeight + Look.rowGap) }
-    }
-    private var placementAnimation: Animation? {
-        if disclosureFrame != nil { return nil }
-        return NativeSidebarPlacementMotion.animation(transaction: transaction,
-            reduceMotion: inherited.accessibilityReduceMotion, reducedByPolicy: Motion.reduced)
     }
 }
 
@@ -971,6 +985,7 @@ private final class NativeBatchMouseObservation {
     private var disclosureKnownRows: [String: SidebarRows.Row] = [:]
     private var rowWindow = NativeSidebarResidentWindow()
     private var generation: UInt64 = 0
+    private var rootStamp: UInt64 = 0
     private var geometryRevision: UInt64 = 0
     private var readiness: SidebarNativeReadinessCoordinator.Ticket?
     private var readinessSection: String?
@@ -1376,6 +1391,30 @@ private final class NativeBatchMouseObservation {
         refreshClip()
     }
 
+    /// An environment change with the same rows at rest, such as the sidebar being
+    /// disabled behind the command bar: every cached root takes the new values and keeps
+    /// its rows. False when the change is one only `configure` can carry.
+    func adopt(environment: EnvironmentValues, transaction: Transaction) -> Bool {
+        guard !disposed, content != nil, configuredScope,
+              activeScope == environment.sidebarNativeReadinessScope,
+              inherited.sidebarNativeReadinessOwnerID == environment.sidebarNativeReadinessOwnerID,
+              inherited.accessibilityReduceMotion == environment.accessibilityReduceMotion,
+              disclosureSample == environment.nativeSidebarDisclosureSample, disclosureSample?.isSettled != false,
+              disclosureLayout == nil, !groups.values.contains(where: { $0.contains { $0.rollout != nil } }),
+              cache.values.allSatisfy({ $0.generation == generation }) else { return false }
+        inherited = environment
+        self.transaction = transaction
+        for entry in cache.values { entry.host.rootView.inherited = environment }
+        batchCounts.environmentAdoptions += 1
+        // What configure does besides building roots still happens: the section keeps
+        // its readiness claim, and protection is sampled again.
+        needsReconcile = true
+        registerReadiness(claimingCurrentSection: true)
+        reconcileLastGeometry()
+        refreshClip()
+        return true
+    }
+
     func setAccessibilityRowsExpanded(_ value: Bool = true) {
         guard !disposed, accessibilityRowsExpanded != value else { return }
         accessibilityRowsExpanded = value
@@ -1577,15 +1616,16 @@ private final class NativeBatchMouseObservation {
             placementTransaction.animation = nil
             placementTransaction.disablesAnimations = true
         }
-        return Root(slots: slots, total: rows.count, generation: generation,
-             inherited: inherited, transaction: placementTransaction, disclosureSample: disclosureSample,
+        rootStamp &+= 1
+        return Root(inherited: inherited, rows: .init(stamp: rootStamp, slots: slots, total: rows.count,
+             generation: generation, transaction: placementTransaction, disclosureSample: disclosureSample,
              disclosureFrame: disclosureFrame, viewport: viewport, navigation: navigation,
              interactionOwner: (interactionLease as (any NativeSidebarInteractionRetaining)?) ?? self,
              committed: { [weak self] anchor in self?.rowDidLayout(anchor) },
              finishedClosing: { [weak self] row, request in
                  // Finish outside SwiftUI's update/disappearance callbacks.
                  DispatchQueue.main.async { [weak self] in self?.finishClosing(row: row, request: request) }
-             }, content: content!)
+             }, content: content!))
     }
     private func updateDisclosureLayout(previousOrder: [String]) {
         guard let sample = disclosureSample else { disclosureLayout = nil; disclosureFrame = nil; return }
@@ -1842,11 +1882,14 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
             view.presentDisclosure(sample)
             return
         }
-        context.coordinator.revision = revision
-        context.coordinator.sample = sample
         // A structural update still reads its sample where it always has.
         var environment = context.environment
         environment.nativeSidebarDisclosureSample = sample
+        // Neither input changed, so the environment did.
+        if context.coordinator.revision == revision && context.coordinator.sample == sample,
+           view.adopt(environment: environment, transaction: context.transaction) { return }
+        context.coordinator.revision = revision
+        context.coordinator.sample = sample
         view.configure(rows: rows, modelIDs: modelIDs, environment: environment, protectedRows: protectedRows, readinessSection: readinessSection,
                        transaction: context.transaction, owner: owner, content: content)
     }

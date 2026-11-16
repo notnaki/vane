@@ -39,6 +39,7 @@ import XCTest
         }
         func updateNSView(_ field: NSTextField, context: Context) {
             field.stringValue = "\(index)/\(total)"
+            field.isEnabled = context.environment.isEnabled
         }
     }
     private func rows(_ count: Int) -> [SidebarRows.Row] {
@@ -432,6 +433,41 @@ import XCTest
         XCTAssertEqual(fixture.owner.batchCounts.rootUpdates, before.rootUpdates,
                        "A small clip change must not submit another SwiftUI root")
         XCTAssertEqual(fixture.owner.batchCounts.coldGraphCreates, before.coldGraphCreates)
+    }
+
+    /// Disabling the sidebar changes what every row reads and nothing about the rows.
+    /// The mounted controls must take it, and no owner may be handed new rows for it.
+    func testAnEnvironmentOnlyUpdateReachesMountedRowsWithoutRebuildingRoots() async throws {
+        try await withApplicationLoop {
+            let fixture = Fixture(rows: self.rows(100))
+            defer { fixture.close() }
+            try await fixture.admit(row: 40)
+            let field = try XCTUnwrap(fixture.controls.fields[fixture.rows[40].id]?.value)
+            XCTAssertTrue(field.isEnabled)
+            let before = fixture.owner.batchCounts
+            for enabled in [false, true] {
+                fixture.environment.isEnabled = enabled
+                XCTAssertTrue(fixture.owner.adopt(environment: fixture.environment, transaction: Fixture.instant))
+                fixture.display()
+                XCTAssertEqual(field.isEnabled, enabled)
+            }
+            XCTAssertTrue(fixture.controls.fields[fixture.rows[40].id]?.value === field)
+            XCTAssertEqual(fixture.owner.batchCounts.rootUpdates, before.rootUpdates)
+            XCTAssertEqual(fixture.owner.batchCounts.coldGraphCreates, before.coldGraphCreates)
+            // A detached owner takes the same value before it is shown again.
+            fixture.environment.isEnabled = false
+            XCTAssertTrue(fixture.owner.adopt(environment: fixture.environment, transaction: Fixture.instant))
+            fixture.scroll.contentView.scroll(to: .zero)
+            fixture.scroll.reflectScrolledClipView(fixture.scroll.contentView)
+            fixture.owner.reconcile(visible: fixture.owner.convert(fixture.scroll.contentView.bounds, from: fixture.scroll.contentView))
+            fixture.display()
+            try await compatibilityWait { fixture.controls.fields[fixture.rows[0].id]?.value?.window === fixture.window }
+            XCTAssertEqual(fixture.controls.fields[fixture.rows[0].id]?.value?.isEnabled, false)
+            // A structural update is not an environment update.
+            fixture.rows.removeLast()
+            fixture.configure(Fixture.instant)
+            XCTAssertGreaterThan(fixture.owner.batchCounts.rootUpdates, before.rootUpdates)
+        }
     }
 
     @MainActor private final class Fixture {

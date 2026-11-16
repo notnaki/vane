@@ -146,10 +146,22 @@ import XCTest
         XCTAssertGreaterThan(grown, settled, "A new row must reach its native owner")
 
         // And an environment change that arrives with no structural change at all: the
-        // command bar disables the sidebar, which every row reads.
+        // command bar disables the sidebar, which every row reads. Once the new row has
+        // settled, that crosses the native boundary without rebuilding a row.
+        settled = rootUpdates(host)
+        try await compatibilityWait {
+            try await Task.sleep(for: .milliseconds(60))
+            host.layoutSubtreeIfNeeded()
+            defer { settled = self.rootUpdates(host) }
+            return self.rootUpdates(host) == settled
+        }
+        let adoptions = { self.reports(host).reduce(0) { $0 + $1.batchCounts.environmentAdoptions } }
+        let adopted = adoptions()
         store.palette = .tabs
         host.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(rootUpdates(host), grown,
+        XCTAssertGreaterThan(adoptions(), adopted,
                              "The inherited environment must still cross the native boundary")
+        XCTAssertEqual(rootUpdates(host), settled,
+                       "Disabling the sidebar changes no row's place or content")
     }
 }
