@@ -83,4 +83,3 @@ enum StallDiag {
         return result
     }
 }
-
