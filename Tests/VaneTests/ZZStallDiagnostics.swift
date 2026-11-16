@@ -42,8 +42,6 @@ enum StallDiag {
         print("STALL_DIAG save#\(n) reason=\(reason) stall=\(String(format: "%.2f", seconds))s uptime=\(String(format: "%.1f", now()))")
         let window = Int(seconds) + 8
         shell("""
-            sudo -n /usr/bin/tailspin save -l 25 -r \(reason) \(dir)/tail-\(n).tailspin > \(dir)/tail-\(n).err 2>&1 && \
-              sudo -n /usr/sbin/spindump -i \(dir)/tail-\(n).tailspin -timeline -o \(dir)/tail-\(n).txt > /dev/null 2>&1
             /usr/bin/log show --last \(window)s --info --debug --style compact \
               --predicate 'process == "runningboardd" OR subsystem == "com.apple.WebKit" OR process CONTAINS "WebKit" OR process == "xctest"' \
               > \(dir)/log-\(n).txt 2>&1

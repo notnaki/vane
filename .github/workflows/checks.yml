@@ -205,9 +205,6 @@ jobs:
             --manifest "$RUNNER_TEMP/vane-native-shard.json" \
             --filter-output "$RUNNER_TEMP/vane-native-shard.filter"
 
-      - name: Enable tailspin (temporary diagnostic)
-        run: sudo tailspin enable && tailspin info || true
-
       - name: Native regression tests
         timeout-minutes: 24
         env:
