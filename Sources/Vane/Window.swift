@@ -2148,6 +2148,9 @@ extension TabStore {
                 libraryOpen = false
                 sidebarShown = true
             }
+            // The address pill must be enabled by the time chrome focus is delivered.
+            librarySidebarCover.settle()
+            window.contentView?.layoutSubtreeIfNeeded()
         } else {
             librarySwipeMonitor.cancelPendingActivation(toward: false)
             if mountedAddressEndpoint?.takeFocus(from: holder) == true { return }

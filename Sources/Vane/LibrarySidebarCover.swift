@@ -112,10 +112,11 @@ import SwiftUI
         input = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self, weak window] event in
             MainActor.assumeIsolated {
                 // Typing belongs to the search field or the page and moves nothing.
-                // Tab, a shortcut or a function key may move focus, and a click may
-                // land on the returning sidebar: they meet its final state.
+                // Tab, a shortcut or a function key may move focus, Escape and Return
+                // press default and cancel buttons, and a click may land on the
+                // returning sidebar: they meet its final state.
                 guard let self, let window, event.window === window,
-                      event.type != .keyDown || event.keyCode == 48
+                      event.type != .keyDown || [48, 53, 36, 76].contains(event.keyCode)
                         || !event.modifierFlags.intersection([.command, .control, .function]).isEmpty
                 else { return }
                 self.settle()
