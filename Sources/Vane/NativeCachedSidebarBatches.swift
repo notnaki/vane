@@ -756,6 +756,9 @@ private struct NativeSidebarPlacedSlot<Content: View>: View {
         let pitch = Look.rowHeight + Look.rowGap
         SidebarFolderRolloutRow(geometry: slot.rollout, sharedProgress: sample.map { $0.progress(for: slot.id) },
             sharedClipTop: frame?.clipTop(for: slot.id).map { $0 * pitch }, finished: finished) { content }
+            .allowsHitTesting(slot.rollout?.closing != true)
+            .disabled(slot.rollout?.closing == true)
+            .accessibilityHidden(slot.rollout?.closing == true)
             .offset(y: (frame?.position(for: slot.id) ?? CGFloat(slot.index)) * pitch)
             // This sample already owns the interpolation. Suppress the inherited
             // transaction around placement itself, not merely around the row
@@ -784,9 +787,6 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
             ForEach(slots) { slot in
                 NativeSidebarPlacedSlot(slot: slot, pose: pose, finished: { finishedClosing(slot.id, $0) },
                                         content: slotContent(slot))
-                    .allowsHitTesting(slot.rollout?.closing != true)
-                    .disabled(slot.rollout?.closing == true)
-                    .accessibilityHidden(slot.rollout?.closing == true)
                     .environment(\.bufferedSidebarFocus, BufferedSidebarFocus(row: slot.id, viewport: viewport))
                     .environment(\.nativeSidebarNavigationRow, NativeSidebarNavigationRow(row: slot.id, navigation: navigation))
                     .environment(\.nativeSidebarInteraction, NativeSidebarInteraction(row: slot.id, owner: interactionOwner))
