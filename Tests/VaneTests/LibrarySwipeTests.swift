@@ -450,6 +450,72 @@ import XCTest
         XCTAssertFalse(store.librarySidebarCover.covered)
     }
 
+    private func key(_ keyCode: UInt16, _ characters: String, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode))
+    }
+
+    /// Mutation caught: Escape or Return during the opening slide pressing the
+    /// Create Space form's Cancel or Create, still enabled under the arriving panel.
+    func testEscapeAndReturnDuringTheOpeningSlideSkipTheCoveredCreateSpaceForm() async throws {
+        try await withLibraryApplicationLoop { try await checkEscapeAndReturnSkipTheCoveredCreateSpaceForm() }
+    }
+    private func checkEscapeAndReturnSkipTheCoveredCreateSpaceForm() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, host) = try await coverFixture(keyWindow: true)
+        try await compatibilityWait {
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            return NSApp.isActive && window.isKeyWindow
+        }
+        let spaces = store.strip.count
+        for (keyCode, characters) in [(UInt16(53), "\u{1B}"), (36, "\r")] {
+            store.beginCreatingSpace()
+            try await Task.sleep(for: .milliseconds(400))
+            host.layoutSubtreeIfNeeded()
+            // A name, so the form's Create is enabled and Return would press it.
+            for character in "Fixture" { NSApp.sendEvent(try key(0, String(character), in: window)) }
+            XCTAssertTrue(store.creatingSpace)
+            Library.toggle(.archived, in: store)
+            XCTAssertTrue(store.libraryOpen)
+            XCTAssertFalse(store.librarySidebarCover.covered, "The press must land inside the slide")
+            try await Task.sleep(for: .milliseconds(40))
+            NSApp.sendEvent(try key(keyCode, characters, in: window))
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertTrue(store.creatingSpace, "Key \(keyCode) must not press the covered form's buttons")
+            XCTAssertEqual(store.strip.count, spaces, "Key \(keyCode) must not create a Space")
+            if keyCode == 53 { XCTAssertFalse(store.libraryOpen, "Escape closes the Library instead") }
+            if store.libraryOpen { Library.close(store) }
+            try await coverSettles(store, host)
+            store.cancelCreatingSpace()
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    /// Mutation caught: closing the Library for F6 without applying the deferred
+    /// enable leaves the address pill disabled when chrome focus is delivered.
+    func testF6FromOpenLibraryReachesTheAddressPill() async throws {
+        try await withLibraryApplicationLoop { try await checkF6FromOpenLibraryReachesTheAddressPill() }
+    }
+    private func checkF6FromOpenLibraryReachesTheAddressPill() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, host) = try await coverFixture(keyWindow: true)
+        try await compatibilityWait {
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            return NSApp.isActive && window.isKeyWindow && store.mountedAddressEndpoint?.window === window
+        }
+        Library.open(.archived, in: store)
+        try await coverSettles(store, host)
+        try await Task.sleep(for: .milliseconds(100))
+        window.makeFirstResponder(nil)
+        XCTAssertTrue(window.firstResponder === window)
+        store.focusNextArea()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertTrue(window.firstResponder is MountedAddressButton,
+                      "F6 out of the Library must reach the address pill, not \(String(describing: window.firstResponder))")
+    }
+
     func testOpeningEaselReleasesDepartingLibrarySearchFocus() async throws {
         let (store, window, _) = fixture(withSpaces: true)
         _ = store.newBlankTab(loading: URL(string: "about:blank"))

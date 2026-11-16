@@ -586,28 +586,6 @@ private struct DisabledKeyboardSurface: View {
         }
     }
 
-    /// Mutation caught: closing the Library for F6 without applying the deferred
-    /// sidebar enable leaves the pill disabled when chrome focus is delivered.
-    func testF6FromOpenLibraryReachesTheAddressPill() async throws {
-        try await withAdmittedEaselPillForHandoffContract { store, window, page in
-            Library.open(.archived, in: store)
-            let deadline = ContinuousClock.now + .seconds(2)
-            while !store.librarySidebarCover.covered, ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(20))
-            }
-            XCTAssertTrue(store.librarySidebarCover.covered)
-            // Let the Library's search field take the keyboard first, then leave nobody holding it.
-            try await Task.sleep(for: .milliseconds(100))
-            window.makeFirstResponder(nil)
-            XCTAssertTrue(window.firstResponder === window)
-            store.focusNextArea()
-            try await Task.sleep(for: .milliseconds(150))
-            XCTAssertFalse(store.libraryOpen)
-            XCTAssertFalse(window.firstResponder === window, "F6 out of the Library must reach the address pill")
-            XCTAssertFalse(window.firstResponder === page)
-        }
-    }
-
     func testF6EndpointRejectsWrongOwnerAndUnavailableTargets() async throws {
         try await withAdmittedEaselPillForHandoffContract { store, window, page in
             let endpoint = try XCTUnwrap(store.mountedAddressEndpoint)
