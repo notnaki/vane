@@ -36,9 +36,13 @@ import XCTest
         var body: some View {
             ScrollView {
                 VStack(spacing: 0) {
+                    // This builder reads only its row, like the shipping Today section's;
+                    // say so the same way. Without it every pass through the section (any
+                    // store publication) mints a new revision and resubmits each mounted
+                    // root, which this fixture would misread as scroll-driven resubmission.
                     SidebarSectionRows(store: store,
                         snapshot: cache.resolve(in: store, shape: store.todayShape),
-                        transition: .opacity) { row, _, _ in
+                        pullRequests: [], transition: .opacity) { row, _, _ in
                             Control(id: row.id, controls: controls)
                         }
                 }
@@ -124,7 +128,9 @@ import XCTest
         XCTAssertEqual(report.requestedMaxGraphBudget, 3)
         XCTAssertFalse(report.stagingEnabled)
         try await compatibilityWait {
-            NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
+            // Apply updates already scheduled (activation, environment) before admitting.
+            host.layoutSubtreeIfNeeded()
+            return NSApp.isRunning && NSApp.isActive && NSApp.keyWindow === window && window.isKeyWindow
                 && NativeFixtureMountAdmission.scrollReady(scroll, root: host, window: window,
                     minimumHeight: extent)
                 && owner.window === window && abs(document.frame.height - extent) < 1

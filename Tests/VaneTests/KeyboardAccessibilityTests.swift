@@ -779,12 +779,29 @@ private struct DisabledKeyboardSurface: View {
         container.addSubview(field)
         window.contentView = container
         window.makeFirstResponder(field)
+        let editor = try XCTUnwrap(field.currentEditor())
         store.focusPage()
+        // Dismiss on the main queue's timer clock, the same one that paces focusPage's
+        // retries, so the field leaves within their budget however the runner stalls.
+        // A test-side sleep resumes through a separate enqueue and can overtake overdue
+        // main-queue timers after a stall, so wait for the handoff itself instead.
+        var heldWhileMounted: Bool?
+        var handedOffPromptly: Bool?
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+            heldWhileMounted = window.firstResponder === editor
             field.removeFromSuperview()
             window.makeFirstResponder(nil)
+            // Same clock again: the pending 50 ms retry fires first even after a stall.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) {
+                handedOffPromptly = window.firstResponder === web
+            }
         }
-        try await Task.sleep(for: .milliseconds(350))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while handedOffPromptly == nil || window.firstResponder !== web, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(heldWhileMounted, true, "Page focus must not take the keyboard from a still-mounted field")
+        XCTAssertEqual(handedOffPromptly, true, "Page focus must follow the dismissal within a retry or two")
         XCTAssertTrue(window.firstResponder === web,
                       "Dismissal can leave its field editor mounted until the transition finishes")
     }
