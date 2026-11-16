@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import XCTest
 @testable import vane
@@ -124,6 +125,85 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
                        "All native owners must share this frame's cached origins and ancestor clip edges")
     }
 
+    /// A carrier may stand in for SwiftUI only where the result is the very same pose.
+    func testCarrierMoveReproducesTheSampledPoseOrDeclines() throws {
+        let pitch: CGFloat = 40, rowHeight: CGFloat = 36
+        let children = (0..<12).map { "child-\($0)" }
+        let order = ["before", "folder"] + children + ["after-0", "after-1"]
+        let layout = NativeSidebarDisclosureLayout(order: order, baseline: ["before", "folder", "after-0", "after-1"],
+            groups: [:], parents: Dictionary(uniqueKeysWithValues: children.map { ($0, "folder") }))
+        func frame(_ progress: CGFloat) -> NativeSidebarDisclosureLayout.Frame {
+            layout.frame(visibility: NativeSidebarDisclosureVisibility(rowCount: 4 + 12 * progress,
+                changes: Dictionary(uniqueKeysWithValues: children.map { ($0, progress) })))
+        }
+        let rest = frame(1)
+        let strip = Array(children[2..<10]), header = ["before", "folder"] + Array(children[0..<2])
+        let tail = Array(children[10...]) + ["after-0", "after-1"]
+        for step in 0...20 {
+            let progress = CGFloat(step) / 20
+            let sampled = frame(progress)
+            for rows in [strip, header, tail, ["before"], ["after-0", "after-1"]] {
+                guard let move = sampled.carrierMove(of: rows, from: rest, pitch: pitch, rowHeight: rowHeight) else { continue }
+                for row in rows {
+                    let y = try XCTUnwrap(sampled.position(for: row)) * pitch
+                    let resting = try XCTUnwrap(rest.position(for: row)) * pitch
+                    XCTAssertEqual(resting + move.offset, y, accuracy: 0.01, "\(row) at \(progress)")
+                    // What SwiftUI would leave visible of the row, against the resting clip
+                    // carried along and cut at the carrier's edge.
+                    let visible = sampled.clipTop(for: row).map { y + $0 * pitch } ?? y - rowHeight
+                    let carried = rest.clipTop(for: row).map { resting + move.offset + $0 * pitch } ?? y - rowHeight
+                    XCTAssertEqual(max(carried, move.edge ?? -.infinity), visible, accuracy: 0.01, "\(row) at \(progress)")
+                }
+            }
+            let moved = try XCTUnwrap(sampled.carrierMove(of: strip, from: rest, pitch: pitch, rowHeight: rowHeight),
+                                      "A whole strip of siblings travels together at \(progress)")
+            XCTAssertEqual(moved.offset, -12 * (1 - progress) * pitch, accuracy: 0.01)
+            if progress < 1 { XCTAssertEqual(try XCTUnwrap(moved.edge), 2 * pitch, accuracy: 0.01) }
+            XCTAssertNotNil(sampled.carrierMove(of: ["before"], from: rest, pitch: pitch, rowHeight: rowHeight))
+            XCTAssertNotNil(sampled.carrierMove(of: ["after-0", "after-1"], from: rest, pitch: pitch, rowHeight: rowHeight))
+            if progress < 1 {
+                XCTAssertNil(sampled.carrierMove(of: header, from: rest, pitch: pitch, rowHeight: rowHeight),
+                             "A header stays while its children travel; one move cannot place both")
+            }
+        }
+        XCTAssertNil(frame(0).carrierMove(of: tail, from: rest, pitch: pitch, rowHeight: rowHeight),
+                     "An unclipped follower still overhangs the reveal edge it starts beneath")
+        XCTAssertNotNil(frame(0.5).carrierMove(of: tail, from: rest, pitch: pitch, rowHeight: rowHeight))
+        XCTAssertNil(frame(1.02).carrierMove(of: strip, from: rest, pitch: pitch, rowHeight: rowHeight),
+                     "A spring's overshoot spreads the strip; its rows no longer travel as one")
+    }
+
+    @MainActor func testCarrierPresentsItsOwnerMovedAndClippedInTheSection() {
+        let section = FlippedSection(frame: NSRect(x: 0, y: 0, width: 200, height: 600))
+        let window = NSWindow(contentRect: section.frame, styleMask: .borderless, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let content = FlippedSection(frame: section.frame)
+        window.contentView = content
+        content.addSubview(section)
+        defer { window.contentView = nil; window.close() }
+        let carrier = NativeSidebarBatchCarrier(frame: .zero)
+        let owner = FlippedSection(frame: .zero)
+        owner.passesEmptyHits = true
+        let row = NSView(frame: NSRect(x: 0, y: 120, width: 200, height: 36))
+        owner.addSubview(row)
+        section.addSubview(carrier)
+        carrier.place(owner, size: NSSize(width: 200, height: 400), offset: -60, edge: 80)
+        XCTAssertEqual(row.convert(row.bounds, to: section), NSRect(x: 0, y: 60, width: 200, height: 36))
+        XCTAssertEqual(row.convert(row.bounds.intersection(row.visibleRect), to: section), NSRect(x: 0, y: 80, width: 200, height: 16),
+                       "The reveal edge clips the travelling row for paint and hits alike")
+        XCTAssertTrue(section.hitTest(NSPoint(x: 10, y: 70)) === section)
+        XCTAssertTrue(section.hitTest(NSPoint(x: 10, y: 90)) === row)
+        XCTAssertTrue(section.hitTest(NSPoint(x: 10, y: 300)) === section, "An owner's empty slots pass hits to other owners")
+        let clipped = carrier.frame.size
+        carrier.place(owner, size: NSSize(width: 200, height: 400), offset: -20, edge: 80)
+        XCTAssertEqual(carrier.frame.size, clipped, "Travelling moves an origin; it must not resize the owner's tree")
+        XCTAssertEqual(row.convert(row.bounds, to: section).minY, 100)
+        carrier.place(owner, size: NSSize(width: 200, height: 400))
+        XCTAssertEqual(carrier.frame, NSRect(x: 0, y: 0, width: 200, height: 400))
+        XCTAssertEqual(row.convert(row.bounds.intersection(row.visibleRect), to: section), NSRect(x: 0, y: 120, width: 200, height: 36))
+        XCTAssertFalse(carrier.clipsToBounds, "Resting owners keep focus and selection overhang")
+    }
+
     func testInnerFolderCanCloseWhileItsAncestorIsOpening() throws {
         let layout = NativeSidebarDisclosureLayout(order: ["outer", "inner", "c1", "c2", "tail"],
             baseline: ["outer"], groups: [:],
@@ -243,5 +323,14 @@ final class SidebarDisclosureVisibilityTests: XCTestCase {
         XCTAssertFalse(baseline.isSettled, "A superseded completion cannot settle the new reversal")
         XCTAssertEqual(baseline.rows, ["folder", "child"])
         XCTAssertTrue(baseline.visibility.changes.isEmpty)
+    }
+}
+
+private final class FlippedSection: NSView {
+    var passesEmptyHits = false
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return passesEmptyHits && hit === self ? nil : hit
     }
 }
