@@ -32,6 +32,12 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var inactiveScopeHits = 0
     var inactiveScopeMisses = 0
     var inactiveScopeEvictions = 0
+    /// Disclosure frames an owner's rows were placed again by SwiftUI, and frames its
+    /// carrier presented instead.
+    var disclosureRowPlacements = 0
+    var disclosureCarrierMoves = 0
+    /// Interpolated disclosure samples presented, however many owners each reached.
+    var disclosureUpdates = 0
 }
 @MainActor protocol NativeCachedSidebarBatchesReporting: AnyObject {
     var usesThreeBatchBudget: Bool { get }
@@ -413,6 +419,38 @@ struct NativeSidebarDisclosureLayout {
             clips[row] = value
             return value
         }
+        /// Moving an owner whole by `offset` and clipping it above `edge`, both in points.
+        typealias CarrierMove = (offset: CGFloat, edge: CGFloat?)
+        /// The one move that turns `rows` laid out at `rest` into this frame's pose, or nil
+        /// when there is none. It exists when every row is displaced equally, every clip
+        /// that differs from the resting one is at a single shared edge the resting clip
+        /// already lies above, and nothing else of the owner paints above that edge.
+        func carrierMove(of rows: [String], from rest: Frame, pitch: CGFloat, rowHeight: CGFloat) -> CarrierMove? {
+            // A hundredth of a point: far inside a pixel, well outside float error.
+            let tolerance: CGFloat = 0.01
+            var offset: CGFloat?
+            var edge: CGFloat?
+            var highest = CGFloat.infinity
+            for row in rows {
+                guard let y = position(for: row), let resting = rest.position(for: row) else { return nil }
+                let travel = (y - resting) * pitch
+                if let offset { guard abs(offset - travel) <= tolerance else { return nil } } else { offset = travel }
+                switch (clipTop(for: row), rest.clipTop(for: row)) {
+                // Unclipped rows keep their adornments up to a row height outside their slot.
+                case (nil, nil): highest = min(highest, y * pitch - rowHeight)
+                case let (clip?, restClip?):
+                    let revealed = (y + clip) * pitch
+                    if abs(clip - restClip) * pitch <= tolerance { highest = min(highest, revealed) }
+                    else if restClip > clip { return nil }
+                    else if let edge { guard abs(edge - revealed) <= tolerance else { return nil } }
+                    else { edge = revealed }
+                default: return nil
+                }
+            }
+            guard let offset else { return nil }
+            if let edge, highest < edge - tolerance { return nil }
+            return (offset, edge)
+        }
     }
 }
 
@@ -765,13 +803,17 @@ private struct NativeSidebarRowLayoutAnchor: NSViewRepresentable {
     @ObservationIgnored private var presentedSample: NativeSidebarDisclosureSample?
     @ObservationIgnored private var presentedFrame: NativeSidebarDisclosureLayout.Frame?
     @ObservationIgnored private var presentedRevision = 0
-    func present(sample: NativeSidebarDisclosureSample?, frame: NativeSidebarDisclosureLayout.Frame?) {
+    /// Whether any slot has a different placement to render.
+    @discardableResult func present(sample: NativeSidebarDisclosureSample?, frame: NativeSidebarDisclosureLayout.Frame?) -> Bool {
+        var changed = false
         if sample?.visibility != presentedSample?.visibility {
             presentedRevision &+= 1
             revision = presentedRevision
+            changed = true
         }
-        if sample != presentedSample { presentedSample = sample; self.sample = sample }
-        if frame !== presentedFrame { presentedFrame = frame; self.frame = frame }
+        if sample != presentedSample { presentedSample = sample; self.sample = sample; changed = true }
+        if frame !== presentedFrame { presentedFrame = frame; self.frame = frame; changed = true }
+        return changed
     }
 }
 
@@ -835,6 +877,11 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
             .frame(maxWidth: .infinity)
             .frame(height: Look.rowHeight)
             .background(NativeSidebarRowLayoutAnchor(row: slot.id, generation: generation, committed: committed))
+            // A slot only ever moves and clips its row whole. As one group that is one
+            // placement, instead of every view and control inside the row placed again.
+            // The slot's clip then bounds the row's native views as well, so the part
+            // of a row still masked beneath its header takes no hits.
+            .geometryGroup()
     }
     private var placementAnimation: Animation? {
         if framed { return nil }
@@ -871,24 +918,56 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
+        // Destinations and reveal edges are the section's; during a disclosure the
+        // carrier may present this owner some way from the section's origin.
+        let placed = superview?.superview.map { convert(local, to: $0) } ?? local
+        let travelled = placed.y - local.y
         // A rollout can carry a child across another eight-row owner's slots.
         // Read the cached native anchors, without scanning the hosting tree.
         let accepts = occupiedRows.contains { id, destination in
             guard let anchor = rowAnchors[id]?.view, anchor.window === window else {
-                return rollingHeaders[id] == nil && destination.contains(local)
+                return rollingHeaders[id] == nil && destination.contains(placed)
             }
             let actual = convert(anchor.bounds.intersection(anchor.visibleRect), from: anchor)
             if let header = rollingHeaders[id] {
-                if abs(actual.minY - destination.minY) < 0.5 {
+                if abs(actual.minY + travelled - destination.minY) < 0.5 {
                     rollingHeaders.removeValue(forKey: id)
                 } else {
-                    guard let edge = revealEdge?(header), local.y >= edge else { return false }
+                    guard let edge = revealEdge?(header), placed.y >= edge else { return false }
                 }
             }
             return actual.contains(local)
         }
         guard accepts else { return nil }
         return super.hitTest(point)
+    }
+}
+
+/// Presents one owner at the section's disclosure pose without asking SwiftUI to place
+/// its rows again. The frame is what the owner may paint and the bounds origin how far
+/// it has travelled, so one frame of the curve moves an origin and resizes nothing.
+@MainActor final class NativeSidebarBatchCarrier: NSView {
+    override var isFlipped: Bool { true }
+    override init(frame: NSRect) { super.init(frame: frame); setAccessibilityElement(false) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    // Owners overlap across the whole section. Only a row may accept a hit.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+    /// `offset` is the owner's origin and `edge` the reveal edge it is clipped at, both
+    /// in the section. With neither, this is the owner's own resting frame.
+    func place(_ owner: NSView, size: NSSize, offset: CGFloat = 0, edge: CGFloat? = nil) {
+        let top = edge ?? offset
+        // Below the edge nothing is cut: resting adornments may overhang the last slot.
+        let height = edge == nil ? size.height : size.height + Look.rowHeight + max(0, offset - top)
+        let target = NSRect(x: 0, y: top, width: size.width, height: height)
+        if frame != target { frame = target }
+        let origin = NSPoint(x: 0, y: top - offset)
+        if bounds.origin != origin { setBoundsOrigin(origin) }
+        if clipsToBounds != (edge != nil) { clipsToBounds = edge != nil }
+        if owner.frame.size != size || owner.frame.origin != .zero { owner.frame = NSRect(origin: .zero, size: size) }
+        if owner.superview !== self { addSubview(owner) }
     }
 }
 
@@ -952,8 +1031,12 @@ private final class NativeBatchMouseObservation {
         var generation: UInt64
         /// The disclosure placement its slots read. Only mounted owners follow the curve.
         let pose: NativeSidebarDisclosurePose
-        init(host: NativeSidebarBatchHostingView<Content>, generation: UInt64, pose: NativeSidebarDisclosurePose) {
-            self.host = host; self.generation = generation; self.pose = pose
+        let carrier: NativeSidebarBatchCarrier
+        /// Frames for which the pointer keeps this owner's rows placed by SwiftUI.
+        var pointerFrames = 0
+        init(host: NativeSidebarBatchHostingView<Content>, generation: UInt64, pose: NativeSidebarDisclosurePose,
+             carrier: NativeSidebarBatchCarrier) {
+            self.host = host; self.generation = generation; self.pose = pose; self.carrier = carrier
         }
     }
     private final class WeakAnchor {
@@ -1000,6 +1083,12 @@ private final class NativeBatchMouseObservation {
     private var disclosureSample: NativeSidebarDisclosureSample?
     private var disclosureLayout: NativeSidebarDisclosureLayout?
     private var disclosureFrame: NativeSidebarDisclosureLayout.Frame?
+    /// Every row of the disclosure fully shown: the one pose SwiftUI lays an owner out
+    /// at while its carrier moves and clips it through the curve.
+    private var disclosureRest: NativeSidebarDisclosureLayout.Frame?
+    private var disclosureRestSample: NativeSidebarDisclosureSample?
+    // Diagnostic opt-out: every owner's rows placed by SwiftUI on every frame, as before carriers.
+    private let movesOwnersNatively = getenv("VANE_DIAG_SWIFTUI_DISCLOSURE_PLACEMENT") == nil
     private var disclosureKnownRows: [String: SidebarRows.Row] = [:]
     private var rowWindow = NativeSidebarResidentWindow()
     private var generation: UInt64 = 0
@@ -1206,7 +1295,7 @@ private final class NativeBatchMouseObservation {
         SidebarNativeReadinessCoordinator.shared.unregister(readiness)
         readiness = nil
         sampledGeometryRevision = nil
-        for entry in cache.values { entry.host.removeFromSuperview() }
+        for entry in cache.values { entry.carrier.removeFromSuperview() }
         if visitMayBeArchived, let previous = activeScope, mayRetain(previous) {
             // Retain only mounted owners, never every graph visited while scrolling.
             // Five eight-row roots per Space, three inactive Spaces per section.
@@ -1223,7 +1312,7 @@ private final class NativeBatchMouseObservation {
             }
         }
         cache.removeAll(); mounted.removeAll(); groups.removeAll(); ownership.removeAll(); anchors.removeAll()
-        disclosureLayout = nil; disclosureFrame = nil
+        disclosureLayout = nil; disclosureFrame = nil; disclosureRest = nil; disclosureRestSample = nil
         disclosureKnownRows.removeAll()
         interactions.removeAll(); pressedRows.removeAll(); menuRows.removeAll(); requestedProtection.removeAll()
         visit = UUID()
@@ -1385,7 +1474,7 @@ private final class NativeBatchMouseObservation {
         clipsToBounds = disclosureFrame != nil
         let currentOwners = Set(ownership.values)
         for key in Array(cache.keys) where !currentOwners.contains(key) {
-            cache.removeValue(forKey: key)?.host.removeFromSuperview()
+            cache.removeValue(forKey: key)?.carrier.removeFromSuperview()
             mounted.remove(key)
             batchCounts.graphEvictions += 1
         }
@@ -1525,7 +1614,7 @@ private final class NativeBatchMouseObservation {
             return (key, slots)
         }.sorted { $0.value[0].index < $1.value[0].index }
         for key in mounted.subtracting(wanted) {
-            cache[key]?.host.removeFromSuperview()
+            cache[key]?.carrier.removeFromSuperview()
             batchCounts.graphDetaches += 1
         }
         let oldMounted = mounted
@@ -1546,17 +1635,17 @@ private final class NativeBatchMouseObservation {
                 }
             } else {
                 let pose = NativeSidebarDisclosurePose()
-                pose.present(sample: disclosureSample, frame: disclosureFrame)
                 let host = NativeSidebarBatchHostingView(rootView: makeRoot(slots: slots, pose: pose))
                 host.sizingOptions = []
-                entry = Entry(host: host, generation: generation, pose: pose)
+                entry = Entry(host: host, generation: generation, pose: pose, carrier: NativeSidebarBatchCarrier(frame: .zero))
                 cache[key] = entry
                 batchCounts.coldGraphCreates += 1
             }
             // Every permanent owner uses the same document origin. Structural
             // movement is wholly inside SwiftUI; an immediate native-parent jump
             // must never cancel or double a child's animated absolute offset.
-            let target = batchFrame(for: slots)
+            // Only a disclosure's shared pose may be presented by the carrier.
+            place(entry, slots: slots)
             entry.host.occupy(slots, width: bounds.width)
             entry.host.revealEdge = { [weak self] header in
                 guard let self else { return nil }
@@ -1565,11 +1654,10 @@ private final class NativeBatchMouseObservation {
                       let anchor = self.anchors[header]?.value, anchor.window === self.window else { return nil }
                 return self.convert(anchor.bounds, from: anchor).maxY + Look.rowGap
             }
-            if entry.host.frame != target { entry.host.frame = target }
-            if entry.host.superview !== self || needsReconcile {
-                addSubview(entry.host, positioned: previousHost == nil ? .below : .above, relativeTo: previousHost)
+            if entry.carrier.superview !== self || needsReconcile {
+                addSubview(entry.carrier, positioned: previousHost == nil ? .below : .above, relativeTo: previousHost)
             }
-            previousHost = entry.host
+            previousHost = entry.carrier
         }
         if disclosureSample == nil {
             var cohorts: [ObjectIdentifier: (NativeSidebarRolloutStart, Set<UUID>)] = [:]
@@ -1588,20 +1676,55 @@ private final class NativeBatchMouseObservation {
         checkReadiness()
         SidebarScrollTrace.recordRowWindow(range, count: rows.count, clip: clip)
     }
-    private func batchFrame(for slots: [NativeSidebarOwnedSlot]) -> NSRect {
+    private func batchSize(for slots: [NativeSidebarOwnedSlot], rest: NativeSidebarDisclosureLayout.Frame?) -> NSSize {
         let closingHeight = slots.filter { $0.rollout?.closing == true }
             .map { CGFloat($0.index + 1) * pitch }.max() ?? 0
+        if let rest {
+            // The rows stay at their resting slots inside the owner; the carrier moves it.
+            let restingHeight = slots.compactMap { rest.position(for: $0.id) }.max().map { ($0 + 1) * pitch } ?? 0
+            return NSSize(width: bounds.width, height: max(sectionHeight, closingHeight, restingHeight))
+        }
         // A nested close can put still-authorized rows below the final section
         // height. NSHostingView rejects hits outside its own bounds even while
         // its unclipped descendants paint inside the larger animated section.
         // Use the same shared sample for the native owner's hit bounds too.
         let presentedHeight = disclosureFrame == nil ? 0
             : max(0, (disclosureSample?.visibility.rowCount ?? 0) * pitch - Look.rowGap)
-        return NSRect(x: 0, y: 0, width: bounds.width,
-                      height: max(sectionHeight, closingHeight, presentedHeight))
+        return NSSize(width: bounds.width, height: max(sectionHeight, closingHeight, presentedHeight))
+    }
+    /// The carrier's placement for this frame, or nil while SwiftUI must place the rows.
+    private func carrierMove(_ entry: Entry, slots: [NativeSidebarOwnedSlot]) -> NativeSidebarDisclosureLayout.Frame.CarrierMove? {
+        guard movesOwnersNatively, let frame = disclosureFrame, let rest = disclosureRest else { return nil }
+        // SwiftUI resolves hover again as rows pass beneath a still pointer. Keep that for
+        // the owner the pointer is over, and for the frame after it leaves.
+        if let pointer = window.map({ convert($0.mouseLocationOutsideOfEventStream, from: nil) }),
+           pointer.x >= 0, pointer.x <= bounds.width, slots.contains(where: { slot in
+               guard let y = frame.position(for: slot.id) else { return false }
+               let top = y * pitch
+               return pointer.y >= top + max(0, frame.clipTop(for: slot.id) ?? 0) * pitch - Look.rowGap
+                   && pointer.y <= top + Look.rowHeight + Look.rowGap
+           }) { entry.pointerFrames = 2 }
+        guard entry.pointerFrames == 0 else { return nil }
+        return frame.carrierMove(of: slots.map(\.id), from: rest, pitch: pitch, rowHeight: Look.rowHeight)
+    }
+    /// Present an owner at the section's current pose. Returns whether SwiftUI has rows to place.
+    @discardableResult private func place(_ entry: Entry, slots: [NativeSidebarOwnedSlot]) -> Bool {
+        if let move = carrierMove(entry, slots: slots) {
+            entry.carrier.place(entry.host, size: batchSize(for: slots, rest: disclosureRest), offset: move.offset, edge: move.edge)
+            return pose(entry, sample: disclosureRestSample, frame: disclosureRest)
+        }
+        entry.carrier.place(entry.host, size: batchSize(for: slots, rest: nil))
+        return pose(entry, sample: disclosureSample, frame: disclosureFrame)
+    }
+    private func pose(_ entry: Entry, sample: NativeSidebarDisclosureSample?,
+                      frame: NativeSidebarDisclosureLayout.Frame?) -> Bool {
+        guard entry.pose.present(sample: sample, frame: frame) else { return false }
+        // The owner renders in this layout pass, on the same frame as the extent.
+        entry.host.needsLayout = true
+        return true
     }
     private func setRoot(_ entry: Entry, slots: [NativeSidebarOwnedSlot], animate: Bool = true) {
-        entry.pose.present(sample: disclosureSample, frame: disclosureFrame)
+        place(entry, slots: slots)
         entry.host.rootView = makeRoot(slots: slots, animate: animate, pose: entry.pose)
         batchCounts.rootUpdates += 1
     }
@@ -1626,6 +1749,7 @@ private final class NativeBatchMouseObservation {
              }, content: content!)
     }
     private func updateDisclosureLayout(previousOrder: [String]) {
+        disclosureRest = nil; disclosureRestSample = nil
         guard let sample = disclosureSample else { disclosureLayout = nil; disclosureFrame = nil; return }
         let rolling = groups.values.flatMap { $0 }.filter { $0.rollout != nil }
         guard !sample.isSettled || !rolling.isEmpty else {
@@ -1667,6 +1791,12 @@ private final class NativeBatchMouseObservation {
         disclosureLayout = NativeSidebarDisclosureLayout(order: order, baseline: sample.baseline,
             groups: [:], parents: parents, travelLimits: limits)
         disclosureFrame = disclosureLayout?.frame(visibility: sample.visibility)
+        guard movesOwnersNatively else { return }
+        let shown = NativeSidebarDisclosureVisibility(rowCount: CGFloat(order.count),
+            changes: Dictionary(order.filter { !sample.baseline.contains($0) }.map { ($0, 1) },
+                                uniquingKeysWith: { first, _ in first }))
+        disclosureRest = disclosureLayout?.frame(visibility: shown)
+        disclosureRestSample = NativeSidebarDisclosureSample(baseline: sample.baseline, visibility: shown, isSettled: false)
     }
     var disclosureDiagnosticString: String {
         let slots = groups.values.flatMap { $0 }
@@ -1679,20 +1809,20 @@ private final class NativeBatchMouseObservation {
     }
     fileprivate func presentDisclosure(_ sample: NativeSidebarDisclosureSample?) {
         guard !disposed, let sample else { return }
+        batchCounts.disclosureUpdates += 1
         disclosureSample = sample
         disclosureFrame = disclosureLayout?.frame(visibility: sample.visibility)
         clipsToBounds = disclosureFrame != nil
         for key in mounted {
             guard let slots = groups[key], let entry = cache[key],
                   disclosureLayout != nil || slots.contains(where: { $0.rollout != nil }) else { continue }
-            let target = batchFrame(for: slots)
-            if entry.host.frame != target { entry.host.frame = target }
             // Slots read their placement from the owner's pose. Replacing the root
             // instead re-evaluated its rows, environments and controls on every
-            // frame of the curve, which alone exceeded a 120 Hz frame. The owner
-            // still renders in this layout pass, on the same frame as the extent.
-            entry.pose.present(sample: sample, frame: disclosureFrame)
-            entry.host.needsLayout = true
+            // frame of the curve, which alone exceeded a 120 Hz frame. An owner whose
+            // rows all travel together is moved by its carrier and renders nothing.
+            if place(entry, slots: slots) { batchCounts.disclosureRowPlacements += 1 }
+            else { batchCounts.disclosureCarrierMoves += 1 }
+            if entry.pointerFrames > 0 { entry.pointerFrames -= 1 }
         }
         // Closing visuals are disabled from the first structural update. Release
         // them with the guarded outer transaction completion/rebase, rather than
@@ -1840,7 +1970,7 @@ private final class NativeBatchMouseObservation {
         menuRows.removeAll()
         mouseObservation?.detach()
         mouseObservation = nil
-        for entry in cache.values { entry.host.removeFromSuperview() }
+        for entry in cache.values { entry.carrier.removeFromSuperview() }
         cache.removeAll(); mounted.removeAll(); groups.removeAll(); ownership.removeAll(); rows.removeAll(); anchors.removeAll()
         revokeInactiveOwners(); activeScope = nil
         ownerObservations.removeAll(); supplyingStore = nil
@@ -1848,6 +1978,7 @@ private final class NativeBatchMouseObservation {
         interactions.removeAll(); pressedRows.removeAll(); requestedProtection.removeAll()
         readinessRowIDs.removeAll(); authorizedRowIDs.removeAll(); rowIndexByID.removeAll()
         disclosureSample = nil; disclosureLayout = nil; disclosureFrame = nil; disclosureKnownRows.removeAll()
+        disclosureRest = nil; disclosureRestSample = nil
         content = nil; inherited = EnvironmentValues()
     }
 }

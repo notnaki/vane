@@ -95,9 +95,15 @@ import XCTest
             // Forced native layout is useful even on a desktop where XCTest windows
             // remain occluded. Report visibility; these are not displayed frame timings.
             let visible = window.occlusionState.contains(.visible)
+            func owners(in view: NSView) -> [any NativeCachedSidebarBatchesReporting] {
+                ((view as? any NativeCachedSidebarBatchesReporting).map { [$0] } ?? []) + view.subviews.flatMap { owners(in: $0) }
+            }
+            let commits = FolderDisclosureCommits(sections: owners(in: host))
+            func placements() -> (rows: Int, carriers: Int) { commits.placements() }
             for _ in 0..<3 {
                 var gaps: [Double] = []
                 var last = ProcessInfo.processInfo.systemUptime
+                commits.begin()
                 let timer = Timer(timeInterval: 0.001, repeats: true) { _ in
                     MainActor.assumeIsolated {
                         let now = ProcessInfo.processInfo.systemUptime
@@ -106,10 +112,19 @@ import XCTest
                     }
                 }
                 RunLoop.main.add(timer, forMode: .common)
+                // Core Animation flushes as the run loop is about to wait or exit. Ordered
+                // after that flush, this sees each committed transaction once.
+                let turns = CFRunLoopObserverCreateWithHandler(nil,
+                    CFRunLoopActivity.beforeWaiting.rawValue | CFRunLoopActivity.exit.rawValue, true, 3_000_000) { _, _ in
+                    MainActor.assumeIsolated { commits.observe(at: ProcessInfo.processInfo.systemUptime) }
+                }
+                CFRunLoopAddObserver(CFRunLoopGetMain(), turns, .commonModes)
+                defer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), turns, .commonModes) }
                 defer { timer.invalidate() }
                 let cadence = FolderDisclosureCadence()
                 if let screen = window.screen { cadence.start(on: screen) }
                 defer { cadence.stop() }
+                let before = placements()
                 let start = ProcessInfo.processInfo.systemUptime
                 store.toggleFolder(folder.id, in: shape)
                 let toggle = (ProcessInfo.processInfo.systemUptime - start) * 1000
@@ -126,17 +141,60 @@ import XCTest
                 XCTAssertEqual(store[keyPath: shape].visible.count, count + 1)
                 XCTAssertGreaterThan(mounted, 0)
                 XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
-                print("FOLDER_OPEN kind=\(kind) count=\(count) visible=\(visible) mounted=\(mounted) toggle_ms=\(toggle) layout_ms=\(layout) max_gap_ms=\(gaps.max() ?? 0) \(cadence.summary())")
+                print("FOLDER_OPEN kind=\(kind) count=\(count) visible=\(visible) mounted=\(mounted) toggle_ms=\(toggle) layout_ms=\(layout) max_gap_ms=\(gaps.max() ?? 0) \(cadence.summary()) \(commits.summary()) swiftui_owner_frames=\(placements().rows - before.rows) carrier_owner_frames=\(placements().carriers - before.carriers)")
                 if count == 300 { XCTAssertLessThan(mounted, 60) }
+                let opened = placements()
                 cadence.begin()
+                commits.begin()
                 let closeStart = ProcessInfo.processInfo.systemUptime
                 store.toggleFolder(folder.id, in: shape)
                 host.layoutSubtreeIfNeeded()
                 let closeLayout = (ProcessInfo.processInfo.systemUptime - closeStart) * 1000
                 try await Task.sleep(for: .milliseconds(500))
-                print("FOLDER_CLOSE kind=\(kind) count=\(count) layout_ms=\(closeLayout) \(cadence.summary())")
+                print("FOLDER_CLOSE kind=\(kind) count=\(count) layout_ms=\(closeLayout) \(cadence.summary()) \(commits.summary()) swiftui_owner_frames=\(placements().rows - opened.rows) carrier_owner_frames=\(placements().carriers - opened.carriers)")
             }
         }
+    }
+}
+
+/// The disclosure's own updates, counted each time Core Animation has flushed. SwiftUI
+/// renders the next sample of this curve as soon as the last is committed, without waiting
+/// for the display: the gap between commits is one whole update, and it has to fit the
+/// display's frame for every frame to show a new pose. Only the curve's nominal duration
+/// is timed; its settling tail moves nothing visible.
+@MainActor private final class FolderDisclosureCommits {
+    private var count: Int?
+    private var first: Double?
+    private var previous = 0.0
+    private var commits = 0
+    private var most = 0
+    private var gaps: [Double] = []
+    private let sections: [any NativeCachedSidebarBatchesReporting]
+    init(sections: [any NativeCachedSidebarBatchesReporting]) { self.sections = sections }
+    /// Owner-frames whose rows SwiftUI placed again, and owner-frames a carrier moved.
+    func placements() -> (rows: Int, carriers: Int) {
+        sections.reduce((0, 0)) {
+            ($0.0 + $1.batchCounts.disclosureRowPlacements, $0.1 + $1.batchCounts.disclosureCarrierMoves)
+        }
+    }
+    private var updates: Int { sections.reduce(0) { $0 + $1.batchCounts.disclosureUpdates } }
+    func begin() { count = nil; first = nil; commits = 0; most = 0; gaps.removeAll(keepingCapacity: true) }
+    func observe(at now: Double) {
+        let next = updates
+        guard let count else { self.count = next; return }
+        guard next != count else { return }
+        commits += 1
+        most = max(most, next - count)
+        self.count = next
+        if let first {
+            if now - first <= Look.listSeconds { gaps.append((now - previous) * 1000) }
+        } else { first = now }
+        previous = now
+    }
+    func summary() -> String {
+        let sorted = gaps.sorted()
+        guard !sorted.isEmpty else { return "commits=\(commits)" }
+        return "commits=\(commits) updates_per_commit_max=\(most) commit_p50_ms=\(sorted[sorted.count / 2]) commit_p95_ms=\(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]) commit_max_ms=\(sorted.last!)"
     }
 }
 

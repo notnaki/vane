@@ -461,7 +461,10 @@ python3 scripts/test-ui-scroll-trace-analysis.py
 ```
 
 Folder-opening diagnostics report toggle time, opening/closing layout, run-loop gaps, and
-mounted native tab controls for 20/300-tab folders. They also guard against repeated
+mounted native tab controls for 20/300-tab folders. `commit_*_ms` is the time between
+committed updates of the disclosure curve, the figure that has to fit one display frame;
+`swiftui_owner_frames` and `carrier_owner_frames` count the row owners SwiftUI placed
+again against those a native carrier moved. They also guard against repeated
 lock scans in an unprotected 3,000-tab strip and inactive-tab scans in the offscreen
 media layer:
 

@@ -113,7 +113,10 @@ import XCTest
                 if [9, 21].contains(frame), current.enabled {
                     let presentedY = try presentedRect(current).midY
                     let nativeY = rect(current).midY
-                    let point = current.convert(NSPoint(x: current.bounds.midX, y: current.bounds.midY), to: nil)
+                    // Early in the rollout most of the row is still masked beneath its
+                    // header, which keeps those points. Click what is actually revealed.
+                    let revealed = current.bounds.intersection(current.visibleRect)
+                    let point = current.convert(NSPoint(x: revealed.midX, y: revealed.midY), to: nil)
                     // Capture native clipping owners before dispatch, without a
                     // second hitTest that could mutate the batch hit cache.
                     var owners: [String] = []
