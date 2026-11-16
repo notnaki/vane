@@ -175,16 +175,106 @@ import XCTest
             try await Task.sleep(for: .milliseconds(500))
             let rebuilt = try await read()
             XCTAssertEqual(rebuilt.size, dragged.size)
-            XCTAssertLessThanOrEqual(rebuilt.resize.count, 2, "\(rebuilt.resize)")
-            XCTAssertLessThanOrEqual(rebuilt.resize.filter { $0 == rebuilt.size }.count, 1, "\(rebuilt.resize)")
-            XCTAssertLessThanOrEqual(rebuilt.observed, 2)
-            XCTAssertLessThanOrEqual(rebuilt.flips, 2)
-            XCTAssertLessThanOrEqual(rebuilt.painted.count, 2, "\(rebuilt.painted)")
-            XCTAssertLessThanOrEqual(rebuilt.painted.filter { $0 == rebuilt.size }.count, 1, "\(rebuilt.painted)")
-            // Only the lookahead's own extra height may have scrolled out of reach.
-            @MainActor func height(_ size: String?) -> Double { size?.split(separator: "x").last.flatMap { Double($0) } ?? 0 }
-            let lookahead = rebuilt.resize.isEmpty ? 0 : height(rebuilt.resize.first) - height(rebuilt.size)
-            XCTAssertEqual(rebuilt.bottom, lookahead, accuracy: 0.5)
+            // The lookahead and back, each once, and the page is still at its end.
+            XCTAssertEqual(rebuilt.resize.count, 2, "\(rebuilt.resize)")
+            XCTAssertEqual(rebuilt.resize.last, rebuilt.size)
+            XCTAssertEqual(rebuilt.observed, 2)
+            XCTAssertEqual(rebuilt.flips, 2)
+            XCTAssertEqual(rebuilt.painted, rebuilt.resize)
+            XCTAssertEqual(rebuilt.bottom, 0)
+        }
+    }
+
+    /// The buffer lays a page out ahead of the pointer, taller and wider than the
+    /// window. Scroll positions that only that never-visible layout clamps must
+    /// come back: a page at its end stays there, a log that follows its end keeps
+    /// following, and positions elsewhere do not move.
+    func testBufferedSizesDoNotMoveScrollPositions() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            // A viewport-sized inner log, appended to like a chat that follows its
+            // end only while it is there, and a wide strip scrolled to its right end.
+            _ = try await web.evaluateJavaScript("""
+                const log = document.createElement('div');
+                log.id = 'log';
+                log.style.cssText = 'position:fixed;right:0;top:0;width:160px;height:50vh;overflow:auto;background:#ddd';
+                const line = () => { const p = document.createElement('p'); p.textContent = 'line'; log.append(p) };
+                for (let i = 0; i < 200; i++) line();
+                const strip = document.createElement('div');
+                strip.id = 'strip';
+                strip.style.cssText = 'position:fixed;left:0;top:0;width:50vw;height:30px;overflow:auto;white-space:nowrap';
+                strip.textContent = 'wide '.repeat(2000);
+                document.body.append(log, strip);
+                log.scrollTop = log.scrollHeight;
+                strip.scrollLeft = strip.scrollWidth;
+                window.__follow = setInterval(() => {
+                    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 4;
+                    line();
+                    if (atEnd) log.scrollTop = log.scrollHeight;
+                }, 50); 0
+                """)
+            struct Scroll: Decodable { var y: Double, bottom: Double, log: Double, strip: Double }
+            @MainActor func read() async throws -> Scroll {
+                let json = try await web.evaluateJavaScript("""
+                    JSON.stringify({y: scrollY, bottom: document.documentElement.scrollHeight - innerHeight - scrollY,
+                        log: log.scrollHeight - log.scrollTop - log.clientHeight,
+                        strip: strip.scrollWidth - strip.scrollLeft - strip.clientWidth})
+                    """) as? String
+                return try JSONDecoder().decode(Scroll.self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            @MainActor func pressAndRelease() async throws {
+                window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+                try await Task.sleep(for: .milliseconds(300))
+                window.endPageResize()
+                try await compatibilityWait { !window.isPreparingPageResize }
+                try await Task.sleep(for: .milliseconds(700))
+            }
+            for position in ["end", "middle", "top"] {
+                _ = try await web.evaluateJavaScript("""
+                    scrollTo(0, {end: document.documentElement.scrollHeight, middle: 1234, top: 0}['\(position)']); 0
+                    """)
+                try await Task.sleep(for: .milliseconds(200))
+                let before = try await read()
+                XCTAssertEqual(before.log, 0, "The log must start at its end")
+                XCTAssertEqual(before.strip, 0, "The strip must start at its end")
+
+                try await pressAndRelease()
+                let pressed = try await read()
+                XCTAssertEqual(pressed.y, before.y, "\(position): a press and release moved the page")
+                XCTAssertEqual(pressed.bottom, before.bottom, "\(position): a press and release moved the page")
+                XCTAssertEqual(pressed.log, 0, "\(position): the log stopped following its end")
+                XCTAssertEqual(pressed.strip, 0, "\(position): the strip left its end")
+
+                // Out and back to the same size: everything is where it was.
+                _ = try await self.drag(window, speed: 300, travel: 120, corner: true)
+                try await Task.sleep(for: .milliseconds(700))
+                let dragged = try await read()
+                XCTAssertEqual(dragged.y, before.y, "\(position): a drag out and back moved the page")
+                XCTAssertEqual(dragged.log, 0, "\(position): the log stopped following its end")
+                XCTAssertEqual(dragged.strip, 0, "\(position): the strip left its end")
+            }
+
+            // Grown and left there, like any resize: the end stays the end.
+            _ = try await web.evaluateJavaScript("scrollTo(0, document.documentElement.scrollHeight); 0")
+            _ = try await self.drag(window, speed: 300, travel: 120, corner: true, returns: false)
+            try await Task.sleep(for: .milliseconds(700))
+            let grown = try await read()
+            XCTAssertEqual(grown.bottom, 0)
+            XCTAssertEqual(grown.log, 0)
+            XCTAssertEqual(grown.strip, 0)
+
+            // Shrunk and left there, the top of the view stays put as in any
+            // resize: nothing was clamped, so nothing is pulled to the end.
+            _ = try await web.evaluateJavaScript("scrollTo(0, document.documentElement.scrollHeight); 0")
+            try await Task.sleep(for: .milliseconds(200))
+            let end = try await read()
+            _ = try await self.drag(window, speed: -300, travel: -90, corner: true, returns: false)
+            try await Task.sleep(for: .milliseconds(700))
+            let shrunk = try await read()
+            XCTAssertEqual(shrunk.y, end.y)
+            XCTAssertGreaterThan(shrunk.bottom, 0)
+            XCTAssertEqual(shrunk.log, 0)
+            _ = try await web.evaluateJavaScript("clearInterval(__follow); 0")
         }
     }
 
