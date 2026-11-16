@@ -357,6 +357,98 @@ import XCTest
     }
 }
 
+@MainActor final class InstantFolderDisclosureClipTests: XCTestCase {
+    /// Battery Saver takes the native batches' Reduce Motion path on every host.
+    /// A collapsed section is just the folder row the user toggled: clipping it for
+    /// the displays before its sample rebases cuts that row's focus ring.
+    func testInstantToggleNeverClipsTheSectionOrPaintsOutsideIt() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let policy = NSApp.activationPolicy()
+        defer { NSApp.setActivationPolicy(policy) }
+        let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
+        var failure: (any Error)?
+        do { try await check() } catch { failure = error }
+        do { try await loop.close() } catch {
+            if failure == nil { failure = error } else { XCTFail("Loop cleanup: \(error)") }
+        }
+        if let failure { throw failure }
+    }
+
+    private func check() async throws {
+        let previousMode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.alwaysOn)
+        defer { BatterySaver.shared.setMode(previousMode) }
+        XCTAssertTrue(Motion.reduced, "Battery Saver must select the reduced-motion path")
+        let controls = LargeDisclosureControls()
+        let store = TabStore(isPrivate: true, session: [])
+        store.sharingReady = false
+        let folder = Folder(name: "Instant", collapsed: true)
+        let tabs = (0..<4).map { _ in Tab(isPrivate: true, profileID: store.profileID) }
+        store.tabs = tabs
+        store.pins = Pins(entries: [.init(row: .folder(folder))] + tabs.map {
+            .init(row: .tab($0.id.uuidString), parent: folder.id)
+        })
+        let host = NSHostingView(rootView: LargeDisclosureOutline(store: store, controls: controls))
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 250, height: 600),
+                              styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        defer {
+            window.orderOut(nil); window.contentView = nil; window.close()
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+        }
+        func descendants<T: NSView>(_ root: NSView, _: T.Type) -> [T] {
+            ((root as? T).map { [$0] } ?? []) + root.subviews.flatMap { descendants($0, T.self) }
+        }
+        func display() {
+            host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+        }
+        try await compatibilityWait {
+            display()
+            return NSApp.isRunning && window.occlusionState.contains(.visible)
+                && controls.views["new-tab"]?.value?.window === window
+                && descendants(host, NativeSidebarRowLayoutView.self).contains {
+                    $0.rowID == folder.id.uuidString && $0.hasCommittedCurrentBounds
+                        && $0.committedGeneration == $0.generation
+                }
+        }
+        let newTab = try XCTUnwrap(controls.views["new-tab"]?.value)
+        let section = try XCTUnwrap(descendants(host, NativeCachedSidebarBatchesView<LargeDisclosurePaintRow>.self).first)
+        XCTAssertFalse(section.clipsToBounds, "Resting sections must retain focus/selection overhang")
+        let pitch = Look.rowHeight + Look.rowGap
+        for open in [true, false, true, false] {
+            // The model asks for motion; the policy must land it at once.
+            Motion.animate(.linear(duration: 120)) { store.pins.toggle(folder: folder.id) }
+            // The first display after the toggle, before the sample rebases a turn later.
+            display()
+            XCTAssertFalse(section.clipsToBounds, "An instant toggle must not clip the folder row (open: \(open))")
+            let extent = section.convert(section.bounds, to: host)
+            XCTAssertEqual(extent.height, CGFloat(open ? tabs.count + 1 : 1) * pitch - Look.rowGap, accuracy: 1,
+                           "The section must take its endpoint extent at once (open: \(open))")
+            XCTAssertEqual(newTab.convert(newTab.bounds, to: host).minY, extent.maxY + Look.rowGap, accuracy: 1,
+                           "New Tab must land directly below the section (open: \(open))")
+            // Unclipped, every child must still lie inside the section it belongs to.
+            for tab in tabs {
+                guard let child = controls.views[tab.id.uuidString]?.value, child.window === window,
+                      !child.isHiddenOrHasHiddenAncestor else { continue }
+                let frame = child.convert(child.bounds, to: host)
+                XCTAssertTrue(extent.insetBy(dx: -1, dy: -1).contains(frame),
+                              "A child must not paint outside its section (open: \(open)): \(frame) in \(extent)")
+            }
+            try await compatibilityWait {
+                display()
+                return section.disclosureDiagnosticString.contains("settled=Optional(true)")
+            }
+            XCTAssertFalse(section.clipsToBounds, "Settled sections must restore focus/selection overhang")
+        }
+    }
+}
+
 @MainActor private final class LargeDisclosureControls {
     final class WeakMarker {
         weak var value: LargeDisclosureMarker?

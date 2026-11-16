@@ -1489,9 +1489,7 @@ private final class NativeBatchMouseObservation {
         }
         for key in Array(groups.keys) { groups[key]?.sort { $0.index < $1.index } }
         updateDisclosureLayout(previousOrder: disclosureLayout?.order ?? previousOrder.map(\.id))
-        // Viewport-capped strips must not paint through the authoritative outer
-        // extent. Restore ordinary focus/selection overhang after disclosure.
-        clipsToBounds = disclosureFrame != nil
+        clipsToBounds = clipsDisclosure
         let currentOwners = Set(ownership.values)
         for key in Array(cache.keys) where !currentOwners.contains(key) {
             cache.removeValue(forKey: key)?.carrier.removeFromSuperview()
@@ -1822,6 +1820,19 @@ private final class NativeBatchMouseObservation {
         disclosureRest = disclosureLayout?.frame(visibility: shown)
         disclosureRestSample = NativeSidebarDisclosureSample(baseline: sample.baseline, visibility: shown, isSettled: false)
     }
+    /// Viewport-capped strips must not paint through the authoritative outer
+    /// extent. Restore ordinary focus/selection overhang after disclosure.
+    ///
+    /// An instant toggle (Reduce Motion, Battery Saver, an immediate transaction)
+    /// keeps its unsettled sample until the baseline rebases on the next main-loop
+    /// turn, but it already presents the destination with no row in motion. Clipping
+    /// it would cut the toggled folder row's focus ring for those displays.
+    private var clipsDisclosure: Bool {
+        guard disclosureFrame != nil, let sample = disclosureSample else { return false }
+        return groups.values.contains { $0.contains { $0.rollout != nil } }
+            || sample.visibility.rowCount != CGFloat(rows.count)
+            || rows.contains { sample.progress(for: $0.id) != 1 }
+    }
     var disclosureDiagnosticString: String {
         let slots = groups.values.flatMap { $0 }
         return "rows=\(rows.count) settled=\(String(describing: disclosureSample?.isSettled))"
@@ -1836,7 +1847,7 @@ private final class NativeBatchMouseObservation {
         batchCounts.disclosureUpdates += 1
         disclosureSample = sample
         disclosureFrame = disclosureLayout?.frame(visibility: sample.visibility)
-        clipsToBounds = disclosureFrame != nil
+        clipsToBounds = clipsDisclosure
         for key in mounted {
             guard let slots = groups[key], let entry = cache[key],
                   disclosureLayout != nil || slots.contains(where: { $0.rollout != nil }) else { continue }
