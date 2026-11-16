@@ -145,11 +145,20 @@ private final class PreviewServer: @unchecked Sendable {
             setTimeout(() => { document.body.innerHTML = '<div style="height:240px;background:#1976d2">Deferred article</div><div style="height:240px;background:#e53935"></div><div style="height:240px;background:#43a047"></div>'; }, 1000);
             </script></body>
             """)
-            let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
+            let warm = try PreviewServer(body: "<body style='margin:0'><div style='height:240px;background:#1976d2'>Warm</div>"
+                + "<div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>")
+            let base = try await server.start(), warmBase = try await warm.start()
+            let previews = Previews(), tab = Tab(isPrivate: true)
             let enabled = Previews.enabled
             Previews.enabled = true
-            defer { previews.cancel(); tab.tearDown(); server.stop(); Previews.enabled = enabled }
+            defer { previews.cancel(); tab.tearDown(); server.stop(); warm.stop(); Previews.enabled = enabled }
+            // The budget starts at load, so a cold WebContent launch on a slow runner can
+            // spend it before the deferred page's timer even starts. Admit the reused
+            // preview renderer with an immediately painted page, then measure as before.
+            previews.request(warmBase, from: tab)
+            try await compatibilityWait { previews.current?.image != nil }
             previews.request(base, from: tab)
+            XCTAssertNil(previews.current?.image, "The measured page must not inherit the warm-up pixels")
             let deadline = ContinuousClock.now + .seconds(6)
             while previews.current?.image == nil, ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(20))

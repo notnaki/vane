@@ -16,7 +16,16 @@ import XCTest
         NativeFixtureDiagnostics.emit("resource baseline: " + NativeFixtureDiagnostics.resourceSnapshot())
     }()
 
+    /// CI starts xctest as a launchd job, not from a visible app, so between window-presenting
+    /// fixtures it is App Nap eligible: its timers coalesce. Started that way on an idle Mac,
+    /// 64 of its 20ms sleeps in 40s overran 100ms (worst 0.54s); with this activity, 3 (0.12s).
+    /// Real-time fixture deadlines (preview paint, WebKit readiness) must not depend on how
+    /// the runner launched us, and Vane is never napped while a user waits on that work.
+    private static let appNapOptOut = ProcessInfo.processInfo.beginActivity(
+        options: [.userInitiated, .latencyCritical], reason: "Native fixtures measure real-time deadlines")
+
     static func prepare() {
+        _ = appNapOptOut
         _ = cleanup
         NativeFixtureRetirement.registerHostIfEnabled()
         _ = resourceBaseline
