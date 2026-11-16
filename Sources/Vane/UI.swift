@@ -4335,8 +4335,11 @@ private struct TidyRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let offering = TidyTabs.offersClear(store, hovering: hovering)
-        let tidy = TidyTabs.control(store)
+        // Counted once: it reads every tab, and this body runs on each store publication.
+        let today = TidyTabs.todayCount(store)
+        let offering = TidyTabs.offersClear(today: today, hovering: hovering)
+        let tidy = TidyTabs.control(today: today, threshold: TidyTabs.threshold, enabled: TidyTabs.enabled,
+                                    running: progress.isRunning(store))
         SidebarTidySurface {
             switch tidy {
             case .hidden:
