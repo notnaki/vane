@@ -21,7 +21,7 @@ enum StallDiag {
     /// Live, system-wide timeline spindump while something is stalled.
     static func capture(_ reason: String, target: Int32?) {
         lock.lock(); defer { lock.unlock() }
-        guard captures < 8 else { return }
+        guard captures < 6 else { return }
         captures += 1
         let n = captures, t = String(format: "%.1f", now())
         print("STALL_DIAG capture#\(n) reason=\(reason) target=\(target.map(String.init) ?? "-") uptime=\(t)")
@@ -34,7 +34,7 @@ enum StallDiag {
     /// Retroactive: tailspin holds the last ~20s, log show the stall window.
     static func saveAfter(_ reason: String, seconds: Double) {
         lock.lock(); defer { lock.unlock() }
-        guard saves < 4 else { return }
+        guard saves < 6 else { return }
         saves += 1
         let n = saves
         print("STALL_DIAG save#\(n) reason=\(reason) stall=\(String(format: "%.2f", seconds))s uptime=\(String(format: "%.1f", now()))")
@@ -64,7 +64,7 @@ enum StallDiag {
                 let sem = DispatchSemaphore(value: 0)
                 DispatchQueue.main.async { sem.signal() }
                 if sem.wait(timeout: .now() + 0.5) == .timedOut {
-                    if sem.wait(timeout: .now() + 2.5) == .timedOut {
+                    if sem.wait(timeout: .now() + 5.5) == .timedOut {
                         capture("main", target: ProcessInfo.processInfo.processIdentifier)
                         sem.wait()
                         saveAfter("main", seconds: now() - sent)
@@ -82,7 +82,7 @@ enum StallDiag {
         let pid = (web.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value
         let start = now()
         let watcher = Task.detached {
-            try? await Task.sleep(for: .milliseconds(2500))
+            try? await Task.sleep(for: .milliseconds(4000))
             if !Task.isCancelled { capture("js", target: pid) }
         }
         defer { watcher.cancel() }
@@ -91,7 +91,7 @@ enum StallDiag {
         if elapsed > 0.75 {
             print("STALL_DIAG js \(String(format: "%.2f", elapsed))s pid=\(pid.map(String.init) ?? "-") from uptime \(String(format: "%.1f", start)) label=\(label.prefix(80).replacingOccurrences(of: "\n", with: " "))")
         }
-        if elapsed > 3 { saveAfter("js", seconds: elapsed) }
+        if elapsed > 5 { saveAfter("js", seconds: elapsed) }
         return result
     }
 }
