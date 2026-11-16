@@ -4974,7 +4974,26 @@ struct Stash {
         let list = strip
         guard list.count > 1, let i = list.firstIndex(where: { $0.id == currentSpaceID })
         else { return }
-        switchTo(space: list[(i + delta + list.count) % list.count])
+        selectSpace(list[(i + delta + list.count) % list.count])
+    }
+
+    /// Keyboard, menu and palette switches take the footer's native slide when it is
+    /// exactly equivalent to `switchTo`: the SwiftUI fallback transition re-lays out both
+    /// sidebars every frame, a 600 ms main-thread stall with 40 tabs a Space, against about
+    /// 100 ms for the captured-pixel slide. Within a profile, with the sidebar on screen
+    /// and nothing travelling, `select` commits before it returns, as `switchTo` does.
+    /// Anything else keeps `switchTo`: a profile hop stays synchronous, and a hidden
+    /// sidebar or an open Library has nothing to slide. A slide or swipe still under way is retired
+    /// first, so a press during one commits at once and can itself take the slide.
+    func selectSpace(_ space: Space) {
+        if space.id != currentSpaceID { spaceGesture.monitor.yieldToCommandSwitch(in: self) }
+        let host = window?.contentView as? BrowserWindowHost
+        guard space.profileID == profileID, space.id != currentSpaceID, host != nil,
+              host?.spaceSlide == nil, !spaceSwiping, spaceGesture.sectionsView != nil,
+              sidebarShown || sidebarPeeking, !libraryOpen, !creatingSpace, palette == nil,
+              !Motion.spaceReduced
+        else { switchTo(space: space); return }
+        spaceGesture.monitor.select(space, in: self)
     }
 
     /// ⌃1…⌃9. Literally space N *of the strip*, unlike ⌘9 which means "the last tab": Arc
@@ -4983,7 +5002,7 @@ struct Stash {
     func switchTo(spaceNumber n: Int) {
         let list = strip
         guard list.indices.contains(n - 1) else { return }
-        switchTo(space: list[n - 1])
+        selectSpace(list[n - 1])
     }
 
     /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
@@ -5006,7 +5025,7 @@ struct Stash {
     /// naming another profile's Space works the same way the dot for it does.
     func switchTo(spaceID: UUID) {
         guard let space = strip.first(where: { $0.id == spaceID }) else { return }
-        switchTo(space: space)
+        selectSpace(space)
     }
 
     /// Create a space in this window's profile and move this window into it, leaving the

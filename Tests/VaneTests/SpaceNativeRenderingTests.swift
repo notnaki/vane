@@ -1225,6 +1225,117 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, spaces[0].id)
     }
 
+    /// Keyboard commands take the native slide, but each press still commits at once:
+    /// a press during the slide, or with the sidebar hidden, must not queue behind it.
+    func testRapidSpaceCommandsEachCommitImmediately() async throws {
+        try await withFixtureApplicationLoop {
+            let (store, spaces, window, _) = try fixture()
+            store.palette = nil
+            try await admitFixtureSidebar(store, window: window)
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            store.switchTo(spaceNumber: 2)
+            XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+            XCTAssertEqual(host.spaceSlide?.isActive, true, "An idle command takes the native slide")
+            let first = host.spaceSlide
+            store.switchTo(spaceNumber: 3)
+            XCTAssertEqual(store.currentSpaceID, spaces[2].id, "A press during the first slide commits")
+            XCTAssertNotNil(first)
+            XCTAssertNil(first?.superview, "The first slide's captured rows are retired")
+            XCTAssertFalse(host.spaceSlide === first)
+            XCTAssertFalse(store.spaceGesture.profileSliding)
+            store.cycleSpace(1)
+            XCTAssertEqual(store.currentSpaceID, spaces[3].id)
+            let tab = store.newBlankTab(focus: false)
+            XCTAssertTrue(store.tabs.contains { $0.id == tab.id }, "A new tab joins the Space just entered")
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertEqual(store.currentSpaceID, spaces[3].id, "No queued selection replays afterwards")
+            // A press after travel ends but before the live rows acknowledge it must not
+            // strand the finished slide's rows over the sidebar.
+            try await compatibilityWait { host.spaceSlide == nil && store.spaceGesture.sectionsView != nil && !store.spaceSwiping }
+            store.palette = nil     // landing in an empty Space opened the command bar
+            store.cycleSpace(-1)
+            XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+            let finished = try XCTUnwrap(host.spaceSlide, "An idle command takes the native slide")
+            finished.finish()
+            XCTAssertEqual(host.spaceSlide === finished && !finished.isActive, true,
+                           "A finished slide waits for the live rows before it retires")
+            store.cycleSpace(-1)
+            XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+            XCTAssertNil(finished.superview, "The finished slide's rows do not outlive the switch")
+            XCTAssertFalse(host.spaceSlide === finished)
+            XCTAssertFalse(store.spaceGesture.profileSliding)
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertNil(host.spaceSlide, "No captured slide outlives a command switch")
+            store.sidebarShown = false
+            try await Task.sleep(for: .milliseconds(100))
+            store.cycleSpace(1)
+            store.cycleSpace(1)
+            XCTAssertEqual(store.currentSpaceID, spaces[3].id, "A hidden sidebar switches synchronously")
+            XCTAssertNil(host.spaceSlide, "A hidden sidebar has nothing to slide")
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertEqual(store.currentSpaceID, spaces[3].id)
+        }
+    }
+
+    /// Main-thread stalls of populated Space switches, by entry point: programmatic
+    /// `switchTo`, the keyboard/menu commands, and the footer's swipe monitor.
+    func testPopulatedSpaceSwitchMainThreadGaps() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
+        let (store, spaces, window, monitor) = try fixture()
+        window.setFrame(NSRect(x: 100, y: 100, width: 1100, height: 800), display: true)
+        for space in spaces.prefix(2) {
+            store.switchTo(space: space)
+            store.tabs = (0..<40).map { index in
+                let tab = Tab(profileID: store.profileID)
+                tab.kind = index < 12 ? .pinned : .today
+                tab.park(url: URL(string: "about:blank#\(space.name)-\(index)")!,
+                         Parked(title: "\(space.name) document \(index)"))
+                return tab
+            }
+            store.syncShapes()
+        }
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(800))
+        var last = ProcessInfo.processInfo.systemUptime, gap = 0.0
+        let heartbeat = Timer(timeInterval: 0.001, repeats: true) { _ in
+            let now = ProcessInfo.processInfo.systemUptime
+            gap = max(gap, now - last); last = now
+        }
+        RunLoop.main.add(heartbeat, forMode: .common)
+        defer { heartbeat.invalidate() }
+        let route = ProcessInfo.processInfo.environment["VANE_SPACE_SWITCH_ROUTE"]
+        for name in ["direct", "command", "footer"] where route == nil || route == name {
+            var calls: [Double] = [], gaps: [Double] = []
+            for leg in 0..<(Int(ProcessInfo.processInfo.environment["VANE_SIDEBAR_PERF_REPEATS"] ?? "") ?? 8) {
+                let target = spaces[leg % 2 == 0 ? 1 : 0]
+                // Measure each leg from rest, so a command never takes the fallback.
+                let rest = ContinuousClock.now + .seconds(2)
+                while (window.contentView as? BrowserWindowHost)?.spaceSlide != nil, ContinuousClock.now < rest {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                last = ProcessInfo.processInfo.systemUptime; gap = 0
+                let start = last
+                switch name {
+                case "direct": store.switchTo(space: target)            // programmatic callers
+                case "command": store.switchTo(spaceNumber: leg % 2 == 0 ? 2 : 1) // ⌃1/⌃2
+                default: monitor.select(target, in: store)
+                }
+                if name != "direct" {
+                    XCTAssertNotNil((window.contentView as? BrowserWindowHost)?.spaceSlide, "\(name) takes the native slide")
+                }
+                // Within a profile the command commits before returning, as it always did.
+                XCTAssertEqual(store.currentSpaceID, target.id)
+                calls.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                try await Task.sleep(for: .milliseconds(700))
+                gaps.append(max(gap, ProcessInfo.processInfo.systemUptime - last) * 1000)
+                XCTAssertEqual(store.currentSpaceID, target.id)
+            }
+            calls.sort(); gaps.sort()
+            print("SPACE_SWITCH_PERF route=\(name) median_call_ms=\(calls[calls.count / 2]) median_gap_ms=\(gaps[gaps.count / 2]) max_gap_ms=\(gaps.last!)")
+        }
+    }
+
     func testNativeSwipePreparationKeepsOneLiveSidebarUntilItsOverlayIsMounted() async throws {
         let (store, _, window, _) = try fixture()
         try await Task.sleep(for: .milliseconds(120))
