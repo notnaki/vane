@@ -206,7 +206,7 @@ import UniformTypeIdentifiers
                                     .scaleEffect(scale, anchor: .topLeading)
                                     .frame(width: width * scale, height: height * scale, alignment: .topLeading).clipped())
         renderer.scale = 1
-        guard let image = renderer.cpuImage(in: CGColorSpace.displayP3),
+        guard let image = renderer.cpuImage,
               let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw EaselStore.Failure.invalid }
         return png
     }

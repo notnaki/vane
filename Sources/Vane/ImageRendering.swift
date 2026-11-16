@@ -5,15 +5,12 @@ import SwiftUI
     /// stalls or resets (CI's paravirtual GPU does so for seconds at a time) they return a
     /// correctly sized, fully transparent image without any error. Drawing the same display
     /// list into a CPU bitmap never touches Metal, so artwork cannot silently come out blank.
-    var cpuImage: CGImage? { cpuImage(in: CGColorSpace.sRGB) }
-
-    /// Display P3 keeps wide-gamut content (captures, photos) that sRGB would clamp.
-    func cpuImage(in colorSpace: CFString) -> CGImage? {
+    var cpuImage: CGImage? {
         var image: CGImage?
         let scale = scale
         render(rasterizationScale: scale) { size, draw in
             let width = Int((size.width * scale).rounded(.up)), height = Int((size.height * scale).rounded(.up))
-            guard width > 0, height > 0, let space = CGColorSpace(name: colorSpace),
+            guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
                   let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                           bytesPerRow: 0, space: space,
                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
