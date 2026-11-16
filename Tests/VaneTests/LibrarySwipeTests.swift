@@ -212,6 +212,312 @@ import XCTest
                       "Closing the Library keeps its press anchors in place")
     }
 
+    /// A sidebar of rows under a closed Library, mounted as the app mounts it.
+    private func coverFixture(keyWindow: Bool = false) async throws -> (TabStore, NSWindow, NSView) {
+        let (store, original, monitor) = fixture(withSpaces: true)
+        var window: NSWindow = original
+        if keyWindow {
+            monitor.remove()
+            window = VaneWindow(contentRect: original.frame, styleMask: [.titled, .fullSizeContentView],
+                                backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            store.window = window
+            monitor.install(store)
+            addTeardownBlock { @MainActor [window] in window.contentView = nil; window.close() }
+        }
+        store.tabs = (0..<12).map { index in
+            let tab = Tab(profileID: store.profileID)
+            tab.kind = .today
+            tab.park(url: URL(string: "about:blank#cover-\(index)")!, Parked(title: "Cover fixture \(index)"))
+            return tab
+        }
+        store.syncShapes()
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        if keyWindow { NSApp.activate(ignoringOtherApps: true) }
+        addTeardownBlock { @MainActor [window] in window.orderOut(nil); window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
+        return (store, window, host)
+    }
+    private func coverRowHosts(_ view: NSView) -> [NSView] {
+        view.subviews.flatMap { ($0 is any NativeSidebarRowHostFocusProbe ? [$0] : []) + coverRowHosts($0) }
+    }
+    private func holdsSidebarRow(_ window: NSWindow, _ host: NSView) -> Bool {
+        guard let responder = window.firstResponder as? NSView else { return false }
+        return coverRowHosts(host).contains { responder === $0 || responder.isDescendant(of: $0) }
+    }
+    private func coverSettles(_ store: TabStore, _ host: NSView) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while store.librarySidebarCover.covered != store.libraryOpen, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(store.librarySidebarCover.covered, store.libraryOpen,
+                       "The sidebar's disabled state must land on the Library's")
+    }
+    private func tab(in window: NSWindow, shift: Bool = false) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: shift ? .shift : [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "\t",
+            charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
+    }
+
+    /// The sidebar's disable waits for the opening slide, and nothing under the
+    /// arriving panel is focusable while it waits or afterwards.
+    func testSlidingLibraryOpeningKeepsFocusOutOfTheSidebarBeforeItsDisableLands() async throws {
+        try await withLibraryApplicationLoop { try await checkSlidingLibraryOpeningKeepsFocusOutOfTheSidebar() }
+    }
+    private func checkSlidingLibraryOpeningKeepsFocusOutOfTheSidebar() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, host) = try await coverFixture(keyWindow: true)
+        let cover = store.librarySidebarCover
+        let rows = coverRowHosts(host)
+        try await compatibilityWait {
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            return NSApp.isActive && window.isKeyWindow
+        }
+        // Keyboard navigation enters a row through its native host.
+        let focusable = try XCTUnwrap(rows.first, "The fixture mounts sidebar rows")
+        XCTAssertTrue(window.makeFirstResponder(focusable))
+        XCTAssertTrue(holdsSidebarRow(window, host))
+
+        Library.open(.archived, in: store)
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertFalse(cover.covered, "The disable is not part of the update that starts the slide")
+        XCTAssertFalse(holdsSidebarRow(window, host), "Opening takes the keyboard out of the sidebar at once")
+        for view in rows {
+            XCTAssertFalse(view.acceptsFirstResponder, "A row under the arriving panel offers no focus")
+            window.makeFirstResponder(view)
+            XCTAssertFalse(holdsSidebarRow(window, host), "…and refuses one handed to it")
+        }
+        // All of this is the opening's own turn of the main thread: the wait cannot
+        // have ended, so each answer below is the gate's and not the disable's.
+        for _ in 0..<(rows.count + 8) {
+            window.selectNextKeyView(nil)
+            XCTAssertFalse(holdsSidebarRow(window, host), "The key-view loop must not enter the covered sidebar")
+        }
+        XCTAssertFalse(cover.covered, "Walking key views is answered without the disable")
+        // Tab is answered by a sidebar that is disabled before the key is delivered.
+        NSApp.sendEvent(try tab(in: window))
+        XCTAssertTrue(cover.covered, "A focus-moving key applies the pending disable first")
+        XCTAssertFalse(holdsSidebarRow(window, host))
+        for view in coverRowHosts(host) {
+            XCTAssertFalse((view as! any NativeSidebarRowHostFocusProbe).hostedAcceptsFirstResponder)
+        }
+
+        // Left alone, it lands by itself once the panel has.
+        Library.close(store)
+        try await coverSettles(store, host)
+        try await Task.sleep(for: .milliseconds(300))
+        Library.open(.archived, in: store)
+        XCTAssertFalse(cover.covered)
+        try await coverSettles(store, host)
+        XCTAssertTrue(cover.covered)
+        for _ in 0..<(rows.count + 8) {
+            window.selectNextKeyView(nil)
+            NSApp.sendEvent(try tab(in: window))
+            XCTAssertFalse(holdsSidebarRow(window, host), "Nothing under an open Library takes focus")
+        }
+        for view in coverRowHosts(host) {
+            XCTAssertFalse(view.acceptsFirstResponder)
+            XCTAssertFalse((view as! any NativeSidebarRowHostFocusProbe).hostedAcceptsFirstResponder)
+        }
+    }
+
+    /// However an opening is interrupted, the sidebar ends disabled exactly while
+    /// the Library is open.
+    func testInterruptedLibraryTogglesLeaveTheSidebarInTheLibrarysState() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, host) = try await coverFixture()
+        let cover = store.librarySidebarCover
+        // Press anchors report what their control inherited; some rest disabled anyway.
+        func inert(_ view: NSView) -> Int {
+            view.subviews.reduce(0) { $0 + (($1 as? Feel02PressAnchorView)?.enabled == false ? 1 : 0) + inert($1) }
+        }
+        let resting = inert(host)
+        func enabledRows() -> Bool { host.layoutSubtreeIfNeeded(); return inert(host) == resting }
+
+        // Opened and closed again before the slide lands: never disabled at all.
+        Library.open(.archived, in: store)
+        Library.close(store)
+        XCTAssertFalse(cover.covered)
+        try await Task.sleep(for: .milliseconds(700))
+        try await coverSettles(store, host)
+        XCTAssertFalse(cover.covered, "A retired opening must not disable the sidebar later")
+        Library.open(.archived, in: store)
+        try await Task.sleep(for: .milliseconds(40))
+        Library.close(store)
+        try await Task.sleep(for: .milliseconds(700))
+        try await coverSettles(store, host)
+        XCTAssertFalse(cover.covered, "A retired opening must not disable the sidebar later")
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertTrue(enabledRows())
+
+        // Rapid toggles ending open, then ending closed.
+        for _ in 0..<5 {
+            Library.toggle(.archived, in: store)
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertTrue(store.libraryOpen)
+        try await coverSettles(store, host)
+        XCTAssertFalse(enabledRows())
+        for _ in 0..<5 {
+            Library.toggle(.archived, in: store)
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertFalse(store.libraryOpen)
+        try await coverSettles(store, host)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(cover.covered)
+        XCTAssertTrue(enabledRows())
+
+        // A click on the returning sidebar meets an enabled one.
+        Library.open(.archived, in: store)
+        try await coverSettles(store, host)
+        try await Task.sleep(for: .milliseconds(300))
+        Library.close(store)
+        XCTAssertTrue(cover.covered, "A closing slide starts before the sidebar is enabled again")
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            NSApp.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: 700, y: 350),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+        }
+        XCTAssertFalse(cover.covered)
+        XCTAssertTrue(enabledRows())
+        try await Task.sleep(for: .milliseconds(400))
+
+        // The command bar arriving mid-slide disables the sidebar itself, and both leaving restores it.
+        Library.open(.archived, in: store)
+        try await Task.sleep(for: .milliseconds(30))
+        store.palette = .all
+        host.layoutSubtreeIfNeeded()
+        XCTAssertFalse(enabledRows(), "The command bar disables the sidebar without waiting for the slide")
+        try await coverSettles(store, host)
+        store.palette = nil
+        Library.close(store)
+        try await coverSettles(store, host)
+        XCTAssertTrue(enabledRows())
+
+        // A swipe publishes its destination with the panel already across.
+        send(window, phase: .began)
+        send(window, dx: 1000)
+        send(window, phase: .ended)
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertTrue(cover.covered, "A fully dragged panel has nothing left to wait for")
+        send(window, phase: .began)
+        send(window, dx: -1000)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertFalse(cover.covered)
+
+        // A swipe released part-way, then reversed by a command during its landing.
+        send(window, phase: .began)
+        for _ in 0..<5 { send(window, dx: 20); try await Task.sleep(for: .milliseconds(8)) }
+        send(window, phase: .ended)
+        try await Task.sleep(for: .milliseconds(30))
+        Library.close(store)
+        try await Task.sleep(for: .milliseconds(500))
+        try await coverSettles(store, host)
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertTrue(enabledRows())
+
+        // A Space change mid-slide.
+        Library.open(.archived, in: store)
+        try await Task.sleep(for: .milliseconds(30))
+        store.switchTo(space: try XCTUnwrap(store.strip.last))
+        try await Task.sleep(for: .milliseconds(500))
+        try await coverSettles(store, host)
+        if store.libraryOpen { Library.close(store); try await coverSettles(store, host) }
+        XCTAssertFalse(cover.covered)
+    }
+
+    func testLibraryOpenedWithoutMotionDisablesTheSidebarAtOnce() async throws {
+        let saver = BatterySaver.shared
+        let previous = saver.mode
+        defer { saver.setMode(previous) }
+        let (store, _, host) = try await coverFixture()
+        saver.setMode(.alwaysOn)
+        Library.open(.archived, in: store)
+        XCTAssertTrue(store.librarySidebarCover.covered, "With nothing sliding there is nothing to wait for")
+        host.layoutSubtreeIfNeeded()
+        Library.close(store)
+        XCTAssertFalse(store.librarySidebarCover.covered)
+    }
+
+    private func key(_ keyCode: UInt16, _ characters: String, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode))
+    }
+
+    /// Mutation caught: Escape or Return during the opening slide pressing the
+    /// Create Space form's Cancel or Create, still enabled under the arriving panel.
+    func testEscapeAndReturnDuringTheOpeningSlideSkipTheCoveredCreateSpaceForm() async throws {
+        try await withLibraryApplicationLoop { try await checkEscapeAndReturnSkipTheCoveredCreateSpaceForm() }
+    }
+    private func checkEscapeAndReturnSkipTheCoveredCreateSpaceForm() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, host) = try await coverFixture(keyWindow: true)
+        try await compatibilityWait {
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            return NSApp.isActive && window.isKeyWindow
+        }
+        let spaces = store.strip.count
+        for (keyCode, characters) in [(UInt16(53), "\u{1B}"), (36, "\r")] {
+            store.beginCreatingSpace()
+            try await Task.sleep(for: .milliseconds(400))
+            host.layoutSubtreeIfNeeded()
+            // A name, so the form's Create is enabled and Return would press it.
+            for character in "Fixture" { NSApp.sendEvent(try key(0, String(character), in: window)) }
+            XCTAssertTrue(store.creatingSpace)
+            Library.toggle(.archived, in: store)
+            XCTAssertTrue(store.libraryOpen)
+            XCTAssertFalse(store.librarySidebarCover.covered, "The press must land inside the slide")
+            // Escape still reaches the form's cancel action once the Library's search field
+            // has the keyboard; that field swallows Return, so Return goes before it takes it.
+            if keyCode == 53 { try await Task.sleep(for: .milliseconds(40)) }
+            NSApp.sendEvent(try key(keyCode, characters, in: window))
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertTrue(store.creatingSpace, "Key \(keyCode) must not press the covered form's buttons")
+            XCTAssertEqual(store.strip.count, spaces, "Key \(keyCode) must not create a Space")
+            if keyCode == 53 { XCTAssertFalse(store.libraryOpen, "Escape closes the Library instead") }
+            if store.libraryOpen { Library.close(store) }
+            try await coverSettles(store, host)
+            store.cancelCreatingSpace()
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    /// Mutation caught: closing the Library for F6 without applying the deferred
+    /// enable leaves the address pill disabled when chrome focus is delivered.
+    func testF6FromOpenLibraryReachesTheAddressPill() async throws {
+        try await withLibraryApplicationLoop { try await checkF6FromOpenLibraryReachesTheAddressPill() }
+    }
+    private func checkF6FromOpenLibraryReachesTheAddressPill() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, host) = try await coverFixture(keyWindow: true)
+        try await compatibilityWait {
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+            return NSApp.isActive && window.isKeyWindow && store.mountedAddressEndpoint?.window === window
+        }
+        Library.open(.archived, in: store)
+        try await coverSettles(store, host)
+        try await Task.sleep(for: .milliseconds(100))
+        window.makeFirstResponder(nil)
+        XCTAssertTrue(window.firstResponder === window)
+        store.focusNextArea()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertTrue(window.firstResponder is MountedAddressButton,
+                      "F6 out of the Library must reach the address pill, not \(String(describing: window.firstResponder))")
+    }
+
     func testOpeningEaselReleasesDepartingLibrarySearchFocus() async throws {
         let (store, window, _) = fixture(withSpaces: true)
         _ = store.newBlankTab(loading: URL(string: "about:blank"))
@@ -959,18 +1265,26 @@ import XCTest
                 let handler = (ProcessInfo.processInfo.systemUptime - start) * 1000
                 var firstMotion: Double?
                 var startGap = 0.0
-                for _ in 0..<30 {
+                // The slide alone, up to the panel's last movement, and when the
+                // sidebar's disabled state landed relative to it.
+                var lastX = before, arrival = 0.0, slideGap = 0.0
+                var covered: Double?
+                // The last twelve samples stand in for the settling pause between visits.
+                for _ in 0..<42 {
                     try await Task.sleep(for: .milliseconds(8))
-                    if firstMotion == nil, abs(try clickPanelX() - before) > 1 {
-                        firstMotion = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                    let now = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                    let x = try clickPanelX()
+                    if firstMotion == nil, abs(x - before) > 1 {
+                        firstMotion = now
                         // Separate the activation before the first frame from the slide.
                         startGap = maxGap
                         maxGap = 0
                     }
+                    if abs(x - lastX) > 0.5 { lastX = x; arrival = now; slideGap = maxGap }
+                    if covered == nil, store.librarySidebarCover.covered == opening { covered = now }
                 }
                 XCTAssertEqual(store.libraryOpen, opening)
-                print("LIBRARY_CLICK tabs=\(count) visit=\(visit) opening=\(opening) first_motion_ms=\(firstMotion ?? -1) handler_ms=\(handler) start_gap_ms=\(startGap * 1000) motion_gap_ms=\(maxGap * 1000)")
-                try await Task.sleep(for: .milliseconds(100))
+                print("LIBRARY_CLICK tabs=\(count) visit=\(visit) opening=\(opening) first_motion_ms=\(firstMotion ?? -1) handler_ms=\(handler) start_gap_ms=\(startGap * 1000) slide_gap_ms=\(slideGap * 1000) motion_gap_ms=\(maxGap * 1000) arrival_ms=\(arrival) sidebar_state_ms=\(covered ?? -1)")
                 phase = nil
             }
         }
