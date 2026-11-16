@@ -361,7 +361,14 @@ extension ExtensionNativeMessagingErrorTests {
         try await exerciseSequentialRetries(approvedModes: [true], injectObservedHide: true)
     }
 
+    /// CI runners hide and unhide the test app from outside within ~50ms of the
+    /// window becoming key, leaving it unhidden but inactive before preparation polls.
+    func testRetryPageReadmitsOwnerAfterAnAlreadyRevertedHide() async throws {
+        try await exerciseSequentialRetries(approvedModes: [true], injectObservedHide: true, revertInjectedHide: true)
+    }
+
     private func exerciseSequentialRetries(approvedModes: [Bool], injectObservedHide: Bool,
+                                           revertInjectedHide: Bool = false,
                                            withdrawLaunchReadiness: Bool = false) async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -455,6 +462,13 @@ extension ExtensionNativeMessagingErrorTests {
                     XCTAssertEqual(actionStartsAfterOldPreparation, 0)
                     guard actionStartsAfterOldPreparation == 0 else { throw ExtensionHost.Failure("Old preparation started the hidden control action") }
                     print("NATIVE_MODE_OLD_PREPARATION timeout=true actionInvoked=\(actionInvoked) actionStarts=\(actionStartsAfterOldPreparation ?? -1)")
+                    if revertInjectedHide {
+                        // Match the CI end state: the hide is over before preparation samples it.
+                        NSApp.unhideWithoutActivation()
+                        try await waitNativeModePage("reverted hide leaves the owner inactive", diagnostics: diagnostics) {
+                            !NSApp.isHidden && window.isVisible && !(NSApp.isActive && window.isKeyWindow)
+                        }
+                    }
                 }
                 #if DEBUG
                 var before = 0
@@ -545,7 +559,10 @@ extension ExtensionNativeMessagingErrorTests {
                 try action(deadline)
                 return readmissions
             }
-            if application.isHidden && trace.applicationHideCount == 1 && readmissions == 0 {
+            // The hide may already be reverted from outside (CI), leaving the
+            // owner unhidden but inactive, so readmit on lost foreground too.
+            if trace.applicationHideCount == 1 && readmissions == 0
+                && (application.isHidden || !application.isActive || !window.isKeyWindow) {
                 readmissions = 1
                 trace.record("readmit observed application hide once")
                 application.unhideWithoutActivation()
