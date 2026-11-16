@@ -913,6 +913,7 @@ extension NativeSidebarBatchHostingView: NativeSidebarRowHostFocusProbe {
         get { super.needsLayout }
         set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
     }
+    override func layout() { if !BufferedResizeLayout.hold(self) { super.layout() } }
     func record(_ anchor: NativeSidebarRowLayoutView) {
         guard occupiedRows[anchor.rowID] != nil else { return }
         rowAnchors[anchor.rowID] = WeakRow(anchor)
