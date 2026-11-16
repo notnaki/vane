@@ -172,7 +172,11 @@ import XCTest
             store.palette = nil
             _ = tab.web
             let host = BrowserWindowHost(shown: ShownStore(store))
-            let window = VaneWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 600),
+            // The corner fixture grows the top edge 40pt. AppKit moves a titled
+            // window whose top passes the menu bar (CI's 768pt screen), and that
+            // foreign frame change rightly retires the paint-coordinating buffer.
+            let top = NSScreen.screens.first?.visibleFrame.maxY ?? 740
+            let window = VaneWindow(contentRect: NSRect(x: 100, y: min(100, top - 660), width: 900, height: 600),
                                     styleMask: [.titled, .resizable, .fullSizeContentView],
                                     backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -564,6 +568,7 @@ import XCTest
             let began = CACurrentMediaTime()
             owner.stage = "resize proposals direct=\(direct) mixed=\(mixedAxes)"
             let frameHeight = window.frame.height
+            let origin = window.frame.origin
             if queuedGeometry {
                 // Exercise WebKit's real coalesced geometry queue: a host layout
                 // can submit another viewport before the previous IPC replies.
@@ -631,6 +636,8 @@ import XCTest
                     // Keep sampling through each paint so coalescing cannot skip
                     // the corner geometry this regression is meant to exercise.
                     try await compatibilityWait { !window.isPreparingPageResize && window.frame.size == size }
+                    XCTAssertEqual(window.frame.origin, origin,
+                                   "The corner drag keeps its anchored edge; a screen-constrained frame retires paint coordination")
                     // Admit the actual WindowServer geometry before the next
                     // proposal. Keep every earlier pixel sample, including gaps.
                     try await compatibilityWait {
