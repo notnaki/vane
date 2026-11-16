@@ -90,6 +90,7 @@ import SwiftUI
         get { super.needsLayout }
         set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
     }
+    override func layout() { if !BufferedResizeLayout.hold(self) { super.layout() } }
 }
 
 /// The anchor stays in SwiftUI's native hierarchy. Its owned host is a sibling,

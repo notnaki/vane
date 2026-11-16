@@ -12,7 +12,8 @@ import XCTest
     /// old width, then again at the new one, on every published drag frame.
     func testBufferedCommitsLayTheRootOutOnlyAtItsNewWidth() async throws {
         try await withFixture(count: 20, sidebarShown: true) { window, root in
-            let cls: AnyClass = type(of: root)
+            // SwiftUI's own pass: the root holds `layout()` calls inside a commit.
+            let cls: AnyClass = try XCTUnwrap(class_getSuperclass(type(of: root)))
             let selector = #selector(NSView.layout)
             let method = try XCTUnwrap(class_getInstanceMethod(cls, selector))
             typealias Layout = @convention(c) (AnyObject, Selector) -> Void
@@ -23,12 +24,22 @@ import XCTest
                 if let view = object as? NSView, view === root {
                     MainActor.assumeIsolated {
                         layouts.total += 1
-                        if !layouts.finished, abs(view.bounds.width - (view.window?.frame.width ?? 0)) > 0.5 { layouts.stale += 1 }
+                        if !layouts.finished, abs(view.bounds.width - (view.window?.frame.width ?? 0)) > 0.5 {
+                            layouts.stale += 1
+                            // Name the caller, so a runner-only failure says which path laid it out.
+                            if layouts.staleCaller == nil {
+                                let committing = (view.window as? VaneWindow)?.isCommittingBufferedPageResize == true
+                                layouts.staleCaller = "bounds \(view.bounds.width), window \(view.window?.frame.width ?? 0), "
+                                    + "committing buffered \(committing)\n" + Thread.callStackSymbols.dropFirst().prefix(48)
+                                    .map { $0.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ") }
+                                    .joined(separator: "\n")
+                            }
+                        }
                     }
                 }
                 original(object, selector)
             }
-            // The root's specialized class may inherit `layout`; add an override
+            // The hosting class may inherit `layout`; add an override
             // there, or replace and later restore its own implementation.
             let added = class_addMethod(cls, selector, imp_implementationWithBlock(block), method_getTypeEncoding(method))
             let previous = added ? nil : method_setImplementation(method, imp_implementationWithBlock(block))
@@ -39,10 +50,15 @@ import XCTest
             // The release commit after `endPageResize` keeps its own eager path.
             // Buffered commits wait for WebKit to paint their coverage, which takes
             // up to ~300ms on CI's paravirtual GPU; a 0.4s drag ended before any.
+            // A root already dirty when a commit begins (an earlier commit's release,
+            // a state change) must wait for the new frame as well.
+            let dirty = Timer(timeInterval: 0.002, repeats: true) { _ in MainActor.assumeIsolated { root.needsLayout = true } }
+            RunLoop.main.add(dirty, forMode: .common)
+            defer { dirty.invalidate() }
             let drag = try await self.drag(window, speed: 100, travel: 120) { layouts.finished = true }
             XCTAssertGreaterThan(drag.changes.count, 5, "The drag must publish buffered frames")
             XCTAssertGreaterThan(layouts.total, 5)
-            XCTAssertEqual(layouts.stale, 0, "No buffered commit may lay the root out at its previous width")
+            XCTAssertEqual(layouts.stale, 0, "No buffered commit may lay the root out at its previous width; first:\n\(layouts.staleCaller ?? "")")
             XCTAssertEqual(root.bounds.width, window.frame.width, accuracy: 0.5)
         }
     }
@@ -717,6 +733,7 @@ import XCTest
 @MainActor private final class ResizeLayoutRecord {
     var total = 0
     var stale = 0
+    var staleCaller: String?
     var changes: [Double] = []
     var finished = false
     var done: (() -> Void)?

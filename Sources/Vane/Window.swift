@@ -1192,6 +1192,7 @@ extension VaneWindow {
         get { super.needsLayout }
         set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
     }
+    override func layout() { if !BufferedResizeLayout.hold(self) { super.layout() } }
 
     override func setFrameSize(_ newSize: NSSize) {
         let previous = frame.size
@@ -1212,6 +1213,8 @@ extension VaneWindow {
 /// per live-resize frame. While the buffer installs its own frame, hosting roots
 /// hold those requests; the window re-asserts them once the frame is in place, so
 /// the display cycle lays the tree out once, at the new size, in the same commit.
+/// A request already pending when the commit begins cannot be withdrawn (AppKit
+/// keeps its flag through `needsLayout = false`), so they hold `layout()` itself too.
 @MainActor enum BufferedResizeLayout {
     private final class Held { weak var view: NSView?; init(_ view: NSView) { self.view = view } }
     private static var held: [Held] = []
@@ -1246,6 +1249,7 @@ private final class BrowserPaletteHost: NSHostingView<AnyView> {
         get { super.needsLayout }
         set { if !newValue || !BufferedResizeLayout.hold(self) { super.needsLayout = newValue } }
     }
+    override func layout() { if !BufferedResizeLayout.hold(self) { super.layout() } }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard store?.palette != nil else { return nil }
