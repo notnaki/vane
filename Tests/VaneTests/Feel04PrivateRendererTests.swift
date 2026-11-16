@@ -147,6 +147,8 @@ private final class Feel04WaitingServer: @unchecked Sendable {
 
 @MainActor final class Feel04CookieRendererTests: XCTestCase {
     private var nativeFixtureProfiles: Set<UUID> = []
+    /// Hang guard only: the preview bounds its own paint, so waits end on its verdict.
+    private let paintVerdictBudget = Duration.seconds(20)
 
     override func tearDown() async throws {
         let profiles = nativeFixtureProfiles
@@ -256,13 +258,17 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         let beforeRequest = setupObserver.changes
         previews.request(url, from: tab)
         try await clock.waitUntil { clock.count == 2 }; clock.release(1)
-        let deadline = ContinuousClock.now + .seconds(8)
+        // Wait for the preview's own paint verdict: `loading` clears once it publishes an
+        // image or its paint deadline (counted from load start) expires without one. A fixed
+        // budget from the request also paid for the cookie snapshot and load, and on a slow
+        // runner expired while the paint loop was still inside its own deadline.
+        let requested = ContinuousClock.now, deadline = requested + paintVerdictBudget
         while ContinuousClock.now < deadline {
             host = NSApp.windows.first { ($0.contentView as? WKWebView)?.url?.port == url.port } ?? host
-            if previews.current?.title == "Cookie preview", previews.current?.image != nil { break }
+            if previews.current?.title == "Cookie preview", previews.current?.loading == false { break }
             try await Task.sleep(for: .milliseconds(20))
         }
-        print("FEEL04_RENDERER_ADMISSION running=\(NSApp.isRunning) image=\(previews.current?.image != nil) loading=\(String(describing: previews.current?.loading)) host=\(host is PreviewHostWindow)")
+        print("FEEL04_RENDERER_ADMISSION running=\(NSApp.isRunning) image=\(previews.current?.image != nil) loading=\(String(describing: previews.current?.loading)) host=\(host is PreviewHostWindow) elapsed=\(ContinuousClock.now - requested)")
         XCTAssertEqual(previews.current?.title, "Cookie preview")
         // A cache-miss reload can reuse its renderer. Do not interpret that as a
         // session-invalidation failure if the initial cache was never populated.
@@ -311,7 +317,7 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             XCTAssertEqual(clock.count, 3, "A changed session must reach a fresh load gate")
             guard clock.count == 3 else { return }
             clock.release(2)
-            let reloadDeadline = ContinuousClock.now + .seconds(8)
+            let reloadDeadline = ContinuousClock.now + paintVerdictBudget
             while ContinuousClock.now < reloadDeadline {
                 if let replacement = host?.contentView as? WKWebView,
                    replacement.title == "Cookie preview", !replacement.isLoading,
@@ -321,9 +327,10 @@ private final class Feel04WaitingServer: @unchecked Sendable {
                     XCTAssertFalse(replacement === web, "A changed source session must discard the old renderer")
                     return
                 }
+                if previews.current?.loading == false, previews.current?.image == nil { break }
                 try await Task.sleep(for: .milliseconds(20))
             }
-            return XCTFail("The revalidated preview did not reload")
+            return XCTFail("The revalidated preview did not reload (loading=\(String(describing: previews.current?.loading)))")
         }
         while previews.current != nil, ContinuousClock.now < invalidationDeadline {
             try await Task.sleep(for: .milliseconds(20))
