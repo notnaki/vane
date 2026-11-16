@@ -786,16 +786,22 @@ private struct DisabledKeyboardSurface: View {
         // A test-side sleep resumes through a separate enqueue and can overtake overdue
         // main-queue timers after a stall, so wait for the handoff itself instead.
         var heldWhileMounted: Bool?
+        var handedOffPromptly: Bool?
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
             heldWhileMounted = window.firstResponder === editor
             field.removeFromSuperview()
             window.makeFirstResponder(nil)
+            // Same clock again: the pending 50 ms retry fires first even after a stall.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) {
+                handedOffPromptly = window.firstResponder === web
+            }
         }
         let deadline = ContinuousClock.now + .seconds(5)
-        while heldWhileMounted == nil || window.firstResponder !== web, ContinuousClock.now < deadline {
+        while handedOffPromptly == nil || window.firstResponder !== web, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(heldWhileMounted, true, "Page focus must not take the keyboard from a still-mounted field")
+        XCTAssertEqual(handedOffPromptly, true, "Page focus must follow the dismissal within a retry or two")
         XCTAssertTrue(window.firstResponder === web,
                       "Dismissal can leave its field editor mounted until the transition finishes")
     }
