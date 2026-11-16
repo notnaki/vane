@@ -1,5 +1,6 @@
 import Foundation
 import WebKit
+import XCTest
 
 // TEMPORARY CI diagnostic: drop before merge.
 enum StallDiag {
@@ -20,7 +21,7 @@ enum StallDiag {
     /// Live, system-wide timeline spindump while something is stalled.
     static func capture(_ reason: String, target: Int32?) {
         lock.lock(); defer { lock.unlock() }
-        guard captures < 4 else { return }
+        guard captures < 8 else { return }
         captures += 1
         let n = captures, t = String(format: "%.1f", now())
         print("STALL_DIAG capture#\(n) reason=\(reason) target=\(target.map(String.init) ?? "-") uptime=\(t)")
@@ -48,15 +49,26 @@ enum StallDiag {
             """)
     }
 
+    final class Observer: NSObject, XCTestObservation {
+        func testCaseWillStart(_ testCase: XCTestCase) {
+            print("STALL_DIAG start \(testCase.name) uptime=\(String(format: "%.1f", StallDiag.now()))")
+        }
+    }
+    nonisolated(unsafe) static let observer = Observer()
+
     static let watchdog: Void = {
+        DispatchQueue.main.async { MainActor.assumeIsolated { XCTestObservationCenter.shared.addTestObserver(observer) } }
         Thread.detachNewThread {
             while true {
                 let sent = now()
                 let sem = DispatchSemaphore(value: 0)
                 DispatchQueue.main.async { sem.signal() }
-                if sem.wait(timeout: .now() + 1.5) == .timedOut {
-                    capture("main", target: ProcessInfo.processInfo.processIdentifier)
-                    sem.wait()
+                if sem.wait(timeout: .now() + 0.5) == .timedOut {
+                    if sem.wait(timeout: .now() + 2.5) == .timedOut {
+                        capture("main", target: ProcessInfo.processInfo.processIdentifier)
+                        sem.wait()
+                        saveAfter("main", seconds: now() - sent)
+                    }
                     print("STALL_DIAG main stall \(String(format: "%.2f", now() - sent))s from uptime \(String(format: "%.1f", sent))")
                 }
                 Thread.sleep(forTimeInterval: 0.1)
