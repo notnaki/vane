@@ -173,24 +173,35 @@ import XCTest
 
 @MainActor final class LargeFolderDisclosureTests: XCTestCase {
     func testSharedLargeOpeningAndReversalsClipAtTheAuthoritativeSectionExtent() async throws {
+        try await withLoop { try await checkLargeDisclosure(reduced: false) }
+    }
+
+    /// Battery Saver takes the native batches' Reduce Motion path, so this runs on
+    /// every host, including CI runners that report Reduce Motion.
+    func testReducedMotionLargeOpeningAndReversalsLandAtOnceInsideTheSection() async throws {
+        try await withLoop { try await checkLargeDisclosure(reduced: true) }
+    }
+
+    private func withLoop(_ body: () async throws -> Void) async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let policy = NSApp.activationPolicy()
         defer { NSApp.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await checkLargeDisclosure() } catch { failure = error }
+        do { try await body() } catch { failure = error }
         do { try await loop.close() } catch {
             if failure == nil { failure = error } else { XCTFail("Loop cleanup: \(error)") }
         }
         if let failure { throw failure }
     }
 
-    private func checkLargeDisclosure() async throws {
+    private func checkLargeDisclosure(reduced: Bool) async throws {
         let previousMode = BatterySaver.shared.mode
-        BatterySaver.shared.setMode(.off)
+        BatterySaver.shared.setMode(reduced ? .alwaysOn : .off)
         defer { BatterySaver.shared.setMode(previousMode) }
-        try XCTSkipIf(Motion.spaceReduced, "Normal-motion regression requires Reduce Motion off")
+        if reduced { XCTAssertTrue(Motion.reduced, "Battery Saver must select the reduced-motion path") }
+        else { try XCTSkipIf(Motion.spaceReduced, "Normal-motion regression requires Reduce Motion off") }
         let controls = LargeDisclosureControls()
         let store = TabStore(isPrivate: true, session: [])
         store.sharingReady = false
@@ -250,14 +261,58 @@ import XCTest
             let x1 = min(bitmap.pixelsWide, Int(ceil((region.maxX - capture.minX) * scaleX)))
             let y0 = max(0, Int(floor((region.minY - capture.minY) * scaleY)))
             let y1 = min(bitmap.pixelsHigh, Int(ceil((region.maxY - capture.minY) * scaleY)))
+            // The capture holds the display's device values (P3 on a wide-gamut
+            // panel), which colorAt mislabels as calibrated RGB. Compare against
+            // the marker in the bitmap's own space rather than converting the pixel.
+            guard let green = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1).usingColorSpace(bitmap.colorSpace) else { return 0 }
             var count = 0
             for y in y0..<y1 {
                 for x in x0..<x1 {
-                    if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
-                       color.greenComponent > 0.8 && color.redComponent < 0.2 && color.blueComponent < 0.2 { count += 1 }
+                    if let color = bitmap.colorAt(x: x, y: y),
+                       abs(color.greenComponent - green.greenComponent) < 0.2,
+                       abs(color.redComponent - green.redComponent) < 0.2,
+                       abs(color.blueComponent - green.blueComponent) < 0.2 { count += 1 }
                 }
             }
             return count
+        }
+        if reduced {
+            // Each toggle, including immediate reversals, must land on its endpoint in
+            // the first display: no interpolated frame and no paint past New Tab.
+            let rows = CGFloat(tabs.count + 1) * (Look.rowHeight + Look.rowGap) - Look.rowGap
+            var sawChildPaint = false
+            for open in [true, false, true, false] {
+                Motion.animate(.linear(duration: 120)) { store.pins.toggle(folder: folder.id) }
+                display()
+                let footer = try presentedRect(newTab)
+                let extent = section.convert(section.bounds, to: host)
+                XCTAssertEqual(extent.height, open ? rows : Look.rowHeight, accuracy: 1,
+                               "The section must take its endpoint extent at once (open: \(open))")
+                XCTAssertEqual(footer.minY, open ? start + rows - Look.rowHeight : start, accuracy: 1,
+                               "New Tab must land with the section, not animate (open: \(open))")
+                let capture = host.bounds
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: capture))
+                host.cacheDisplay(in: capture, to: bitmap)
+                let strip = CGRect(x: 100, y: Look.rowHeight, width: 2, height: host.bounds.height - Look.rowHeight)
+                let childPaint = greenPixels(in: strip, bitmap: bitmap, capture: capture)
+                if open { sawChildPaint = sawChildPaint || childPaint > 0 }
+                else {
+                    XCTAssertEqual(childPaint, 0, "A collapsed folder must not leave child paint")
+                    controls.selected = nil
+                    let point = newTab.convert(NSPoint(x: newTab.bounds.midX, y: newTab.bounds.midY), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
+                            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                            windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                            clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
+                    }
+                    XCTAssertEqual(controls.selected, "new-tab", "Collapsed children must not take New Tab's hit")
+                }
+                // The instant endpoint rebases its disclosure sample on the next turn.
+                try await compatibilityWait { display(); return !section.clipsToBounds }
+            }
+            XCTAssertTrue(sawChildPaint, "The bitmap probe must capture the opened children")
+            return
         }
         var bottomPaint: [Int] = []
         var gapProbes = 0

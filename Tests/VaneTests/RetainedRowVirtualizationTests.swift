@@ -487,7 +487,12 @@ import XCTest
         }
         store.syncShapes()
         store.palette = nil
-        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 400),
+        // Vane's narrowest window (contentMinSize) still fits a wide saved sidebar
+        // down. Narrower than Library's offscreen panel, the navigation layout would
+        // overflow and shift the sidebar, which no real window can reach.
+        let previousWidth = SidebarWidth.shared.width
+        SidebarWidth.shared.width = 400
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 470, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
@@ -508,7 +513,9 @@ import XCTest
             Store.forget(profile)
             ProfileManager.shared.delete(profile)
             RetainedRowVirtualizationExperiment.enabled = previous
+            SidebarWidth.shared.width = previousWidth
         }
+        XCTAssertLessThan(SidebarWidth.inWindow(store), SidebarWidth.shared.width, "Exercise the fitted travel width")
         try await compatibilityWait { monitor.preparedSlides[spaces[1].id] != nil }
         let live = try XCTUnwrap(descendants(host, NSScrollView.self).first {
             let frame = $0.convert($0.bounds, to: host)
@@ -527,7 +534,7 @@ import XCTest
             return abs(outgoing.documentVisibleRect.minY - 180) < 1
         }
         let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
-        // This narrow window fits the saved sidebar width down. Claim using the
+        // The window fits the saved sidebar width down. Claim using the
         // same effective travel width that production captured during preparation.
         monitor.track(-30, width: SidebarWidth.inWindow(store), in: store)
         XCTAssertTrue(host.spaceSlide === prepared)
