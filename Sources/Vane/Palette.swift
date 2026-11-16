@@ -1921,7 +1921,7 @@ private struct PaletteSuggestionWatch: View, Equatable {
             PaletteRow(id: "space:" + space.id.uuidString, icon: space.icon ?? "square.stack",
                        title: space.name, detail: "Space",
                        trailing: "Switch to Space", kind: "Space") { _ in
-                Windows.current?.switchTo(space: space)
+                Windows.current?.selectSpace(space)
             }
         }
     }

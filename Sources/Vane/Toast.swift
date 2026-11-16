@@ -194,7 +194,7 @@ struct ToastAnchor: View {
 /// Keep one host alive through docking, hiding, edge reveal and Library navigation.
 /// Moving its layout slot preserves the current pill, hover hold and action generation.
 struct ToastPresentation: ViewModifier {
-    @ObservedObject var store: TabStore
+    @ChromeObserved var store: TabStore
     let sidebarWidth: CGFloat
     @EnvironmentObject private var downloads: DownloadFeedback
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

@@ -9,9 +9,14 @@ struct AIFeatureSettings: View {
     @AppStorage("tidyTitles", store: .vane) private var titles = true
     @AppStorage("aiSettingsRevision", store: .vane) private var revision = 0
 
+    /// Keychain-backed, so computed on appear and settings changes rather than per body.
+    @State private var blocked: Set<AIFeature> = []
+
     private func unavailable(_ feature: AIFeature) -> Bool {
-        _ = revision
-        return !enabled || !BrowserAI.ready(for: feature)
+        !enabled || blocked.contains(feature)
+    }
+    private func refreshBlocked() {
+        blocked = Set(AIFeature.allCases.filter { BrowserAI.unavailableReason(for: $0) != nil })
     }
 
     var body: some View {
@@ -35,6 +40,8 @@ struct AIFeatureSettings: View {
             Footnote(!enabled ? "AI is off. Browsing works without it."
                 : "Each feature uses its selected AI connection. Grouping runs when you choose Tidy Tabs.")
         }
+        .onAppear { refreshBlocked() }
+        .onChange(of: revision) { refreshBlocked() }
     }
 }
 

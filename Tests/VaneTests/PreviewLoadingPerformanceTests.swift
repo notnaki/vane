@@ -145,10 +145,21 @@ private final class PreviewServer: @unchecked Sendable {
             setTimeout(() => { document.body.innerHTML = '<div style="height:240px;background:#1976d2">Deferred article</div><div style="height:240px;background:#e53935"></div><div style="height:240px;background:#43a047"></div>'; }, 1000);
             </script></body>
             """)
-            let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
+            let warm = try PreviewServer(body: "<body style='margin:0'><div style='height:240px;background:#1976d2'>Warm</div>"
+                + "<div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>")
+            let base = try await server.start(), warmBase = try await warm.start()
+            let previews = Previews(), tab = Tab(isPrivate: true)
             let enabled = Previews.enabled
             Previews.enabled = true
-            defer { previews.cancel(); tab.tearDown(); server.stop(); Previews.enabled = enabled }
+            defer { previews.cancel(); tab.tearDown(); server.stop(); warm.stop(); Previews.enabled = enabled }
+            // The budget starts at load, so a cold WebContent launch on a slow runner can
+            // spend it before the deferred page's timer even starts. Admit the reused
+            // preview renderer by its own loaded document, not by the paint budget being
+            // measured, then measure as before.
+            previews.request(warmBase, from: tab)
+            try await compatibilityWait {
+                NSApp.windows.contains { ($0.contentView as? WKWebView).map { $0.url?.port == warmBase.port && !$0.isLoading } ?? false }
+            }
             previews.request(base, from: tab)
             let deadline = ContinuousClock.now + .seconds(6)
             while previews.current?.image == nil, ContinuousClock.now < deadline {

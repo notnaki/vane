@@ -644,7 +644,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     // Arc's order: New Space, Manage Spaces…, the two arrows, then the Spaces themselves
     // wearing ⌃1…⌃9 — the shortcut sits on the row it switches to, not on a hidden twin.
     let switchers = spaces.enumerated().map { n, space in
-        let entry = item(space.name, "") { spaceStore()?.shown.switchTo(space: space); rebuild() }
+        let entry = item(space.name, "") { spaceStore()?.shown.selectSpace(space); rebuild() }
         entry.state = store?.currentSpaceID == space.id ? .on : .off
         if let command = Command(rawValue: "goToSpace\(n + 1)") {
             let binding = Keybindings.binding(for: command)

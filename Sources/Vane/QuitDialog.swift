@@ -162,7 +162,7 @@ import SwiftUI
         // colour standing as exactly the old, dim-only scrim for when there is no picture.
         let dimmed = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: Look.quitScrim))
             .cropped(to: blur.extent).composited(over: blur)
-        return CIContext().createCGImage(dimmed, from: dimmed.extent)
+        return CIContext.vane.createCGImage(dimmed, from: dimmed.extent)
     }
 
     /// The layer over the page: the blurred picture where there is one, and the dim alone
@@ -315,4 +315,12 @@ import SwiftUI
                 .animation(reduceMotion ? nil : Look.quick, value: hovering)
         }
     }
+}
+
+extension CIContext {
+    /// Shared by the captures taken on the main thread as a window question opens. A fresh
+    /// context sets up its GPU pipeline each time: 15–60 ms before the first frame of the
+    /// dialog, against effectively nothing for a reused one. Core Image contexts are
+    /// thread-safe and meant to be kept.
+    nonisolated(unsafe) static let vane = CIContext()
 }

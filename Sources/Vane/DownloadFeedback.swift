@@ -65,7 +65,7 @@ struct DownloadFeedbackAnchor: ViewModifier {
 
 
 struct DownloadFeedbackPresentation: ViewModifier {
-    @ObservedObject var store: TabStore
+    @ChromeObserved var store: TabStore
     let chrome: Bool
     @StateObject private var downloadFeedback = DownloadFeedback()
     @ObservedObject private var batterySaver = BatterySaver.shared

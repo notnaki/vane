@@ -1188,12 +1188,21 @@ struct TitleReveal: Equatable, Sendable {
         parkedState = nil; parkedURL = nil
     }
 
+    /// Set for the length of one `Session` capture, which reads every tab twice (the Space
+    /// sidecar and the session file): a live page's interactionState serialises its whole
+    /// back/forward list, so it is taken once. Holding the tab keeps its identifier unique.
+    /// A tab parked mid-capture (a folder lock) may have a new `currentURL`; then its title rule is re-run.
+    static var captureSnapshots: [ObjectIdentifier: (tab: Tab, url: URL?, snapshot: Parked)]?
+
     /// Enough to redraw the strip and to come back exactly where the user left off.
     var snapshot: Parked {
+        if let held = Tab.captureSnapshots?[ObjectIdentifier(self)], held.url == currentURL { return held.snapshot }
         // A host label is a placeholder, not a name: written down it comes back as the
         // name, and the row is called "github.com" for good. See `TabStore.parkedTitle`.
-        Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
-               state: parkedState ?? existingWeb?.interactionState as? Data, needsRecovery: needsRecovery)
+        let snapshot = Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
+                              state: parkedState ?? existingWeb?.interactionState as? Data, needsRecovery: needsRecovery)
+        Tab.captureSnapshots?[ObjectIdentifier(self)] = (self, currentURL, snapshot)
+        return snapshot
     }
 
     /// Drop the WKWebView, and with it the WebContent process, keeping only the
@@ -2892,6 +2901,12 @@ struct Stash {
     /// synchronization also invalidates previews, so it cannot supply this signal.
     let sidebarRowsProtectionRevoked = PassthroughSubject<Void, Never>()
     lazy var sidebarObservation = SidebarObservation(store: self)
+    lazy var chromeObservation = ChromeObservation(store: self)
+    /// Above zero while `current` or `selection` is being published. `ChromeObservation`
+    /// skips exactly those, and `didSet` publishes as usual. A `$current`/`$selection` sink
+    /// runs inside the window, so a store write it makes synchronously is hidden from chrome:
+    /// defer such writes to the next turn.
+    private(set) var selectionPublications = 0
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }
@@ -2916,7 +2931,13 @@ struct Stash {
     var tabRenameSession: TabRenameSession?
     /// Arc's multi-select: which rows are ticked, and which section they are in. Per window,
     /// like the sidebar itself. See Selection.swift — everything done with it is there.
-    @Published var selection = Selection() { didSet { if oldValue != selection { extensions.sync() } } }
+    @Published var selection = Selection() {
+        willSet { selectionPublications += 1 }
+        didSet {
+            selectionPublications -= 1
+            if oldValue != selection { extensions.sync() }
+        }
+    }
     /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.
@@ -2947,7 +2968,9 @@ struct Stash {
     @Published var lockedFolderBackdrop: NSImage?
     @Published var folderUnlockRequest: FolderUnlockRequest?
     @Published var current: Tab.ID? {
+        willSet { selectionPublications += 1 }
         didSet {
+            selectionPublications -= 1
             if oldValue != current { cancelFolderUnlock() }
             // All selection paths enforce the same boundary, before resume or auto PiP.
             if let id = current, isTabLocked(id) {
@@ -3431,7 +3454,12 @@ struct Stash {
         return restored
     }
 
-    var active: Tab? { tabs.first { $0.id == current && !isTabLocked($0.id) } }
+    var active: Tab? {
+        // No selection is the usual state of a window with the command bar up; it has no
+        // tab to look for, and every tab's id is a separate load.
+        guard let current else { return nil }
+        return tabs.first { $0.id == current && !isTabLocked($0.id) }
+    }
     /// What the card is drawing: the active tab, or every pane of its split.
     var onScreenTabs: [Tab] {
         let ids = activeSplit?.tabs ?? [current].compactMap { $0 }
@@ -4992,7 +5020,26 @@ struct Stash {
         let list = strip
         guard list.count > 1, let i = list.firstIndex(where: { $0.id == currentSpaceID })
         else { return }
-        switchTo(space: list[(i + delta + list.count) % list.count])
+        selectSpace(list[(i + delta + list.count) % list.count])
+    }
+
+    /// Keyboard, menu and palette switches take the footer's native slide when it is
+    /// exactly equivalent to `switchTo`: the SwiftUI fallback transition re-lays out both
+    /// sidebars every frame, a 600 ms main-thread stall with 40 tabs a Space, against about
+    /// 100 ms for the captured-pixel slide. Within a profile, with the sidebar on screen
+    /// and nothing travelling, `select` commits before it returns, as `switchTo` does.
+    /// Anything else keeps `switchTo`: a profile hop stays synchronous, and a hidden
+    /// sidebar or an open Library has nothing to slide. A slide or swipe still under way is retired
+    /// first, so a press during one commits at once and can itself take the slide.
+    func selectSpace(_ space: Space) {
+        if space.id != currentSpaceID { spaceGesture.monitor.yieldToCommandSwitch(in: self) }
+        let host = window?.contentView as? BrowserWindowHost
+        guard space.profileID == profileID, space.id != currentSpaceID, host != nil,
+              host?.spaceSlide == nil, !spaceSwiping, spaceGesture.sectionsView != nil,
+              sidebarShown || sidebarPeeking, !libraryOpen, !creatingSpace, palette == nil,
+              !Motion.spaceReduced
+        else { switchTo(space: space); return }
+        spaceGesture.monitor.select(space, in: self)
     }
 
     /// ⌃1…⌃9. Literally space N *of the strip*, unlike ⌘9 which means "the last tab": Arc
@@ -5001,7 +5048,7 @@ struct Stash {
     func switchTo(spaceNumber n: Int) {
         let list = strip
         guard list.indices.contains(n - 1) else { return }
-        switchTo(space: list[n - 1])
+        selectSpace(list[n - 1])
     }
 
     /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
@@ -5024,7 +5071,7 @@ struct Stash {
     /// naming another profile's Space works the same way the dot for it does.
     func switchTo(spaceID: UUID) {
         guard let space = strip.first(where: { $0.id == spaceID }) else { return }
-        switchTo(space: space)
+        selectSpace(space)
     }
 
     /// Create a space in this window's profile and move this window into it, leaving the

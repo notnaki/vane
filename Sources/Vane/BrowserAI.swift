@@ -4,7 +4,17 @@ import SwiftUI
 
 /// Resolve a saved connection separately for each Max feature. Apple stays the default.
 @MainActor enum BrowserAI {
-    static var state: AIConnections { AIConnections.load(UserDefaults.vane) }
+    /// Decoding the JSON on every read made each SwiftUI body re-parse it. Keyed on the raw
+    /// stored bytes, compared by value, so any write (local, restore or iCloud) is seen at once.
+    private static var memo: (data: Data, state: AIConnections)?
+    static var state: AIConnections {
+        // No stored bytes: `load` migrates legacy keys and writes them, so don't memoise this read.
+        guard let data = UserDefaults.vane.data(forKey: AIConnections.preferenceKey) else { return AIConnections.load(UserDefaults.vane) }
+        if let memo, memo.data == data { return memo.state }
+        let decoded = (try? JSONDecoder().decode(AIConnections.self, from: data)) ?? AIConnections()
+        memo = (data, decoded)
+        return decoded
+    }
     static var enabled: Bool { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? false }
     /// Invalidate synchronously on each master-switch edge; SwiftUI may coalesce an
     /// off→on sequence before an onChange observer runs, reopening stale admission.

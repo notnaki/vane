@@ -129,9 +129,10 @@ import XCTest
                          prepare: () -> Void = {},
                          _ action: () -> Void) async throws {
                 if let operation = ProcessInfo.processInfo.environment["VANE_SIDEBAR_PERF_OPERATION"],
-                   operation != name { return }
+                   !operation.split(separator: ",").contains(Substring(name)) { return }
                 let repeats = ProcessInfo.processInfo.environment["VANE_SIDEBAR_PERF_REPEATS"].flatMap(Int.init) ?? repeats
                 var times: [Double] = []
+                var cpu: [Double] = []
                 var gaps: [Double] = []
                 try await Task.sleep(for: .milliseconds(400))
                 for _ in 0..<repeats {
@@ -139,15 +140,20 @@ import XCTest
                     if settlePreparation { try await Task.sleep(for: .milliseconds(400)) }
                     XCTAssertTrue(window.occlusionState.contains(.visible), "Discard measurements from an occluded window")
                     heartbeat.reset()
+                    // Wall time includes preemption by whatever else the machine is doing;
+                    // this thread's own CPU time is what a change to the app can move.
+                    let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
                     let start = ProcessInfo.processInfo.systemUptime
                     action()
                     times.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                    cpu.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStart) / 1_000_000)
                     try await Task.sleep(for: .milliseconds(400))
                     gaps.append(heartbeat.observedGap * 1000)
                 }
                 times.sort()
+                cpu.sort()
                 gaps.sort()
-                print("SIDEBAR_PERF count=\(count) live=\(store.tabs.count) today=\(store.todayShape.entries.count) operation=\(name) median_ms=\(times[times.count / 2]) max_ms=\(times.last!) median_gap_ms=\(gaps[gaps.count / 2]) max_gap_ms=\(gaps.last!)")
+                print("SIDEBAR_PERF count=\(count) live=\(store.tabs.count) today=\(store.todayShape.entries.count) operation=\(name) median_ms=\(times[times.count / 2]) max_ms=\(times.last!) median_gap_ms=\(gaps[gaps.count / 2]) max_gap_ms=\(gaps.last!) min_ms=\(times[0]) median_cpu_ms=\(cpu[cpu.count / 2]) min_cpu_ms=\(cpu[0])")
             }
             try await measure("accessibleTabs") { XCTAssertEqual(store.accessibleTabs.count, count) }
             try await measure("rows") {
@@ -157,6 +163,16 @@ import XCTest
             }
             try await measure("selection-recovery-layout") {
                 store.current = store.current == tabs[0].id ? tabs[1].id : tabs[0].id
+                host.layoutSubtreeIfNeeded()
+            }
+            // What a publication costs when nothing it could draw has changed: first every
+            // view observing the window, then the sidebar's own rows as well.
+            try await measure("unchanged-window-publish") {
+                store.findOpen = false
+                host.layoutSubtreeIfNeeded()
+            }
+            try await measure("unchanged-sidebar-publish") {
+                store.announcing = nil
                 host.layoutSubtreeIfNeeded()
             }
             store.current = nil

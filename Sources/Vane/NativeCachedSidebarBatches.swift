@@ -234,6 +234,15 @@ private extension EnvironmentValues {
             _ = self?.commitSettledVisibility(value, revision: revision)
         }
     }
+    private var structuralKey: NativeSidebarStructuralKey?
+    private var structuralRevision = UUID()
+    /// One revision per structural input. A section that cannot name its inputs
+    /// gets a new one on every pass, which reconfigures the native owners.
+    func structuralRevision(for key: NativeSidebarStructuralKey?) -> UUID {
+        guard let key else { structuralKey = nil; return UUID() }
+        if key != structuralKey { structuralKey = key; structuralRevision = UUID() }
+        return structuralRevision
+    }
     @discardableResult func commitSettledVisibility(_ value: NativeSidebarDisclosureVisibility, revision: UUID) -> Bool {
         guard self.revision == revision, value == visibility, needsCompletion else { return false }
         Motion.instant {
@@ -245,6 +254,27 @@ private extension EnvironmentValues {
         }
         return true
     }
+}
+
+/// A section's promise that its rows draw the same thing for as long as this value is
+/// equal: the rows come from `source`, and everything else its row builder reads that the
+/// rows do not observe for themselves is in `pullRequests`. Selecting a tab republishes the
+/// sidebar without changing either, and must not rebuild every native owner.
+struct NativeSidebarContentStability: Equatable {
+    /// Retained, so a later snapshot can never reuse a compared address.
+    let source: AnyObject
+    var pullRequests: [GitHub.Row?] = []
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.source === rhs.source && lhs.pullRequests == rhs.pullRequests
+    }
+}
+
+struct NativeSidebarStructuralKey: Equatable {
+    let content: NativeSidebarContentStability
+    let rowCount: Int
+    let protectedRows: Set<String>
+    let readinessSection: String?
+    let owner: ObjectIdentifier?
 }
 
 /// Prefixes are captured once per structural update. Per-frame placement touches
@@ -1782,7 +1812,12 @@ private final class NativeBatchMouseObservation {
     }
 }
 
-private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresentable {
+private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresentable, Equatable {
+    /// The revision stands for every structural input. Environment changes still
+    /// reach `updateNSView` on their own.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.revision == rhs.revision && lhs.sample == rhs.sample
+    }
     let rows: [SidebarRows.Row]
     let modelIDs: Set<String>
     let revision: UUID
@@ -1829,6 +1864,8 @@ struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
     var protectedRows: Set<String> = []
     var readinessSection: String? = nil
     var owner: TabStore? = nil
+    /// Nil reconfigures on every pass, as a caller with an arbitrary row builder needs.
+    var stability: NativeSidebarContentStability? = nil
     let content: (SidebarRows.Row, Int, Int) -> Content
     var body: some View {
         let visible = Set(rows.map(\.id))
@@ -1836,11 +1873,15 @@ struct NativeCachedSidebarBatchSectionRows<Content: View>: View {
         let baseline = disclosureBaseline.rows
         let visibility = disclosureBaseline.visibility
         // One revision per structural update: every interpolated frame of it reuses the same.
-        let revision = UUID()
+        let revision = disclosureBaseline.structuralRevision(for: stability.map {
+            NativeSidebarStructuralKey(content: $0, rowCount: rows.count, protectedRows: protectedRows,
+                readinessSection: readinessSection, owner: owner.map(ObjectIdentifier.init))
+        })
         return NativeSidebarDisclosureExtent(baseline: baseline,
             isSettled: disclosureBaseline.isSettled, visibility: visibility) { sample in
                 NativeCachedSidebarBatchesBridge(rows: rows, modelIDs: modelIDs, revision: revision, sample: sample,
                     protectedRows: protectedRows, readinessSection: readinessSection, owner: owner, content: content)
+                    .equatable()
             }
             .transaction { disclosureBaseline.registerCompletion(in: &$0) }
             .vaneMotionPolicy()

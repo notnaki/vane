@@ -7,6 +7,8 @@ struct AIProviderSettings: View {
     @State private var state = AIConnections()
     @State private var selected: UUID?
     @State private var feedback = ""
+    /// Keychain-backed, so computed on appear and settings changes rather than per body.
+    @State private var reasons: [AIFeature: String] = [:]
     private var animation: Animation? { reduceMotion || Motion.reduced ? nil : Look.quick }
 
     var body: some View {
@@ -70,7 +72,7 @@ struct AIProviderSettings: View {
                             }
                         }.labelsHidden().frame(maxWidth: .infinity, alignment: .trailing)
                     }
-                    if let reason = BrowserAI.unavailableReason(for: feature) {
+                    if let reason = reasons[feature] {
                         AIConnectionNote(feature.title + ": " + reason)
                     }
                 }
@@ -94,6 +96,9 @@ struct AIProviderSettings: View {
     }
     private func reload() {
         state = BrowserAI.state
+        reasons = Dictionary(uniqueKeysWithValues: AIFeature.allCases.compactMap { feature in
+            BrowserAI.unavailableReason(for: feature).map { (feature, $0) }
+        })
         if !state.connections.contains(where: { $0.id == selected }) { selected = state.connections.first?.id }
     }
     private func route(_ feature: AIFeature) -> Binding<UUID?> {
@@ -129,7 +134,16 @@ private struct AIConnectionEditor: View {
     @State private var task: Task<Void, Never>?
     @State private var operationID = UUID()
     @State private var signIn: ChatGPTSignIn?
-    private var saved: Bool { BrowserAI.hasKey(connection) }
+    // Keychain reads: refreshed on appear, when the connection's credential inputs change
+    // (not its name), on any settings revision (iCloud key sync), and after this view acts.
+    @State private var saved = false
+    @State private var unavailable = true
+    @AppStorage("aiSettingsRevision") private var revision = 0
+    private var credentialInputs: AIConnection { var copy = connection; copy.name = ""; return copy }
+    private func refreshCredentials() {
+        saved = BrowserAI.hasKey(connection)
+        unavailable = BrowserAI.unavailableReason(connection) != nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -184,7 +198,7 @@ private struct AIConnectionEditor: View {
                             .textFieldStyle(.roundedBorder).accessibilityLabel("Your API key").disabled(busy)
                         if !key.isEmpty {
                             Button("Save Key") {
-                                if BrowserAI.saveKey(key, for: connection) { key = ""; status = "Saved in this Mac's Keychain." }
+                                if BrowserAI.saveKey(key, for: connection) { key = ""; status = "Saved in this Mac's Keychain."; refreshCredentials() }
                                 else { status = "Could not save this key. Check the key and Keychain access." }
                             }.disabled(busy || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
@@ -202,7 +216,7 @@ private struct AIConnectionEditor: View {
                         .buttonStyle(.borderedProminent)
                         .tint(AIConnectionLook.cobalt)
                         .foregroundStyle(.white)
-                        .disabled(busy || BrowserAI.unavailableReason(connection) != nil)
+                        .disabled(busy || unavailable)
                     Menu {
                         if saved {
                             if connection.provider == .chatGPT {
@@ -210,6 +224,7 @@ private struct AIConnectionEditor: View {
                             } else {
                                 Button("Remove Key", role: .destructive) {
                                     status = BrowserAI.removeKey(connection) ? "API key removed." : "Could not remove the key from Keychain."
+                                    refreshCredentials()
                                 }
                             }
                         }
@@ -243,13 +258,19 @@ private struct AIConnectionEditor: View {
         .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: busy)
         .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: key.isEmpty)
         // Changing the selected account cancels its in-flight operation.
-        .onAppear { if connection.provider == .chatGPT, saved { refreshModels() } }
+        .onAppear { refreshCredentials(); if connection.provider == .chatGPT, saved { refreshModels() } }
+        .onChange(of: credentialInputs) { refreshCredentials() }
+        .onChange(of: revision) { refreshCredentials() }
         .onDisappear { cancel() }
     }
     private func changeEndpoint(_ value: String) {
         guard value != connection.baseURL else { return }
         // Editing a destination never forwards a previously saved key to the new endpoint.
-        if saved, !BrowserAI.removeKey(connection) { status = "Remove the saved key before changing its destination."; return }
+        if saved {
+            let removed = BrowserAI.removeKey(connection)
+            refreshCredentials()
+            if !removed { status = "Remove the saved key before changing its destination."; return }
+        }
         key = ""; connection.baseURL = value; status = "Save the key for this API endpoint."
     }
     private func cancel() { operationID = UUID(); task?.cancel(); task = nil; signIn?.cancel(); signIn = nil; busy = false }
@@ -257,7 +278,8 @@ private struct AIConnectionEditor: View {
         let id = UUID(); operationID = id
         busy = true; status = "Connecting…"
         task = Task { @MainActor in
-            defer { if operationID == id { busy = false } }
+            // Sign-in, sign-out and token refresh change the Keychain even when superseded.
+            defer { refreshCredentials(); if operationID == id { busy = false } }
             do {
                 let message = try await action()
                 guard !Task.isCancelled, operationID == id else { return }
