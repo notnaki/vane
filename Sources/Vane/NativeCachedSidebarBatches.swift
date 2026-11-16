@@ -722,14 +722,57 @@ private struct NativeSidebarRowLayoutAnchor: NSViewRepresentable {
     }
 }
 
+/// The section's interpolated disclosure sample and shared frame. Each slot reads its
+/// own placement here, so a frame of the curve updates only the placement of rows,
+/// never their owners' roots, environments or row content.
+@MainActor @Observable final class NativeSidebarDisclosurePose {
+    private(set) var sample: NativeSidebarDisclosureSample?
+    private(set) var frame: NativeSidebarDisclosureLayout.Frame?
+    /// Changes exactly when the sampled visibility does.
+    private(set) var revision = 0
+    // The bridge presents from updateNSView, where SwiftUI tracks observed reads.
+    // Comparing against these copies keeps it from depending on its own writes.
+    @ObservationIgnored private var presentedSample: NativeSidebarDisclosureSample?
+    @ObservationIgnored private var presentedFrame: NativeSidebarDisclosureLayout.Frame?
+    @ObservationIgnored private var presentedRevision = 0
+    func present(sample: NativeSidebarDisclosureSample?, frame: NativeSidebarDisclosureLayout.Frame?) {
+        if sample?.visibility != presentedSample?.visibility {
+            presentedRevision &+= 1
+            revision = presentedRevision
+        }
+        if sample != presentedSample { presentedSample = sample; self.sample = sample }
+        if frame !== presentedFrame { presentedFrame = frame; self.frame = frame }
+    }
+}
+
+private struct NativeSidebarPlacedSlot<Content: View>: View {
+    let slot: NativeSidebarOwnedSlot
+    let pose: NativeSidebarDisclosurePose
+    let finished: (UUID) -> Void
+    let content: Content
+    var body: some View {
+        let sample = pose.sample
+        let frame = pose.frame
+        let pitch = Look.rowHeight + Look.rowGap
+        SidebarFolderRolloutRow(geometry: slot.rollout, sharedProgress: sample.map { $0.progress(for: slot.id) },
+            sharedClipTop: frame?.clipTop(for: slot.id).map { $0 * pitch }, finished: finished) { content }
+            .offset(y: (frame?.position(for: slot.id) ?? CGFloat(slot.index)) * pitch)
+            // This sample already owns the interpolation. Suppress the inherited
+            // transaction around placement itself, not merely around the row
+            // content inside the offset modifier.
+            .animation(nil, value: frame == nil ? nil : pose.revision)
+    }
+}
+
 private struct NativeSidebarBatchRoot<Content: View>: View {
     let slots: [NativeSidebarOwnedSlot]
     let total: Int
     let generation: UInt64
     let inherited: EnvironmentValues
     let transaction: Transaction
-    let disclosureSample: NativeSidebarDisclosureSample?
-    let disclosureFrame: NativeSidebarDisclosureLayout.Frame?
+    let pose: NativeSidebarDisclosurePose
+    /// Whether the section's shared frame owns placement; fixed per structural update.
+    let framed: Bool
     let viewport: SidebarRowsViewport
     let navigation: NativeSidebarNavigation
     weak var interactionOwner: (any NativeSidebarInteractionRetaining)?
@@ -739,25 +782,14 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(slots) { slot in
-                SidebarFolderRolloutRow(geometry: slot.rollout,
-                    sharedProgress: disclosureSample.map { $0.progress(for: slot.id) },
-                    sharedClipTop: clipTop(of: slot), finished: { finishedClosing(slot.id, $0) }) {
-                    content(slot.row, slot.index, total)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: Look.rowHeight)
-                        .background(NativeSidebarRowLayoutAnchor(row: slot.id, generation: generation, committed: committed))
-                }
+                NativeSidebarPlacedSlot(slot: slot, pose: pose, finished: { finishedClosing(slot.id, $0) },
+                                        content: slotContent(slot))
                     .allowsHitTesting(slot.rollout?.closing != true)
                     .disabled(slot.rollout?.closing == true)
                     .accessibilityHidden(slot.rollout?.closing == true)
                     .environment(\.bufferedSidebarFocus, BufferedSidebarFocus(row: slot.id, viewport: viewport))
                     .environment(\.nativeSidebarNavigationRow, NativeSidebarNavigationRow(row: slot.id, navigation: navigation))
                     .environment(\.nativeSidebarInteraction, NativeSidebarInteraction(row: slot.id, owner: interactionOwner))
-                    .offset(y: position(of: slot) * (Look.rowHeight + Look.rowGap))
-                    // This sample already owns the interpolation. Suppress the
-                    // inherited transaction around placement itself, not merely
-                    // around the row content inside the offset modifier.
-                    .animation(nil, value: disclosureFrame == nil ? nil : disclosureSample?.visibility)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -768,16 +800,14 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
         .animation(placementAnimation, value: slots.map(\.id))
         .animation(placementAnimation, value: slots.map(\.index))
     }
-    private func position(of slot: NativeSidebarOwnedSlot) -> CGFloat {
-        if let position = disclosureFrame?.position(for: slot.id) { return position }
-        return CGFloat(slot.index)
-    }
-    private func clipTop(of slot: NativeSidebarOwnedSlot) -> CGFloat? {
-        return disclosureFrame?.clipTop(for: slot.id)
-            .map { $0 * (Look.rowHeight + Look.rowGap) }
+    private func slotContent(_ slot: NativeSidebarOwnedSlot) -> some View {
+        content(slot.row, slot.index, total)
+            .frame(maxWidth: .infinity)
+            .frame(height: Look.rowHeight)
+            .background(NativeSidebarRowLayoutAnchor(row: slot.id, generation: generation, committed: committed))
     }
     private var placementAnimation: Animation? {
-        if disclosureFrame != nil { return nil }
+        if framed { return nil }
         return NativeSidebarPlacementMotion.animation(transaction: transaction,
             reduceMotion: inherited.accessibilityReduceMotion, reducedByPolicy: Motion.reduced)
     }
@@ -890,8 +920,10 @@ private final class NativeBatchMouseObservation {
     private final class Entry {
         let host: NativeSidebarBatchHostingView<Content>
         var generation: UInt64
-        init(host: NativeSidebarBatchHostingView<Content>, generation: UInt64) {
-            self.host = host; self.generation = generation
+        /// The disclosure placement its slots read. Only mounted owners follow the curve.
+        let pose: NativeSidebarDisclosurePose
+        init(host: NativeSidebarBatchHostingView<Content>, generation: UInt64, pose: NativeSidebarDisclosurePose) {
+            self.host = host; self.generation = generation; self.pose = pose
         }
     }
     private final class WeakAnchor {
@@ -1112,8 +1144,7 @@ private final class NativeBatchMouseObservation {
             let remaining = slots.filter { $0.rollout?.closing != true }
             groups[key] = remaining
             if let entry = cache[key] {
-                entry.host.rootView = makeRoot(slots: remaining, animate: false)
-                batchCounts.rootUpdates += 1
+                setRoot(entry, slots: remaining, animate: false)
             }
             needsReconcile = true
         }
@@ -1479,15 +1510,16 @@ private final class NativeBatchMouseObservation {
                     // Detached roots do not receive frame samples. Rejoin the
                     // section's current pose instead of replaying a stale one.
                     if disclosureSample != nil && (disclosureLayout != nil || slots.contains(where: { $0.rollout != nil })) {
-                        entry.host.rootView = makeRoot(slots: slots, animate: false)
-                        batchCounts.rootUpdates += 1
+                        setRoot(entry, slots: slots, animate: false)
                     }
                     batchCounts.warmGraphReattachments += 1
                 }
             } else {
-                let host = NativeSidebarBatchHostingView(rootView: makeRoot(slots: slots))
+                let pose = NativeSidebarDisclosurePose()
+                pose.present(sample: disclosureSample, frame: disclosureFrame)
+                let host = NativeSidebarBatchHostingView(rootView: makeRoot(slots: slots, pose: pose))
                 host.sizingOptions = []
-                entry = Entry(host: host, generation: generation)
+                entry = Entry(host: host, generation: generation, pose: pose)
                 cache[key] = entry
                 batchCounts.coldGraphCreates += 1
             }
@@ -1538,7 +1570,13 @@ private final class NativeBatchMouseObservation {
         return NSRect(x: 0, y: 0, width: bounds.width,
                       height: max(sectionHeight, closingHeight, presentedHeight))
     }
-    private func makeRoot(slots: [NativeSidebarOwnedSlot], animate: Bool = true) -> Root {
+    private func setRoot(_ entry: Entry, slots: [NativeSidebarOwnedSlot], animate: Bool = true) {
+        entry.pose.present(sample: disclosureSample, frame: disclosureFrame)
+        entry.host.rootView = makeRoot(slots: slots, animate: animate, pose: entry.pose)
+        batchCounts.rootUpdates += 1
+    }
+    private func makeRoot(slots: [NativeSidebarOwnedSlot], animate: Bool = true,
+                          pose: NativeSidebarDisclosurePose) -> Root {
         var placementTransaction = transaction
         if !animate {
             // Cached, detached owners absorb authoritative structural updates
@@ -1548,8 +1586,8 @@ private final class NativeBatchMouseObservation {
             placementTransaction.disablesAnimations = true
         }
         return Root(slots: slots, total: rows.count, generation: generation,
-             inherited: inherited, transaction: placementTransaction, disclosureSample: disclosureSample,
-             disclosureFrame: disclosureFrame, viewport: viewport, navigation: navigation,
+             inherited: inherited, transaction: placementTransaction, pose: pose,
+             framed: disclosureFrame != nil, viewport: viewport, navigation: navigation,
              interactionOwner: (interactionLease as (any NativeSidebarInteractionRetaining)?) ?? self,
              committed: { [weak self] anchor in self?.rowDidLayout(anchor) },
              finishedClosing: { [weak self] row, request in
@@ -1619,8 +1657,12 @@ private final class NativeBatchMouseObservation {
                   disclosureLayout != nil || slots.contains(where: { $0.rollout != nil }) else { continue }
             let target = batchFrame(for: slots)
             if entry.host.frame != target { entry.host.frame = target }
-            entry.host.rootView = makeRoot(slots: slots, animate: false)
-            batchCounts.rootUpdates += 1
+            // Slots read their placement from the owner's pose. Replacing the root
+            // instead re-evaluated its rows, environments and controls on every
+            // frame of the curve, which alone exceeded a 120 Hz frame. The owner
+            // still renders in this layout pass, on the same frame as the extent.
+            entry.pose.present(sample: sample, frame: disclosureFrame)
+            entry.host.needsLayout = true
         }
         // Closing visuals are disabled from the first structural update. Release
         // them with the guarded outer transaction completion/rebase, rather than
@@ -1628,9 +1670,8 @@ private final class NativeBatchMouseObservation {
     }
     private func update(_ entry: Entry, slots: [NativeSidebarOwnedSlot], animate: Bool = true) {
         guard entry.generation != generation else { return }
-        entry.host.rootView = makeRoot(slots: slots, animate: animate)
+        setRoot(entry, slots: slots, animate: animate)
         entry.generation = generation
-        batchCounts.rootUpdates += 1
     }
     private func finishClosing(row: String, request: UUID) {
         guard !disposed, let owner = ownership[row], let slots = groups[owner],
@@ -1638,8 +1679,7 @@ private final class NativeBatchMouseObservation {
         let remaining = slots.filter { $0.id != row }
         groups[owner] = remaining
         if let entry = cache[owner] {
-            entry.host.rootView = makeRoot(slots: remaining, animate: false)
-            batchCounts.rootUpdates += 1
+            setRoot(entry, slots: remaining, animate: false)
         }
         needsReconcile = true
         reconcileLastGeometry()
