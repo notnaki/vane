@@ -2407,8 +2407,12 @@ extension TabStore {
 
     private static func captureSave(background: Bool) -> Bool {
         guard !restoring else { return false }
+        let ownsSnapshots = Tab.captureSnapshots == nil
+        if ownsSnapshots { Tab.captureSnapshots = [:] }
+        defer { if ownsSnapshots { Tab.captureSnapshots = nil } }
         var succeeded = true
-        var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved], space: String,
+        // A row's interactionState travels raw; base64 is applied with the JSON off main.
+        var byProfile: [UUID: [(entries: [(entry: Entry, state: Data?)], splits: [Split.Saved], space: String,
                                        selected: String?)]] = [:]
         // Restore opens each window in sequence. Save back-to-front so the window the
         // user was working in comes forward last, regardless of its creation order.
@@ -2443,16 +2447,15 @@ extension TabStore {
                     .append((entries: [], splits: [], space: "", selected: nil))
                 continue
             }
-            let entries = store.tabs.compactMap { tab -> Entry? in
+            let entries = store.tabs.compactMap { tab -> (entry: Entry, state: Data?)? in
                 // currentURL, not web.url: a suspended tab has no live page and would
                 // otherwise drop out of its own session.
                 guard let u = tab.currentURL,
                       TabAddress.restorable(u) else { return nil }
                 let snap = tab.snapshot
-                return Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
-                             state: snap.state?.base64EncodedString(), kind: tab.kind,
-                             home: tab.homeURL?.absoluteString, customName: tab.workspaceName,
-                             needsRecovery: tab.needsRecovery ? true : nil)
+                return (Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
+                              kind: tab.kind, home: tab.homeURL?.absoluteString, customName: tab.workspaceName,
+                              needsRecovery: tab.needsRecovery ? true : nil), snap.state)
             }
             byProfile[store.profileID, default: []]
                 .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? "",
@@ -2463,9 +2466,14 @@ extension TabStore {
             // end up filed under the next window's tabs.
             let kept = windows.filter { !$0.entries.isEmpty }
             let destination = file(profileID)
-            let entries = kept.map(\.entries), splits = kept.map(\.splits)
+            let rows = kept.map(\.entries), splits = kept.map(\.splits)
             let spaces = kept.map(\.space), selected = kept.map(\.selected)
             let write: @Sendable () -> Bool = {
+                let entries = rows.map { window in window.map { row in
+                    var entry = row.entry
+                    entry.state = row.state?.base64EncodedString()
+                    return entry
+                } }
                 guard let data = encode(entries, splits: splits, spaces: spaces, selected: selected) else { return false }
                 return RecoverySnapshots.write(data, to: destination, valid: readable)
             }

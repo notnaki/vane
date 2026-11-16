@@ -155,7 +155,8 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// The data dir a second instance was pointed at, if any. A debug build running beside
     /// the real app gets its own everything: files here and preferences in `UserDefaults.vane`.
     nonisolated static var overrideDirectory: String? {
-        ProcessInfo.processInfo.environment["VANE_DATA_DIR"]
+        // getenv, not ProcessInfo.environment: that copies the whole environment per call.
+        getenv("VANE_DATA_DIR").map { String(cString: $0) }
     }
 
     /// nonisolated: a path and a mkdir, with nothing of the store in it. The blocker reads
@@ -166,11 +167,17 @@ struct BookmarkImportResult: Equatable, Sendable {
         // set of files (and tripping its crash marker). Unset in normal use.
         let base = overrideDirectory
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Vane", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            ?? applicationSupport
+        // A stat is ~20x cheaper than createDirectory on an existing path; a folder
+        // deleted while running is still recreated by the next caller.
+        if access(base.path, F_OK) != 0 {
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        }
         return base
     }
+    private nonisolated static let applicationSupport =
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Vane", isDirectory: true)
 
     private let profileID: UUID?
     private let connection: StoreConnection

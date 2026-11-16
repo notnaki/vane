@@ -1188,12 +1188,20 @@ struct TitleReveal: Equatable, Sendable {
         parkedState = nil; parkedURL = nil
     }
 
+    /// Set for the length of one `Session` capture, which reads every tab twice (the Space
+    /// sidecar and the session file): a live page's interactionState serialises its whole
+    /// back/forward list, so it is taken once. Holding the tab keeps its identifier unique.
+    static var captureSnapshots: [ObjectIdentifier: (tab: Tab, snapshot: Parked)]?
+
     /// Enough to redraw the strip and to come back exactly where the user left off.
     var snapshot: Parked {
+        if let held = Tab.captureSnapshots?[ObjectIdentifier(self)] { return held.snapshot }
         // A host label is a placeholder, not a name: written down it comes back as the
         // name, and the row is called "github.com" for good. See `TabStore.parkedTitle`.
-        Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
-               state: parkedState ?? existingWeb?.interactionState as? Data, needsRecovery: needsRecovery)
+        let snapshot = Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
+                              state: parkedState ?? existingWeb?.interactionState as? Data, needsRecovery: needsRecovery)
+        Tab.captureSnapshots?[ObjectIdentifier(self)] = (self, snapshot)
+        return snapshot
     }
 
     /// Drop the WKWebView, and with it the WebContent process, keeping only the
