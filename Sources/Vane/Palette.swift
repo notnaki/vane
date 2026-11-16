@@ -989,6 +989,8 @@ struct PaletteSizing {
 private struct PaletteTabWatch: View, Equatable {
     @EnvironmentObject private var store: TabStore
     @ObservedObject var tabs: ChangeWatch
+    /// The other windows whose tabs are listed: one opening or closing a tab publishes there.
+    @StateObject private var windows = ChangeWatch()
     @Binding var changes: Int
     private let identity: ObjectIdentifier
 
@@ -1005,8 +1007,10 @@ private struct PaletteTabWatch: View, Equatable {
         let content = sources.flatMap { number, owner in
             owner.accessibleTabs.map { Feel03TabContent($0, owner: owner, windowNumber: number) }
         }
+        let others = sources.map(\.element).filter { $0 !== store }
         Color.clear
             .accessibilityHidden(true)
+            .onChange(of: others.map(ObjectIdentifier.init), initial: true) { windows.watch(others) }
             .onChange(of: content) { changes += 1 }
             // Tabs opened or closed while the bar is up: watch the new set, and list it.
             .onChange(of: content.map(\.id)) {
