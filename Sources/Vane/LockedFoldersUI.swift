@@ -231,7 +231,7 @@ private struct EmbeddedFolderAuthentication: NSViewRepresentable {
         blur.inputImage = input.clampedToExtent()
         blur.radius = 3
         guard let output = blur.outputImage?.cropped(to: input.extent),
-              let cg = CIContext().createCGImage(output, from: input.extent) else { return nil }
+              let cg = CIContext.vane.createCGImage(output, from: input.extent) else { return nil }
         return NSImage(cgImage: cg, size: source.size)
     }
 }
