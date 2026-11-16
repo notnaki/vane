@@ -166,6 +166,9 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         // left open would be invisible, would still be eating Escape, and would have nothing
         // to search.
         if store.findOpen { store.findOpen = false }
+        // The command bar would stay drawn over the Library and keep every click (⇧⌘L, the
+        // Archive menu and toasts can open it under the bar; the swipe clears it the same way).
+        if store.palette != nil { store.palette = nil }
         if !store.libraryOpen { store.libraryOpen = true }
         shared.focusSearch()
     }

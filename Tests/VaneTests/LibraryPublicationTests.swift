@@ -71,6 +71,15 @@ import XCTest
                        "Repeated activation still requests search focus without rebuilding unchanged state")
     }
 
+    func testOpeningDismissesTheCommandBar() {
+        let store = fixture()
+        store.libraryOpen = false
+        store.palette = .all
+        Library.toggle(.archived, in: store)
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.palette, "A command bar left open would cover the Library and take its clicks")
+    }
+
     func testFreshOpeningResetsRealFiltersQueryAndFindExactlyOnce() {
         let store = fixture()
         store.libraryOpen = false
