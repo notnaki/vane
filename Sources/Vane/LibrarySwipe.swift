@@ -162,7 +162,7 @@ extension View {
 }
 
 private struct LibrarySwipe: ViewModifier {
-    @ObservedObject var store: TabStore
+    @ChromeObserved var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 

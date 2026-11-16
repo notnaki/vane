@@ -245,7 +245,7 @@ final class SidebarResizeHighlightView: NSView {
 /// Its rule appears only while hovering or dragging. The forgiving hit area stays wider
 /// than the rule, centred on the seam like AppKit's split-view divider.
 struct SidebarHandle: View {
-    @EnvironmentObject private var store: TabStore
+    @ChromeObserved var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
     @WindowSidebarWidth private var presentedWidth
     /// The gap between the pointer and the seam, taken on the drag's first frame and held
