@@ -8,11 +8,16 @@ struct SearchMatch: Sendable {
     let query: String
     private let characters: [Character]
     private let asciiQuery: [UInt8]?
+    /// What the query says about addresses, read once rather than for every candidate.
+    private let typesScheme: Bool, typesWWW: Bool, typesTrailingSlash: Bool
 
     init(_ query: String) {
         self.query = Self.fold(query.trimmingCharacters(in: .whitespacesAndNewlines))
         characters = Array(self.query)
         asciiQuery = self.query.utf8.allSatisfy { $0 < 128 } ? Array(self.query.utf8) : nil
+        typesScheme = self.query.contains("://")
+        typesWWW = self.query.hasPrefix("www.")
+        typesTrailingSlash = self.query.hasSuffix("/")
     }
 
     static func fold(_ value: String) -> String {
@@ -127,14 +132,14 @@ struct SearchMatch: Sendable {
         let foldedURL = Self.fold(url)
         var address = foldedURL
         // Omitted scheme/www are address-bar conveniences, not changes to stored URLs.
-        if !query.contains("://") {
+        if !typesScheme {
             for prefix in ["https://", "http://"] where address.hasPrefix(prefix) {
                 address.removeFirst(prefix.count)
                 break
             }
-            if address.hasPrefix("www."), !query.hasPrefix("www.") { address.removeFirst(4) }
+            if address.hasPrefix("www."), !typesWWW { address.removeFirst(4) }
         }
-        if address.hasSuffix("/") && !query.hasSuffix("/") { address.removeLast() }
+        if address.hasSuffix("/") && !typesTrailingSlash { address.removeLast() }
         // Preserve the scoring pass's second Unicode fold: Foundation folding is
         // not idempotent for repeated combining marks. ASCII is already final.
         let normalized = address.utf8.allSatisfy { $0 < 128 } ? address : Self.fold(address)

@@ -53,11 +53,20 @@ struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
     /// Swapped out by `check()` so the assertions never touch the user's real preferences.
     static var defaults = UserDefaults.vane
 
+    /// The search bar reads the custom lists several times per keystroke. Each stored value
+    /// is decoded once; the cache is keyed by its bytes, so any write decodes afresh.
+    private static var decoded: [String: (data: Data, engines: [SearchEngine])] = [:]
+
+    static func stored(_ key: String) -> [SearchEngine] {
+        guard let data = defaults.data(forKey: key) else { return [] }
+        if let hit = decoded[key], hit.data == data { return hit.engines }
+        let engines = (try? JSONDecoder().decode([SearchEngine].self, from: data)) ?? []
+        decoded[key] = (data, engines)
+        return engines
+    }
+
     static var custom: [SearchEngine] {
-        get {
-            guard let data = defaults.data(forKey: "customSearchEngines") else { return [] }
-            return (try? JSONDecoder().decode([SearchEngine].self, from: data)) ?? []
-        }
+        get { stored("customSearchEngines") }
         set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "customSearchEngines") }
     }
 

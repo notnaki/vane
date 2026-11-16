@@ -28,9 +28,11 @@ import XCTest
                  Date(timeIntervalSince1970: 1_791_400_000 - Double(n)))
             })
             let archive = Archive.shared(for: profile)
-            for n in 0..<47 {
-                archive.add(url: URL(string: "https://fixture.invalid/archived/\(n)")!, title: "Archived search \(n)")
-            }
+            // A full archive in the large case: every keystroke searches all of it.
+            archive.add((0..<(count == 300 ? Archive.limit : 47)).map { n in
+                Archive.Entry(url: "https://fixture.invalid/archived/\(n)", title: "Archived search \(n)",
+                              at: Date(timeIntervalSince1970: 1_791_400_000 - Double(n)), space: nil, littleArc: nil)
+            })
             let store = TabStore(profileID: profile, space: spaces[0], session: [])
             store.sharingReady = false
             store.palette = nil
