@@ -574,10 +574,12 @@ struct OffscreenPages: View {
             // `cardHolds`: a view has one superview, so a page the card is keeping hidden
             // would be *moved* here rather than shared, and the switch back would race this
             // host's teardown for it — a blink, and a stopped song.
-            ForEach(store.everyTab.filter {
-                !shown.contains($0.id) && media.keepsRunning($0)
-                    && $0.existingWeb.map { !WebHost.cardHolds($0) } == true
-                    && !store.isTabLocked($0.id)
+            // The stored web view first: most tabs have none, the rest of the test reads
+            // published flags, and this body runs on each store publication.
+            ForEach(store.everyTab.filter { tab in
+                guard let web = tab.existingWeb else { return false }
+                return !shown.contains(tab.id) && media.keepsRunning(tab)
+                    && !WebHost.cardHolds(web) && !store.isTabLocked(tab.id)
             }) { tab in
                 TabPage(tab: tab, offscreen: true).id(tab.id)
             }

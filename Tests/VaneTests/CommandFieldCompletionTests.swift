@@ -91,4 +91,32 @@ import XCTest
             }
         }
     }
+
+    /// The stand-in's symbol names AppKit's password AutoFill check, which is how the
+    /// field knows who is asking for its neighbours.
+    @inline(never) private func NSAutoFillHeuristicControllerStandIn(_ field: CommandField.BarField) -> (NSView?, NSView?) {
+        (field.nextValidKeyView, field.previousValidKeyView)
+    }
+
+    func testOnlyTheAutoFillCheckIsToldAFieldHasNoNeighbours() {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let field = CommandField.BarField(string: "")
+        let after = NSTextField(string: ""), before = NSTextField(string: "")
+        for (index, view) in [before, field, after].enumerated() {
+            view.frame = NSRect(x: 20, y: 150 - 40 * index, width: 200, height: 24)
+            window.contentView?.addSubview(view)
+        }
+        before.nextKeyView = field
+        field.nextKeyView = after
+        XCTAssertTrue(field.nextValidKeyView === after, "Tab still reaches the real next key view")
+        XCTAssertTrue(field.previousValidKeyView === before, "Shift-Tab still reaches the real previous one")
+        let answer = NSAutoFillHeuristicControllerStandIn(field)
+        XCTAssertTrue(answer.0 === field && answer.1 === field,
+                      "The AutoFill check must not search the window for key views")
+    }
 }

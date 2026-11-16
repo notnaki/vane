@@ -880,6 +880,29 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(100))
             }
         }
+        // The activation alone, with no slide: what a swipe pays after its panel
+        // arrives and a click pays before its first frame.
+        let activations = ProcessInfo.processInfo.environment["VANE_LIBRARY_PERF_ACTIVATIONS"].flatMap(Int.init) ?? 3
+        saver.setMode(.alwaysOn)
+        try await Task.sleep(for: .milliseconds(300))
+        for visit in 0..<activations {
+            for opening in [true, false] {
+                maxGap = 0
+                lastTick = ProcessInfo.processInfo.systemUptime
+                Library.toggle(.archived, in: store)
+                try await Task.sleep(for: .milliseconds(200))
+                XCTAssertEqual(store.libraryOpen, opening)
+                print("LIBRARY_ACTIVATION tabs=\(count) visit=\(visit) opening=\(opening) max_gap_ms=\(maxGap * 1000)")
+            }
+        }
+        // What any store publication costs with nothing changed: the floor under the above.
+        for visit in 0..<activations {
+            maxGap = 0
+            lastTick = ProcessInfo.processInfo.systemUptime
+            store.objectWillChange.send()
+            try await Task.sleep(for: .milliseconds(100))
+            print("LIBRARY_PUBLICATION tabs=\(count) visit=\(visit) max_gap_ms=\(maxGap * 1000)")
+        }
         XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000)
     }
 

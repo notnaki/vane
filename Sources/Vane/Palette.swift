@@ -622,8 +622,31 @@ struct CommandField: NSViewRepresentable {
         /// AppKit's password AutoFill check asks a newly focused text field for its
         /// neighbours. Answering that without a nearby key view searches every candidate in
         /// the window — the whole sidebar — on each ⌘T. The bar's answer is always "none".
-        override var nextValidKeyView: NSView? { closedKeyLoop ? self : super.nextValidKeyView }
-        override var previousValidKeyView: NSView? { closedKeyLoop ? self : super.previousValidKeyView }
+        /// A field that keeps Tab gives the check the same answer and everyone else the
+        /// real one: these are search fields, and none sits beside a password field.
+        override var nextValidKeyView: NSView? {
+            closedKeyLoop || Self.askedByAutoFill() ? self : super.nextValidKeyView
+        }
+        override var previousValidKeyView: NSView? {
+            closedKeyLoop || Self.askedByAutoFill() ? self : super.previousValidKeyView
+        }
+        /// ponytail: names the caller by symbol, because the check has no per-field
+        /// opt-out. If AppKit renames it this is false and the search simply runs again.
+        /// Remembered per call site: looking a symbol up costs more than the frames do.
+        private static var autoFillCallers: [UnsafeMutableRawPointer: Bool] = [:]
+        private static func askedByAutoFill() -> Bool {
+            var frames = [UnsafeMutableRawPointer?](repeating: nil, count: 6)
+            let count = Int(backtrace(&frames, Int32(frames.count)))
+            return frames.prefix(count).contains { frame in
+                guard let frame else { return false }
+                if let known = autoFillCallers[frame] { return known }
+                var info = Dl_info()
+                let asked = dladdr(frame, &info) != 0
+                    && info.dli_sname.map { strstr($0, "NSAutoFillHeuristicController") != nil } == true
+                autoFillCallers[frame] = asked
+                return asked
+            }
+        }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if window != nil { onMount?() }
