@@ -978,8 +978,13 @@ import XCTest
             profiles.forEach { _ = manager.delete($0.id) }
             manager.active = previous
         }
+        // The hop mounts the arriving profile in a main-actor turn after land() returns:
+        // ~150ms on a debug build, while a 0.8s critical spring crosses the whole middle
+        // window in ~140ms, so no poll could admit it. Slow only this setup leg, as the
+        // other cross-profile reversals do; the takeover below keeps production timing.
         try await checkReverseLanding(store: store, origin: spaces[0], target: spaces[1],
-                                      window: window, monitor: store.spaceGesture.monitor, direction: 1)
+                                      window: window, monitor: store.spaceGesture.monitor, direction: 1,
+                                      setupDuration: 2)
     }
 
     func testTargetClickInterruptsTheSameProfileReturnSpring() async throws {
@@ -1110,7 +1115,8 @@ import XCTest
     }
 
     private func checkReverseLanding(store: TabStore, origin: Space, target: Space,
-                                     window: NSWindow, monitor: SwipeMonitor, direction: Int) async throws {
+                                     window: NSWindow, monitor: SwipeMonitor, direction: Int,
+                                     setupDuration: TimeInterval = 0.8) async throws {
         store.palette = nil
         let width = fixtureSidebarWidth(in: store)
         let sign = CGFloat(direction)
@@ -1137,7 +1143,7 @@ import XCTest
         try await compatibilityWait {
             abs(slide.offset - heldDrag) < 0.125 && slide.outgoing.layer?.presentation() != nil
         }
-        monitor.land(direction, to: target, width: width, store: store, duration: 0.8)
+        monitor.land(direction, to: target, width: width, store: store, duration: setupDuration)
         // Admit a real middle frame with room to move in either direction. Fixed sleeps
         // can sample the insertion frame or an endpoint on a loaded desktop.
         let middleStart = CACurrentMediaTime()
@@ -1161,7 +1167,8 @@ import XCTest
         XCTAssertEqual(originalRows.frame.minX, presentedX + sign * 12, accuracy: 5,
                        "Take over at the visible position, without snapping to the old endpoint")
         let held = originalRows.frame.minX
-        try await Task.sleep(for: .milliseconds(850))
+        // Outlast the interrupted landing so its completion would have fired.
+        try await Task.sleep(for: .seconds(setupDuration + 0.05))
         XCTAssertTrue(host.spaceSlide === slide && slide.isActive,
                       "The previous animation completion must not retire the new gesture")
         XCTAssertEqual(originalRows.frame.minX, held, accuracy: 1)

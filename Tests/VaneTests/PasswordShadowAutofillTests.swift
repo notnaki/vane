@@ -42,7 +42,7 @@ import XCTest
         }
     }
     private func js(_ web: WKWebView, _ source: String, isolated: Bool = false) async throws -> Any? {
-        let data: Data? = try await StallDiag.measure(web, source) { try await withCheckedThrowingContinuation { continuation in
+        let data: Data? = try await withCheckedThrowingContinuation { continuation in
             web.evaluateJavaScript(source, in: nil, in: isolated ? Autofill.world : .page) { result in
                 do {
                     let value: Any? = try result.get()
@@ -50,7 +50,7 @@ import XCTest
                     continuation.resume(returning: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]))
                 } catch { continuation.resume(throwing: error) }
             }
-        } }
+        }
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
     }
     private func wait(_ stage: String = "fixture outcome", file: StaticString = #filePath,
