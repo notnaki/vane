@@ -17,6 +17,9 @@ struct SidebarSectionRows<Content: View>: View {
     let snapshot: Feel02SidebarRowsCache.Snapshot
     var readinessSection: String? = nil
     var collapsed = false
+    /// What the row builder reads beyond its row, when that is all it reads. Nil for a
+    /// builder that closes over anything else. See `NativeSidebarContentStability`.
+    var pullRequests: [GitHub.Row?]? = nil
     let transition: AnyTransition
     @ViewBuilder let content: (SidebarRows.Row, Int, Int) -> Content
 
@@ -46,7 +49,8 @@ struct SidebarSectionRows<Content: View>: View {
         if groupedNativeRows || NativeCachedSidebarBatchesExperiment.enabled {
             NativeCachedSidebarBatchSectionRows(rows: rows, modelIDs: snapshot.structuralRowIDs,
                 protectedRows: editingRows.union(Set([dragging.tab?.uuidString, dragging.folder?.uuidString].compactMap { $0 })),
-                readinessSection: readinessSection, owner: store) { row, index, total in
+                readinessSection: readinessSection, owner: store,
+                stability: pullRequests.map { NativeSidebarContentStability(source: snapshot, pullRequests: $0) }) { row, index, total in
                     // Each native owner is a separate hosting root. Row menus
                     // need the real store explicitly, without transplanting the
                     // outer host's private focus or presentation environment.

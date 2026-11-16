@@ -452,7 +452,7 @@ extension View {
 }
 
 private struct ExternalAppPrompt: ViewModifier {
-    @ObservedObject var store: TabStore
+    @ChromeObserved var store: TabStore
 
     func body(content: Content) -> some View {
         content.sheet(item: $store.externalApp.presented(when: store.profileVisible)) { prompt in

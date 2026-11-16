@@ -2901,6 +2901,12 @@ struct Stash {
     /// synchronization also invalidates previews, so it cannot supply this signal.
     let sidebarRowsProtectionRevoked = PassthroughSubject<Void, Never>()
     lazy var sidebarObservation = SidebarObservation(store: self)
+    lazy var chromeObservation = ChromeObservation(store: self)
+    /// Above zero while `current` or `selection` is being published. `ChromeObservation`
+    /// skips exactly those, and `didSet` publishes as usual. A `$current`/`$selection` sink
+    /// runs inside the window, so a store write it makes synchronously is hidden from chrome:
+    /// defer such writes to the next turn.
+    private(set) var selectionPublications = 0
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }
@@ -2925,7 +2931,13 @@ struct Stash {
     var tabRenameSession: TabRenameSession?
     /// Arc's multi-select: which rows are ticked, and which section they are in. Per window,
     /// like the sidebar itself. See Selection.swift — everything done with it is there.
-    @Published var selection = Selection() { didSet { if oldValue != selection { extensions.sync() } } }
+    @Published var selection = Selection() {
+        willSet { selectionPublications += 1 }
+        didSet {
+            selectionPublications -= 1
+            if oldValue != selection { extensions.sync() }
+        }
+    }
     /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.
@@ -2956,7 +2968,9 @@ struct Stash {
     @Published var lockedFolderBackdrop: NSImage?
     @Published var folderUnlockRequest: FolderUnlockRequest?
     @Published var current: Tab.ID? {
+        willSet { selectionPublications += 1 }
         didSet {
+            selectionPublications -= 1
             if oldValue != current { cancelFolderUnlock() }
             // All selection paths enforce the same boundary, before resume or auto PiP.
             if let id = current, isTabLocked(id) {
@@ -3413,7 +3427,12 @@ struct Stash {
         return restored
     }
 
-    var active: Tab? { tabs.first { $0.id == current && !isTabLocked($0.id) } }
+    var active: Tab? {
+        // No selection is the usual state of a window with the command bar up; it has no
+        // tab to look for, and every tab's id is a separate load.
+        guard let current else { return nil }
+        return tabs.first { $0.id == current && !isTabLocked($0.id) }
+    }
     /// What the card is drawing: the active tab, or every pane of its split.
     var onScreenTabs: [Tab] {
         let ids = activeSplit?.tabs ?? [current].compactMap { $0 }
