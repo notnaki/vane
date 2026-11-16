@@ -26,7 +26,6 @@ import XCTest
 
     static func prepare() {
         _ = appNapOptOut
-        _ = StallDiag.watchdog
         _ = cleanup
         NativeFixtureRetirement.registerHostIfEnabled()
         _ = resourceBaseline

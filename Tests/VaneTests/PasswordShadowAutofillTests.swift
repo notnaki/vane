@@ -105,6 +105,11 @@ import XCTest
         window.isReleasedWhenClosed = false
         window.contentView = web
         let retire: @MainActor @Sendable () -> Void = {
+            // A released page's WebContent process first runs its suspension teardown
+            // (MetalContext::finish) at background QoS. CI's paravirtual GPU serialises
+            // those: a burst of retired fixtures held the next live page's paint flush,
+            // and every evaluateJavaScript reply behind it, for 13.8s. End it here instead.
+            web.perform(NSSelectorFromString("_killWebContentProcess"))
             web.stopLoading()
             config.userContentController.removeScriptMessageHandler(forName: "vanepw", contentWorld: Autofill.world)
             window.contentView = nil
