@@ -205,6 +205,9 @@ jobs:
             --manifest "$RUNNER_TEMP/vane-native-shard.json" \
             --filter-output "$RUNNER_TEMP/vane-native-shard.filter"
 
+      - name: Enable tailspin (temporary diagnostic)
+        run: sudo tailspin enable && tailspin info || true
+
       - name: Native regression tests
         timeout-minutes: 24
         env:
@@ -236,6 +239,7 @@ jobs:
             ${{ runner.temp }}/vane-native-shard.filter
             /tmp/vane-resize-*.png
             /tmp/vane-resize-*.json
+            /tmp/vane-stall-diag/
           if-no-files-found: ignore
           retention-days: 7
 
