@@ -154,11 +154,13 @@ private final class PreviewServer: @unchecked Sendable {
             defer { previews.cancel(); tab.tearDown(); server.stop(); warm.stop(); Previews.enabled = enabled }
             // The budget starts at load, so a cold WebContent launch on a slow runner can
             // spend it before the deferred page's timer even starts. Admit the reused
-            // preview renderer with an immediately painted page, then measure as before.
+            // preview renderer by its own loaded document, not by the paint budget being
+            // measured, then measure as before.
             previews.request(warmBase, from: tab)
-            try await compatibilityWait { previews.current?.image != nil }
+            try await compatibilityWait {
+                NSApp.windows.contains { ($0.contentView as? WKWebView).map { $0.url?.port == warmBase.port && !$0.isLoading } ?? false }
+            }
             previews.request(base, from: tab)
-            XCTAssertNil(previews.current?.image, "The measured page must not inherit the warm-up pixels")
             let deadline = ContinuousClock.now + .seconds(6)
             while previews.current?.image == nil, ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(20))

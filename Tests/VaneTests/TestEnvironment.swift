@@ -17,10 +17,10 @@ import XCTest
     }()
 
     /// CI starts xctest as a launchd job, not from a visible app, so between window-presenting
-    /// fixtures it is App Nap eligible: its timers coalesce. Started that way on an idle Mac,
-    /// 64 of its 20ms sleeps in 40s overran 100ms (worst 0.54s); with this activity, 3 (0.12s).
-    /// Real-time fixture deadlines (preview paint, WebKit readiness) must not depend on how
-    /// the runner launched us, and Vane is never napped while a user waits on that work.
+    /// fixtures it is App Nap eligible: its timers coalesce. Started with `launchctl submit` on
+    /// an idle Mac, 64 of its 20ms sleeps in 40s overran 100ms (worst 0.54s); with this
+    /// activity, 3 (0.12s). Keeps real-time fixture deadlines independent of how the runner
+    /// launched the process.
     private static let appNapOptOut = ProcessInfo.processInfo.beginActivity(
         options: [.userInitiated, .latencyCritical], reason: "Native fixtures measure real-time deadlines")
 
