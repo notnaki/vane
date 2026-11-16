@@ -165,11 +165,12 @@ struct BookmarkImportResult: Equatable, Sendable {
         // VANE_DATA_DIR: a second instance — a debug build running beside the real app —
         // gets its own history, session and spaces instead of racing the other over one
         // set of files (and tripping its crash marker). Unset in normal use.
-        let base = overrideDirectory
-            .map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? applicationSupport
-        // A stat is ~20x cheaper than createDirectory on an existing path; a folder
-        // deleted while running is still recreated by the next caller.
+        ensuring(overrideDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? applicationSupport)
+    }
+
+    /// A stat is ~20x cheaper than createDirectory on an existing path; a folder
+    /// deleted while running is still recreated by the next caller.
+    nonisolated static func ensuring(_ base: URL) -> URL {
         if access(base.path, F_OK) != 0 {
             try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         }

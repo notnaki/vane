@@ -279,15 +279,12 @@ import XCTest
     }
 
     func testStoreDirectoryIsRecreatedAfterRuntimeDeletion() throws {
-        TestEnvironment.prepare()
-        let original = try XCTUnwrap(Store.overrideDirectory)
-        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("vane-dir-\(UUID())")
-        setenv("VANE_DATA_DIR", scratch.path, 1)
-        defer { setenv("VANE_DATA_DIR", original, 1); try? FileManager.default.removeItem(at: scratch) }
-        XCTAssertEqual(Store.directory.path, scratch.path)
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("vane-dir-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        XCTAssertEqual(Store.ensuring(scratch), scratch)
         XCTAssertTrue(FileManager.default.fileExists(atPath: scratch.path))
         try FileManager.default.removeItem(at: scratch)
-        XCTAssertEqual(Store.directory.path, scratch.path)
+        XCTAssertEqual(Store.ensuring(scratch), scratch)
         XCTAssertTrue(FileManager.default.fileExists(atPath: scratch.path), "A deleted data folder comes back on next use")
     }
 
@@ -299,8 +296,9 @@ import XCTest
         let file = ProfileManager.spacesURL(for: profile, in: manager.directory)
         let own = Space(name: "Owned", profileID: profile)
         XCTAssertTrue(manager.saveSpaces([own], for: profile))
-        XCTAssertEqual(manager.spaces(for: profile), [own])
+        // Linking changes ctime, so it comes before the decode the save is meant to reuse.
         try FileManager.default.linkItem(at: file, to: manager.directory.appendingPathComponent("retained-spaces.json"))
+        XCTAssertEqual(manager.spaces(for: profile), [own])
         let identity = try fileIdentity(file)
         XCTAssertTrue(manager.saveSpaces([own], for: profile))
         XCTAssertEqual(try fileIdentity(file), identity, "A current, complete decode proves the save is unchanged")
