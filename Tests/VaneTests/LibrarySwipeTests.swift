@@ -849,6 +849,37 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(100))
             }
         }
+        // ⇧⌘L and the footer glyph publish the destination before the first frame,
+        // so their start delay includes the whole activation.
+        XCTAssertFalse(store.libraryOpen, "The swipe visits end closed")
+        let marker = try XCTUnwrap(monitor.presentationView)
+        func clickPanelX() throws -> CGFloat {
+            try XCTUnwrap(marker.layer?.presentation()).convert(.zero, to: host.layer?.presentation()).x
+        }
+        for visit in 0..<3 {
+            for opening in [true, false] {
+                let before = try clickPanelX()
+                maxGap = 0
+                lastTick = ProcessInfo.processInfo.systemUptime
+                let start = lastTick
+                Library.toggle(.archived, in: store)
+                let handler = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                var firstMotion: Double?
+                var startGap = 0.0
+                for _ in 0..<30 {
+                    try await Task.sleep(for: .milliseconds(8))
+                    if firstMotion == nil, abs(try clickPanelX() - before) > 1 {
+                        firstMotion = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                        // Separate the activation before the first frame from the slide.
+                        startGap = maxGap
+                        maxGap = 0
+                    }
+                }
+                XCTAssertEqual(store.libraryOpen, opening)
+                print("LIBRARY_CLICK tabs=\(count) visit=\(visit) opening=\(opening) first_motion_ms=\(firstMotion ?? -1) handler_ms=\(handler) start_gap_ms=\(startGap * 1000) motion_gap_ms=\(maxGap * 1000)")
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
         XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000)
     }
 
