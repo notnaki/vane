@@ -991,6 +991,8 @@ private struct PaletteTabWatch: View, Equatable {
     @ObservedObject var tabs: ChangeWatch
     /// The other windows whose tabs are listed: one opening or closing a tab publishes there.
     @StateObject private var windows = ChangeWatch()
+    /// A window opening or closing changes `TabStore.all`, which publishes nowhere else.
+    @State private var storeSet = 0
     @Binding var changes: Int
     private let identity: ObjectIdentifier
 
@@ -1003,6 +1005,7 @@ private struct PaletteTabWatch: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
     var body: some View {
+        let _ = storeSet
         let sources = PaletteView.sources(for: store)
         let content = sources.flatMap { number, owner in
             owner.accessibleTabs.map { Feel03TabContent($0, owner: owner, windowNumber: number) }
@@ -1010,6 +1013,7 @@ private struct PaletteTabWatch: View, Equatable {
         let others = sources.map(\.element).filter { $0 !== store }
         Color.clear
             .accessibilityHidden(true)
+            .onReceive(TabStore.storesChanged) { storeSet += 1 }
             .onChange(of: others.map(ObjectIdentifier.init), initial: true) { windows.watch(others) }
             .onChange(of: content) { changes += 1 }
             // Tabs opened or closed while the bar is up: watch the new set, and list it.

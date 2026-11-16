@@ -188,8 +188,11 @@ import SQLite3
 
     func testLargeBookmarkRoundTripAndFirstURLWinsWithinProfile() throws {
         let id = destination(), other = destination(), file = try directory().appendingPathComponent("bookmarks.html")
-        let entries = (0..<2500).map { index in
-            Export.BookmarkEntry(row: .init(url: "https://fixture.invalid/\(index)?q=雪&x=1#part", title: "Title \(index)\n雪 \"&\"", at: Date(timeIntervalSince1970: Double(1700000000 + index))), folder: index % 2 == 0 ? "Work / Café" : nil)
+        // Typed explicitly: Swift 6.3's solver times out inferring this closure.
+        let entries = (0..<2500).map { (index: Int) -> Export.BookmarkEntry in
+            let row = Export.Row(url: "https://fixture.invalid/\(index)?q=雪&x=1#part", title: "Title \(index)\n雪 \"&\"",
+                                 at: Date(timeIntervalSince1970: Double(1700000000 + index)))
+            return Export.BookmarkEntry(row: row, folder: index % 2 == 0 ? "Work / Café" : nil)
         }
         let normalizedURLs = entries.map { URL(string: $0.row.url)!.absoluteString }
         try Export.write(Export.bookmarksHTML(entries + [entries[0]]), to: file)
