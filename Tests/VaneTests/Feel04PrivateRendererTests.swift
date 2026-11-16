@@ -208,9 +208,10 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         // Keep that persistent context alive, and exercise a page-originated logout
         // rather than relying on observation of native edits to an otherwise unused store.
         let sourceServer = try Feel04WaitingServer(body: "<title>Source page</title>")
+        let warmServer = try Feel04WaitingServer(body: "<title>Warm preview</title>")
         var host: NSWindow?
         defer {
-            previews.cancel(); clock.finish(); tab.tearDown(); server.stop(); sourceServer.stop()
+            previews.cancel(); clock.finish(); tab.tearDown(); server.stop(); sourceServer.stop(); warmServer.stop()
             host?.contentView = nil; host?.close()
             Previews.enabled = enabled; BatterySaver.shared.setMode(mode)
         }
@@ -237,11 +238,24 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             guard ContinuousClock.now < setupDeadline else { return XCTFail("Initial source cookie change was not observed") }
             try await Task.sleep(for: .milliseconds(20))
         }
+        // The first-image budget below starts at the request, so on a slow runner a cold
+        // preview renderer (its WebContent launch and the cookie snapshot copied into its
+        // fresh store) can spend all of it before the page loads. Admit the reused renderer
+        // by its own loaded document first, then measure as before. Retiring it unloads to
+        // about:blank and keeps the same web view for the measured request.
+        let warmURL = try await warmServer.start()
+        previews.request(warmURL, from: tab)
+        try await clock.waitUntil { clock.count == 1 }; clock.release(0)
+        try await compatibilityWait {
+            NSApp.windows.contains { ($0.contentView as? WKWebView).map {
+                $0.url?.port == warmURL.port && $0.title == "Warm preview" && !$0.isLoading } ?? false }
+        }
+        previews.cancel()
         // Keep the source subscription alive across the production observer's handoff.
         // The unique profile also excludes cookie-store teardown from earlier fixtures.
         let beforeRequest = setupObserver.changes
         previews.request(url, from: tab)
-        try await clock.waitUntil { clock.count == 1 }; clock.release(0)
+        try await clock.waitUntil { clock.count == 2 }; clock.release(1)
         let deadline = ContinuousClock.now + .seconds(8)
         while ContinuousClock.now < deadline {
             host = NSApp.windows.first { ($0.contentView as? WKWebView)?.url?.port == url.port } ?? host
@@ -290,13 +304,13 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             previews.request(url, from: tab)
             XCTAssertNil(previews.current?.image, "Unvalidated cached pixels must never be promoted")
             let gateDeadline = ContinuousClock.now + .seconds(5)
-            while clock.count < 2, previews.current?.image == nil, ContinuousClock.now < gateDeadline {
+            while clock.count < 3, previews.current?.image == nil, ContinuousClock.now < gateDeadline {
                 try await Task.sleep(for: .milliseconds(20))
             }
             XCTAssertNil(previews.current?.image, "Changed session policy must not promote the old pixels")
-            XCTAssertEqual(clock.count, 2, "A changed session must reach a fresh load gate")
-            guard clock.count == 2 else { return }
-            clock.release(1)
+            XCTAssertEqual(clock.count, 3, "A changed session must reach a fresh load gate")
+            guard clock.count == 3 else { return }
+            clock.release(2)
             let reloadDeadline = ContinuousClock.now + .seconds(8)
             while ContinuousClock.now < reloadDeadline {
                 if let replacement = host?.contentView as? WKWebView,

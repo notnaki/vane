@@ -269,7 +269,17 @@ import XCTest
             let region = NSRect(x: max(fieldRect.minX, sections.minX + 40),
                                 y: fieldRect.minY - 160, width: 100, height: 120)
             XCTAssertTrue(sections.intersects(region), "The fixture must cover sidebar content")
-            let baseline = try await capturePixels(in: host, region: region)
+            // Opacity settles before the bar's appear scale and its result list's height
+            // spring, and SwiftUI drives both without a layer animation to inspect. A
+            // baseline taken mid-motion differs from any later frame, so admit it only
+            // once the presented region holds still across display frames.
+            var baseline = try await capturePixels(in: host, region: region)
+            try await compatibilityWait {
+                try await displayFrames(in: window)
+                let next = try await capturePixels(in: host, region: region)
+                defer { baseline = next }
+                return next == baseline
+            }
             NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
             NSApp.sendEvent(ScrollEvent(window: window, dx: -12))
             NSApp.sendEvent(ScrollEvent(window: window, dx: -8))
