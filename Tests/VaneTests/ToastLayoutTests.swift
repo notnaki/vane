@@ -10,7 +10,7 @@ import XCTest
         let renderer = ImageRenderer(content: ToastPill(toast: toast, tint: .green)
             .environment(\.colorScheme, dark ? .dark : .light))
         renderer.proposedSize = ProposedViewSize(width: width - Look.inset * 2, height: nil)
-        return NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        return NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cpuImage))
     }
 
     func testShortUndoToastStaysOneRowAtDefaultSidebarWidth() throws {

@@ -382,7 +382,7 @@ import XCTest
                         renderer.scale = scale
                         var expected: CGImage?
                         NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
-                            expected = renderer.cgImage
+                            expected = renderer.cpuImage
                         }
                         let reference = NSBitmapImageRep(cgImage: try XCTUnwrap(expected))
                         var alphaActual = 0.0, alphaExpected = 0.0, difference = 0.0, colorDifference = 0.0

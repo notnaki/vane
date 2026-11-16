@@ -149,7 +149,7 @@ extension EnvironmentValues {
                 .environment(\.colorScheme, scheme))
             renderer.scale = rasterScale
             let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-            appearance?.performAsCurrentDrawingAppearance { marker.symbolInk.contents = renderer.cgImage }
+            appearance?.performAsCurrentDrawingAppearance { marker.symbolInk.contents = renderer.cpuImage }
             marker.symbolInk.opacity = compositesInk ? 0.8 : 1
             marker.symbolInk.contentsScale = rasterScale
             marker.symbol.contentsScale = rasterScale
