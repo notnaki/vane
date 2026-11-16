@@ -107,6 +107,9 @@ import XCTest
                 }
                 RunLoop.main.add(timer, forMode: .common)
                 defer { timer.invalidate() }
+                let cadence = FolderDisclosureCadence()
+                if let screen = window.screen { cadence.start(on: screen) }
+                defer { cadence.stop() }
                 let start = ProcessInfo.processInfo.systemUptime
                 store.toggleFolder(folder.id, in: shape)
                 let toggle = (ProcessInfo.processInfo.systemUptime - start) * 1000
@@ -123,15 +126,47 @@ import XCTest
                 XCTAssertEqual(store[keyPath: shape].visible.count, count + 1)
                 XCTAssertGreaterThan(mounted, 0)
                 XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
-                print("FOLDER_OPEN kind=\(kind) count=\(count) visible=\(visible) mounted=\(mounted) toggle_ms=\(toggle) layout_ms=\(layout) max_gap_ms=\(gaps.max() ?? 0)")
+                print("FOLDER_OPEN kind=\(kind) count=\(count) visible=\(visible) mounted=\(mounted) toggle_ms=\(toggle) layout_ms=\(layout) max_gap_ms=\(gaps.max() ?? 0) \(cadence.summary())")
                 if count == 300 { XCTAssertLessThan(mounted, 60) }
+                cadence.begin()
                 let closeStart = ProcessInfo.processInfo.systemUptime
                 store.toggleFolder(folder.id, in: shape)
                 host.layoutSubtreeIfNeeded()
                 let closeLayout = (ProcessInfo.processInfo.systemUptime - closeStart) * 1000
                 try await Task.sleep(for: .milliseconds(500))
-                print("FOLDER_CLOSE kind=\(kind) count=\(count) layout_ms=\(closeLayout)")
+                print("FOLDER_CLOSE kind=\(kind) count=\(count) layout_ms=\(closeLayout) \(cadence.summary())")
             }
         }
     }
+}
+
+/// Display callbacks during the disclosure after the forced layout: callback availability,
+/// not compositor-presented frames. The forced layout itself is reported separately.
+@MainActor private final class FolderDisclosureCadence: NSObject {
+    private var link: CADisplayLink?
+    private var previous: CFTimeInterval = 0
+    private var gaps: [Double] = []
+    private var rate = 0.0
+    func start(on screen: NSScreen) {
+        rate = Double(screen.maximumFramesPerSecond)
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        let fps = Float(rate)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func begin() { previous = 0; gaps.removeAll(keepingCapacity: true) }
+    @objc private func tick(_ link: CADisplayLink) {
+        let now = CACurrentMediaTime()
+        // The first callback after the forced layout absorbs that layout; skip it.
+        if previous > 0 { gaps.append((now - previous) * 1000) }
+        previous = now
+    }
+    func summary() -> String {
+        let sorted = gaps.sorted()
+        guard !sorted.isEmpty, rate > 0 else { return "frames=0" }
+        let budget = 1000 / rate
+        return "frames=\(sorted.count) hz=\(Int(rate)) frame_p50_ms=\(sorted[sorted.count / 2]) frame_p95_ms=\(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]) frame_max_ms=\(sorted.last!) over_1_5_frames=\(sorted.filter { $0 > budget * 1.5 }.count)"
+    }
+    func stop() { link?.invalidate(); link = nil }
 }
