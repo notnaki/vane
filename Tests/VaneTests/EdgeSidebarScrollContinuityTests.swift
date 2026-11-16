@@ -175,7 +175,7 @@ import XCTest
         try await checkLibraryEdge(commit: false, diagonal: true)
     }
 
-    func testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageWidthSteady() async throws {
+    func testLibraryWithAnActivePageKeepsTheScrolledViewportAndPageFillsItsCard() async throws {
         try await checkLibraryEdge(commit: true, activePage: true)
     }
 
@@ -193,10 +193,23 @@ import XCTest
             let presentedStart = try presentedOrigin(live)
             let page = activePage ? store.active?.existingWeb : nil
             let pageWidth = page?.bounds.width
+            let pageStart = page.map { $0.convert($0.bounds, to: nil) }
             if activePage {
                 XCTAssertTrue(try XCTUnwrap(page).window === window, "Exercise a mounted local WebKit page")
                 XCTAssertGreaterThan(try XCTUnwrap(pageWidth), 100)
             }
+            let section = Library.shared.section
+            let panelWidth = Library.panelWidth(section: section,
+                spaces: section == .spaces ? ProfileManager.shared.allSpaces.count : 0,
+                private: store.isPrivate, available: host.bounds.width)
+            // Library paint accepts a finger phase once that phase's page viewport is
+            // covered, a display frame or so after the sample (#677). The scrolled
+            // viewport must hold on every sample; travel is checked once accepted.
+            func pending(_ view: NSView) -> Bool {
+                if let bridge = view as? LibraryPaintView { return !bridge.isSettled }
+                return view.subviews.contains(where: pending)
+            }
+            func sidebarTravel() -> CGFloat { live.convert(live.bounds, to: window.contentView).minX - startingRect.minX }
             let y = startingRect.minY
             let point = live.convert(NSPoint(x: 100, y: 80), to: nil)
             NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, phase: .began))
@@ -207,22 +220,58 @@ import XCTest
                 offset = live.documentVisibleRect.minY
             }
             var travel: CGFloat = diagonal ? 3 : 0
+            var accepted: CGFloat = 0 // Unclaimed startup noise never moved the sidebar.
             for dx: CGFloat in [30, 25, -20, commit ? 50 : 0] {
+                let previous = accepted
                 travel += dx
                 let start = ProcessInfo.processInfo.systemUptime
                 NSApp.sendEvent(EdgeContinuityEvent(window: window, point: point, dx: dx))
                 host.layoutSubtreeIfNeeded()
+                let handled = ProcessInfo.processInfo.systemUptime
                 if ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1" {
                     print("SCROLLED_LIBRARY_LAYOUT offset=\(offset) dx=\(dx) ms=\((ProcessInfo.processInfo.systemUptime - start) * 1000)")
                 }
                 XCTAssertNotNil(store.librarySwipeProgress, "Library must actually claim the edge gesture")
-                for _ in 0..<4 {
-                    XCTAssertEqual(live.convert(live.bounds, to: window.contentView).minX - startingRect.minX,
-                                   travel, accuracy: 1, "The native sidebar must follow fingers one to one")
+                let acceptBy = ContinuousClock.now + .milliseconds(150)
+                var caughtUp: Double?
+                repeat {
                     XCTAssertEqual(live.documentVisibleRect.minY, offset, accuracy: 1)
                     XCTAssertEqual(live.contentView.bounds.size, size)
                     XCTAssertEqual(live.convert(live.bounds, to: window.contentView).minY, y, accuracy: 1)
-                    if let page, let pageWidth { XCTAssertEqual(page.bounds.width, pageWidth, accuracy: 1) }
+                    let shown = sidebarTravel()
+                    XCTAssertTrue(shown >= min(previous, travel) - 1 && shown <= max(previous, travel) + 1,
+                                  "The sidebar may only move from the last accepted phase toward the fingers: \(shown)")
+                    if caughtUp == nil, abs(shown - travel) <= 1 {
+                        caughtUp = (ProcessInfo.processInfo.systemUptime - handled) * 1000
+                    }
+                    guard caughtUp == nil || pending(host) else { break }
+                    try await Task.sleep(for: .milliseconds(2))
+                    host.layoutSubtreeIfNeeded()
+                } while ContinuousClock.now < acceptBy
+                // Finger samples are never held back (#677): after the event's own layout
+                // the sidebar reaches the fingers in one to three display frames (the
+                // claim phase prepares its buffer first). The page buffer may take longer
+                // to cover the new viewport (WebKit paint), bounded separately above.
+                let frameMs = 1000 / Double(window.screen?.maximumFramesPerSecond ?? 60)
+                let caught = try XCTUnwrap(caughtUp, "The sidebar must reach the fingers")
+                XCTAssertLessThanOrEqual(caught, frameMs * 3.5,
+                                         "The sidebar must reach the fingers within three display frames")
+                XCTAssertFalse(pending(host), "Library paint must accept the finger phase within a few display frames")
+                accepted = travel
+                for _ in 0..<4 {
+                    XCTAssertEqual(sidebarTravel(), travel, accuracy: 1, "The native sidebar must follow fingers one to one")
+                    XCTAssertEqual(live.documentVisibleRect.minY, offset, accuracy: 1)
+                    XCTAssertEqual(live.contentView.bounds.size, size)
+                    XCTAssertEqual(live.convert(live.bounds, to: window.contentView).minY, y, accuracy: 1)
+                    if let page, let pageStart {
+                        // The page resizes with its card: its trailing rim stays put and
+                        // its leading edge follows navigation from sidebar to panel width.
+                        let frame = page.convert(page.bounds, to: nil)
+                        let progress = min(1, max(0, travel / panelWidth))
+                        XCTAssertEqual(frame.maxX, pageStart.maxX, accuracy: 1)
+                        XCTAssertEqual(frame.minX - pageStart.minX, (panelWidth - SidebarWidth.shared.width) * progress,
+                                       accuracy: 1, "The page must fill the card beside the moving navigation")
+                    }
                     try await Task.sleep(for: .milliseconds(8))
                 }
                 try await Task.sleep(for: .milliseconds(20))
