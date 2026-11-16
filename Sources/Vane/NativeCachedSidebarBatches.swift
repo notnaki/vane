@@ -892,6 +892,13 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
 
 /// Immutable ownership can produce interleaved roots after a reorder. Empty
 /// slots are not controls and must pass pointer/drop hits to the actual row root.
+#if DEBUG
+/// What SwiftUI itself answers for a row host, for the test that holds its shortcut to it.
+@MainActor protocol NativeSidebarRowHostFocusProbe { var hostedAcceptsFirstResponder: Bool { get } }
+extension NativeSidebarBatchHostingView: NativeSidebarRowHostFocusProbe {
+    var hostedAcceptsFirstResponder: Bool { hostedAnswer }
+}
+#endif
 @MainActor private final class NativeSidebarBatchHostingView<Content: View>: NSHostingView<NativeSidebarBatchRoot<Content>> {
     private final class WeakRow {
         weak var view: NativeSidebarRowLayoutView?
@@ -916,6 +923,14 @@ private struct NativeSidebarBatchRoot<Content: View>: View {
             if let rollout = slot.rollout { rollingHeaders[slot.id] = rollout.headerID }
         }
     }
+    /// A disabled section has nothing to focus. Answer that from the environment the
+    /// root already carries: asking SwiftUI makes it update this owner's whole graph,
+    /// once per owner, for every responder change while the sidebar is covered.
+    override var acceptsFirstResponder: Bool {
+        if !rootView.inherited.isEnabled { return false }
+        return super.acceptsFirstResponder
+    }
+    fileprivate var hostedAnswer: Bool { super.acceptsFirstResponder }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         // Destinations and reveal edges are the section's; during a disclosure the

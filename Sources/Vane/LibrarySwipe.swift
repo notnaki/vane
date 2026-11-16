@@ -140,6 +140,8 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
                 .offset(x: -panelWidth * (1 - progress))
                 // A close waits for the page's paint before the card moves. Fading the
                 // panel at the close itself left an empty strip beside the unmoved page.
+                // As in the sidebar: a closed panel keeps its press anchors, inert.
+                .environment(\.sidebarRetainsControls, true)
                 .opacity(libraryOpen || gesture.progress != nil || progress > 0 ? 1 : 0)
                 // Disabled at the close itself, even while still visible: that is what takes
                 // keyboard focus out of a Library closed by a path that cleared libraryOpen first.

@@ -677,6 +677,9 @@ private struct BrowserWindowContent: View {
         let visible = store.sidebarShown || peeking
         let floating = store.sidebarFloatingChrome
         return Sidebar(store: store)
+            // Press anchors stay mounted, inert, through a disable: covering the sidebar
+            // otherwise removes one native view per control and re-adds it on the way back.
+            .environment(\.sidebarRetainsControls, true)
             .disabled(!visible || store.palette != nil || store.libraryOpen)
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
