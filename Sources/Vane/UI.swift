@@ -2168,7 +2168,9 @@ private struct FavoriteTile: View {
 /// Everything a tab row says with a picture, a position or a colour instead of words.
 @MainActor private func tabState(_ tab: Tab, in store: TabStore) -> String {
     var bits: [String] = []
-    if let i = store.tabs.firstIndex(where: { $0.id == tab.id }) {
+    // Every mounted row asks this on every outline publication. A row holds the window's
+    // own tab, so find the object first: comparing ids loads each tab in turn.
+    if let i = store.tabs.firstIndex(where: { $0 === tab }) ?? store.tabs.firstIndex(where: { $0.id == tab.id }) {
         bits.append("tab \(i + 1) of \(store.tabs.count)")
     }
     switch tab.kind {
