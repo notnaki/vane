@@ -117,6 +117,7 @@ struct LivePageResizeAnchor {
         }
 
         func freeze() {
+            PageResizeScroll.begin(web)
             host?.clipsToBounds = true
             web.autoresizingMask = []
         }
@@ -181,6 +182,7 @@ struct LivePageResizeAnchor {
                 }
             }
             finishStyle()
+            PageResizeScroll.end(web)
             web.prepareContent(in: web.bounds)
         }
 

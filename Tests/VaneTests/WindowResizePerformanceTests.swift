@@ -175,16 +175,259 @@ import XCTest
             try await Task.sleep(for: .milliseconds(500))
             let rebuilt = try await read()
             XCTAssertEqual(rebuilt.size, dragged.size)
-            XCTAssertLessThanOrEqual(rebuilt.resize.count, 2, "\(rebuilt.resize)")
-            XCTAssertLessThanOrEqual(rebuilt.resize.filter { $0 == rebuilt.size }.count, 1, "\(rebuilt.resize)")
-            XCTAssertLessThanOrEqual(rebuilt.observed, 2)
-            XCTAssertLessThanOrEqual(rebuilt.flips, 2)
-            XCTAssertLessThanOrEqual(rebuilt.painted.count, 2, "\(rebuilt.painted)")
-            XCTAssertLessThanOrEqual(rebuilt.painted.filter { $0 == rebuilt.size }.count, 1, "\(rebuilt.painted)")
-            // Only the lookahead's own extra height may have scrolled out of reach.
-            @MainActor func height(_ size: String?) -> Double { size?.split(separator: "x").last.flatMap { Double($0) } ?? 0 }
-            let lookahead = rebuilt.resize.isEmpty ? 0 : height(rebuilt.resize.first) - height(rebuilt.size)
-            XCTAssertEqual(rebuilt.bottom, lookahead, accuracy: 0.5)
+            // The lookahead and back, each once, and the page is still at its end.
+            XCTAssertEqual(rebuilt.resize.count, 2, "\(rebuilt.resize)")
+            XCTAssertEqual(rebuilt.resize.last, rebuilt.size)
+            XCTAssertEqual(rebuilt.observed, 2)
+            XCTAssertEqual(rebuilt.flips, 2)
+            XCTAssertEqual(rebuilt.painted, rebuilt.resize)
+            XCTAssertEqual(rebuilt.bottom, 0)
+        }
+    }
+
+    /// The buffer lays a page out ahead of the pointer, taller and wider than the
+    /// window. Scroll positions that only that never-visible layout clamps must
+    /// come back: a page at its end stays there, a log that follows its end keeps
+    /// following, and positions elsewhere do not move.
+    func testBufferedSizesDoNotMoveScrollPositions() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            // A viewport-sized inner log, appended to like a chat that follows its
+            // end only while it is there, and a wide strip scrolled to its right end.
+            _ = try await web.evaluateJavaScript("""
+                const log = document.createElement('div');
+                log.id = 'log';
+                log.style.cssText = 'position:fixed;right:0;top:0;width:160px;height:50vh;overflow:auto;background:#ddd';
+                const line = () => { const p = document.createElement('p'); p.textContent = 'line'; log.append(p) };
+                for (let i = 0; i < 200; i++) line();
+                const strip = document.createElement('div');
+                strip.id = 'strip';
+                strip.style.cssText = 'position:fixed;left:0;top:0;width:50vw;height:30px;overflow:auto;white-space:nowrap';
+                strip.textContent = 'wide '.repeat(2000);
+                document.body.append(log, strip);
+                log.scrollTop = log.scrollHeight;
+                strip.scrollLeft = strip.scrollWidth;
+                window.__follow = setInterval(() => {
+                    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 4;
+                    line();
+                    if (atEnd) log.scrollTop = log.scrollHeight;
+                }, 50); 0
+                """)
+            struct Scroll: Decodable { var y: Double, bottom: Double, log: Double, strip: Double }
+            @MainActor func read() async throws -> Scroll {
+                let json = try await web.evaluateJavaScript("""
+                    JSON.stringify({y: scrollY, bottom: document.documentElement.scrollHeight - innerHeight - scrollY,
+                        log: log.scrollHeight - log.scrollTop - log.clientHeight,
+                        strip: strip.scrollWidth - strip.scrollLeft - strip.clientWidth})
+                    """) as? String
+                return try JSONDecoder().decode(Scroll.self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            @MainActor func pressAndRelease() async throws {
+                window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+                try await Task.sleep(for: .milliseconds(300))
+                window.endPageResize()
+                try await compatibilityWait { !window.isPreparingPageResize }
+                try await Task.sleep(for: .milliseconds(700))
+            }
+            for position in ["end", "middle", "top"] {
+                _ = try await web.evaluateJavaScript("""
+                    scrollTo(0, {end: document.documentElement.scrollHeight, middle: 1234, top: 0}['\(position)']); 0
+                    """)
+                try await Task.sleep(for: .milliseconds(200))
+                let before = try await read()
+                XCTAssertEqual(before.log, 0, "The log must start at its end")
+                XCTAssertEqual(before.strip, 0, "The strip must start at its end")
+
+                try await pressAndRelease()
+                let pressed = try await read()
+                XCTAssertEqual(pressed.y, before.y, "\(position): a press and release moved the page")
+                XCTAssertEqual(pressed.bottom, before.bottom, "\(position): a press and release moved the page")
+                XCTAssertEqual(pressed.log, 0, "\(position): the log stopped following its end")
+                XCTAssertEqual(pressed.strip, 0, "\(position): the strip left its end")
+
+                // Out and back to the same size: everything is where it was.
+                _ = try await self.drag(window, speed: 300, travel: 120, corner: true)
+                try await Task.sleep(for: .milliseconds(700))
+                let dragged = try await read()
+                XCTAssertEqual(dragged.y, before.y, "\(position): a drag out and back moved the page")
+                XCTAssertEqual(dragged.log, 0, "\(position): the log stopped following its end")
+                XCTAssertEqual(dragged.strip, 0, "\(position): the strip left its end")
+            }
+
+            // Grown and left there, like any resize: the end stays the end.
+            _ = try await web.evaluateJavaScript("scrollTo(0, document.documentElement.scrollHeight); 0")
+            _ = try await self.drag(window, speed: 300, travel: 120, corner: true, returns: false)
+            try await Task.sleep(for: .milliseconds(700))
+            let grown = try await read()
+            XCTAssertEqual(grown.bottom, 0)
+            XCTAssertEqual(grown.log, 0)
+            XCTAssertEqual(grown.strip, 0)
+
+            // Shrunk and left there, the top of the view stays put as in any
+            // resize: nothing was clamped, so nothing is pulled to the end.
+            _ = try await web.evaluateJavaScript("scrollTo(0, document.documentElement.scrollHeight); 0")
+            try await Task.sleep(for: .milliseconds(200))
+            let end = try await read()
+            _ = try await self.drag(window, speed: -300, travel: -90, corner: true, returns: false)
+            try await Task.sleep(for: .milliseconds(700))
+            let shrunk = try await read()
+            XCTAssertEqual(shrunk.y, end.y)
+            XCTAssertGreaterThan(shrunk.bottom, 0)
+            XCTAssertEqual(shrunk.log, 0)
+            _ = try await web.evaluateJavaScript("clearInterval(__follow); 0")
+        }
+    }
+
+    /// Only a clamp is undone. A scroll the page or the user makes during the drag,
+    /// backward included, ends where they put it: a carousel that realigns itself
+    /// on `resize`, a page that jumps back, a user scrolling up.
+    func testScrollsMadeDuringABufferedResizeAreKept() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            _ = try await web.evaluateJavaScript("""
+                const scroller = (id, top) => {
+                    const el = document.createElement('div');
+                    el.id = id;
+                    el.style.cssText = 'position:fixed;left:0;top:' + top + 'px;width:100vw;height:40px;overflow:auto;display:flex';
+                    for (let i = 0; i < 10; i++) el.append(Object.assign(document.createElement('div'), {textContent: i, style: 'flex:0 0 100%'}));
+                    document.body.append(el);
+                    return el;
+                };
+                const car = scroller('car', 0), jump = scroller('jump', 40);
+                car.scrollLeft = 3 * car.clientWidth;
+                addEventListener('resize', () => { car.scrollLeft = 3 * car.clientWidth });
+                // Scrolls made from the second `resize` of a drag on, one per event:
+                // the tracking then first sees each together with a new viewport.
+                // A user's scroll looks the same to it: steps of position.
+                let pending = [], seen = 0;
+                addEventListener('resize', () => { if (++seen > 1) pending.shift()?.() });
+                window.__during = (...steps) => { seen = 0; pending = steps };
+                window.__pending = () => pending.length;
+                window.__scrollUp = () => __during(...Array(3).fill(() => scrollBy(0, -100))); 0
+                """)
+            struct Scroll: Decodable { var y: Double, bottom: Double, car: Double, slide: Double, jump: Double, pending: Int }
+            // A page that loses the foreground stops receiving `resize` at all,
+            // and every phase below would fail for that instead.
+            @MainActor func read() async throws -> Scroll {
+                try await Task.sleep(for: .milliseconds(700))
+                XCTAssertTrue(window.occlusionState.contains(.visible) && NSApp.isActive, "The fixture lost the foreground during the phase")
+                try await ResizeNativeWindowAdmission.wait(window, web: web)
+                let json = try await web.evaluateJavaScript("""
+                    JSON.stringify({y: scrollY, bottom: document.documentElement.scrollHeight - innerHeight - scrollY,
+                        car: car.scrollLeft, slide: 3 * car.clientWidth, jump: jump.scrollLeft, pending: __pending()})
+                    """) as? String
+                return try JSONDecoder().decode(Scroll.self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            @MainActor func outAndBack() async throws { _ = try await self.drag(window, speed: 200, travel: 120, corner: true) }
+
+            // A carousel at a middle slide stays aligned to it at every size.
+            let start = try await read()
+            XCTAssertGreaterThan(start.car, 0)
+            XCTAssertEqual(start.car, start.slide)
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            try await Task.sleep(for: .milliseconds(300))
+            window.endPageResize()
+            try await compatibilityWait { !window.isPreparingPageResize }
+            let pressed = try await read()
+            XCTAssertEqual(pressed.car, start.car, "A press and release moved the carousel off its slide")
+            try await outAndBack()
+            let dragged = try await read()
+            XCTAssertEqual(dragged.car, start.car, "A drag out and back moved the carousel off its slide")
+            _ = try await self.drag(window, speed: -300, travel: -90, corner: true, returns: false)
+            let shrunk = try await read()
+            XCTAssertLessThan(shrunk.slide, start.slide)
+            XCTAssertEqual(shrunk.car, shrunk.slide, "A shrinking drag left the carousel between slides")
+
+            // The page scrolls backward in the middle of a drag.
+            _ = try await web.evaluateJavaScript("""
+                scrollTo(0, 3000); jump.scrollLeft = 2000;
+                __during(() => { scrollTo(0, 1000); jump.scrollLeft = 0 }); 0
+                """)
+            try await outAndBack()
+            let jumped = try await read()
+            XCTAssertEqual(jumped.pending, 0, "The drag must outlast the scrolls made during it")
+            XCTAssertEqual(jumped.y, 1000, "The page's own scroll back was undone")
+            XCTAssertEqual(jumped.jump, 0, "The page's own scroll back was undone")
+
+            // The user scrolls up in the middle of a drag, mid-page and from the end.
+            _ = try await web.evaluateJavaScript("scrollTo(0, 3000); __scrollUp(); 0")
+            try await outAndBack()
+            let middle = try await read()
+            XCTAssertEqual(middle.pending, 0, "The drag must outlast the scrolls made during it")
+            XCTAssertEqual(middle.y, 2700, "Scrolling up during the drag was undone")
+            _ = try await web.evaluateJavaScript("scrollTo(0, document.documentElement.scrollHeight); __scrollUp(); 0")
+            try await outAndBack()
+            let end = try await read()
+            XCTAssertEqual(end.pending, 0, "The drag must outlast the scrolls made during it")
+            // The lookahead's clamp at the time comes on top of the 300 scrolled.
+            XCTAssertGreaterThanOrEqual(end.bottom, 300, "Scrolling up from the end during the drag was undone")
+        }
+    }
+
+    /// A page at its end that keeps a paragraph at the same place on screen from
+    /// its own `resize` handler (a reader) scrolls forward, but not to the end.
+    /// That is its scroll, not a log following its content: it ends where the
+    /// page put it.
+    func testAPageKeepingItsPlaceFromTheEndIsNotPulledToIt() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            _ = try await web.evaluateJavaScript("""
+                const wrap = document.createElement('div');
+                for (let i = 0; i < 400; i++) wrap.append(Object.assign(document.createElement('p'), {textContent: (i + ' word ').repeat(30)}));
+                document.body.append(wrap);
+                scrollTo(0, document.documentElement.scrollHeight);
+                window.__anchor = [...wrap.children].find(p => p.getBoundingClientRect().top > 0);
+                window.__offset = __anchor.getBoundingClientRect().top;
+                addEventListener('resize', () => { window.__asked = __anchor.offsetTop - __offset; scrollTo(0, __asked) }); 0
+                """)
+            struct Scroll: Decodable { var y: Double, bottom: Double, asked: Double?, anchor: Double, offset: Double }
+            @MainActor func read() async throws -> Scroll {
+                try await Task.sleep(for: .milliseconds(700))
+                XCTAssertTrue(window.occlusionState.contains(.visible) && NSApp.isActive, "The fixture lost the foreground during the phase")
+                try await ResizeNativeWindowAdmission.wait(window, web: web)
+                let json = try await web.evaluateJavaScript("""
+                    JSON.stringify({y: scrollY, bottom: document.documentElement.scrollHeight - innerHeight - scrollY,
+                        asked: window.__asked, anchor: __anchor.getBoundingClientRect().top, offset: __offset})
+                    """) as? String
+                return try JSONDecoder().decode(Scroll.self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            let start = try await read()
+            XCTAssertEqual(start.bottom, 0, "The page must start at its end")
+
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            try await Task.sleep(for: .milliseconds(300))
+            window.endPageResize()
+            try await compatibilityWait { !window.isPreparingPageResize }
+            let pressed = try await read()
+            XCTAssertNotNil(pressed.asked, "The page must have handled a resize")
+            XCTAssertEqual(pressed.y, start.y, "A press and release moved the page")
+
+            // Narrower, the text above the paragraph is taller: the page scrolls
+            // forward to keep it, and the end is further still.
+            _ = try await self.drag(window, speed: -300, travel: -90, corner: true, returns: false)
+            let shrunk = try await read()
+            XCTAssertGreaterThan(shrunk.y, start.y)
+            XCTAssertGreaterThan(shrunk.bottom, 1, "The page must not have asked for its end")
+            XCTAssertEqual(shrunk.y, shrunk.asked, "The page was moved from where it scrolled itself")
+            XCTAssertEqual(shrunk.anchor, shrunk.offset, accuracy: 1, "The paragraph the page keeps in place moved")
+        }
+    }
+
+    /// A page that enters the back/forward cache mid-drag never hears the drag
+    /// end, so it stops tracking as it is hidden.
+    func testScrollTrackingStopsWhenThePageIsHidden() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            @MainActor func tracking() async throws -> Bool {
+                try await web.evaluateJavaScript("!!globalThis.__vaneResizeScroll", contentWorld: PageResizeStyle.world) as? Bool == true
+            }
+            _ = try await web.evaluateJavaScript("scrollTo(0, 500); 0")
+            PageResizeScroll.begin(web)
+            let began = try await tracking()
+            XCTAssertTrue(began)
+            _ = try await web.evaluateJavaScript("dispatchEvent(new PageTransitionEvent('pagehide', {persisted: true})); 0")
+            let hidden = try await tracking()
+            XCTAssertFalse(hidden)
         }
     }
 
@@ -286,6 +529,23 @@ import XCTest
                     if mode == "floating" {
                         store?.sidebarPeeking = true
                         try await Task.sleep(for: .milliseconds(600))
+                    }
+                    // VANE_RESIZE_PERF_PAGE=heavy: about 34k elements, the document and six
+                    // viewport-sized inner scrollers all at their ends, so every
+                    // buffered size clamps and restores each of them.
+                    if environment["VANE_RESIZE_PERF_PAGE"] == "heavy", let web = window.contentView.flatMap(Self.page) {
+                        _ = try await web.evaluateJavaScript("""
+                            document.body.insertAdjacentHTML('beforeend', '<div class=c>Card<p>Responsive text that wraps.</p></div>'.repeat(15000));
+                            for (let i = 0; i < 6; i++) {
+                                const el = document.createElement('div');
+                                el.style.cssText = 'position:fixed;top:0;left:' + i * 12 + 'vw;width:10vw;height:50vh;overflow:auto;background:#ddd';
+                                el.innerHTML = '<p>line</p>'.repeat(500);
+                                document.body.append(el);
+                                el.scrollTop = el.scrollHeight;
+                            }
+                            scrollTo(0, document.documentElement.scrollHeight); document.querySelectorAll('*').length
+                            """)
+                        try await Task.sleep(for: .milliseconds(500))
                     }
                     let interval = 1000 / Double(window.screen?.maximumFramesPerSecond ?? 60)
                     for corner in corners {
