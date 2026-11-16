@@ -1191,7 +1191,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Set for the length of one `Session` capture, which reads every tab twice (the Space
     /// sidecar and the session file): a live page's interactionState serialises its whole
     /// back/forward list, so it is taken once. Holding the tab keeps its identifier unique.
-    /// A tab parked mid-capture (a folder lock) has a new `currentURL`, so its title rule is re-run.
+    /// A tab parked mid-capture (a folder lock) may have a new `currentURL`; then its title rule is re-run.
     static var captureSnapshots: [ObjectIdentifier: (tab: Tab, url: URL?, snapshot: Parked)]?
 
     /// Enough to redraw the strip and to come back exactly where the user left off.
