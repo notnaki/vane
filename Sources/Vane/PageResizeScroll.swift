@@ -28,10 +28,11 @@ import WebKit
         let state = globalThis.__vaneResizeScroll;
         if (state) { clearTimeout(state.timer); state.timer = 0; return; }
         // Per scroller and axis: `at` as last seen, `want` to return to (infinite
-        // for the end itself), and whether it was at its end when last seen.
+        // for the end itself), and whether it was at its end, and how much of it
+        // was visible, when last seen.
         const axes = [['scrollLeft', 'scrollWidth', 'clientWidth'], ['scrollTop', 'scrollHeight', 'clientHeight']];
         const atEnd = (el, [at, size, client]) => el[size] - el[client] - Math.abs(el[at]) <= 1;
-        const read = el => axes.map(axis => ({ at: el[axis[0]], want: el[axis[0]], end: atEnd(el, axis) }));
+        const read = el => axes.map(axis => ({ at: el[axis[0]], want: el[axis[0]], end: atEnd(el, axis), client: el[axis[2]] }));
         const wants = new Map();
         const note = el => { if (el.scrollTop || el.scrollLeft) wants.set(el, read(el)); };
         if (document.scrollingElement) note(document.scrollingElement);
@@ -47,7 +48,9 @@ import WebKit
         // short of the visible one.
         // A scroll's event runs after the resize event of the same frame, by
         // which time the range it was made in is gone. So a resize settles what
-        // moved first, and there forward from the end was following it.
+        // moved first, and there forward from the end to the end of that earlier
+        // range was following it. Forward to anywhere else was made in this one,
+        // by a resize handler (a reader keeping its paragraph in place).
         // ponytail: a scroller the page itself empties below its position mid-drag
         // reads as clamped and returns if the content does, until tracking stops.
         const settle = (el, resizing) => {
@@ -57,10 +60,12 @@ import WebKit
             const state = record[i], at = el[axis[0]];
             if (at === state.at) return;
             const forward = Math.abs(at) > Math.abs(state.at), end = atEnd(el, axis);
-            if (forward && (end ? state.end || Math.abs(at) >= Math.abs(state.want) : resizing && state.end)) state.want = Math.sign(at) * Infinity;
+            const followed = resizing && state.end && Math.abs(el[axis[1]] - state.client - Math.abs(at)) <= 1;
+            if (forward && (end ? state.end || Math.abs(at) >= Math.abs(state.want) : followed)) state.want = Math.sign(at) * Infinity;
             else if (!end) state.want = at;
             state.at = at;
             state.end = end;
+            state.client = el[axis[2]];
           });
         };
         const scrolled = event => {
@@ -77,7 +82,7 @@ import WebKit
               return Math.abs(el[axis[0]]) < Math.abs(want) ? want : el[axis[0]];
             });
             if (left !== el.scrollLeft || top !== el.scrollTop) el.scrollTo({ left, top, behavior: 'instant' });
-            axes.forEach((axis, i) => { record[i].at = el[axis[0]]; record[i].end = atEnd(el, axis); });
+            axes.forEach((axis, i) => Object.assign(record[i], { at: el[axis[0]], end: atEnd(el, axis), client: el[axis[2]] }));
           }
         };
         // Once with the new viewport laid out, and again after the page's own

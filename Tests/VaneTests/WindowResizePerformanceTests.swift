@@ -364,6 +364,55 @@ import XCTest
         }
     }
 
+    /// A page at its end that keeps a paragraph at the same place on screen from
+    /// its own `resize` handler (a reader) scrolls forward, but not to the end.
+    /// That is its scroll, not a log following its content: it ends where the
+    /// page put it.
+    func testAPageKeepingItsPlaceFromTheEndIsNotPulledToIt() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            _ = try await web.evaluateJavaScript("""
+                const wrap = document.createElement('div');
+                for (let i = 0; i < 400; i++) wrap.append(Object.assign(document.createElement('p'), {textContent: (i + ' word ').repeat(30)}));
+                document.body.append(wrap);
+                scrollTo(0, document.documentElement.scrollHeight);
+                window.__anchor = [...wrap.children].find(p => p.getBoundingClientRect().top > 0);
+                window.__offset = __anchor.getBoundingClientRect().top;
+                addEventListener('resize', () => { window.__asked = __anchor.offsetTop - __offset; scrollTo(0, __asked) }); 0
+                """)
+            struct Scroll: Decodable { var y: Double, bottom: Double, asked: Double?, anchor: Double, offset: Double }
+            @MainActor func read() async throws -> Scroll {
+                try await Task.sleep(for: .milliseconds(700))
+                XCTAssertTrue(window.occlusionState.contains(.visible) && NSApp.isActive, "The fixture lost the foreground during the phase")
+                try await ResizeNativeWindowAdmission.wait(window, web: web)
+                let json = try await web.evaluateJavaScript("""
+                    JSON.stringify({y: scrollY, bottom: document.documentElement.scrollHeight - innerHeight - scrollY,
+                        asked: window.__asked, anchor: __anchor.getBoundingClientRect().top, offset: __offset})
+                    """) as? String
+                return try JSONDecoder().decode(Scroll.self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            let start = try await read()
+            XCTAssertEqual(start.bottom, 0, "The page must start at its end")
+
+            window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
+            try await Task.sleep(for: .milliseconds(300))
+            window.endPageResize()
+            try await compatibilityWait { !window.isPreparingPageResize }
+            let pressed = try await read()
+            XCTAssertNotNil(pressed.asked, "The page must have handled a resize")
+            XCTAssertEqual(pressed.y, start.y, "A press and release moved the page")
+
+            // Narrower, the text above the paragraph is taller: the page scrolls
+            // forward to keep it, and the end is further still.
+            _ = try await self.drag(window, speed: -300, travel: -90, corner: true, returns: false)
+            let shrunk = try await read()
+            XCTAssertGreaterThan(shrunk.y, start.y)
+            XCTAssertGreaterThan(shrunk.bottom, 1, "The page must not have asked for its end")
+            XCTAssertEqual(shrunk.y, shrunk.asked, "The page was moved from where it scrolled itself")
+            XCTAssertEqual(shrunk.anchor, shrunk.offset, accuracy: 1, "The paragraph the page keeps in place moved")
+        }
+    }
+
     /// A page that enters the back/forward cache mid-drag never hears the drag
     /// end, so it stops tracking as it is hidden.
     func testScrollTrackingStopsWhenThePageIsHidden() async throws {
