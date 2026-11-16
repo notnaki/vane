@@ -37,7 +37,9 @@ import XCTest
                 else if let own = class_getInstanceMethod(cls, selector) { method_setImplementation(own, inherited) }
             }
             // The release commit after `endPageResize` keeps its own eager path.
-            let drag = try await self.drag(window, speed: 600, travel: 120) { layouts.finished = true }
+            // Buffered commits wait for WebKit to paint their coverage, which takes
+            // up to ~300ms on CI's paravirtual GPU; a 0.4s drag ended before any.
+            let drag = try await self.drag(window, speed: 100, travel: 120) { layouts.finished = true }
             XCTAssertGreaterThan(drag.changes.count, 5, "The drag must publish buffered frames")
             XCTAssertGreaterThan(layouts.total, 5)
             XCTAssertEqual(layouts.stale, 0, "No buffered commit may lay the root out at its previous width")
