@@ -77,6 +77,11 @@ import XCTest
         WebKitStartup.prepare()
         let config = WKWebViewConfiguration(), capture = Capture()
         config.websiteDataStore = .nonPersistent()
+        // No case here inspects pixels. CI's paravirtual GPU stalls for seconds at a time,
+        // and an accelerated WebContent paint flush blocks its main thread on it; every
+        // evaluateJavaScript reply then queued 13.8s behind MetalContext::flush. Paint into
+        // CPU bitmaps so DOM outcomes never wait on that GPU.
+        config.preferences.setValue(false, forKey: "acceleratedDrawingEnabled")
         config.userContentController.add(capture, contentWorld: Autofill.world, name: "vanepw")
         if !tracking.isEmpty {
             config.userContentController.addUserScript(WKUserScript(source: tracking,
@@ -105,11 +110,6 @@ import XCTest
         window.isReleasedWhenClosed = false
         window.contentView = web
         let retire: @MainActor @Sendable () -> Void = {
-            // A released page's WebContent process first runs its suspension teardown
-            // (MetalContext::finish) at background QoS. CI's paravirtual GPU serialises
-            // those: a burst of retired fixtures held the next live page's paint flush,
-            // and every evaluateJavaScript reply behind it, for 13.8s. End it here instead.
-            web.perform(NSSelectorFromString("_killWebContentProcess"))
             web.stopLoading()
             config.userContentController.removeScriptMessageHandler(forName: "vanepw", contentWorld: Autofill.world)
             window.contentView = nil

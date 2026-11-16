@@ -98,7 +98,10 @@ import XCTest
                 let current = "active=\(NSApp.isActive) key=\(window.isKeyWindow) owner=\(NSApp.keyWindow === window) "
                     + "visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) placed=\(onScreen) "
                     + "pointerInside=\(pointerInside) populated=\(populated) frame=\(window.frame) "
-                    + "representations=\(representations) admitted=\(admitted)"
+                    + "representations=\(representations) admitted=\(admitted) "
+                    // An inactive owner that NSApp.activate cannot recover names its holder.
+                    + "frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil") "
+                    + "menuBar=\(NSWorkspace.shared.menuBarOwningApplication?.bundleIdentifier ?? "nil")"
                 if current != gates, history.count < 40 {
                     history.append("t=\(ContinuousClock.now - start) \(current)")
                 }
