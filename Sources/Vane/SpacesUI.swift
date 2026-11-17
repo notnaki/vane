@@ -2252,11 +2252,15 @@ private struct SpaceSwipe: ViewModifier {
         // that drift is enough to lose the toss.
         claim = travelled.h > travelled.v * 1.5 ? .mine : .theirs
         guard claim == .mine else { return false }
-        if ownsLanding { (window.contentView as? BrowserWindowHost)?.clearQueuedSpaceSelection() }
+        // A momentum tail is claimed only to be consumed: no fingers are down to carry a
+        // caught slide on. Catching the return of a short flick with it stopped that
+        // return where it was, with nothing left to restart it.
+        let catchesLanding = ownsLanding && event.momentumPhase.isEmpty
+        if catchesLanding { (window.contentView as? BrowserWindowHost)?.clearQueuedSpaceSelection() }
         var resumedOffset: CGFloat = 0
-        if ownsLanding, let offset = slide?.resumeTracking(in: store, dx: event.scrollingDeltaX) {
+        if catchesLanding, let offset = slide?.resumeTracking(in: store, dx: event.scrollingDeltaX) {
             resumedOffset = offset
-        } else if ownsLanding {
+        } else if catchesLanding {
             // A distinct horizontal gesture can begin before the preceding landing
             // reaches rest. Retire that owned leg only after axis lock; unrelated page
             // and vertical scrolling must leave its presentation alone.
@@ -2277,7 +2281,9 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     private func isOverSidebar(_ event: NSEvent, _ store: TabStore) -> Bool {
+        // A Library still landing open already owns the sidebar's gestures, as an open one does.
         guard let window = event.window, window === store.window, !store.libraryOpen,
+              !store.librarySwipeMonitor.intendsOpen(in: store),
               store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true else { return false }
         let inset = store.sidebarShown ? 0 : Look.floatingSidebarGap
         let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }

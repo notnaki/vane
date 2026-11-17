@@ -297,10 +297,29 @@ extension EnvironmentValues {
         publishedThisFrame = false; deferredDrain = false
         bufferToken = UUID()
         buffer?.cancel(); buffer = nil; finishingBuffer = false
+        let interrupted = requestedProgress != progress
         requestedProgress = progress
         retirePaint()
         stopArrivalFrames?(); stopArrivalFrames = nil
         arrival = nil
+        if interrupted { resumeLatestTarget() }
+    }
+
+    /// A cancellation stops at the phase on screen, so a reversal can take over from
+    /// there. SwiftUI only sends the bridge another request when its target changes.
+    /// A swipe dragged all the way and released at its endpoint cancels with that
+    /// endpoint already requested and the page's paint still behind it: nothing asked
+    /// again, and the panel stayed where the paint had got to (fully open, with the
+    /// Library closed underneath it). Resume toward the bridge's latest target unless
+    /// this turn brought a replacement.
+    func resumeLatestTarget() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let view = self.marker as? LibraryPaintView, view.paint === self,
+                  view.window != nil, self.buffer == nil,
+                  self.requestedProgress == self.progress, view.target != self.progress else { return }
+            self.requestedProgress = view.target
+            self.schedule()
+        }
     }
 }
 
@@ -312,6 +331,12 @@ final class LibraryPaintView: NSView {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow !== window { paint?.cancel() }
         super.viewWillMove(toWindow: newWindow)
+    }
+
+    /// A parked profile's host leaves the window mid-slide and returns with it.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { paint?.resumeLatestTarget() }
     }
 
     override func viewWillMove(toSuperview newSuperview: NSView?) {

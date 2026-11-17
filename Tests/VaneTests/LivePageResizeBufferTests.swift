@@ -134,6 +134,55 @@ import XCTest
         XCTAssertEqual(f.web.autoresizingMask, [.width, .height])
     }
 
+    /// A close dragged all the way and released at its endpoint cancels the paint with
+    /// that endpoint already requested. SwiftUI sends no second request for an unchanged
+    /// target, so the paint itself has to carry on to it.
+    func testCancelledLibraryPaintStillReachesItsLatestTarget() async throws {
+        let f = Fixture(); defer { f.close() }
+        var paints: [@MainActor @Sendable () -> Void] = []
+        let paint = LibraryNavigationPaint(progress: 1,
+            presenter: { _, callback in paints.append(callback) }, deadline: { _, _ in })
+        defer { paint.cancel() }
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 889, height: 400))
+        let marker = LibraryPaintView(frame: NSRect(x: 372, y: 0, width: 0, height: 0))
+        f.host.removeFromSuperview()
+        f.host.frame = NSRect(x: 372, y: 0, width: 517, height: 400)
+        root.addSubview(marker)
+        root.addSubview(f.host)
+        f.window.setContentSize(root.frame.size)
+        f.window.contentView = root
+        f.host.libraryNavigationPaintOwner = paint.owner
+        // What LibraryPaintBridge does for the finger's last sample: the panel fully closed.
+        marker.paint = paint
+        marker.target = 0
+        paint.request(0, marker: marker, startLeading: 228, endLeading: 372,
+                      targetLeading: 228, currentLeading: 372)
+        paint.drain()
+        XCTAssertEqual(paint.progress, 1, "A growing page waits for its paint")
+        XCTAssertTrue(paint.isPreparing)
+
+        // Fingers up at the endpoint: the swipe monitor retires the gesture's paint work.
+        paint.cancel()
+        var rendered = paint.progress
+        for _ in 0..<40 where paint.progress != 0 || paint.isPreparing {
+            try await Task.sleep(for: .milliseconds(10))
+            if paint.progress != rendered {
+                // Only a published phase re-renders the bridge; native layout installs it.
+                rendered = paint.progress
+                let leading = 228 + 144 * rendered
+                marker.setFrameOrigin(NSPoint(x: leading, y: 0))
+                f.host.setFrameOrigin(NSPoint(x: leading, y: 0))
+                f.host.setFrameSize(NSSize(width: 889 - leading, height: 400))
+                paint.request(0, marker: marker, startLeading: 228, endLeading: 372,
+                              targetLeading: 228, currentLeading: leading)
+            }
+            while !paints.isEmpty { paints.removeFirst()() }
+            paint.drain()
+        }
+        XCTAssertEqual(paint.progress, 0, "The panel must not stay open over a closed Library")
+        XCTAssertFalse(paint.isPreparing)
+    }
+
     func testExactLibraryGrowthPublishesPaintedProgressWhileNewerInputWaits() throws {
         let f = Fixture(); defer { f.close() }
         let owner = UUID()

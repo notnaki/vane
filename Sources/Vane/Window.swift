@@ -962,6 +962,12 @@ extension VaneWindow {
         // menu's direct call above. Otherwise its tabs exist only in the parked store until
         // the next session save and a crash before then loses them.
         store.saveCurrentSpace()
+        // A keyboard or menu switch can leave from under the Library. Its visit ends here,
+        // or the parked profile would come back with the panel up, or with an opening swipe
+        // still to land.
+        if store.libraryOpen || store.librarySwipeMonitor.intendsOpen(in: store) {
+            Motion.instant { Library.close(store) }
+        }
         // Either the store this window already has for that profile, or a new one opened
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
