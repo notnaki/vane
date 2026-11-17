@@ -8,13 +8,37 @@ import XCTest
 /// with the next swipe switching Space underneath it.
 @MainActor final class LibraryProfileSwipeTests: XCTestCase {
     func testFullyDraggedSwipesLeaveThePanelWhereTheLibraryIs() async throws {
+        try await onAppKitLoop { try await self.checkFullyDraggedSwipes() }
+    }
+
+    /// A flick too short to switch Space springs back, and its momentum tail arrives
+    /// while it does. The tail must not catch the returning slide: no fingers are down
+    /// to carry it anywhere, and it stayed where it was caught until the next gesture.
+    func testAShortFlicksMomentumLetsTheSpaceSlideReturn() async throws {
+        try await onAppKitLoop { try await self.checkShortFlickMomentum() }
+    }
+
+    /// ⌥⌘→ and ⌃N out of an open Library into another profile's Space end the visit.
+    /// The parked profile kept its Library open and came back with the panel up.
+    func testAKeyboardSpaceSwitchEndsTheLibraryVisit() async throws {
+        try await onAppKitLoop { try await self.checkKeyboardSwitchEndsTheVisit() }
+    }
+
+    /// A second opening swipe while the first is still landing belongs to the Library,
+    /// as it does once the Library is open. The sidebar's Space swipe took it instead,
+    /// and the Library refuses to open under a Space swipe.
+    func testASwipeDuringAnOpeningLandingKeepsTheOpen() async throws {
+        try await onAppKitLoop { try await self.checkSwipeDuringOpeningLanding() }
+    }
+
+    private func onAppKitLoop(_ check: () async throws -> Void) async throws {
         TestEnvironment.prepare()
         let app = NSApplication.shared
         let policy = app.activationPolicy()
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await checkFullyDraggedSwipes() } catch { failure = error }
+        do { try await check() } catch { failure = error }
         do { try await loop.close() }
         catch {
             if failure == nil { failure = error }
@@ -24,12 +48,22 @@ import XCTest
     }
 
     private func checkFullyDraggedSwipes() async throws {
+        try await withWindow { store, window, spaces in
+            try await self.checkFullyDraggedSwipes(store, window, spaces)
+        }
+    }
+
+    /// The first profile's window on its first Space, with a second profile after it on
+    /// the strip. `spaces` runs in strip order; the last one is the second profile's.
+    private func withWindow(firstProfileSpaces: Int = 1,
+                            _ check: (TabStore, NSWindow, [Space]) async throws -> Void) async throws {
         try XCTSkipIf(Motion.spaceReduced || Motion.reduced, "Requires animated navigation")
         let manager = ProfileManager.shared
         let previous = manager.active
         let profiles = [manager.create(name: "Library swipe first"), manager.create(name: "Library swipe second")]
         addTeardownBlock { @MainActor in try await NativeFixtureProfileCleanup.release(Set(profiles.map(\.id))) }
-        let spaces = profiles.map { manager.createSpace(name: "Swipe", in: $0.id) }
+        let spaces = (0..<firstProfileSpaces).map { manager.createSpace(name: "Swipe \($0)", in: profiles[0].id) }
+            + [manager.createSpace(name: "Swipe", in: profiles[1].id)]
         let store = Windows.open(profile: profiles[0], space: spaces[0], focus: false)
         let window = try XCTUnwrap(store.window)
         window.animationBehavior = .none
@@ -65,6 +99,127 @@ import XCTest
                 && store.libraryGesture.paint != nil
                 && store.active?.web.window === window && store.active?.web.isLoading == false
         }
+        try await check(store, window, spaces)
+    }
+
+    /// Bounded: a stranded paint never gets there, and that is the failure.
+    private func rests(_ store: TabStore, at progress: CGFloat) async throws -> Bool {
+        guard let paint = store.libraryGesture.paint else { return false }
+        for _ in 0..<100 {
+            if paint.progress == progress, !paint.isPreparing, store.librarySwipeProgress == nil { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    /// Bounded, for an outcome whose absence is the failure.
+    private func settles(_ condition: () -> Bool) async throws -> Bool {
+        for _ in 0..<100 {
+            if condition() { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    private func checkShortFlickMomentum() async throws {
+        try await withWindow(firstProfileSpaces: 2) { store, window, spaces in
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            for (origin, route) in [(spaces[0], "within one profile"), (spaces[1], "into the next profile")] {
+                if store.currentSpaceID != origin.id { store.switchTo(space: origin) }
+                try await compatibilityWait {
+                    store.currentSpaceID == origin.id && host.spaceSlide == nil && !store.spaceSwiping
+                        && store.spaceGesture.sectionsView?.window === window
+                }
+                // Too short and too slow to switch: the default timestamps give it no speed.
+                NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+                NSApp.sendEvent(ScrollEvent(window: window, dx: -20))
+                NSApp.sendEvent(ScrollEvent(window: window, dx: -20))
+                XCTAssertNotNil(host.spaceSlide, "The next-Space swipe travels natively (\(route))")
+                XCTAssertTrue(store.spaceSwiping, route)
+                NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+                for index in 0..<6 {
+                    NSApp.sendEvent(ScrollEvent(window: window, dx: -8, phase: [],
+                                                momentum: index == 0 ? .began : .changed))
+                }
+                NSApp.sendEvent(ScrollEvent(window: window, phase: [], momentum: .ended))
+                let returned = try await settles { host.spaceSlide == nil && !store.spaceSwiping }
+                XCTAssertTrue(returned, "The momentum tail stranded the returning slide (\(route)): "
+                    + "slide=\(host.spaceSlide != nil) swiping=\(store.spaceSwiping)")
+                XCTAssertTrue(store.window === window, route)
+                XCTAssertEqual(store.currentSpaceID, origin.id, route)
+                // Leave nothing travelling for the next route or the teardown.
+                store.spaceGesture.monitor.interruptLanding()
+                host.cancelSpaceSlide()
+                Motion.instant { store.spaceDrag = 0; store.spaceSwiping = false }
+            }
+        }
+    }
+
+    private func checkKeyboardSwitchEndsTheVisit() async throws {
+        try await withWindow { store, window, spaces in
+            let strip = store.strip
+            let home = try XCTUnwrap(strip.firstIndex { $0.id == spaces[0].id })
+            let away = try XCTUnwrap(strip.firstIndex { $0.id == spaces[1].id })
+            let switches: [(String, (TabStore, Int) -> Void)] = [
+                ("⌥⌘→", { store, index in store.cycleSpace(index - (store.strip.firstIndex { $0.id == store.currentSpaceID } ?? 0)) }),
+                ("⌃N", { store, index in store.switchTo(spaceNumber: index + 1) }),
+            ]
+            for (key, press) in switches {
+                Library.open(.archived, in: store)
+                let opened = try await rests(store, at: 1)
+                XCTAssertTrue(opened, key)
+
+                press(store, away)
+                let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window }, key)
+                XCTAssertEqual(arriving.currentSpaceID, spaces[1].id, key)
+                XCTAssertTrue(store.isParked, key)
+                XCTAssertFalse(store.libraryOpen, "\(key) left the Library open in the parked profile")
+                XCTAssertFalse(store.librarySwipeMonitor.intendsOpen(in: store), key)
+                XCTAssertFalse(arriving.libraryOpen, key)
+
+                try await compatibilityWait { arriving.spaceGesture.sectionsView?.window === window }
+                press(arriving, home)
+                XCTAssertTrue(store.window === window, key)
+                XCTAssertFalse(store.libraryOpen, "\(key) brought the profile back with its Library open")
+                let closed = try await rests(store, at: 0)
+                XCTAssertTrue(closed, "\(key) brought the panel back at "
+                    + "\(String(describing: store.libraryGesture.paint?.progress)) over a closed Library")
+                try await compatibilityWait {
+                    store.spaceGesture.sectionsView?.window === window && store.libraryGesture.paint != nil
+                }
+            }
+        }
+    }
+
+    private func checkSwipeDuringOpeningLanding() async throws {
+        try await withWindow { store, window, _ in
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: 100))
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+            try XCTSkipUnless(!store.libraryOpen && store.librarySwipeMonitor.intendsOpen(in: store),
+                              "The opening must still be landing")
+
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .began))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: 40))
+            NSApp.sendEvent(ScrollEvent(window: window, dx: 40))
+            XCTAssertFalse(store.spaceSwiping, "The sidebar's Space swipe took a gesture over a landing Library")
+            XCTAssertNil(host.spaceSlide)
+
+            // Fingers still down when the landing arrives.
+            let opened = try await settles { store.libraryOpen }
+            XCTAssertTrue(opened, "The second swipe dropped the pending open")
+            NSApp.sendEvent(ScrollEvent(window: window, phase: .ended))
+            let rested = try await rests(store, at: 1)
+            XCTAssertTrue(rested, "The panel stayed at "
+                + "\(String(describing: store.libraryGesture.paint?.progress)) under an open Library")
+            XCTAssertFalse(store.spaceSwiping)
+            // Leave nothing travelling for the teardown.
+            Motion.instant { store.spaceDrag = 0; store.spaceSwiping = false }
+        }
+    }
+
+    private func checkFullyDraggedSwipes(_ store: TabStore, _ window: NSWindow, _ spaces: [Space]) async throws {
         let paint = try XCTUnwrap(store.libraryGesture.paint)
         func rests(at progress: CGFloat) async throws -> Bool {
             // Bounded: a stranded paint never gets there, and that is the failure.
