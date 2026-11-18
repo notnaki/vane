@@ -750,8 +750,12 @@ enum ArcImport {
                 : (byDirectory[directory]
                    ?? scan.sidebar.spaces.first { $0.profileDirectory == directory }?.title
                    ?? directory)
+            // Vane's default profile is born named "Personal", and Arc's `Default` already
+            // owns it above. Matching another Arc profile by name onto it would merge two
+            // Arc profiles' spaces into one, so only other Vane profiles can match by name.
             if let existing = profiles
-                .first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                .first(where: { $0.id != ProfileManager.defaultID
+                    && $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
                 out[directory] = existing.id
             } else {
                 out[directory] = ProfileManager.shared.create(name: name).id
