@@ -145,6 +145,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>            <string>$BUILD</string>
   <key>VaneDefaultBrowserPromptEnabled</key> <$DEFAULT_BROWSER_PROMPT/>
+  <!-- The Manage Spaces card drag uses this private type. macOS only matches a custom drag
+       type the app declares, so without this entry a card dropped on another card never
+       reaches the reorder. SpaceCardDragging.swift defines the same identifier. -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>          <string>app.vane.space-card</string>
+      <key>UTTypeDescription</key>         <string>Vane space card</string>
+      <key>UTTypeConformsTo</key>          <array><string>public.data</string></array>
+    </dict>
+  </array>
   <key>LSMinimumSystemVersion</key>     <string>26.0</string>
   <key>NSHighResolutionCapable</key>    <true/>
   <key>NSPrincipalClass</key>           <string>NSApplication</string>
