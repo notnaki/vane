@@ -1103,6 +1103,19 @@ struct Space: Identifiable, Codable, Equatable {
         return [space]
     }
 
+    /// The global order of every Space across profiles, as the footer dots and the swipe
+    /// walk it. Kept beside the profile files rather than in them, so one profile's file
+    /// never has to know another profile's Spaces exist.
+    static let stripOrderKey = "spaceStripOrder"
+
+    var stripOrder: [UUID] {
+        (UserDefaults.vane.stringArray(forKey: Self.stripOrderKey) ?? []).compactMap(UUID.init(uuidString:))
+    }
+
+    func saveStripOrder(_ ids: [UUID]) {
+        UserDefaults.vane.set(ids.map(\.uuidString), forKey: Self.stripOrderKey)
+    }
+
     @discardableResult
     func createSpace(name: String, in profileID: UUID) -> Space {
         let space = Space(name: name, profileID: profileID)

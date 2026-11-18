@@ -330,17 +330,17 @@ struct SpaceDrop: DropDelegate {
         }
         guard let dragged = SpaceDragging.shared.id else { return false }
         SpaceDragging.shared.id = nil
-        // The strip runs across profiles, but an *order* only exists inside one: dragging a
-        // dot onto another profile's would have to change which profile the Space belongs to,
-        // which is what the context menu's "Set Profile" is for. So the drop is simply
-        // refused unless both ends are the same profile's, and the list it reorders is that
-        // profile's own rather than the strip's.
-        let list = ProfileManager.shared.spaces(for: space.profileID)
+        // The order is one global strip, so a dot can move past a dot from any profile. It
+        // changes only the order: which profile a Space belongs to is still "Set Profile".
+        let manager = ProfileManager.shared
+        let list = Spaces.strip(profiles: manager.profiles, spacesOf: {
+            manager.spaces(for: $0.id)
+        }, order: manager.stripOrder)
         guard let from = list.firstIndex(where: { $0.id == dragged }),
               let to = list.firstIndex(where: { $0.id == space.id }) else { return false }
         // A dot dropped on a dot means "put it where that one is", so a rightward drag has to
         // land *after* the target — which is what `reordered` reads `to` as.
-        store.reorderSpaces(from: from, to: to > from ? to + 1 : to, in: space.profileID)
+        store.reorderSpaces(from: from, to: to > from ? to + 1 : to)
         return true
     }
 }
