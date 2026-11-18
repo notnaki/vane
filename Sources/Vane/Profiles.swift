@@ -1114,6 +1114,9 @@ struct Space: Identifiable, Codable, Equatable {
 
     func saveStripOrder(_ ids: [UUID]) {
         UserDefaults.vane.set(ids.map(\.uuidString), forKey: Self.stripOrderKey)
+        // The Spaces page reloads on this revision, and it lists spaces in the order saved
+        // here. Without the bump, a drag there saved the order and the page kept the old one.
+        spacesRevision += 1
     }
 
     @discardableResult
