@@ -154,7 +154,7 @@ enum MediaTray {
     /// The three things the tray can ask the page to do. An enum, so the only strings that
     /// ever reach `evaluateJavaScript` are these three literals — nothing from the page and
     /// nothing from a title is ever evaluated.
-    enum Command: String { case playpause, next, prev, pause }
+    enum Command: String { case playpause, next, prev, pause, pauseAll }
 
     /// How fast one frame is allowed to talk. A gate on the interval was wrong: a page
     /// legitimately reports three or four times in the same millisecond as it loads — one
@@ -316,6 +316,20 @@ enum MediaTray {
           pipMedia = null;
           report();
           return 'released';
+        }
+        if (cmd === 'pauseAll') {
+          // Pause only: every running element, then the page's own pause. Never play, and
+          // never a live call's MediaStream.
+          var did = false;
+          for (var list of [videos, audios]) {
+            for (var i = 0; i < list.length; i++) {
+              var el = list[i];
+              if (!el.paused && !(window.MediaStream && el.srcObject instanceof MediaStream)) { el.pause(); did = true; }
+            }
+          }
+          if (handlers.pause) { try { await handlers.pause({ action: 'pause' }); } catch (_) {} did = true; }
+          report();
+          return did ? 'element' : 'none';
         }
         var e = media();
         if (cmd === 'playpause' || cmd === 'pause') {
@@ -597,16 +611,22 @@ enum MediaTray {
             else { ok = false }
             if !ok {
                 // A removed frame must never send a later click to a main-frame decoy.
-                if let source {
-                    self.reports[tab.id]?[source] = nil
-                    self.preferred[tab.id] = nil
-                }
+                if let source { self.drop(source, of: tab.id) }
                 Toasts.show("Couldn’t control playback. Open the playing tab to try again.")
             }
             then?(ok)
         }
     }
 
+    private func drop(_ source: Source, of id: UUID) {
+        reports[id]?[source] = nil
+        preferred[id] = nil
+    }
+
+    /// `send`'s failure cleanup, for a caller that holds the frame rather than the source.
+    func drop(_ frame: WKFrameInfo, of id: UUID) {
+        if let source = reports[id]?.first(where: { $0.value.frame === frame })?.key { drop(source, of: id) }
+    }
 }
 
 // MARK: - Pages kept running off screen
@@ -1077,3 +1097,12 @@ extension MediaTray {
 }
 
 extension MediaTray.Command: CaseIterable {}
+
+extension MediaState {
+    /// Every frame whose latest report says it is playing, in every tab that has a live web
+    /// view — all windows, Spaces, profiles, Little Vane and private ones alike. A sleeping
+    /// tab has no web view and so no report, which is why reading this never wakes one.
+    var playingFrames: [(tab: UUID, frame: WKFrameInfo)] {
+        reports.flatMap { id, rows in rows.values.filter { $0.info.playing }.map { (id, $0.frame) } }
+    }
+}

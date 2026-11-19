@@ -1434,6 +1434,109 @@ private struct UIAnimationSpeedRow: View {
     }
 }
 
+/// The "Keep these sites loaded" list. `Prefs.keepLoaded` is not observable, so the card
+/// mirrors it and writes through on every change, like the engines in `SearchPane`.
+private struct KeepLoadedCard: View {
+    @State private var rules = Prefs.keepLoaded
+    @State private var newHost = ""
+    @State private var newSubdomains = true
+    /// Re-render when Settings becomes key again, so "Add Open Site" sees tabs opened meanwhile.
+    @Environment(\.controlActiveState) private var activeState
+
+    /// Sites open right now and not yet listed. Private tabs are left out: offering their
+    /// hosts here would write private browsing into preferences.
+    private var openHosts: [String] {
+        let listed = Set(rules.map(\.host))
+        let hosts = Suspension.allTabs.filter { !$0.isPrivate }
+            .compactMap { $0.currentURL }.filter { $0.scheme == "http" || $0.scheme == "https" }
+            .compactMap { $0.host?.lowercased() }
+        return Set(hosts).subtracting(listed).sorted()
+    }
+
+    private func save(_ change: (inout [KeepLoadedRule]) -> Void) {
+        Motion.animate(Look.quick) { change(&rules) }
+        Prefs.keepLoaded = rules
+    }
+
+    private func add(_ host: String, subdomains: Bool) {
+        save { all in
+            if let index = all.firstIndex(where: { $0.host == host }) { all[index].subdomains = subdomains }
+            else { all.append(KeepLoadedRule(host: host, subdomains: subdomains)) }
+        }
+    }
+
+    var body: some View {
+        let _ = activeState
+        SettingsCard {
+            SettingsRow("Keep these sites loaded", icon: "bolt.horizontal.fill", tint: .green) {
+                Menu("Add Open Site") {
+                    ForEach(openHosts, id: \.self) { host in
+                        Button(host) { add(host, subdomains: false) }
+                    }
+                }
+                .fixedSize().disabled(openHosts.isEmpty)
+            }
+            ForEach(rules, id: \.host) { rule in
+                KeepLoadedRow(rule: rule) { edited in
+                    save { all in
+                        guard let index = all.firstIndex(of: rule) else { return }
+                        if let edited { all[index] = edited } else { all.remove(at: index) }
+                    }
+                }
+            }
+            SettingsRow("Add a site") {
+                TextField("", text: $newHost, prompt: Text("example.com"))
+                    .settingsField().frame(width: 200)
+                    .onSubmit(addTyped)
+                    .accessibilityLabel("Site to keep loaded")
+                Toggle("Subdomains", isOn: $newSubdomains).toggleStyle(.checkbox)
+                Button("Add", action: addTyped)
+                    .disabled(KeepLoadedRule.host(from: newHost) == nil)
+            }
+            Footnote("Vane never puts tabs on these sites to sleep for being idle, for being in "
+                     + "a Space you have switched away from, for Battery Saver, or for memory "
+                     + "pressure, including critical pressure. With Subdomains on, "
+                     + "example.com also covers app.example.com. A rule follows the page a tab is "
+                     + "on now, and stops applying when the tab leaves the site.")
+            Footnote("The list applies to every profile and window. It only keeps pages that are "
+                     + "already loaded; Vane never opens these sites at launch or sends requests "
+                     + "to keep them alive. Loaded pages use memory and battery, and macOS can "
+                     + "still end a page when the Mac sleeps or runs out of memory.")
+        }
+    }
+
+    private func addTyped() {
+        guard let host = KeepLoadedRule.host(from: newHost) else { return }
+        add(host, subdomains: newSubdomains || newHost.trimmingCharacters(in: .whitespaces).hasPrefix(".")
+                || newHost.trimmingCharacters(in: .whitespaces).hasPrefix("*."))
+        newHost = ""; newSubdomains = true
+    }
+}
+
+/// One rule: its host, the subdomain switch, and a remove button. `change(nil)` removes it.
+/// ponytail: no in-place host editing; remove and re-add covers a typo.
+private struct KeepLoadedRow: View {
+    let rule: KeepLoadedRule
+    let change: (KeepLoadedRule?) -> Void
+
+    var body: some View {
+        HStack(spacing: Look.inset) {
+            Text(rule.host).lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle("Subdomains", isOn: Binding(
+                get: { rule.subdomains },
+                set: { change(KeepLoadedRule(host: rule.host, subdomains: $0)) }
+            )).toggleStyle(.checkbox)
+            Button { change(nil) } label: { Image(systemName: "minus.circle") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .accessibilityLabel("Stop keeping \(rule.host) loaded")
+        }
+        .padding(.horizontal, Look.cardInset)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, minHeight: Look.settingsRow)
+    }
+}
+
 private struct AdvancedPane: View {
     @ObservedObject var selection: SettingsSelection
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -1458,7 +1561,7 @@ private struct AdvancedPane: View {
                     Footnote("Adjust animation speeds for the sidebar, tabs, panels, and more.")
                 }
             }
-            SettingsDisclosure("Performance", summary: "Battery Saver and power status",
+            SettingsDisclosure("Performance", summary: "Battery Saver, power status, and sites kept loaded",
                                icon: "battery.100percent", tint: .green) {
                 SettingsCard {
                     SettingsRow("Battery Saver", icon: "battery.100percent", tint: .green) {
@@ -1479,6 +1582,7 @@ private struct AdvancedPane: View {
                     Footnote("Automatic turns on below 20% battery while unplugged. Always On keeps it active on any power source; Off disables it.")
                     Footnote("While active, eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar motion is reduced. Active pages, pinned tabs, media, private tabs, and unfinished forms stay protected. Sleeping tabs reload when you return.")
                 }
+                KeepLoadedCard()
             }
             SettingsDisclosure("Windows and Tabs", summary: "Startup, homepage, and Split View",
                                icon: "macwindow", tint: .green) {
