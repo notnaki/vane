@@ -2161,18 +2161,29 @@ import WebKit
         }
         if let existing = actionWindows[key], existing.web === web { existing.show(); return }
         for presentation in Array(actionWindows.values) { presentation.close() }
-        // An auto-hidden Little Vane or Peek bar stays up while its popup is open.
-        parent.barHeld += 1
+        // An auto-hidden Little Vane or Peek bar stays up while its popup is in use (key):
+        // a popup left behind the page must not hold the bar forever.
+        weak var heldStore = parent
+        var holding = false
+        func hold(_ on: Bool) {
+            guard on != holding else { return }
+            holding = on
+            heldStore?.barHeld += on ? 1 : -1
+        }
+        hold(true)
         let presentation = ExtensionWindowPresentation(web: web, context: context, action: action,
-            parentStore: parent, parentTab: tab, title: name) { [weak self, weak parent] closed in
-                parent?.barHeld -= 1
+            parentStore: parent, parentTab: tab, title: name) { [weak self] closed in
+                hold(false)
                 if self?.actionWindows[key] === closed { self?.actionWindows[key] = nil }
             }
         actionWindows[key] = presentation
         // Install file selection after the compact owner and SDK-forwarding proxy
         // exist. The unused SDK popover is not this view's presentation owner.
         configurePageUI(web, context: context, window: presentation.window)
-        presentation.focusChanged = { [weak self] in self?.sync() }
+        presentation.focusChanged = { [weak self, weak presentation] in
+            self?.sync()
+            hold(presentation?.window.isKeyWindow == true)
+        }
         presentation.show()
     }
 
