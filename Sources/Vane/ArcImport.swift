@@ -765,16 +765,20 @@ enum ArcImport {
         return out
     }
 
-    /// Deletes the empty Space a profile was born with, when it is named after the profile and
-    /// holds no tabs. Any other Space, or one with tabs, is left alone.
+    /// Deletes the empty Space a profile was born with, when it is named after the profile. Any
+    /// window showing it saves first, and the emptiness check reads what is on disk after that,
+    /// so unsaved tabs keep the Space. Deletion goes through `Spaces.delete`, which archives the
+    /// Space's pages and clears the window that was showing it.
     @MainActor static func removeEmptyPlaceholder(in profileID: UUID) {
         let manager = ProfileManager.shared
-        guard let profile = manager.profiles.first(where: { $0.id == profileID }) else { return }
-        let placeholder = manager.spaces(for: profileID).first { space in
-            space.name == profile.name && space.tabURLs.isEmpty && (space.pinnedTabURLs ?? []).isEmpty
-        }
-        guard let placeholder else { return }
-        _ = manager.deleteSpace(placeholder.id, in: profileID)
+        guard let profile = manager.profiles.first(where: { $0.id == profileID }),
+              let candidate = manager.spaces(for: profileID).first(where: { $0.name == profile.name })
+        else { return }
+        let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == candidate.id }
+        guard showing.allSatisfy({ $0.saveCurrentSpace() }) else { return }
+        guard let placeholder = manager.spaces(for: profileID).first(where: { $0.id == candidate.id }),
+              placeholder.tabURLs.isEmpty, (placeholder.pinnedTabURLs ?? []).isEmpty else { return }
+        _ = Spaces.delete(placeholder.id, in: profileID)
     }
 
     /// One Arc space, written down as a Vane Space: its theme, its Pinned rows with the
@@ -996,6 +1000,12 @@ enum ArcImport {
         try Task.checkCancellation()
         counts.noKey = scan.requiresKey && key == nil
 
+        // A fresh default profile is born with an empty first Space named after itself. When the
+        // import will put Spaces into it, that placeholder goes first, so an Arc Space with the
+        // same name is written rather than skipped as a duplicate.
+        if scan.sidebar.spaces.contains(where: { ids[$0.profileDirectory] == ProfileManager.defaultID }) {
+            removeEmptyPlaceholder(in: ProfileManager.defaultID)
+        }
         var gained: Set<UUID> = []
         var spaceIDs: [String: UUID] = [:]
         defer { refreshSpaces(afterImporting: gained) }
@@ -1007,12 +1017,6 @@ enum ArcImport {
                 spaceIDs[space.id] = id
                 gained.insert(profileID)
             }
-        }
-        // A fresh default profile is born with an empty first Space named after itself. Once
-        // the import has put real Spaces into it, that empty placeholder is only a stray extra
-        // Space beside them, so it goes. Only an empty Space with this exact name is removed.
-        if gained.contains(ProfileManager.defaultID) {
-            removeEmptyPlaceholder(in: ProfileManager.defaultID)
         }
         importRouting(scan.routing, unavailable: scan.routingUnavailable, spaceIDs: spaceIDs, counts: &counts)
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
