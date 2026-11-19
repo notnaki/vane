@@ -1449,7 +1449,7 @@ private struct KeepLoadedCard: View {
         let listed = Set(rules.map(\.host))
         let hosts = Suspension.allTabs.filter { !$0.isPrivate }
             .compactMap { $0.currentURL }.filter { $0.scheme == "http" || $0.scheme == "https" }
-            .compactMap { $0.host.flatMap(KeepLoadedRule.host(from:)) }
+            .compactMap { $0.host?.lowercased() }
         return Set(hosts).subtracting(listed).sorted()
     }
 
@@ -1507,7 +1507,8 @@ private struct KeepLoadedCard: View {
 
     private func addTyped() {
         guard let host = KeepLoadedRule.host(from: newHost) else { return }
-        add(host, subdomains: newSubdomains || newHost.trimmingCharacters(in: .whitespaces).hasPrefix("*."))
+        add(host, subdomains: newSubdomains || newHost.trimmingCharacters(in: .whitespaces).hasPrefix(".")
+                || newHost.trimmingCharacters(in: .whitespaces).hasPrefix("*."))
         newHost = ""; newSubdomains = true
     }
 }
