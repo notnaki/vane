@@ -260,7 +260,7 @@ enum MediaTray {
         // When the latest player ended over one that is only paused (a ringtone over a
         // paused song), the paused one is still the player; otherwise the ended one is
         // reported as ended. Elements that never played never take over.
-        if (lastMedia && lastMedia.ended && prevMedia && prevMedia.isConnected && !prevMedia.ended) {
+        if (lastMedia && (lastMedia.ended || !lastMedia.isConnected) && prevMedia && prevMedia.isConnected && !prevMedia.ended) {
           return prevMedia;
         }
         if (lastMedia && lastMedia.isConnected) { return lastMedia; }
