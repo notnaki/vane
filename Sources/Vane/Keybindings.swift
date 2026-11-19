@@ -187,7 +187,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case pictureInPicture
     case tidyTabs, undoTidyTabs, clearTabs
     case favouriteTab, pinTab
-    case muteTab
+    case muteTab, pauseAllMedia
     case addSplit, removeSplit, nextPane
     case commandPalette, searchTabs
     // Window / Help
@@ -299,6 +299,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .favouriteTab: "Favourite Tab"
         case .pinTab: "Pin Tab"
         case .muteTab: "Mute Tab"
+        case .pauseAllMedia: "Pause All Media"
         case .addSplit: "Add Split View"
         case .removeSplit: "Remove Split"
         case .nextPane: "Next Pane"

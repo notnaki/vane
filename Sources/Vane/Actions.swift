@@ -81,6 +81,7 @@ extension PaletteCommand {
             PaletteCommand(.reopenClosedTab, icon: "arrow.uturn.left"),
             PaletteCommand(.newWindow, icon: "macwindow"),
             PaletteCommand(.newPrivateWindow, icon: "eyeglasses"),
+            PaletteCommand(.pauseAllMedia, icon: "pause.circle"),
         ]
         // The one row that carries the window it was opened from: ⌥⌘N out of a private
         // window has to stay private, and a menu item has no window to ask. In an ordinary
@@ -301,7 +302,7 @@ extension PaletteCommand {
         .newEasel, .showEasels, .captureToEasel,
         .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
-        .showReader, .pictureInPicture, .muteTab, .zoomIn, .zoomOut, .actualSize,
+        .showReader, .pictureInPicture, .muteTab, .pauseAllMedia, .zoomIn, .zoomOut, .actualSize,
         .sharePage, .savePageAs, .capturePage, .captureFullPage, .showWebInspector,
         .toggleSidebar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
         .tidyTabs, .clearTabs, .newSpace, .nextSpace, .previousSpace,

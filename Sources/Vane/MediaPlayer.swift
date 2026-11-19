@@ -935,3 +935,12 @@ extension MediaTray {
 }
 
 extension MediaTray.Command: CaseIterable {}
+
+extension MediaState {
+    /// Every frame whose latest report says it is playing, in every tab that has a live web
+    /// view — all windows, Spaces, profiles, Little Vane and private ones alike. A sleeping
+    /// tab has no web view and so no report, which is why reading this never wakes one.
+    var playingFrames: [(tab: UUID, frame: WKFrameInfo)] {
+        reports.flatMap { id, rows in rows.values.filter { $0.info.playing }.map { (id, $0.frame) } }
+    }
+}
