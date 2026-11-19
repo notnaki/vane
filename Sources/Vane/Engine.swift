@@ -3081,6 +3081,11 @@ struct Stash {
     @Published var palette: PaletteMode? {
         didSet { if palette != nil { librarySwipeMonitor.cancelPendingActivation() } }
     }
+    /// Little Vane and Peek with the toolbar auto-hidden: each bump brings the bar back for
+    /// a moment (a shortcut acted on it), and a nonzero hold keeps it up while its Open in
+    /// menu, an extension popup or a permission prompt is open. See `CompactBar`.
+    @Published var barReveal = 0
+    @Published var barHeld = 0
     /// “Open “Zoom”?” — a link in this window that leads out of the browser, waiting for
     /// an answer. Per window, like the command bar: the card is anchored to the page that
     /// asked, so a background window’s `zoommtg:` link cannot put a sheet over whatever is

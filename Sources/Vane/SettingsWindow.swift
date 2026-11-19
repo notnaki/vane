@@ -1085,6 +1085,7 @@ private struct LinksPane: View {
     @AppStorage(LinkTarget.key) private var externalLinks = LinkTarget.littleArc
     @AppStorage(LinkInteraction.Preferences.littleKey) private var littleLinks = true
     @AppStorage(LinkInteraction.Preferences.shiftKey) private var shiftPeek = true
+    @AppStorage(CompactBar.prefKey) private var autoHideBar = false
 
     var body: some View {
         Pane {
@@ -1112,6 +1113,16 @@ private struct LinksPane: View {
                 Footnote("Hold ⌘ over a link to open a background tab, or ⇧⌘ to open and focus it. "
                          + "⌥ opens a link in Split View. The hint at the bottom of the page "
                          + "updates as you hold or release these keys.")
+            }
+
+            SettingsCard {
+                SettingsRow("Auto-hide toolbar in Little Vane and Peek", icon: "menubar.arrow.up.rectangle", tint: .green) {
+                    Toggle("Auto-hide toolbar in Little Vane and Peek", isOn: $autoHideBar).labelsHidden()
+                }
+                Footnote("The page fills the window. Move the pointer to the top edge to show "
+                         + "the toolbar over it; \u{2318}L and \u{21E7}\u{2318}C show it too. It stays while "
+                         + "you use it, and always with VoiceOver. In full screen the top edge "
+                         + "brings back the menu bar and the toolbar together.")
             }
 
             // Arc's Air Traffic Control, directly under the preference it overrides — a rule

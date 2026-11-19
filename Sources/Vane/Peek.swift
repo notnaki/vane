@@ -433,7 +433,7 @@ import WebKit
         // The browser window's own order, kept: Escape stops a page that is still coming
         // in, and only closes the thing it is in once there is nothing left to stop.
         if event.keyCode == 53, mods.isEmpty {
-            if !TabActions.stopLoading(in: session.window) { close() }
+            if TabActions.stopLoading(in: session.window) { session.store.barReveal += 1 } else { close() }
             return true
         }
         if mods == [.command], event.charactersIgnoringModifiers?.lowercased() == "o" {
@@ -530,9 +530,12 @@ private struct PeekView: View {
     private var card: some View {
         Group {
             if let tab = store.active {
-                VStack(spacing: 0) {
-                    PeekOriginBar(tab: tab)
-                    Divider()
+                CompactBarStack {
+                    VStack(spacing: 0) {
+                        PeekOriginBar(tab: tab)
+                        Divider()
+                    }
+                } page: {
                     WebView(web: tab.web).id(tab.id)
                 }
             } else {
@@ -561,6 +564,7 @@ private struct PeekView: View {
 private struct PeekOriginBar: View {
     @ObservedObject var tab: Tab
     @State private var showingDetails = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         let identity = Peek.identity(url: tab.currentURL, secureContent: tab.secureContent,
@@ -578,7 +582,9 @@ private struct PeekOriginBar: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .focused($focused)
         .background(Look.barMaterial)
+        .preference(key: CompactBarEngaged.self, value: showingDetails || focused)
         .help(identity.fullURL + "\n" + identity.connection)
         .accessibilityLabel(identity.origin + ", " + identity.connection)
         .popover(isPresented: $showingDetails, arrowEdge: .bottom) {

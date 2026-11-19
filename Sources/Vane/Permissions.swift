@@ -297,6 +297,9 @@ import WebKit
                 if pending[tabID] === prompt && (!valid || !isCurrent()) { cancel(tabID: tabID); return }
             }
         }
+        // An auto-hidden Little Vane or Peek bar comes back for the question and stays for it.
+        let bar = TabStore.all.first { $0.isLittle && $0.window === window }
+        bar?.barHeld += 1
         let response = await withTaskCancellationHandler {
             await presentation.present(in: window, tabID: tabID)
         } onCancel: {
@@ -304,6 +307,7 @@ import WebKit
                 if pending[tabID] === prompt { cancel(tabID: tabID) }
             }
         }
+        bar?.barHeld -= 1
         guard pending[tabID] === prompt else { return .deny }
         let valid = await validate()
         guard pending[tabID] === prompt else { return .deny }
