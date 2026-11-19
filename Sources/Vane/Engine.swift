@@ -3082,8 +3082,8 @@ struct Stash {
         didSet { if palette != nil { librarySwipeMonitor.cancelPendingActivation() } }
     }
     /// Little Vane and Peek with the toolbar auto-hidden: each bump brings the bar back for
-    /// a moment (a shortcut acted on it), and a nonzero hold keeps it up while one of its
-    /// AppKit menus is open. See `CompactBar`.
+    /// a moment (a shortcut acted on it), and a nonzero hold keeps it up while its Open in
+    /// menu, an extension popup or a permission prompt is open. See `CompactBar`.
     @Published var barReveal = 0
     @Published var barHeld = 0
     /// “Open “Zoom”?” — a link in this window that leads out of the browser, waiting for

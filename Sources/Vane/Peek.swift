@@ -433,12 +433,10 @@ import WebKit
         // The browser window's own order, kept: Escape stops a page that is still coming
         // in, and only closes the thing it is in once there is nothing left to stop.
         if event.keyCode == 53, mods.isEmpty {
-            session.store.barReveal += 1
-            if !TabActions.stopLoading(in: session.window) { close() }
+            if TabActions.stopLoading(in: session.window) { session.store.barReveal += 1 } else { close() }
             return true
         }
         if mods == [.command], event.charactersIgnoringModifiers?.lowercased() == "o" {
-            session.store.barReveal += 1
             openAsTab()
             return true
         }

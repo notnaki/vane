@@ -440,7 +440,7 @@ import SwiftUI
               event.charactersIgnoringModifiers?.lowercased() == "o",
               let store = store(of: NSApp.keyWindow) else { return false }
         switch mods {
-        case [.command]:            store.barReveal += 1; openInCurrentSpace(store)
+        case [.command]:            openInCurrentSpace(store)
         case [.command, .option]:   pickSpace(store)
         default:                    return false
         }
@@ -573,7 +573,6 @@ extension TabStore {
         // Nothing showing — every tab archived or closed — and ⌘W again: the window is the
         // only thing left to close, so it closes, as Arc's does. A Little Vane closes on
         // the first ⌘W because its one tab is the window.
-        if isLittle { barReveal += 1 }
         if isLittle || active == nil { window?.performClose(nil) } else { archiveWithToast() }
     }
 }
@@ -589,14 +588,14 @@ struct LittleArcView: View {
 
     /// The traffic lights are part of the bar: they go and come back with it.
     private func showLights(_ shown: Bool) {
-        for kind in VaneWindow.lightKinds { store.window?.standardWindowButton(kind)?.isHidden = !shown }
+        (store.window as? VaneWindow)?.lightsHiddenByBar = !shown
     }
 
     var body: some View {
         ZStack {
             WindowGlass()
             SpaceGround()
-            CompactBarStack(height: Look.littleTopInset * 2 + Look.pillHeight, shownChanged: showLights) {
+            CompactBarStack(shownChanged: showLights) {
                 LittleArcBar()
                     .padding(.bottom, Look.littleTopInset)
                     // Over the page it needs a ground of its own; above it, the window's shows.
@@ -664,33 +663,6 @@ enum CompactBar {
     /// How long a shortcut keeps the bar up, and how long the pointer may stray before it goes.
     static let pulse: Duration = .seconds(1.5)
     static let linger: Duration = .milliseconds(400)
-
-    /// Whether the bar is up. Anything using it holds it; only the setting lets it go.
-    nonisolated static func wanted(autoHide: Bool, pointer: Bool, engaged: Bool,
-                                   pulsed: Bool, voiceOver: Bool) -> Bool {
-        !autoHide || pointer || engaged || pulsed || voiceOver
-    }
-
-    /// Where the page starts: under the bar, or at the top with the bar over it.
-    nonisolated static func pageTop(autoHide: Bool, bar: CGFloat) -> CGFloat { autoHide ? 0 : bar }
-
-    nonisolated static func check() -> [(String, Bool)] {
-        func up(_ autoHide: Bool, pointer: Bool = false, engaged: Bool = false,
-                pulsed: Bool = false, voiceOver: Bool = false) -> Bool {
-            wanted(autoHide: autoHide, pointer: pointer, engaged: engaged, pulsed: pulsed, voiceOver: voiceOver)
-        }
-        return [
-            ("with auto-hide off the bar is always up", up(false)),
-            ("…and the page sits under it, as before", pageTop(autoHide: false, bar: 50) == 50),
-            ("with auto-hide on and nothing using it the bar goes", !up(true)),
-            ("…and the page takes its room, so revealing it never moves the page",
-             pageTop(autoHide: true, bar: 50) == 0),
-            ("the pointer at the top edge brings it back", up(true, pointer: true)),
-            ("a focused field or an open menu holds it", up(true, engaged: true)),
-            ("a shortcut that acts on it shows it", up(true, pulsed: true)),
-            ("VoiceOver keeps it in reach", up(true, voiceOver: true)),
-        ]
-    }
 }
 
 /// Something in the bar is in use — its field has focus, a popover is open.
@@ -701,8 +673,6 @@ struct CompactBarEngaged: PreferenceKey {
 
 /// A Little Vane's or a Peek's bar over its page. See `CompactBar`.
 struct CompactBarStack<Bar: View, Page: View>: View {
-    /// The bar's height, or nil to measure it — Peek's strip is as tall as its text.
-    var height: CGFloat? = nil
     var shownChanged: (Bool) -> Void = { _ in }
     @ViewBuilder var bar: Bar
     @ViewBuilder var page: Page
@@ -711,34 +681,36 @@ struct CompactBarStack<Bar: View, Page: View>: View {
     @State private var overEdge = false
     @State private var overBar = false
     @State private var engaged = false
+    @State private var menuOpen = false
     @State private var pulsed = false
     @State private var voiceOver = NSWorkspace.shared.isVoiceOverEnabled
     @State private var shown = !UserDefaults.vane.bool(forKey: CompactBar.prefKey)
-    @State private var measured: CGFloat = 0
-    private var barHeight: CGFloat { height ?? measured }
+    @State private var measured: CGFloat?
 
+    /// Anything using the bar holds it; only the setting lets it go.
     private var wanted: Bool {
-        CompactBar.wanted(autoHide: autoHide, pointer: overEdge || overBar,
-                          engaged: engaged || store.barHeld > 0 || store.palette != nil,
-                          pulsed: pulsed, voiceOver: voiceOver)
+        !autoHide || overEdge || overBar || engaged || menuOpen || store.barHeld > 0
+            || store.palette != nil || pulsed || voiceOver
     }
 
     var body: some View {
-        // One tree either way, so flipping the setting never rebuilds the page.
-        ZStack(alignment: .top) {
-            page.padding(.top, CompactBar.pageTop(autoHide: autoHide, bar: barHeight))
-            if autoHide {
-                Color.clear.frame(height: CompactBar.edge).contentShape(.rect)
-                    .onHover { overEdge = $0 }
-                    .accessibilityHidden(true)
-            }
-            // Slid out rather than faded, so VoiceOver still finds it.
-            bar.frame(height: height, alignment: .top)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measured = $0 }
-                .onHover { overBar = $0 }
+        // Off, this is main's VStack exactly; on, the page takes the bar's room and the bar
+        // slides over it. `AnyLayout` keeps both children's identity, so flipping the setting
+        // never rebuilds the page.
+        let layout = autoHide ? AnyLayout(ZStackLayout(alignment: .top)) : AnyLayout(VStackLayout(spacing: 0))
+        layout {
+            // Slid out rather than faded, so VoiceOver still finds it — faded only until its
+            // height is known, so a bar that starts hidden never shows on the first frame.
+            bar.onHover { overBar = $0 }
                 .onPreferenceChange(CompactBarEngaged.self) { engaged = $0 }
-                .offset(y: shown ? 0 : -barHeight)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measured = $0 }
+                .offset(y: shown ? 0 : -(measured ?? 0))
+                .opacity(shown || measured != nil ? 1 : 0)
                 .allowsHitTesting(shown)
+                .zIndex(1)
+            page.overlay(alignment: .top) {
+                if autoHide { EdgeHover { overEdge = $0 }.frame(height: CompactBar.edge) }
+            }
         }
         .task(id: wanted) {
             // Leaving is forgiven for a moment; coming back is immediate.
@@ -750,9 +722,39 @@ struct CompactBarStack<Bar: View, Page: View>: View {
             pulsed = true
             if (try? await Task.sleep(for: CompactBar.pulse)) != nil { pulsed = false }
         }
+        // The bar's own menus (Open in, the page menu, pinned extensions). Only one that opens
+        // in this window while the bar is up holds it, so a page's context menu never shows it.
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
+            if shown, store.window?.isKeyWindow == true { menuOpen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
+            menuOpen = false
+        }
         .onChange(of: shown, initial: true) { shownChanged(shown) }
         .onReceive(NSWorkspace.shared.publisher(for: \.isVoiceOverEnabled)) { voiceOver = $0 }
         .vaneMotionPolicy()
+    }
+}
+
+/// The window's top edge, heard without being hit: clicks, scrolls and window drags there
+/// still reach the page and the window. The `AnchorView` pattern, with a tracking area.
+private struct EdgeHover: NSViewRepresentable {
+    let changed: (Bool) -> Void
+    func makeNSView(context: Context) -> Strip { Strip(changed: changed) }
+    func updateNSView(_ view: Strip, context: Context) { view.changed = changed }
+
+    final class Strip: NSView {
+        var changed: (Bool) -> Void
+        init(changed: @escaping (Bool) -> Void) {
+            self.changed = changed
+            super.init(frame: .zero)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                           owner: self))
+        }
+        required init?(coder: NSCoder) { nil }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func mouseEntered(with event: NSEvent) { changed(true) }
+        override func mouseExited(with event: NSEvent) { changed(false) }
     }
 }
 

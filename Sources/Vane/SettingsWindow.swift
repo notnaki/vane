@@ -1120,8 +1120,9 @@ private struct LinksPane: View {
                     Toggle("Auto-hide toolbar in Little Vane and Peek", isOn: $autoHideBar).labelsHidden()
                 }
                 Footnote("The page fills the window. Move the pointer to the top edge to show "
-                         + "the toolbar over it; \u{2318}L, \u{21E7}\u{2318}C, \u{2318}O and \u{2318}W "
-                         + "show it too. It stays while you use it, and always with VoiceOver.")
+                         + "the toolbar over it; \u{2318}L and \u{21E7}\u{2318}C show it too. It stays while "
+                         + "you use it, and always with VoiceOver. In full screen the top edge "
+                         + "brings back the menu bar and the toolbar together.")
             }
 
             // Arc's Air Traffic Control, directly under the preference it overrides — a rule

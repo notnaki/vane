@@ -344,6 +344,16 @@ final class VaneWindow: NSWindow {
     /// The lights' resting face, laid over AppKit's own three. See `TrafficLightRest`.
     private var lightsAtRest: TrafficLightRest?
 
+    /// An auto-hidden Little Vane bar has taken the lights with it. Kept here rather than
+    /// set once on the buttons: AppKit replaces them on full-screen and style-mask changes.
+    var lightsHiddenByBar = false {
+        didSet {
+            guard lightsHiddenByBar != oldValue else { return }
+            for kind in Self.lightKinds { standardWindowButton(kind)?.isHidden = lightsHiddenByBar }
+            centreTrafficLights()
+        }
+    }
+
     /// The three buttons, in AppKit's own left-to-right order — which is the order
     /// `Look.lightColours` is written in.
     static let lightKinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
@@ -352,6 +362,7 @@ final class VaneWindow: NSWindow {
         let peeking = peekingSidebar
         for kind in Self.lightKinds {
             guard let button = standardWindowButton(kind), let host = button.superview else { continue }
+            if lightsHiddenByBar, !button.isHidden { button.isHidden = true }
             // The window's top edge in base coordinates is its own height; convert that into
             // whatever space the buttons are laid out in. The buttons' window, not always
             // this one: in full screen the titlebar lives in AppKit's own strip of a window,

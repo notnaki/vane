@@ -2161,8 +2161,11 @@ import WebKit
         }
         if let existing = actionWindows[key], existing.web === web { existing.show(); return }
         for presentation in Array(actionWindows.values) { presentation.close() }
+        // An auto-hidden Little Vane or Peek bar stays up while its popup is open.
+        parent.barHeld += 1
         let presentation = ExtensionWindowPresentation(web: web, context: context, action: action,
-            parentStore: parent, parentTab: tab, title: name) { [weak self] closed in
+            parentStore: parent, parentTab: tab, title: name) { [weak self, weak parent] closed in
+                parent?.barHeld -= 1
                 if self?.actionWindows[key] === closed { self?.actionWindows[key] = nil }
             }
         actionWindows[key] = presentation
