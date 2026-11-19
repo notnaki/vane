@@ -24,6 +24,11 @@ import XCTest
             _ = ProfileManager.shared.delete(profile)
         }
 
+        let file = URL(fileURLWithPath: "/tmp/away.pdf")
+        tab.park(url: file, Parked(title: "File"))
+        store.replacePinnedURL(tab.id)
+        XCTAssertEqual(tab.homeURL, home, "A page that can't be saved must not replace the pin, or the pin is dropped")
+
         tab.park(url: away, Parked(title: "Away"))
         XCTAssertFalse(tab.atHome, "The row should be away from its pinned page")
 

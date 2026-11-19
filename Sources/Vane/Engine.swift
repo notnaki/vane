@@ -4299,7 +4299,7 @@ struct Stash {
     /// this page instead of the old one. Titles follow the same rule as pinning does.
     func replacePinnedURL(_ id: Tab.ID) {
         guard let tab = tabs.first(where: { $0.id == id }), tab.kind == .pinned,
-              let current = tab.currentURL, tab.homeURL != current else { return }
+              let current = tab.currentURL, TabAddress.restorable(current), tab.homeURL != current else { return }
         let old = tab.homeURL
         if let old, !isPrivate, !TabStore.stands(for: old, in: profileID, besides: tab) {
             TidyTitles.recordPinnedName(nil, for: old, in: profileID)
