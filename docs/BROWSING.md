@@ -347,8 +347,9 @@ window as a fallback.
 pauses every playing player in every loaded tab, across windows, Spaces, profiles,
 Little Vane and private windows. It only pauses: running it again never resumes
 anything. It does not switch tabs, raise windows, or wake sleeping tabs, and Picture in
-Picture stays open, paused. Players Vane cannot see, such as Web Audio without a media
-element, are not covered. There is no AppleScript or URL-scheme entry for it yet.
+Picture stays open, paused. Live calls are left alone: Meet tabs, and any player fed by a
+camera or call stream. Players Vane cannot see, such as Web Audio without a media
+element, are not covered; the toast counts them as still playing. There is no AppleScript or URL-scheme entry for it yet.
 
 Google Meet calls use a floating window containing the existing live page, keeping
 participants, shared screens, and Meet's own call controls together. Leaving the tab
