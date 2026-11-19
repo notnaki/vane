@@ -203,7 +203,7 @@ enum MediaTray {
     (function () {
       if (window.__vaneMedia) { return; }
       var alive = true, queued = false, pending = null;
-      var handlers = {}, last = null, lastMedia = null, pipMedia = null;
+      var handlers = {}, last = null, lastMedia = null, prevMedia = null, pipMedia = null;
       var source = Array.from(crypto.getRandomValues(new Uint8Array(16)), function (b) {
         return b.toString(16).padStart(2, '0');
       }).join('');
@@ -243,22 +243,28 @@ enum MediaTray {
       // first one on the page, which is what a paused player is.
       function media() {
         if (pipMedia && pipMedia.isConnected) { return pipMedia; }
-        var first = null, live = null, running = null;
+        var first = null, running = null;
         function earlier(a, b) {
           return !a || (b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) ? b : a;
         }
         for (var list of [videos, audios]) {
           for (var i = 0; i < list.length; i++) {
             first = earlier(first, list[i]);
-            if (!list[i].ended && counts(list[i])) { live = earlier(live, list[i]); }
             if (!list[i].paused && !list[i].ended && counts(list[i])) { running = earlier(running, list[i]); }
           }
         }
-        if (running) { lastMedia = running; return running; }
-        if (lastMedia && lastMedia.isConnected && !lastMedia.ended && counts(lastMedia)) { return lastMedia; }
-        // An ended player is only reported once nothing resumable is left, so a ringtone
-        // finishing over a paused song does not retire the song's card.
-        return live || (lastMedia && lastMedia.isConnected ? lastMedia : first);
+        if (running) {
+          if (running !== lastMedia) { prevMedia = lastMedia; lastMedia = running; }
+          return running;
+        }
+        // When the latest player ended over one that is only paused (a ringtone over a
+        // paused song), the paused one is still the player; otherwise the ended one is
+        // reported as ended. Elements that never played never take over.
+        if (lastMedia && lastMedia.ended && prevMedia && prevMedia.isConnected && !prevMedia.ended) {
+          return prevMedia;
+        }
+        if (lastMedia && lastMedia.isConnected) { return lastMedia; }
+        return first;
       }
       function report() {
         if (!alive) { return; }
@@ -1059,6 +1065,10 @@ extension MediaTray {
             var tune = el(200); start(tune); tune.paused = true; fire('pause', tune);
             var ring = el(30); start(ring); ring.paused = true; ring.ended = true; fire('ended', ring);
             var r = sent[sent.length - 1]; r.ended === false && r.playing === false
+            """))
+        assert("a finished player is reported ended even beside one that never played", page("""
+            var idle = el(100); var last1 = el(300); start(last1); last1.paused = true; last1.ended = true;
+            fire('ended', last1); sent[sent.length - 1].ended === true
             """))
         assert("a sound whose length is not known yet is not a player",
                page("start(el(NaN)); sent[sent.length - 1].playing === false"))
