@@ -333,7 +333,11 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
             // A favourite or pinned row at home comes back parked, with no page to ask, so
             // its page's icon gets a file of its own. Any other tab only needs this session's.
             // ponytail: a row pinned after its page loaded gets that file on its next load.
-            let ownFile = tab?.stays == true && tab?.atHome == true && tab?.isPrivate == false
+            // At home by page key, not URL equality: a redirect that only adds a query
+            // (`/edit` → `/edit?tab=t.0`) must still give the row its file.
+            let home = tab?.homeURL.flatMap(Favicons.pageKey)
+            let atHome = home.map { $0 == page } ?? (tab?.atHome == true)
+            let ownFile = tab?.stays == true && atHome && tab?.isPrivate == false
             let resolved = self.discoveries[page] == declared && self.memory[page] != nil
             if !declared.isEmpty, resolved, !(ownFile && self.fileless.contains(page)) { return }
             if !declared.isEmpty, !ownFile, self.memory[page] == nil, self.discoveries[key] == declared,
