@@ -459,6 +459,9 @@ import SwiftUI
         func windowDidEndLiveResize(_ n: Notification) { recentre() }
         func windowDidBecomeKey(_ n: Notification) { recentre() }
         func windowDidResignKey(_ n: Notification) { recentre() }
+        func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposed: NSApplication.PresentationOptions = []) -> NSApplication.PresentationOptions {
+            VaneWindow.fullScreenPresentation(proposed)
+        }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 store.clearSuggestions()
