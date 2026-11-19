@@ -372,6 +372,8 @@ import SwiftUI
         let frame = window.frame
         let at = NSPoint(x: frame.maxX - Look.inset - menuWidth,
                          y: frame.maxY - Look.littleTopInset - Look.pillHeight)
+        store.barHeld += 1
+        defer { store.barHeld -= 1 }
         spaceMenu(store).popUp(positioning: nil, at: at, in: nil)
     }
 
@@ -438,7 +440,7 @@ import SwiftUI
               event.charactersIgnoringModifiers?.lowercased() == "o",
               let store = store(of: NSApp.keyWindow) else { return false }
         switch mods {
-        case [.command]:            openInCurrentSpace(store)
+        case [.command]:            store.barReveal += 1; openInCurrentSpace(store)
         case [.command, .option]:   pickSpace(store)
         default:                    return false
         }
@@ -571,6 +573,7 @@ extension TabStore {
         // Nothing showing — every tab archived or closed — and ⌘W again: the window is the
         // only thing left to close, so it closes, as Arc's does. A Little Vane closes on
         // the first ⌘W because its one tab is the window.
+        if isLittle { barReveal += 1 }
         if isLittle || active == nil { window?.performClose(nil) } else { archiveWithToast() }
     }
 }
@@ -582,14 +585,23 @@ struct LittleArcView: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(CompactBar.prefKey, store: .vane) private var autoHide = false
+
+    /// The traffic lights are part of the bar: they go and come back with it.
+    private func showLights(_ shown: Bool) {
+        for kind in VaneWindow.lightKinds { store.window?.standardWindowButton(kind)?.isHidden = !shown }
+    }
 
     var body: some View {
         ZStack {
             WindowGlass()
             SpaceGround()
-            VStack(spacing: 0) {
+            CompactBarStack(height: Look.littleTopInset * 2 + Look.pillHeight, shownChanged: showLights) {
                 LittleArcBar()
                     .padding(.bottom, Look.littleTopInset)
+                    // Over the page it needs a ground of its own; above it, the window's shows.
+                    .background { if autoHide { ZStack { WindowGlass(); SpaceGround() } } }
+            } page: {
                 WebCard(topGap: 0, edgeToEdge: true)
             }
             // Last, so ⌘L's bar composites over the bar as well as the page.
@@ -636,6 +648,111 @@ struct LittleArcBar: View {
         .background(WindowDragArea())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Little Vane")
+    }
+}
+
+// MARK: - Auto-hidden toolbar
+
+/// Settings › Links › "Auto-hide toolbar in Little Vane and Peek". Off by default, and off
+/// is exactly the old layout: the bar above, the page under it. On, the page takes the bar's
+/// room and the bar slides down over it — never pushing it — from the window's top edge.
+/// Website dialogs (`WebsitePopupWindow`) keep their origin strip regardless.
+enum CompactBar {
+    static let prefKey = "compactAutoHideToolbar"
+    /// The strip along the top edge that brings a hidden bar back.
+    static let edge: CGFloat = 6
+    /// How long a shortcut keeps the bar up, and how long the pointer may stray before it goes.
+    static let pulse: Duration = .seconds(1.5)
+    static let linger: Duration = .milliseconds(400)
+
+    /// Whether the bar is up. Anything using it holds it; only the setting lets it go.
+    nonisolated static func wanted(autoHide: Bool, pointer: Bool, engaged: Bool,
+                                   pulsed: Bool, voiceOver: Bool) -> Bool {
+        !autoHide || pointer || engaged || pulsed || voiceOver
+    }
+
+    /// Where the page starts: under the bar, or at the top with the bar over it.
+    nonisolated static func pageTop(autoHide: Bool, bar: CGFloat) -> CGFloat { autoHide ? 0 : bar }
+
+    nonisolated static func check() -> [(String, Bool)] {
+        func up(_ autoHide: Bool, pointer: Bool = false, engaged: Bool = false,
+                pulsed: Bool = false, voiceOver: Bool = false) -> Bool {
+            wanted(autoHide: autoHide, pointer: pointer, engaged: engaged, pulsed: pulsed, voiceOver: voiceOver)
+        }
+        return [
+            ("with auto-hide off the bar is always up", up(false)),
+            ("…and the page sits under it, as before", pageTop(autoHide: false, bar: 50) == 50),
+            ("with auto-hide on and nothing using it the bar goes", !up(true)),
+            ("…and the page takes its room, so revealing it never moves the page",
+             pageTop(autoHide: true, bar: 50) == 0),
+            ("the pointer at the top edge brings it back", up(true, pointer: true)),
+            ("a focused field or an open menu holds it", up(true, engaged: true)),
+            ("a shortcut that acts on it shows it", up(true, pulsed: true)),
+            ("VoiceOver keeps it in reach", up(true, voiceOver: true)),
+        ]
+    }
+}
+
+/// Something in the bar is in use — its field has focus, a popover is open.
+struct CompactBarEngaged: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+/// A Little Vane's or a Peek's bar over its page. See `CompactBar`.
+struct CompactBarStack<Bar: View, Page: View>: View {
+    /// The bar's height, or nil to measure it — Peek's strip is as tall as its text.
+    var height: CGFloat? = nil
+    var shownChanged: (Bool) -> Void = { _ in }
+    @ViewBuilder var bar: Bar
+    @ViewBuilder var page: Page
+    @EnvironmentObject private var store: TabStore
+    @AppStorage(CompactBar.prefKey, store: .vane) private var autoHide = false
+    @State private var overEdge = false
+    @State private var overBar = false
+    @State private var engaged = false
+    @State private var pulsed = false
+    @State private var voiceOver = NSWorkspace.shared.isVoiceOverEnabled
+    @State private var shown = !UserDefaults.vane.bool(forKey: CompactBar.prefKey)
+    @State private var measured: CGFloat = 0
+    private var barHeight: CGFloat { height ?? measured }
+
+    private var wanted: Bool {
+        CompactBar.wanted(autoHide: autoHide, pointer: overEdge || overBar,
+                          engaged: engaged || store.barHeld > 0 || store.palette != nil,
+                          pulsed: pulsed, voiceOver: voiceOver)
+    }
+
+    var body: some View {
+        // One tree either way, so flipping the setting never rebuilds the page.
+        ZStack(alignment: .top) {
+            page.padding(.top, CompactBar.pageTop(autoHide: autoHide, bar: barHeight))
+            if autoHide {
+                Color.clear.frame(height: CompactBar.edge).contentShape(.rect)
+                    .onHover { overEdge = $0 }
+                    .accessibilityHidden(true)
+            }
+            // Slid out rather than faded, so VoiceOver still finds it.
+            bar.frame(height: height, alignment: .top)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measured = $0 }
+                .onHover { overBar = $0 }
+                .onPreferenceChange(CompactBarEngaged.self) { engaged = $0 }
+                .offset(y: shown ? 0 : -barHeight)
+                .allowsHitTesting(shown)
+        }
+        .task(id: wanted) {
+            // Leaving is forgiven for a moment; coming back is immediate.
+            if !wanted, (try? await Task.sleep(for: CompactBar.linger)) == nil { return }
+            Motion.animate(Look.quick) { shown = wanted }
+        }
+        .task(id: store.barReveal) {
+            guard store.barReveal > 0 else { return }
+            pulsed = true
+            if (try? await Task.sleep(for: CompactBar.pulse)) != nil { pulsed = false }
+        }
+        .onChange(of: shown, initial: true) { shownChanged(shown) }
+        .onReceive(NSWorkspace.shared.publisher(for: \.isVoiceOverEnabled)) { voiceOver = $0 }
+        .vaneMotionPolicy()
     }
 }
 
