@@ -663,6 +663,8 @@ struct TitleReveal: Equatable, Sendable {
     /// into a section (above) and by `park`, which is how a row restored from disk — where
     /// the saved list *is* the home — and a live folder's row both get one.
     @Published private(set) var homeURL: URL?
+    /// "Replace Pinned URL with Current": the page this row is on becomes the page it stands for.
+    func replaceHome(with url: URL) { homeURL = url }
     /// Whether this row is on the page it stands for. Always true for a row with no home.
     /// See `TabRowGlyph.decide`, which turns a wandered parked row's × back into "go home".
     var atHome: Bool { TabStore.goesHome(home: homeURL, at: currentURL) == nil }
@@ -4291,6 +4293,22 @@ struct Stash {
     /// on screen again.
     static func savePins(owning tab: Tab) {
         all.first { $0.tabs.contains { $0 === tab } }?.savePins()
+    }
+
+    /// Makes the page a pinned row is on now the page it stands for, so the row goes back to
+    /// this page instead of the old one. Titles follow the same rule as pinning does.
+    func replacePinnedURL(_ id: Tab.ID) {
+        guard let tab = tabs.first(where: { $0.id == id }), tab.kind == .pinned,
+              let current = tab.currentURL, TabAddress.restorable(current), tab.homeURL != current else { return }
+        let old = tab.homeURL
+        if let old, !isPrivate, !TabStore.stands(for: old, in: profileID, besides: tab) {
+            TidyTitles.recordPinnedName(nil, for: old, in: profileID)
+        }
+        tab.replaceHome(with: current)
+        if !isPrivate, TidyTitles.realTitle(tab.title, at: current) {
+            TidyTitles.recordPinnedName(tab.title, for: current, in: profileID)
+        }
+        savePins()
     }
 
     func savePins() {

@@ -5119,6 +5119,9 @@ struct TabMenu: View {
         case .favourite:
             Button("Unfavourite Tab") { store.toggleFavourite(tab.id) }
         case .pinned:
+            if !tab.atHome, TabAddress.restorable(tab.currentURL) {
+                Button("Replace Pinned URL with Current") { store.replacePinnedURL(tab.id) }
+            }
             Button("Unpin Tab") { store.togglePinned(tab.id) }
         case .today:
             Button("Favourite Tab") { store.move(tab.id, to: .favourite) }
