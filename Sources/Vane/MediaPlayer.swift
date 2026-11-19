@@ -217,7 +217,7 @@ enum MediaTray {
       // resumed. See `notificationLength`. No activation API, no rule.
       var prompted = new WeakSet();
       function counts(el) {
-        return el.tagName !== 'AUDIO' || el.loop || !(el.duration < \(Int(notificationLength))) || prompted.has(el);
+        return el.tagName !== 'AUDIO' || el.loop || el.duration >= \(Int(notificationLength)) || prompted.has(el);
       }
       document.addEventListener('play', function (ev) {
         var ua = navigator.userActivation;
@@ -243,19 +243,22 @@ enum MediaTray {
       // first one on the page, which is what a paused player is.
       function media() {
         if (pipMedia && pipMedia.isConnected) { return pipMedia; }
-        var first = null, running = null;
+        var first = null, live = null, running = null;
         function earlier(a, b) {
           return !a || (b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) ? b : a;
         }
         for (var list of [videos, audios]) {
           for (var i = 0; i < list.length; i++) {
             first = earlier(first, list[i]);
+            if (!list[i].ended && counts(list[i])) { live = earlier(live, list[i]); }
             if (!list[i].paused && !list[i].ended && counts(list[i])) { running = earlier(running, list[i]); }
           }
         }
         if (running) { lastMedia = running; return running; }
-        if (lastMedia && lastMedia.isConnected) { return lastMedia; }
-        return first;
+        if (lastMedia && lastMedia.isConnected && !lastMedia.ended && counts(lastMedia)) { return lastMedia; }
+        // An ended player is only reported once nothing resumable is left, so a ringtone
+        // finishing over a paused song does not retire the song's card.
+        return live || (lastMedia && lastMedia.isConnected ? lastMedia : first);
       }
       function report() {
         if (!alive) { return; }
@@ -718,7 +721,7 @@ struct MediaTrayView: View {
     }
 
     private func player(_ tab: Tab) -> some View {
-        let info = media.info(for: tab.id) ?? MediaTray.Info(playing: media.isPlaying(tab))
+        let info = media.info(for: tab.id) ?? MediaTray.Info(playing: media.onTray(tab))
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
         let expanded = hovered || focused
         return VStack(spacing: 0) {
@@ -1051,7 +1054,14 @@ extension MediaTray {
         assert("and the tray's play button still resumes that player, not the notification",
                page("!song.paused && ding.paused && sent[sent.length - 1].playing === true"))
         assert("running to the end reports ended",
-               page("song.ended = true; fire('ended', song); var e = sent[sent.length - 1]; e.ended === true && e.playing === false"))
+               page("voice.ended = hum.ended = clip.ended = true; song.ended = true; fire('ended', song); var e = sent[sent.length - 1]; e.ended === true && e.playing === false"))
+        assert("a longer ringtone ending does not report a paused player as ended", page("""
+            var tune = el(200); start(tune); tune.paused = true; fire('pause', tune);
+            var ring = el(30); start(ring); ring.paused = true; ring.ended = true; fire('ended', ring);
+            var r = sent[sent.length - 1]; r.ended === false && r.playing === false
+            """))
+        assert("a sound whose length is not known yet is not a player",
+               page("start(el(NaN)); sent[sent.length - 1].playing === false"))
         return out
     }
 }
