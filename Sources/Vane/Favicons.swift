@@ -69,7 +69,8 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
     }
 }
 
-/// Favicons, fetched from the site itself and cached by host.
+/// Favicons, fetched from the site itself and cached by host, with a page's own icon
+/// kept beside it where a tab has loaded one.
 ///
 /// ponytail: no favicon proxy service. Those are one HTTP request per site you visit sent
 /// to a third party — that is a browsing-history feed, and it is not worth a rounder icon.
@@ -157,6 +158,8 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         memory = FaviconMemoryCache()
         discoveries.removeAll()
         misses.removeAll()
+        fileless.removeAll()
+        tails.removeAll()
         tabs.removeAllObjects()
         hostObservers.removeAllObjects()
         let session = session
@@ -195,6 +198,9 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
 
     private var memory = FaviconMemoryCache()
     private var inflight: [String: Task<Void, Never>] = [:]
+    /// The newest fetch per host. Each page's fetch waits for the one before it, so a
+    /// host's file is always written in the order its icons arrived.
+    private var tails: [String: (id: UUID, task: Task<Void, Never>)] = [:]
     private var diskInflight: [String: Task<Void, Never>] = [:]
     /// Inspect loaded pages even after a root fallback has been cached. The same set of
     /// declarations needs one fetch per session, not another fetch on every reload.
@@ -204,10 +210,12 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         var seen: Set<URL> = []
         var persistentURLs: Set<URL> = []
         var fallbackURLs: Set<URL> = []
+        var ownFile = false
         var revision = 0
         var requestedRevision: [URL: Int] = [:]
 
-        mutating func append(_ candidates: [URL], persist: Bool, fallback: URL?) {
+        mutating func append(_ candidates: [URL], persist: Bool, ownFile: Bool, fallback: URL?) {
+            if ownFile { self.ownFile = true }
             revision += 1
             for url in candidates {
                 requestedRevision[url] = revision
@@ -225,8 +233,11 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         }
     }
     private var pending: [String: Pending] = [:]
+    /// Pages looked for on disk and found to have no file of their own, so a row's body
+    /// opens a missing file once rather than on every redraw.
+    private var fileless: Set<String> = []
     /// Parked tabs have no didFinish callback to pick up an icon discovered later by
-    /// another tab. Weak references let every row for that host receive the result.
+    /// another tab. Weak references let every row for that page receive the result.
     private let tabs = NSHashTable<Tab>.weakObjects()
     /// Hosts that had nothing to give, and when they said so. A 404 isn't re-requested on
     /// every page load — but a timeout during a busy restore is not a verdict for the whole
@@ -255,8 +266,12 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
     /// when it lands.
     func icon(for url: URL) -> NSImage? {
         guard !retired, let key = Favicons.key(for: url) else { return nil }
+        if let page = Favicons.pageKey(for: url) {
+            if let own = memory[page] { return own }
+            readOwn(page, host: key)
+        }
         if let img = memory[key] { return img }
-        guard !missed(key), diskInflight[key] == nil, inflight[key] == nil,
+        guard !missed(key), diskInflight[key] == nil, tails[key] == nil,
               let fallback = Favicons.fallback(for: url) else { return nil }
         if profileID == Profile.incognito.id {
             warm(key: key, urls: [fallback], persist: false, fallback: fallback)
@@ -272,10 +287,13 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         guard !retired else { return }
         tabs.add(tab)
         if let url = tab.currentURL, url.isFileURL { tab.favicon = Files.icon(for: url); return }
-        guard let url = tab.currentURL, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
-        if let img = memory[key] {
+        guard let url = tab.currentURL, let key = Favicons.key(for: url),
+              let page = Favicons.pageKey(for: url) else { tab.favicon = nil; return }
+        // The page's own icon, else the host's: one site can declare a different icon per
+        // route (Docs, Sheets and Slides share a host), and a tab keeps the one it is on.
+        if let img = memory[page] ?? memory[key] {
             if tab.favicon !== img { tab.favicon = img }
-            if tab.suspended { return }
+            if tab.suspended, memory[page] != nil || ownFileRead(page) { return }
         }
         // Keep disk reads and decoding off the main actor, including during restoration.
         let file = profileID == Profile.incognito.id ? nil : dir.appendingPathComponent(key)
@@ -284,25 +302,25 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         loads[id] = Task { @MainActor [weak self, weak tab, weak web] in
             defer { self?.loads[id] = nil }
             guard !Task.isCancelled else { return }
-            let diskImage = if self?.memory[key] == nil, let file {
+            await self?.readOwn(page, host: key)?.value
+            let diskImage = if self?.memory[page] == nil, self?.memory[key] == nil, let file {
                 await Favicons.decoded(file)
             } else { Icon(image: nil) }
             // Neither the page's script reply nor an icon download belongs to the tab's
             // lifetime. Keep it weak across both awaits so Close can release it at once.
             guard let self, !self.retired, !Task.isCancelled,
                   tab?.existingWeb === web, tab?.currentURL == url else { return }
-            if let img = self.memory[key] {
-                if tab?.favicon !== img { tab?.favicon = img }
-            } else if let image = diskImage.image {
-                let stored = self.memory.store(image, for: key, artwork: diskImage.artwork)
-                if tab?.favicon !== stored { tab?.favicon = stored }
+            if self.memory[key] == nil, let image = diskImage.image {
+                self.memory.store(image, for: key, artwork: diskImage.artwork)
                 // Cache-only leaves may be waiting on the same host. Publish even
                 // when restoration's worker beats their own pending disk read.
                 self.publishArrival(for: key)
             }
+            let shown = { self.memory[page] ?? self.memory[key] }
+            if let img = shown(), tab?.favicon !== img { tab?.favicon = img }
             if tab?.suspended == true {
-                if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
-                if self.memory[key] == nil, !self.missed(key), let fallback = Favicons.fallback(for: url) {
+                if tab?.favicon !== shown() { tab?.favicon = shown() }
+                if shown() == nil, !self.missed(key), let fallback = Favicons.fallback(for: url) {
                     self.warm(key: key, urls: [fallback], persist: tab?.isPrivate == false, fallback: fallback)
                 }
                 return
@@ -312,45 +330,67 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
             let declared = Favicons.declared(try? await web.evaluateJavaScript(Favicons.linkJS))
             guard !self.retired, !Task.isCancelled,
                   tab?.existingWeb === web, tab?.currentURL == url else { return }
-            if !declared.isEmpty, self.discoveries[key] == declared, self.memory[key] != nil { return }
-            if !declared.isEmpty {
-                self.discoveries[key] = declared
-                if self.discoveries.count > Self.maxFiles,
-                   let other = self.discoveries.keys.first(where: { $0 != key }) {
-                    self.discoveries[other] = nil
-                }
+            // A favourite or pinned row at home comes back parked, with no page to ask, so
+            // its page's icon gets a file of its own. Any other tab only needs this session's.
+            // ponytail: a row pinned after its page loaded gets that file on its next load.
+            let ownFile = tab?.stays == true && tab?.atHome == true && tab?.isPrivate == false
+            let resolved = self.discoveries[page] == declared && self.memory[page] != nil
+            if !declared.isEmpty, resolved, !(ownFile && self.fileless.contains(page)) { return }
+            if !declared.isEmpty, !ownFile, self.memory[page] == nil, self.discoveries[key] == declared,
+               let shared = self.memory[key] {
+                // The host's icon came from these same declarations: the same artwork, so no
+                // second download.
+                if tab?.favicon !== shared { tab?.favicon = shared }
+                return
             }
+            if !declared.isEmpty { self.remember(declared, for: page) }
             var candidates = declared
             let fallback = self.memory[key] != nil || self.missed(key) ? nil : Favicons.fallback(for: url)
             if let fallback { candidates.append(fallback) }
             guard !candidates.isEmpty else {
-                if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
+                if tab?.favicon !== shown() { tab?.favicon = shown() }
                 return
             }
             let persist = tab?.isPrivate == false
-            await self.warm(key: key, urls: candidates, persist: persist, fallback: fallback).value
+            await self.warm(key: page, host: key, urls: candidates, persist: persist, ownFile: ownFile,
+                            fallback: fallback).value
             guard !self.retired, !Task.isCancelled,
                   tab?.existingWeb === web, tab?.currentURL == url else { return }
-            if tab?.favicon !== self.memory[key] { tab?.favicon = self.memory[key] }
+            if tab?.favicon !== shown() { tab?.favicon = shown() }
         }
     }
 
     // MARK: Fetch
 
-    /// One fetch per host at a time; a second tab on the same host awaits the same task.
+    private func remember(_ declared: [URL], for key: String) {
+        discoveries[key] = declared
+        if discoveries.count > Self.maxFiles,
+           let other = discoveries.keys.first(where: { $0 != key }) {
+            discoveries[other] = nil
+        }
+    }
+
+    /// One fetch per page at a time; a second tab on the same page awaits the same task.
+    /// `key` is that page, or the host itself for a cache-only root probe. Either way the
+    /// result also becomes the host's icon: the fallback for a page with none of its own.
     @discardableResult
-    private func warm(key: String, urls: [URL], persist: Bool, fallback: URL?) -> Task<Void, Never> {
+    private func warm(key: String, host: String? = nil, urls: [URL], persist: Bool, ownFile: Bool = false,
+                      fallback: URL?) -> Task<Void, Never> {
         guard !retired else { return Task {} }
+        let host = host ?? key
         var request = pending[key] ?? Pending()
-        request.append(urls, persist: persist, fallback: fallback)
+        request.append(urls, persist: persist, ownFile: ownFile, fallback: fallback)
         pending[key] = request
         if let running = inflight[key] { return running }
+        let earlier = tails[host]?.task, id = UUID()
         let task = Task { @MainActor [weak self] in
+            await earlier?.value
             guard let self, !self.retired, !Task.isCancelled else { return }
             var received: URL?
             defer {
                 self.inflight[key] = nil
                 self.pending[key] = nil
+                if self.tails[host]?.id == id { self.tails[host] = nil }
                 // Failed declarations remain retryable. Only a result that actually
                 // came from this declaration set makes it reusable across reloads.
                 if received.map({ self.discoveries[key]?.contains($0) == true }) != true {
@@ -370,10 +410,18 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
                 let decoded = await Favicons.decoded(data)
                 guard !self.retired, !Task.isCancelled else { return }
                 guard let image = decoded.image else { continue }
-                let previous = self.memory[key]
-                let img = self.memory.store(image, for: key, artwork: decoded.artwork)
+                let ownFile = key != host && self.pending[key]?.ownFile == true
+                let previous = self.memory[host], previousOwn = self.memory[key]
+                let img = self.memory.store(image, for: host, artwork: decoded.artwork)
+                // A page keeps an entry of its own once its icon is not simply its host's.
+                let differs = previous != nil && previous !== img
+                let own = key != host && (previousOwn != nil || ownFile || differs)
+                    ? self.memory.store(img, for: key, artwork: decoded.artwork) : img
                 received = url
-                self.misses.removeValue(forKey: key)
+                self.misses.removeValue(forKey: host)
+                if key != host {
+                    self.discoveries[host] = self.discoveries[key]?.contains(url) == true ? self.discoveries[key] : nil
+                }
                 // Eligibility belongs to the successful URL, before publication can
                 // synchronously notify observers that enqueue another request.
                 let shouldPersist = self.pending[key]?.persistentURLs.contains(url) == true
@@ -383,23 +431,44 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
                     // while another page's newer declaration remains queued.
                     self.pending[key]?.discardAlternatives(through: acceptedRevision)
                 }
-                for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
-                    if tab.favicon !== img { tab.favicon = img }
+                // Only this page's tabs take its icon. Spreading it across the host replaced
+                // every sibling's icon whenever one of them loaded; a sibling still showing the
+                // host's old icon now keeps it as its own.
+                for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == host {
+                    guard let page = tab.currentURL.flatMap(Favicons.pageKey) else { continue }
+                    if page == key {
+                        if tab.favicon !== own { tab.favicon = own }
+                    } else if differs, let previous, tab.favicon === previous, self.memory[page] == nil {
+                        self.memory.store(previous, for: page)
+                    }
                 }
-                if previous !== img { self.publishArrival(for: key) }
+                self.fill(img, host: host)
+                if previous !== img || (previousOwn ?? previous) !== own { self.publishArrival(for: host) }
                 // Show decoded artwork before utility-priority persistence and pruning.
                 // A public fallback does not authorize storing another tab's private-only
                 // declaration. Eligibility follows the successful URL, not the batch.
-                if shouldPersist { await self.writeDisk(key, data) }
+                if shouldPersist {
+                    if ownFile { self.fileless.remove(key) }
+                    await self.writeDisk(ownFile ? [host, key] : [host], data)
+                }
                 guard !self.retired, !Task.isCancelled else { return }
                 // A restored row may already be fetching /favicon.ico when its page
                 // supplies better artwork. Let that queued declaration upgrade it.
                 if !isFallback, self.pending[key]?.urls.isEmpty != false { return }
             }
-            if self.memory[key] == nil { self.recordMiss(key, attemptedFallback: attemptedFallback) }
+            if self.memory[host] == nil { self.recordMiss(host, attemptedFallback: attemptedFallback) }
         }
         inflight[key] = task
+        tails[host] = (id, task)
         return task
+    }
+
+    /// The host's icon is a fallback: it fills a tab showing nothing and never replaces
+    /// the icon another tab on that host already has.
+    private func fill(_ image: NSImage, host: String) {
+        for tab in tabs.allObjects where tab.favicon == nil && tab.currentURL.flatMap(Favicons.key) == host {
+            tab.favicon = image
+        }
     }
 
     nonisolated static func fetch(_ url: URL, session: URLSession) async -> Data? {
@@ -538,6 +607,15 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         })
     }
 
+    /// A page's own key: its host's, then a digest of its path. Also a file name, and
+    /// never a host key, which cannot contain "@".
+    /// ponytail: the query is ignored, so routes told apart only by it share an icon.
+    static func pageKey(for url: URL) -> String? {
+        guard let host = key(for: url) else { return nil }
+        let digest = SHA256.hash(data: Data((url.path.isEmpty ? "/" : url.path).utf8)).prefix(8)
+        return host + "@" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// The letter a site is known by, for the box a favicon has not filled yet — a brand-new
     /// tab, a site that declares no icon, a page still being fetched from a host we have
     /// never been to. Arc puts the site's initial there; it never puts a spinner there, which
@@ -666,6 +744,35 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
     /// Resolve once per profile, never recreate directories from a row's body.
     private lazy var dir = ProfileManager.faviconDir(for: profileID, in: Store.directory)
 
+    private func ownFileRead(_ page: String) -> Bool {
+        profileID == Profile.incognito.id || fileless.contains(page)
+    }
+
+    /// Read a page's own file once. Nil when there is nothing left to wait for.
+    @discardableResult
+    private func readOwn(_ page: String, host: String) -> Task<Void, Never>? {
+        if let running = diskInflight[page] { return running }
+        guard !retired, memory[page] == nil, !ownFileRead(page) else { return nil }
+        let file = dir.appendingPathComponent(page)
+        let task = Task { @MainActor [weak self] in
+            guard !Task.isCancelled else { return }
+            let decoded = await Self.decoded(file)
+            guard let self else { return }
+            defer { self.diskInflight[page] = nil }
+            guard !self.retired, !Task.isCancelled, self.memory[page] == nil else { return }
+            if let image = decoded.image {
+                self.memory.store(image, for: page, artwork: decoded.artwork)
+                self.publishArrival(for: host)
+            } else {
+                // ponytail: forgotten wholesale at the cap; the cost is one more failed open.
+                if self.fileless.count >= Self.maxFiles * 8 { self.fileless.removeAll() }
+                self.fileless.insert(page)
+            }
+        }
+        diskInflight[page] = task
+        return task
+    }
+
     private func readDisk(_ key: String, fallback: URL) {
         let file = dir.appendingPathComponent(key)
         diskInflight[key] = Task { @MainActor [weak self] in
@@ -678,9 +785,7 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
             guard !self.retired, !Task.isCancelled, self.memory[key] == nil else { return }
             if let image = decoded.image {
                 let image = self.memory.store(image, for: key, artwork: decoded.artwork)
-                for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
-                    if tab.favicon !== image { tab.favicon = image }
-                }
+                self.fill(image, host: key)
                 self.publishArrival(for: key)
             } else if !self.missed(key) {
                 self.warm(key: key, urls: [fallback], persist: true, fallback: fallback)
@@ -736,12 +841,12 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
         await Task.detached(priority: .userInitiated) { Icon(image: image(from: data)) }.value
     }
 
-    private func writeDisk(_ key: String, _ data: Data) async {
+    private func writeDisk(_ keys: [String], _ data: Data) async {
         guard !retired, !Task.isCancelled, profileID != Profile.incognito.id else { return }
         let directory = dir
         await Task.detached(priority: .utility) {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try? data.write(to: directory.appendingPathComponent(key))
+            for key in keys { try? data.write(to: directory.appendingPathComponent(key)) }
             Self.prune(in: directory)
         }.value
     }
@@ -780,6 +885,11 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
             ("www folds onto the apex", key(for: u("https://WWW.Example.com/")) == "example.com"),
             ("a subdomain keeps its own key", key(for: u("https://a.example.com/")) == "a.example.com"),
             ("non-http urls have no key", key(for: u("file:///tmp/x.html")) == nil),
+            ("two routes on one host have their own page keys",
+             pageKey(for: u("https://example.com/document")) != pageKey(for: u("https://example.com/spreadsheets"))),
+            ("a page key is a file name, and never a host's key",
+             pageKey(for: u("https://www.example.com/a/b?c=d"))?.hasPrefix("example.com@") == true
+                && pageKey(for: u("https://example.com/a/b"))?.contains("/") == false),
             ("a key can never contain a path separator",
              key(for: u("https://a.example.com/x/y"))?.contains("/") == false),
             ("fallback is the site's own /favicon.ico",

@@ -304,8 +304,8 @@ private actor QueuedFaviconPublicationRequests {
             let completedRequests = await requests.snapshot()
             XCTAssertEqual(completedRequests, [iconA, iconB],
                            "New declarations must survive the write await; old fallback alternatives must not fetch")
-            XCTAssertFalse(first.favicon === firstImage)
-            XCTAssertTrue(first.favicon === second.favicon)
+            XCTAssertTrue(first.favicon === firstImage, "Another page's icon must not replace this page's own")
+            XCTAssertFalse(second.favicon === firstImage)
             #if compiler(>=6.3)
             weak let completing = cache
             #else
