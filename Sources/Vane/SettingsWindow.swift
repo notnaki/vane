@@ -1439,7 +1439,9 @@ private struct UIAnimationSpeedRow: View {
 private struct KeepLoadedCard: View {
     @State private var rules = Prefs.keepLoaded
     @State private var newHost = ""
-    @State private var newSubdomains = false
+    @State private var newSubdomains = true
+    /// Re-render when Settings becomes key again, so "Add Open Site" sees tabs opened meanwhile.
+    @Environment(\.controlActiveState) private var activeState
 
     /// Sites open right now and not yet listed. Private tabs are left out: offering their
     /// hosts here would write private browsing into preferences.
@@ -1457,10 +1459,14 @@ private struct KeepLoadedCard: View {
     }
 
     private func add(_ host: String, subdomains: Bool) {
-        save { if !$0.contains(where: { $0.host == host }) { $0.append(KeepLoadedRule(host: host, subdomains: subdomains)) } }
+        save { all in
+            if let index = all.firstIndex(where: { $0.host == host }) { all[index].subdomains = subdomains }
+            else { all.append(KeepLoadedRule(host: host, subdomains: subdomains)) }
+        }
     }
 
     var body: some View {
+        let _ = activeState
         SettingsCard {
             SettingsRow("Keep these sites loaded", icon: "bolt.horizontal.fill", tint: .green) {
                 Menu("Add Open Site") {
@@ -1471,7 +1477,7 @@ private struct KeepLoadedCard: View {
                 .fixedSize().disabled(openHosts.isEmpty)
             }
             ForEach(rules, id: \.host) { rule in
-                KeepLoadedRow(rule: rule, taken: { host in rules.contains { $0.host == host } }) { edited in
+                KeepLoadedRow(rule: rule) { edited in
                     save { all in
                         guard let index = all.firstIndex(of: rule) else { return }
                         if let edited { all[index] = edited } else { all.remove(at: index) }
@@ -1487,9 +1493,9 @@ private struct KeepLoadedCard: View {
                 Button("Add", action: addTyped)
                     .disabled(KeepLoadedRule.host(from: newHost) == nil)
             }
-            Footnote("Tabs on these sites are never put to sleep by Vane: not when idle, not in "
-                     + "a Space you have switched away from, not in Battery Saver, and not under "
-                     + "memory pressure, including critical pressure. With Subdomains on, "
+            Footnote("Vane never puts tabs on these sites to sleep for being idle, for being in "
+                     + "a Space you have switched away from, for Battery Saver, or for memory "
+                     + "pressure, including critical pressure. With Subdomains on, "
                      + "example.com also covers app.example.com. A rule follows the page a tab is "
                      + "on now, and stops applying when the tab leaves the site.")
             Footnote("The list applies to every profile and window. It only keeps pages that are "
@@ -1501,30 +1507,21 @@ private struct KeepLoadedCard: View {
 
     private func addTyped() {
         guard let host = KeepLoadedRule.host(from: newHost) else { return }
-        add(host, subdomains: newSubdomains)
-        newHost = ""; newSubdomains = false
+        add(host, subdomains: newSubdomains || newHost.trimmingCharacters(in: .whitespaces).hasPrefix("*."))
+        newHost = ""; newSubdomains = true
     }
 }
 
-/// One rule: its host in an editable field, the subdomain switch, and a remove button.
-/// `change(nil)` removes it.
+/// One rule: its host, the subdomain switch, and a remove button. `change(nil)` removes it.
+/// ponytail: no in-place host editing; remove and re-add covers a typo.
 private struct KeepLoadedRow: View {
     let rule: KeepLoadedRule
-    let taken: (String) -> Bool
     let change: (KeepLoadedRule?) -> Void
-    @State private var host: String
-
-    init(rule: KeepLoadedRule, taken: @escaping (String) -> Bool, change: @escaping (KeepLoadedRule?) -> Void) {
-        self.rule = rule; self.taken = taken; self.change = change
-        _host = State(initialValue: rule.host)
-    }
 
     var body: some View {
         HStack(spacing: Look.inset) {
-            TextField("", text: $host, prompt: Text(rule.host))
-                .settingsField()
-                .onSubmit(commit)
-                .accessibilityLabel("Site")
+            Text(rule.host).lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Toggle("Subdomains", isOn: Binding(
                 get: { rule.subdomains },
                 set: { change(KeepLoadedRule(host: rule.host, subdomains: $0)) }
@@ -1536,15 +1533,6 @@ private struct KeepLoadedRow: View {
         .padding(.horizontal, Look.cardInset)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, minHeight: Look.settingsRow)
-    }
-
-    /// Return commits an edit; a host that does not parse, or is already listed, snaps back.
-    private func commit() {
-        guard let edited = KeepLoadedRule.host(from: host), edited == rule.host || !taken(edited) else {
-            host = rule.host; return
-        }
-        host = edited
-        if edited != rule.host { change(KeepLoadedRule(host: edited, subdomains: rule.subdomains)) }
     }
 }
 

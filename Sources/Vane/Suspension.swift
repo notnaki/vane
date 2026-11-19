@@ -140,11 +140,21 @@ struct KeepLoadedRule: Codable, Equatable, Sendable {
 
     /// What the user typed or pasted — a host or a whole address — as the host a tab would
     /// report. URL does the parsing, so a port, a path or credentials fall away.
+    /// A leading `*.` or `.` is stripped (the caller turns Subdomains on for it); other
+    /// schemes, empty labels and stray characters are refused rather than stored as rules
+    /// that can never match.
     static func host(from input: String) -> String? {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasPrefix("*.") { text.removeFirst(2) } else if text.hasPrefix(".") { text.removeFirst() }
+        if let scheme = text.range(of: "://") {
+            guard ["http", "https"].contains(text[..<scheme.lowerBound]) else { return nil }
+        }
         guard !text.isEmpty, !text.contains(" "),
               let host = URL(string: text.contains("://") ? text : "https://" + text)?.host,
-              case let clean = canonical(host), !clean.isEmpty else { return nil }
+              case let clean = canonical(host), !clean.isEmpty,
+              clean.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_.:".contains($0)) }),
+              !clean.split(separator: ".", omittingEmptySubsequences: false).contains(where: \.isEmpty)
+        else { return nil }
         return clean
     }
 }
@@ -889,7 +899,13 @@ struct KeepLoadedRule: Codable, Equatable, Sendable {
         assert("a rule is read out of a typed host or a pasted address",
                KeepLoadedRule.host(from: " Example.com ") == "example.com"
                    && KeepLoadedRule.host(from: "https://app.example.com:8443/inbox?x=1") == "app.example.com"
-                   && KeepLoadedRule.host(from: "") == nil && KeepLoadedRule.host(from: "not a host") == nil)
+                   && KeepLoadedRule.host(from: "") == nil && KeepLoadedRule.host(from: "not a host") == nil
+                   && KeepLoadedRule.host(from: "*.example.com") == "example.com"
+                   && KeepLoadedRule.host(from: ".example.com") == "example.com"
+                   && KeepLoadedRule.host(from: "example..com") == nil
+                   && KeepLoadedRule.host(from: "a,b.com") == nil
+                   && KeepLoadedRule.host(from: "vane://settings") == nil
+                   && KeepLoadedRule.host(from: "bücher.de") == "xn--bcher-kva.de")
         assert("the rule follows the tab's current page, so navigating away ends it",
                KeepLoadedRule.matches(URL(string: "https://app.example.com/a"), in: [wide])
                    && !KeepLoadedRule.matches(URL(string: "https://other.test/"), in: [wide])
