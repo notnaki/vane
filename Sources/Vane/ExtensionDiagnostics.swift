@@ -7,6 +7,14 @@ import WebKit
         "browser.runtime.sendNativeMessage", "browser.runtime.connectNative"
     ]
     static let unsupportedPermissions: Set<String> = ["nativeMessaging"]
+    nonisolated static let unrecognized = "this WebKit version does not recognize this capability."
+    nonisolated static let notProvided = "Vane does not provide "
+
+    /// Whether a limitation line means a feature is missing, not partly supported (issue #746).
+    // ponytail: limitations persist as plain strings, so the check shares their wording.
+    nonisolated static func isUnsupported(_ limitation: String) -> Bool {
+        limitation.contains(unrecognized) || limitation.contains(notProvided)
+    }
 
     static func limitations(_ manifest: [String: Any], extension ext: WKWebExtension) -> [String] {
         let recognized = Set(ext.requestedPermissions.union(ext.optionalPermissions).map(\.rawValue))
@@ -14,10 +22,10 @@ import WebKit
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
         var issues = declared.subtracting(recognized).sorted().map {
-            "\($0): this WebKit version does not recognize this capability."
+            "\($0): \(unrecognized)"
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
-            issues.append("\(permission): Vane does not provide " + (permission == "nativeMessaging"
+            issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
                 ? "connections to native messaging hosts." : "extension items in page menus."))
         }
         if declared.contains("webRequestBlocking") {
@@ -34,7 +42,7 @@ import WebKit
             ("omnibox", "extension search keywords"),
             ("oauth2", "Chrome identity integration")
         ] where manifest[key] != nil {
-            issues.append("\(key): Vane does not provide \(detail).")
+            issues.append("\(key): \(notProvided)\(detail).")
         }
         return issues
     }

@@ -77,6 +77,24 @@ import XCTest
             "Recognizing MV2 is insufficient: consent must disclose ineffective request cancellation")
     }
 
+    func testMissingCapabilitiesAndKeysCountAsUnsupportedButPartialSupportDoesNot() async throws {
+        func limitations(_ extra: [String: Any]) async throws -> [String] {
+            let manifest = (["manifest_version": 2, "name": "Fixture", "version": "1"] as [String: Any]).merging(extra) { $1 }
+            try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
+            let ext = try await WKWebExtension(resourceBaseURL: folder)
+            return ExtensionDiagnostics.limitations(manifest, extension: ext)
+        }
+        let recognized = try await limitations(["permissions": ["storage", "tabs"]])
+        XCTAssertFalse(recognized.contains(where: ExtensionDiagnostics.isUnsupported), "\(recognized)")
+        let partial = try await limitations(["permissions": ["webRequestBlocking"]]).filter { $0.contains("cannot cancel") }
+        XCTAssertEqual(partial.count, 1)
+        XCTAssertFalse(partial.contains(where: ExtensionDiagnostics.isUnsupported), "A partial-support note alone is not a missing feature")
+        for extra: [String: Any] in [["permissions": ["tabCapture"]], ["permissions": ["nativeMessaging"]], ["side_panel": [:]]] {
+            let missing = try await limitations(extra)
+            XCTAssertTrue(missing.contains(where: ExtensionDiagnostics.isUnsupported), "\(extra): \(missing)")
+        }
+    }
+
     private func options(_ context: WKWebExtensionContext) async throws -> WKWebView {
         let config = try XCTUnwrap(context.webViewConfiguration)
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 500, height: 300), configuration: config)

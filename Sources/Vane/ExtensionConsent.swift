@@ -90,10 +90,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         }
 
         /// A capability Vane or WebKit lacks can break the extension's core features (issue #746).
-        // ponytail: matches ExtensionDiagnostics' wording; limitations persist as plain strings.
-        var hasUnsupportedCapabilities: Bool {
-            limitations.contains { $0.contains("does not recognize this capability") || $0.contains("Vane does not provide") }
-        }
+        var hasUnsupportedCapabilities: Bool { limitations.contains(where: ExtensionDiagnostics.isUnsupported) }
     }
 
     static func saved(for folder: URL, profileID: UUID,
@@ -120,7 +117,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         else { defaults.set(records, forKey: key) }
     }
 
-    static let unsupportedWarning = "Some features of this extension may not work in Vane: it asks for capabilities Vane or WebKit doesn’t support. See Compatibility limitations below."
+    static let unsupportedWarning = "Some features of this extension may not work in Vane: it uses features Vane doesn’t support. See Compatibility limitations below."
 
     static func makePrompt(_ review: Review) -> NSAlert {
         let alert = NSAlert()
