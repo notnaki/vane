@@ -281,7 +281,7 @@ enum MediaTray {
               if (!el.paused && !(window.MediaStream && el.srcObject instanceof MediaStream)) { el.pause(); did = true; }
             }
           }
-          if (handlers.pause) { await handlers.pause({ action: 'pause' }); did = true; }
+          if (handlers.pause) { try { await handlers.pause({ action: 'pause' }); } catch (_) {} did = true; }
           report();
           return did ? 'element' : 'none';
         }

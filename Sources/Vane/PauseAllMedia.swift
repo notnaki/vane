@@ -31,16 +31,17 @@ import WebKit
         func finish() {
             guard !state.done else { return }
             state.done = true
-            Toasts.show(summary(paused: state.paused, still: stillPlaying()))
+            Toasts.show(summary(paused: state.paused, still: stillPlaying().subtracting(calls)))
         }
         guard !frames.isEmpty else { finish(); return }
         for (tab, frame) in frames {
             frame.webView?.callAsyncJavaScript("return await \(MediaTray.command(command));", arguments: [:],
                                                in: frame, in: .page) { result in
-                if case .success(let reply) = result, ["element", "session"].contains(reply as? String ?? "") {
+                switch result {
+                case .success(let reply) where ["element", "session"].contains(reply as? String ?? ""):
                     state.paused.insert(tab)
-                } else {
-                    media.drop(frame, of: tab)
+                case .success: break  // 'none': nothing to pause, the frame's report stays
+                case .failure: media.drop(frame, of: tab)  // the frame is gone
                 }
                 state.left -= 1
                 if state.left == 0 { finish() }
