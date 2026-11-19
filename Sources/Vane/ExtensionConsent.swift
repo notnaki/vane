@@ -90,7 +90,13 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         }
 
         /// A capability Vane or WebKit lacks can break the extension's core features (issue #746).
-        var hasUnsupportedCapabilities: Bool { limitations.contains(where: ExtensionDiagnostics.isUnsupported) }
+        /// A saved line for a capability Vane has since gained support for is stale, not missing.
+        var hasUnsupportedCapabilities: Bool {
+            limitations.contains {
+                ExtensionDiagnostics.isUnsupported($0)
+                    && !newlySupportedCapabilities.contains(String($0.prefix { $0 != ":" }))
+            }
+        }
     }
 
     static func saved(for folder: URL, profileID: UUID,

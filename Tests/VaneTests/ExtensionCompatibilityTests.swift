@@ -89,6 +89,9 @@ import XCTest
         let partial = try await limitations(["permissions": ["webRequestBlocking"]]).filter { $0.contains("cannot cancel") }
         XCTAssertEqual(partial.count, 1)
         XCTAssertFalse(partial.contains(where: ExtensionDiagnostics.isUnsupported), "A partial-support note alone is not a missing feature")
+        // Saved records hold these lines verbatim, so the wording must not drift.
+        let tabCapture = try await limitations(["permissions": ["tabCapture"]])
+        XCTAssertEqual(tabCapture, ["tabCapture: this WebKit version does not recognize this capability."])
         for extra: [String: Any] in [["permissions": ["tabCapture"]], ["permissions": ["nativeMessaging"]], ["side_panel": [:]]] {
             let missing = try await limitations(extra)
             XCTAssertTrue(missing.contains(where: ExtensionDiagnostics.isUnsupported), "\(extra): \(missing)")

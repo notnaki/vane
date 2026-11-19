@@ -413,5 +413,8 @@ import XCTest
             let text = try XCTUnwrap((alert.accessoryView as? NSScrollView)?.documentView as? NSTextView)
             XCTAssertTrue(text.string.contains(limitation), "The existing list stays")
         }
+        review.limitations = ["contextMenus: Vane does not provide extension items in page menus."]
+        review.newlySupportedCapabilities = ["contextMenus"]
+        XCTAssertFalse(review.hasUnsupportedCapabilities, "A stale line for a newly supported capability is not a missing feature")
     }
 }
