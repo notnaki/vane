@@ -857,6 +857,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         validated(item(.readingQueue) { Library.open(.readingQueue, in: Windows.current) }) { Windows.current.map { !$0.isPrivate } ?? false },
         item(.pictureInPicture) { PictureInPicture.toggle(Windows.current?.active) },
         item(.muteTab) { Windows.current?.active.map(TabAudio.toggleMute) },
+        item(.pauseAllMedia) { PauseAllMedia.run() },
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
         item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),
