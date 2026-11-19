@@ -88,6 +88,12 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         var needsApproval: Bool {
             installing || updating || !newlySupportedCapabilities.isEmpty || previous.map { !requested.additions(over: $0).isEmpty } ?? true
         }
+
+        /// A capability Vane or WebKit lacks can break the extension's core features (issue #746).
+        // ponytail: matches ExtensionDiagnostics' wording; limitations persist as plain strings.
+        var hasUnsupportedCapabilities: Bool {
+            limitations.contains { $0.contains("does not recognize this capability") || $0.contains("Vane does not provide") }
+        }
     }
 
     static func saved(for folder: URL, profileID: UUID,
@@ -114,6 +120,8 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         else { defaults.set(records, forKey: key) }
     }
 
+    static let unsupportedWarning = "Some features of this extension may not work in Vane: it asks for capabilities Vane or WebKit doesn’t support. See Compatibility limitations below."
+
     static func makePrompt(_ review: Review) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = review.installing ? "Install “\(review.name)”?"
@@ -127,6 +135,9 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
                : "Don’t Allow keeps the previously accepted version, if available. No new access is granted.")
         if let signer = review.verifiedSigner {
             alert.informativeText = signer + "\n\n" + alert.informativeText
+        }
+        if review.hasUnsupportedCapabilities {
+            alert.informativeText = Self.unsupportedWarning + "\n\n" + alert.informativeText
         }
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 440, height: 240))
         text.isEditable = false

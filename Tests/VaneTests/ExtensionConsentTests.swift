@@ -397,4 +397,21 @@ import XCTest
         XCTAssertEqual(alert.buttons.last?.keyEquivalent, "\u{1b}")
         XCTAssertTrue(ExtensionAccess(permissions: [], sites: []).description.contains("None requested"))
     }
+
+    func testUnsupportedCapabilitiesShowOneWarningAboveTheList() throws {
+        var review = ExtensionConsent.Review(name: "Fixture", requested: .init(permissions: ["tabs"], sites: []),
+                                             previous: nil, installing: true)
+        XCTAssertFalse(ExtensionConsent.makePrompt(review).informativeText.contains(ExtensionConsent.unsupportedWarning))
+        review.limitations = ["webRequestBlocking: system WebKit cannot cancel or redirect requests."]
+        XCTAssertFalse(review.hasUnsupportedCapabilities, "Partial support is not an unsupported capability")
+        for limitation in ["tabCapture: this WebKit version does not recognize this capability.",
+                           "nativeMessaging: Vane does not provide connections to native messaging hosts."] {
+            review.limitations = [limitation, "identity: this WebKit version does not recognize this capability."]
+            let alert = ExtensionConsent.makePrompt(review)
+            XCTAssertTrue(alert.informativeText.hasPrefix(ExtensionConsent.unsupportedWarning))
+            XCTAssertEqual(alert.informativeText.components(separatedBy: ExtensionConsent.unsupportedWarning).count, 2, "One warning, not one per capability")
+            let text = try XCTUnwrap((alert.accessoryView as? NSScrollView)?.documentView as? NSTextView)
+            XCTAssertTrue(text.string.contains(limitation), "The existing list stays")
+        }
+    }
 }
