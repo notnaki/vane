@@ -98,6 +98,55 @@ extension Prefs {
         }
         set { UserDefaults.vane.set(newValue, forKey: "suspendAfter") }
     }
+
+    /// Settings › Advanced › Performance: sites Vane never suspends, wherever their tab is.
+    /// Global like the two keys above, not per profile. Decoded once per stored value —
+    /// the sweep asks for every tab.
+    static var keepLoaded: [KeepLoadedRule] {
+        get {
+            let data = UserDefaults.vane.data(forKey: "keepLoaded")
+            if data != keepLoadedCache.data {
+                keepLoadedCache = (data, data.flatMap { try? JSONDecoder().decode([KeepLoadedRule].self, from: $0) } ?? [])
+            }
+            return keepLoadedCache.rules
+        }
+        set { UserDefaults.vane.set(try? JSONEncoder().encode(newValue), forKey: "keepLoaded") }
+    }
+    private static var keepLoadedCache: (data: Data?, rules: [KeepLoadedRule]) = (nil, [])
+}
+
+/// One "keep this site loaded" exception: a host, alone or with everything under it.
+struct KeepLoadedRule: Codable, Equatable, Sendable {
+    var host: String
+    var subdomains = false
+
+    /// Whole labels only: `example.com` with subdomains covers `app.example.com`, never
+    /// `notexample.com` or `example.com.other.test`.
+    func matches(_ other: String?) -> Bool {
+        guard let other = other.map(Self.canonical), !other.isEmpty else { return false }
+        return other == host || (subdomains && other.hasSuffix("." + host))
+    }
+
+    static func matches(_ url: URL?, in rules: [KeepLoadedRule]) -> Bool {
+        guard let host = url?.host else { return false }
+        return rules.contains { $0.matches(host) }
+    }
+
+    private static func canonical(_ host: String) -> String {
+        var host = host.lowercased()
+        while host.hasSuffix(".") { host.removeLast() }
+        return host
+    }
+
+    /// What the user typed or pasted — a host or a whole address — as the host a tab would
+    /// report. URL does the parsing, so a port, a path or credentials fall away.
+    static func host(from input: String) -> String? {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !text.contains(" "),
+              let host = URL(string: text.contains("://") ? text : "https://" + text)?.host,
+              case let clean = canonical(host), !clean.isEmpty else { return nil }
+        return clean
+    }
 }
 
 /// Tab suspension: the policy, the timer and the memory-pressure source. The mechanism —
@@ -131,6 +180,9 @@ extension Prefs {
         var loading = false
         /// Typed-in, unsubmitted form input. Suspending on top of it throws work away.
         var hasInput = false
+        /// On the user's "Keep these sites loaded" list. Unlike a pin this is about the
+        /// page, not a row, so it holds in a stashed Space and under memory pressure too.
+        var kept = false
         var suspended = false
         /// A tab with nothing loaded has nothing to reclaim.
         var loaded = true
@@ -153,6 +205,7 @@ extension Prefs {
         if f.suspended || !f.loaded { return false }
         if f.active || f.isPrivate { return false }
         if f.pinned && !f.stashed { return false }
+        if f.kept { return false }
         if f.playing || f.loading || f.hasInput { return false }
         return f.idle >= limit
     }
@@ -280,7 +333,8 @@ extension Prefs {
     /// far, because both cost a round trip into WebKit.
     private static func facts(_ tab: Tab, now: Date, active: Bool, stashed: Bool) -> Facts {
         Facts(active: active, pinned: tab.stays, stashed: stashed,
-              isPrivate: tab.isPrivate, playing: tab.inMeetCall, loading: tab.loading, suspended: tab.suspended,
+              isPrivate: tab.isPrivate, playing: tab.inMeetCall, loading: tab.loading,
+              kept: KeepLoadedRule.matches(tab.currentURL, in: Prefs.keepLoaded), suspended: tab.suspended,
               loaded: tab.existingWeb?.url != nil, idle: now.timeIntervalSince(tab.lastActive))
     }
 
@@ -820,6 +874,37 @@ extension Prefs {
         assert("no single exclusion is overridden by a long idle time",
                [active, pinned, priv, playing, typing, loading, already, blank]
                    .allSatisfy { !shouldSuspend($0, after: 0) })
+
+        // MARK: keep-loaded sites
+        let exact = KeepLoadedRule(host: "example.com")
+        let wide = KeepLoadedRule(host: "example.com", subdomains: true)
+        assert("an exact rule covers its host and nothing under it",
+               exact.matches("example.com") && !exact.matches("app.example.com"))
+        assert("a subdomain rule covers the host and everything under it",
+               wide.matches("example.com") && wide.matches("app.example.com") && wide.matches("a.b.example.com"))
+        assert("a subdomain rule stops at label boundaries",
+               !wide.matches("notexample.com") && !wide.matches("example.com.other.test")
+                   && !wide.matches("com") && !wide.matches(nil))
+        assert("host case and a trailing dot do not matter", wide.matches("App.Example.COM."))
+        assert("a rule is read out of a typed host or a pasted address",
+               KeepLoadedRule.host(from: " Example.com ") == "example.com"
+                   && KeepLoadedRule.host(from: "https://app.example.com:8443/inbox?x=1") == "app.example.com"
+                   && KeepLoadedRule.host(from: "") == nil && KeepLoadedRule.host(from: "not a host") == nil)
+        assert("the rule follows the tab's current page, so navigating away ends it",
+               KeepLoadedRule.matches(URL(string: "https://app.example.com/a"), in: [wide])
+                   && !KeepLoadedRule.matches(URL(string: "https://other.test/"), in: [wide])
+                   && !KeepLoadedRule.matches(nil, in: [wide]))
+        var kept = idle; kept.kept = true
+        var keptStashed = stashedPin; keptStashed.kept = true
+        assert("a listed site stays loaded past the idle limit, in a kept-alive Space, and under pressure",
+               !shouldSuspend(kept, after: 30 * 60) && !shouldSuspend(keptStashed, after: 30 * 60)
+                   && !shouldSuspend(keptStashed, after: 0))
+        assert("an unlisted tab beside it still suspends", shouldSuspend(idle, after: 30 * 60))
+        let savedRules = UserDefaults.vane.object(forKey: "keepLoaded")
+        Prefs.keepLoaded = [exact, wide]
+        assert("the list round-trips through defaults", Prefs.keepLoaded == [exact, wide])
+        UserDefaults.vane.set(savedRules, forKey: "keepLoaded")
+        assert("…and is put back as it was found", UserDefaults.vane.object(forKey: "keepLoaded") as? Data == savedRules as? Data)
 
         // MARK: LRU under memory pressure
         let t0 = Date(timeIntervalSince1970: 1_000_000)
