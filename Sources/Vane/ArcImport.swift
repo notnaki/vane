@@ -765,7 +765,8 @@ enum ArcImport {
         return out
     }
 
-    /// The empty Space a profile was born with, when it is named after the profile. Any window
+    /// The empty Space a profile was born with, when it is named after the profile: no tabs, no
+    /// folders, no split layout. Any window
     /// showing it saves first, and the emptiness check reads what is on disk after that, so
     /// unsaved tabs keep it from counting as a placeholder.
     @MainActor static func emptyPlaceholder(in profileID: UUID) -> UUID? {
@@ -776,7 +777,10 @@ enum ArcImport {
         let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == candidate.id }
         guard showing.allSatisfy({ $0.saveCurrentSpace() }),
               let placeholder = manager.spaces(for: profileID).first(where: { $0.id == candidate.id }),
-              placeholder.tabURLs.isEmpty, (placeholder.pinnedTabURLs ?? []).isEmpty else { return nil }
+              placeholder.tabURLs.isEmpty, (placeholder.pinnedTabURLs ?? []).isEmpty, placeholder.layout == nil,
+              [TabKind.pinned, .today].allSatisfy({
+                  TabStore.savedShape($0, space: placeholder.id, profileID: profileID)?.isEmpty ?? true })
+        else { return nil }
         return placeholder.id
     }
 

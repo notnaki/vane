@@ -57,4 +57,19 @@ import XCTest
         XCTAssertTrue(spaces.contains { $0.id == placeholder.id }, "A Space holding tabs must not be deleted")
         XCTAssertEqual(spaces.filter { $0.name == profileName }.count, 1, "A real Space of the same name still wins")
     }
+
+    func testPlaceholderWithAnEmptyFolderIsKept() async throws {
+        let manager = ProfileManager.shared
+        let placeholder = manager.createSpace(name: profileName, in: ProfileManager.defaultID)
+        var shape = Pins()
+        shape.entries = [Pins.Entry(row: .folder(Folder(name: "Keep")))]
+        let key = TabStore.shapeKey(.pinned, space: placeholder.id, profileID: ProfileManager.defaultID)
+        UserDefaults.vane.set(try JSONEncoder().encode(shape), forKey: key)
+        defer { UserDefaults.vane.removeObject(forKey: key) }
+
+        _ = try await ArcImport.apply(scan([profileName, "Work"]))
+
+        XCTAssertTrue(manager.spaces(for: ProfileManager.defaultID).contains { $0.id == placeholder.id },
+                      "A Space holding a folder is not a placeholder")
+    }
 }
