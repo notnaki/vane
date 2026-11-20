@@ -210,9 +210,10 @@ import SwiftUI
     func spaces(manager: ProfileManager = .shared, preview: Space? = nil) -> [Space] {
         guard owner === manager else { return [] }
         // Filter removed owners immediately, even before the metadata observer fires.
-        var spaces = manager.profiles.flatMap { profile in
+        // The same global order the footer and the swipe walk, so a reorder shows up here.
+        var spaces = Spaces.strip(profiles: manager.profiles, spacesOf: { profile in
             persisted.filter { $0.space.profileID == profile.id }.map(\.space)
-        }
+        }, order: manager.stripOrder)
         if let preview, let index = spaces.firstIndex(where: {
             $0.id == preview.id && $0.profileID == preview.profileID
         }) { spaces[index] = preview }

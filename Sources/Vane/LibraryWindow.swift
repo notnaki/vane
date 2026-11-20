@@ -2301,16 +2301,17 @@ private struct SpaceCard: View {
                 .frame(width: Look.rowTarget, height: Look.cardRow)
                 .contentShape(.rect)
                 .onDrag { SpaceCardDragging.provider(for: space) }
-                .vaneTooltip("Reorder \(space.name)", hint: "Drag to another Space in this profile")
+                .vaneTooltip("Reorder \(space.name)", hint: "Drag onto any Space to move it there")
                 .accessibilityLabel("Reorder \(space.name)")
             Spacer(minLength: 0)
-            // ponytail: no Delete here. The sidebar's Space menu already deletes one, with
-            // its own confirmation, and a second route to the same irreversible thing is a
-            // second place to keep that confirmation honest.
             Menu {
                 Button("Go to \(space.name)") { Library.show(space, from: store) }
                 Button("Rename…") { _ = beginEditing() }
                     .disabled(catalog.entry(for: space, manager: profiles) == nil)
+                Divider()
+                // The same confirmed delete the sidebar's Space menu runs, so the warning
+                // and the archive of its pages are identical from either place.
+                Button("Delete Space…", role: .destructive) { deleteSpace(space, in: store) }
             } label: {
                 Image(systemName: "ellipsis")
             }

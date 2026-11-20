@@ -32,12 +32,15 @@ import UniformTypeIdentifiers
         guard let payload = try? JSONDecoder().decode(Payload.self, from: data), payload == active else { return false }
         active = nil
         guard !store.isPrivate, !store.isLittle, !store.isParked,
-              payload.profile == target.profileID, payload.space != target.id else { return false }
-        let list = ProfileManager.shared.spaces(for: payload.profile)
+              payload.space != target.id else { return false }
+        let manager = ProfileManager.shared
+        let list = Spaces.strip(profiles: manager.profiles, spacesOf: {
+            manager.spaces(for: $0.id)
+        }, order: manager.stripOrder)
         guard let from = list.firstIndex(where: { $0.id == payload.space }),
               let to = list.firstIndex(where: { $0.id == target.id }) else { return false }
         Motion.animate(Look.quick) {
-            store.reorderSpaces(from: from, to: to > from ? to + 1 : to, in: payload.profile)
+            store.reorderSpaces(from: from, to: to > from ? to + 1 : to)
         }
         axAnnounce("Moved \(list[from].name) \(to > from ? "after" : "before") \(target.name).")
         return true

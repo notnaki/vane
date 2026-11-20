@@ -485,8 +485,19 @@ enum Spaces {
     ///
     /// Generic over the profile and pure, so `selfcheck --pure` can prove the order with no
     /// profiles on disk and no `spaces.json` to read.
-    static func strip<P>(profiles: [P], spacesOf: (P) -> [Space]) -> [Space] {
-        profiles.flatMap(spacesOf)
+    ///
+    /// `order` is the user's global order from the footer dots, which may put Spaces of
+    /// different profiles side by side. A Space it does not name keeps its place in the
+    /// profile-by-profile walk, so Spaces made after the last reorder need no entry.
+    static func strip<P>(profiles: [P], spacesOf: (P) -> [Space], order: [UUID] = []) -> [Space] {
+        let all = profiles.flatMap(spacesOf)
+        guard !order.isEmpty else { return all }
+        var rank: [UUID: Int] = [:]
+        for (index, id) in order.enumerated() where rank[id] == nil { rank[id] = index }
+        return all.enumerated().sorted { l, r in
+            let a = rank[l.element.id] ?? Int.max, b = rank[r.element.id] ?? Int.max
+            return a != b ? a < b : l.offset < r.offset
+        }.map(\.element)
     }
 
     /// Which way the strip slides going from one Space to another: +1 when the destination is
