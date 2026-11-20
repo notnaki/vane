@@ -20,6 +20,7 @@ import XCTest
         let ids = ArcImport.profileIDs(for: scan, counts: &counts)
 
         let personal = try XCTUnwrap(ids["Profile 2"])
+        defer { if personal != ProfileManager.defaultID { _ = ProfileManager.shared.delete(personal) } }
         XCTAssertNotEqual(personal, ProfileManager.defaultID,
                           "Arc's Profile 2 was merged into Vane's default profile by name")
     }
