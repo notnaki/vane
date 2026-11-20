@@ -750,8 +750,12 @@ enum ArcImport {
                 : (byDirectory[directory]
                    ?? scan.sidebar.spaces.first { $0.profileDirectory == directory }?.title
                    ?? directory)
+            // Vane's default profile is born named "Personal", and Arc's `Default` already
+            // owns it above. Matching another Arc profile by name onto it would merge two
+            // Arc profiles' spaces into one, so only other Vane profiles can match by name.
             if let existing = profiles
-                .first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                .first(where: { $0.id != ProfileManager.defaultID
+                    && $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
                 out[directory] = existing.id
             } else {
                 out[directory] = ProfileManager.shared.create(name: name).id
@@ -759,6 +763,25 @@ enum ArcImport {
             }
         }
         return out
+    }
+
+    /// The empty Space a profile was born with, when it is named after the profile: no tabs, no
+    /// folders, no split layout. Any window
+    /// showing it saves first, and the emptiness check reads what is on disk after that, so
+    /// unsaved tabs keep it from counting as a placeholder.
+    @MainActor static func emptyPlaceholder(in profileID: UUID) -> UUID? {
+        let manager = ProfileManager.shared
+        guard let profile = manager.profiles.first(where: { $0.id == profileID }),
+              let candidate = manager.spaces(for: profileID).first(where: { $0.name == profile.name })
+        else { return nil }
+        let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == candidate.id }
+        guard showing.allSatisfy({ $0.saveCurrentSpace() }),
+              let placeholder = manager.spaces(for: profileID).first(where: { $0.id == candidate.id }),
+              placeholder.tabURLs.isEmpty, (placeholder.pinnedTabURLs ?? []).isEmpty, placeholder.layout == nil,
+              [TabKind.pinned, .today].allSatisfy({
+                  TabStore.savedShape($0, space: placeholder.id, profileID: profileID)?.isEmpty ?? true })
+        else { return nil }
+        return placeholder.id
     }
 
     /// One Arc space, written down as a Vane Space: its theme, its Pinned rows with the
@@ -770,10 +793,10 @@ enum ArcImport {
     ///
     /// The new Space identity, or nil when skipped. Link rules only target Spaces actually
     /// imported by this run, never an unrelated Vane Space sharing the same display name.
-    @MainActor private static func write(_ arc: ArcSpace, into profileID: UUID,
+    @MainActor private static func write(_ arc: ArcSpace, into profileID: UUID, ignoring placeholder: UUID? = nil,
                                          counts: inout Counts) async throws -> UUID? {
         guard !ProfileManager.shared.spaces(for: profileID)
-            .contains(where: { $0.name.caseInsensitiveCompare(arc.title) == .orderedSame })
+            .contains(where: { $0.id != placeholder && $0.name.caseInsensitiveCompare(arc.title) == .orderedSame })
         else { counts.spacesSkipped += 1; return nil }
 
         let (pins, pinnedURLs, pinnedTitles) = shape(arc.pinned)
@@ -980,6 +1003,11 @@ enum ArcImport {
         try Task.checkCancellation()
         counts.noKey = scan.requiresKey && key == nil
 
+        // A fresh default profile is born with an empty first Space named after itself. Arc's
+        // Spaces don't count it as a duplicate name, and it goes once they are written, so a
+        // window showing it moves to an imported Space instead of being left with none.
+        let placeholder = scan.sidebar.spaces.contains(where: { ids[$0.profileDirectory] == ProfileManager.defaultID })
+            ? emptyPlaceholder(in: ProfileManager.defaultID) : nil
         var gained: Set<UUID> = []
         var spaceIDs: [String: UUID] = [:]
         defer { refreshSpaces(afterImporting: gained) }
@@ -987,10 +1015,17 @@ enum ArcImport {
             try Task.checkCancellation()
             guard let profileID = ids[space.profileDirectory],
                   ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else { continue }
-            if let id = try await write(space, into: profileID, counts: &counts) {
+            let ignoring = profileID == ProfileManager.defaultID ? placeholder : nil
+            if let id = try await write(space, into: profileID, ignoring: ignoring, counts: &counts) {
                 spaceIDs[space.id] = id
                 gained.insert(profileID)
             }
+        }
+        // Still empty after the writes, with a real Space beside it: the placeholder goes.
+        // A cancelled or fully skipped import keeps it, so the profile is never left bare.
+        if let placeholder, gained.contains(ProfileManager.defaultID),
+           emptyPlaceholder(in: ProfileManager.defaultID) == placeholder {
+            Spaces.delete(placeholder, in: ProfileManager.defaultID)
         }
         importRouting(scan.routing, unavailable: scan.routingUnavailable, spaceIDs: spaceIDs, counts: &counts)
         for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
