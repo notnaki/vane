@@ -543,6 +543,9 @@ private struct BrowserWindowContent: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ProfileChromeObserved var profiles = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(TabStrip.prefKey, store: .vane) private var tabStripOn = false
+    /// Tabs across the top stand in for a hidden sidebar. See `TabStrip`.
+    private var stripShown: Bool { tabStripOn && !store.sidebarShown && !store.isLittle }
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     private var peeking: Bool {
         get { store.sidebarPeeking }
@@ -587,7 +590,15 @@ private struct BrowserWindowContent: View {
                 floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
-                page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
+                page: VStack(spacing: 0) {
+                    if stripShown {
+                        TabStripBar(store: store)
+                            .padding(.leading, store.libraryOpen ? Look.cardGap : TabStrip.lightsClearance)
+                            .transition(.opacity)
+                    }
+                    WebCard(topGap: stripShown ? 0 : Look.cardGap)
+                }
+                .modifier(DownloadFeedbackAnchor(target: .page))
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
                         layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
                             spaces: spaceCount, isPrivate: store.isPrivate,
@@ -659,13 +670,21 @@ private struct BrowserWindowContent: View {
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .onChange(of: store.sidebarShown) { peekTask?.cancel() }
+        // Turning the bar on folds the sidebar away; turning it off brings it back.
+        .onChange(of: tabStripOn) { _, on in
+            if store.sidebarShown == on { store.toggleSidebar() }
+        }
         // Opening the Library ends any peek in flight, for the same reason: the lights
         // belong to the rail's row now, not to a panel sliding in behind it.
         .onChange(of: store.libraryOpen) {
             if store.libraryOpen { peekTask?.cancel(); peeking = false }
         }
         .librarySwipe(store)
-        .onAppear { store.applySpaceAppearance() }
+        .onAppear {
+            store.applySpaceAppearance()
+            // New windows open on the bar, not the sidebar it stands in for.
+            if tabStripOn && store.sidebarShown && !store.isLittle { store.sidebarShown = false }
+        }
         .environmentObject(store.spaceGesture)
         // A cached profile adopts the window's current presentation at rest. The
         // revision survives detachment, unlike the transaction used to write the model.
@@ -708,7 +727,8 @@ private struct BrowserWindowContent: View {
                                               blocked: !visible || store.palette != nil))
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
-                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
+                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking,
+                strip: stripShown))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
             .zIndex(1)
@@ -739,6 +759,7 @@ private struct SidebarSurfaceLayout: ViewModifier {
     let floating: Bool
     let libraryOpen: Bool
     let peeking: Bool
+    let strip: Bool
 
     func body(content: Content) -> some View {
         content
@@ -761,7 +782,8 @@ private struct SidebarSurfaceLayout: ViewModifier {
             .modifier(SidebarTrafficLightMotion(store: store,
                 slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
                 inset: floating ? Look.floatingSidebarGap : 0,
-                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking))
+                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
+                strip: strip))
     }
 }
 

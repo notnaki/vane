@@ -10,6 +10,8 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     var visibility: CGFloat
     let libraryOpen: Bool
     let peeking: Bool
+    /// Tabs across the top: the lights stay, risen to the bar's centre line.
+    let strip: Bool
 
     nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
         get { AnimatablePair(AnimatablePair(slide, inset), visibility) }
@@ -26,8 +28,10 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
             .opacity(visibility)
             .background {
                 TrafficLightPlacement(store: store,
-                    offset: libraryOpen ? .zero : CGPoint(x: slide + inset, y: inset),
-                    visibility: libraryOpen ? 1 : visibility, peeking: peeking)
+                    offset: libraryOpen ? .zero
+                        : strip && !peeking ? CGPoint(x: 0, y: -TabStrip.lightsLift)
+                        : CGPoint(x: slide + inset, y: inset),
+                    visibility: libraryOpen || strip ? 1 : visibility, peeking: peeking)
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false).accessibilityHidden(true)
             }

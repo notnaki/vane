@@ -151,7 +151,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case printPage, settings
     case openFile, savePageAs, sharePage, capturePage, captureFullPage
     // View
-    case reload, hardReload, openLocation, find, toggleSidebar
+    case reload, hardReload, openLocation, find, toggleSidebar, toggleTabStrip
     case nextFocusArea
     case findNext, findPrevious
     case actualSize, zoomIn, zoomOut, fullScreen
@@ -227,6 +227,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext: "Find Next"
         case .findPrevious: "Find Previous"
         case .toggleSidebar: "Toggle Sidebar"
+        case .toggleTabStrip: "Tabs Across the Top"
         case .nextFocusArea: "Next Focus Area"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
@@ -317,7 +318,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
              .sharePage, .capturePage, .captureFullPage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
-             .toggleSidebar, .actualSize,
+             .toggleSidebar, .toggleTabStrip, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
              .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .copyPageURL, .showLibrary: .view
         case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
@@ -369,6 +370,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext:         Keybinding("g", .command)
         case .findPrevious:     Keybinding("g", [.command, .shift])
         case .toggleSidebar:    Keybinding("s", .command)
+        case .toggleTabStrip:   Keybinding("s", [.command, .option])
         case .nextFocusArea:    Keybinding("\u{F709}") // F6, like other browsers
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)
