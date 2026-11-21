@@ -10,7 +10,25 @@ import XCTest
         weak var value: NSButton?
         init(_ value: NSButton) { self.value = value }
     }
-    private final class Controls { var fields: [String: WeakButton] = [:] }
+    private final class Controls {
+        var fields: [String: WeakButton] = [:]
+        var activationUpdates = 0
+        var activeState: ControlActiveState?
+    }
+    /// Counts the hosting window's activation changes as SwiftUI delivers them, in the
+    /// same pass as the section's. It sits outside the scroll view, and counts only a
+    /// changed `controlActiveState`, so nothing scrolling does reaches it.
+    private struct ActivationProbe: NSViewRepresentable {
+        let controls: Controls
+        func makeNSView(context: Context) -> NSView { NSView() }
+        func updateNSView(_ view: NSView, context: Context) {
+            // macOS 26 updates a representable for any environment change; macOS 27
+            // only for the values it reads.
+            let state = context.environment.controlActiveState
+            if controls.activeState != nil, controls.activeState != state { controls.activationUpdates += 1 }
+            controls.activeState = state
+        }
+    }
     private struct Control: NSViewRepresentable {
         let id: String
         let controls: Controls
@@ -47,6 +65,7 @@ import XCTest
                         }
                 }
             }
+            .background(ActivationProbe(controls: controls))
         }
     }
     private func descendants<T: NSView>(_ view: NSView, _: T.Type) -> [T] {
@@ -76,7 +95,20 @@ import XCTest
         let lease = try await NativeFixtureApplicationLoop.acquire()
         var failure: (any Error)?
         do {
-            for count in [100, 1_000] { try await checkDefaultGeometry(count: count) }
+            for count in [100, 1_000] {
+                // Losing or regaining key status is a new environment, and on macOS 26
+                // every root is resubmitted to receive it. An earlier fixture's activation
+                // policy can still be settling after admission, and a pass that lands in
+                // cannot show what scrolling alone does. Take that from a fresh fixture.
+                var attempts = 1
+                while try await !checkDefaultGeometry(count: count) {
+                    guard attempts < 3 else {
+                        XCTFail("The window's activation changed during every scroll pass (count=\(count))")
+                        break
+                    }
+                    attempts += 1
+                }
+            }
         } catch { failure = error }
         do { try await lease.close() }
         catch {
@@ -86,7 +118,9 @@ import XCTest
         if let failure { throw failure }
     }
 
-    private func checkDefaultGeometry(count: Int) async throws {
+    /// False when the window's activation changed while scrolling and roots were
+    /// resubmitted, leaving reuse unmeasured.
+    private func checkDefaultGeometry(count: Int) async throws -> Bool {
         let store = TabStore(isPrivate: true, session: [])
         store.sharingReady = false
         let tabs = (0..<count).map { index in
@@ -138,6 +172,7 @@ import XCTest
         // Initial activation can refresh existing roots' SwiftUI environment.
         // Measure reuse from the admitted owner, before the first scroll action.
         let admittedRootUpdates = report.batchCounts.rootUpdates
+        let admittedActivationUpdates = controls.activationUpdates
         print("RESIDENT_BATCH_ADMISSION count=\(count) rootUpdates=\(admittedRootUpdates)")
         var previousControls: [String: WeakButton] = [:]
         for fraction in [CGFloat(0), 0.5, 1, 0.25, 0] {
@@ -240,9 +275,15 @@ import XCTest
         XCTAssertTrue(highlighted.cell?.isHighlighted == true)
         XCTAssertEqual(report.batchCounts.detachedProtectionOwnerTreeScans, 0)
         report.recordsProtectionTreeScans = false
-        print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates)")
-        XCTAssertEqual(report.batchCounts.rootUpdates, admittedRootUpdates,
-                       "Scrolling alone must reuse roots rather than resubmit SwiftUI content")
+        // The probe and the section update in one pass, so flush before reading both.
+        host.layoutSubtreeIfNeeded()
+        let activationUpdates = controls.activationUpdates - admittedActivationUpdates
+        print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates) activationUpdates=\(activationUpdates)")
+        let reused = report.batchCounts.rootUpdates == admittedRootUpdates
+        if activationUpdates == 0 || reused {
+            XCTAssertEqual(report.batchCounts.rootUpdates, admittedRootUpdates,
+                           "Scrolling alone must reuse roots rather than resubmit SwiftUI content")
+        }
         // Stable owners may interleave after a deliberate transpose. Report the
         // exception truthfully instead of claiming 24 controls / 3 roots, and
         // keep attachment bounded by resident row identities, not total rows.
@@ -269,6 +310,6 @@ import XCTest
                 XCTAssertTrue(previous === field, "Reordering preserves the existing native control identity")
             }
         }
-
+        return activationUpdates == 0 || reused
     }
 }
