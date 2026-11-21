@@ -580,6 +580,7 @@ private struct GeneralPane: View {
     @AppStorage(UpdateChannel.preferenceKey) private var updateChannel = UpdateChannel.stable.rawValue
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
     @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
+    @AppStorage(TabStrip.prefKey) private var tabStrip = false
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -604,6 +605,10 @@ private struct GeneralPane: View {
                 SettingsRow("Space icons in the footer", icon: "square.grid.2x2.fill", tint: .purple) {
                     Toggle("Show Space icons in the footer", isOn: $showSpaceIcons).labelsHidden()
                         .help("Show every Space’s icon. Turn off to use dots for inactive Spaces.")
+                }
+                SettingsRow("Tabs across the top", icon: "rectangle.topthird.inset.filled", tint: .blue) {
+                    Toggle("Tabs across the top", isOn: $tabStrip).labelsHidden()
+                        .help("A compact tab bar replaces the sidebar. \u{2318}S still shows the sidebar; \u{2325}\u{2318}S switches.")
                 }
             }
 

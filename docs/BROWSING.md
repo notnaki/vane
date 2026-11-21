@@ -61,6 +61,27 @@ its saved page, its sidebar row shows `/` before its title and offers **Return t
 Tab**; returning loads the pinned URL again. Favorites belong to a profile, while pinned
 and Today tabs belong to a Space. Library lists Spaces across all profiles.
 
+### Tabs across the top
+
+Turn on **Settings → General → Tabs across the top**, choose **View → Tabs Across the
+Top**, or press `⌥⌘S` to show tabs in a compact bar beside the window buttons instead of
+in the sidebar. The setting applies to every window; Little Vane keeps its own toolbar.
+
+- The bar starts with the current Space's icon. Click it to switch to any Space, grouped
+  by profile, or to create a Space. Creating one opens the sidebar to name it.
+- Favourites and pinned tabs appear as icons, followed by a divider and Today tabs with
+  their titles. Hover a Today tab to show its close button; right-click any tab for the
+  same menu as the sidebar. **+** opens a new tab.
+- Titles narrow as tabs are added. When even narrow tabs no longer fit, the row scrolls
+  and follows the selected tab.
+- Swipe horizontally over the bar to move one Space left or right. `⌃1`–`⌃9` and
+  `⌥⌘←`/`⌥⌘→` also switch Spaces. With the bar, Spaces change immediately instead of
+  sliding.
+- `⌘S` still shows the sidebar; the bar steps aside while the sidebar is open. Hovering the
+  window's leading edge peeks the sidebar, and Library opens as usual.
+- Reorder tabs and manage folders in the sidebar; the bar shows pinned folders' tabs in
+  order without their folders.
+
 ## Copy a clean link
 
 Press **⌘⇧C** (**View → Copy Page URL**) to copy the current page's URL with known
@@ -386,6 +407,7 @@ evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
+| Tabs across the top | `⌥⌘S` |
 
 Shortcuts can be changed in Settings. The menu bar shows the current bindings, including
 numbered tab selection and search commands. Choose **Prefer Website** for a shortcut to
