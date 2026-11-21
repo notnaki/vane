@@ -5,6 +5,8 @@ import WebKit
 
 /// Opt-in checks against unmodified upstream packages in an isolated signed app.
 /// Run: VANE_DATA_DIR=~/Downloads/<isolated-folder> Vane.app/Contents/MacOS/vane extensioncheck
+/// An optional fixtures/bitwarden-account.json (scripts/seed-extensioncheck-vault.mjs) adds
+/// vault unlock and autofill against a disposable self-hosted server.
 /// The fixture folders and accepted installation records are retained for restart checks.
 @MainActor enum ExtensionAppChecks {
     private static var runner: Runner?
@@ -85,6 +87,8 @@ import WebKit
     private struct SettingProbe: Codable { let contextID: String; let brightness: Int }
     private struct Finding: Codable { let workflow: String; let result: Result; let detail: String }
     private struct Report: Codable { let profileID: UUID; let findings: [Finding] }
+    /// Throwaway self-hosted test account; see docs/EXTENSION-VALIDATION.md.
+    private struct VaultAccount: Codable { let server, email, masterPassword, username, password: String }
     private struct Failure: LocalizedError {
         let errorDescription: String?
         init(_ message: String) { errorDescription = message }
@@ -113,7 +117,7 @@ import WebKit
                 HTTPSOnly.enabled = false
                 let profile = ProfileManager.shared.active
                 profileID = profile.id
-                print("extensioncheck isolated profileID=\(profile.id.uuidString); no accounts or credentials are used")
+                print("extensioncheck isolated profileID=\(profile.id.uuidString); no real accounts or credentials are used")
                 fflush(stdout)
                 // Explicit fixture install consent is injected below. Optional runtime
                 // requests are denied, preventing an unexpected modal from hanging checks.
@@ -145,7 +149,7 @@ import WebKit
                 if !syntheticOnly {
                     await darkReader(tab: tab, base: base)
                     await blocker(tab: tab, base: base)
-                    await passwordManager(tab: tab)
+                    await passwordManager(tab: tab, base: base)
                 }
                 await syntheticRuntime(tab: tab)
             } catch {
@@ -270,25 +274,155 @@ import WebKit
             } catch { record("uBlock Origin Lite package", .unavailable, error.localizedDescription) }
         }
 
-        private func passwordManager(tab: Tab) async {
+        private func passwordManager(tab: Tab, base: String) async {
+            var authenticated = false
             do {
-                let context = try await install("bitwarden-firefox")
-                if let popup = await popup(context, tab: tab, label: "Bitwarden unauthenticated popup",
-                                           expected: "/log in|login|create account|get started/i.test(document.body.innerText)") {
-                    let clicked = try await popup.evaluateJavaScript("""
-                        (() => { const item = [...document.querySelectorAll('button,a')].find(e => /settings/i.test((e.getAttribute('aria-label') || '') + ' ' + e.innerText)); if (!item) return false; item.click(); return true; })()
-                        """) as? Bool == true
-                    if clicked {
-                        try await waitJavaScript("Bitwarden unauthenticated settings render", in: popup,
-                                                 script: "/settings|environment|server/i.test(document.body.innerText)")
-                        record("Bitwarden unauthenticated settings", .verified, "Opened the visible Settings control without entering account or vault credentials.")
-                    } else {
-                        record("Bitwarden unauthenticated settings", .unavailable, "No Settings control was exposed on the observed signed-out popup screen.")
+                var context = try await install("bitwarden-firefox")
+                let version = context.webExtension.version ?? "unknown"
+                let accountURL = directory.appendingPathComponent("fixtures/bitwarden-account.json")
+                guard FileManager.default.fileExists(atPath: accountURL.path), let profileID else {
+                    if let popup = await popup(context, tab: tab, label: "Bitwarden unauthenticated popup",
+                                               expected: "/log in|login|create account|get started/i.test(document.body.innerText)") {
+                        let clicked = try await popup.evaluateJavaScript("""
+                            (() => { const item = [...document.querySelectorAll('button,a')].find(e => /settings/i.test((e.getAttribute('aria-label') || '') + ' ' + e.innerText)); if (!item) return false; item.click(); return true; })()
+                            """) as? Bool == true
+                        if clicked {
+                            try await waitJavaScript("Bitwarden unauthenticated settings render", in: popup,
+                                                     script: "/settings|environment|server/i.test(document.body.innerText)")
+                            record("Bitwarden unauthenticated settings", .verified, "Opened the visible Settings control without entering account or vault credentials.")
+                        } else {
+                            record("Bitwarden unauthenticated settings", .unavailable, "No Settings control was exposed on the observed signed-out popup screen.")
+                        }
                     }
+                    _ = await options(context, label: "Bitwarden options")
+                    record("Bitwarden authenticated workflows", .unavailable, "No fixtures/bitwarden-account.json; account login, vault unlock and autofill were not tested.")
+                    return
                 }
-                _ = await options(context, label: "Bitwarden options")
-                record("Bitwarden authenticated workflows", .unavailable, "Account login, vault unlock, autofill, native messaging, and credential saving were not tested.")
-            } catch { record("Bitwarden package", .unavailable, error.localizedDescription) }
+                authenticated = true
+                let account = try JSONDecoder().decode(VaultAccount.self, from: Data(contentsOf: accountURL))
+                // The account file must never carry real credentials: loopback servers only.
+                guard let server = URL(string: account.server), server.scheme == "https",
+                      ["127.0.0.1", "localhost", "127-0-0-1.local-ip.sh"].contains(server.host?.lowercased() ?? "") else {
+                    throw Failure("bitwarden-account.json must name an https loopback server.")
+                }
+                // Bitwarden selects its Safari code on WebKit and retries a missing desktop
+                // "sleep" request without yielding. The user-facing remedy is the explicit
+                // error-only mode in the extension manager; accept that same review here.
+                let host = ExtensionHost.host(for: profileID)
+                let path = directory.appendingPathComponent("fixtures/bitwarden-firefox").resolvingSymlinksInPath().path
+                guard try await host.setNativeMessagingErrorCompatibility(true, for: path, review: { _ in true }),
+                      let current = host.loaded.first(where: { $0.path == path })?.context else {
+                    throw Failure("Error-only desktop compatibility could not be enabled.")
+                }
+                context = current
+                record("Bitwarden error-only desktop compatibility", .verified,
+                       "Explicit review accepted; desktop requests receive paced errors and no desktop app is contacted.")
+                guard let popup = await popup(context, tab: tab, label: "Bitwarden \(version) popup",
+                    expected: "/^#\\/(intro-carousel|login|lock|tabs\\/)/.test(location.hash) && document.body.innerText.trim().length > 20") else {
+                    throw Failure("The Bitwarden popup did not become usable.")
+                }
+                let helpers = """
+                    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+                    const control = text => [...document.querySelectorAll('button,a')]
+                      .filter(e => e.getClientRects().length > 0 && e.innerText.trim() === text).pop();
+                    const until = async (what, probe, ms = 10000, every = 100) => {
+                      for (const end = Date.now() + ms;;) {
+                        const value = probe(); if (value) return value;
+                        if (Date.now() > end) throw new Error('Timed out: ' + what + ' at ' + location.hash + ' showing: ' + document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 160));
+                        await sleep(every);
+                      }
+                    };
+                    const type = (field, value) => {
+                      field.focus();
+                      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, value);
+                      field.dispatchEvent(new Event('input', {bubbles: true}));
+                      field.dispatchEvent(new Event('change', {bubbles: true}));
+                    };
+
+                    """
+                // Only the popup's own visible controls are used: the same fields and
+                // buttons a person fills in, set and activated from script, not the pointer.
+                let outcome = try await evaluate(helpers + """
+                    const unlocked = () => location.hash.startsWith('#/tabs/');
+                    if (unlocked()) return 'was already unlocked';
+                    const locked = location.hash.startsWith('#/lock');
+                    if (!locked) {
+                      // The welcome screen can ignore a press while the extension is still starting.
+                      await until('login form', () => location.hash.startsWith('#/login') || void control('Log in')?.click(), 30000, 1000);
+                      const selector = await until('server selector', () => location.hash.startsWith('#/login') && (control('bitwarden.com') || control('self-hosted')));
+                      if (selector.innerText.trim() === 'bitwarden.com') {
+                        selector.click();
+                        (await until('self-hosted option', () => control('self-hosted'))).click();
+                        type(await until('server URL field', () => document.getElementById('self_hosted_env_settings_form_input_base_url')), account.server);
+                        await sleep(200);
+                        control('Save').click();
+                        await until('server saved', () => !document.getElementById('self_hosted_env_settings_form_input_base_url') && control('self-hosted'));
+                      }
+                      type(await until('email field', () => document.querySelector('input[type=email]')), account.email);
+                      await sleep(200);
+                      control('Continue').click();
+                    }
+                    type(await until('master password field', () => document.querySelector('input[type=password]')), account.masterPassword);
+                    await sleep(200);
+                    document.querySelector('button[type=submit]').click();
+                    await until('vault opens', unlocked, 40000);
+                    return locked ? 'unlocked a locked vault with the master password' : 'logged in and unlocked with email and master password';
+                    """, in: popup, arguments: ["account": ["server": account.server, "email": account.email, "masterPassword": account.masterPassword]], seconds: 150) // above the script's own waits (≤130 s)
+                record("Bitwarden \(version) vault unlock", .verified,
+                       "Real popup form: \(outcome); vault synced from the throwaway self-hosted server \(URL(string: account.server)?.host ?? "unknown").")
+                // Like a person opening a sign-in page in a new tab with the vault unlocked.
+                // The tab that was open before this install did not always receive the
+                // extension's messages in the same session; see docs/EXTENSION-VALIDATION.md.
+                host.closeActionPopup(context, for: tab)
+                try await wait("Bitwarden popup closes") { host.actionPopupWindow(context, for: tab) == nil }
+                guard let store else { throw Failure("No browser window.") }
+                let page = store.newBlankTab()
+                page.go(URL(string: base + "/login")!)
+                try await wait("login fixture loads") { page.web.title == "Vane login fixture" && !page.web.isLoading }
+                store.current = page.id
+                try await wait("login fixture is the selected tab") { store.active === page }
+                guard let reader = await self.popup(context, tab: page, label: "Bitwarden \(version) popup on the login page",
+                    expected: "location.hash.startsWith('#/tabs/') && document.body.innerText.trim().length > 20") else {
+                    throw Failure("The Bitwarden popup did not become usable.")
+                }
+                // Bitwarden injects its form reader after each page load, and its popup reads
+                // the page once when it opens. Observe that reader instead of guessing a delay;
+                // reopening the popup afterwards makes it read the ready page.
+                _ = try await evaluate(helpers + """
+                    const tab = (await browser.tabs.query({active: true, currentWindow: true}))[0];
+                    if (tab?.url !== url) throw new Error('The extension does not see the login fixture as the active tab.');
+                    let ready = false;
+                    await until('Bitwarden form reader in the login page', () => {
+                      Promise.race([browser.tabs.sendMessage(tab.id, {command: 'collectPageDetailsImmediately'}), sleep(1000)])
+                        .then(details => { ready ||= !!details?.fields?.length; }, () => {});
+                      return ready;
+                    }, 30000, 500);
+                    return 'ready';
+                    """, in: reader, arguments: ["url": base + "/login"], seconds: 40)
+                host.closeActionPopup(context, for: page)
+                try await wait("Bitwarden popup closes") { host.actionPopupWindow(context, for: page) == nil }
+                guard let filler = await self.popup(context, tab: page, label: "Bitwarden \(version) popup on the ready login page",
+                    expected: "location.hash.startsWith('#/tabs/') && document.body.innerText.trim().length > 20") else {
+                    throw Failure("The Bitwarden popup did not become usable.")
+                }
+                let toast = try await evaluate(helpers + """
+                    (await until('Fill control for the matching login', () => control('Fill'), 20000)).click();
+                    await sleep(1500);
+                    return (document.getElementById('toast-container')?.innerText ?? '').replace(/\\s+/g, ' ').trim();
+                    """, in: filler, seconds: 40)
+                let read = "return JSON.stringify([document.getElementById('username').value, document.getElementById('password').value]);"
+                var values: [String] = []
+                let deadline = ContinuousClock.now + .seconds(10)
+                while true {
+                    values = (try? JSONDecoder().decode([String].self, from: Data(try await evaluate(read, in: page.web).utf8))) ?? []
+                    if values == [account.username, account.password] || ContinuousClock.now >= deadline { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                let filled = values == [account.username, account.password]
+                record("Bitwarden \(version) popup autofill", filled ? .verified : .failed,
+                       "Fill for the matching vault item on a loopback login form in a new tab: username matches=\(values.first == account.username), password matches=\(values.last == account.password)\(toast.isEmpty ? "" : "; popup message: " + toast).")
+                record("Bitwarden desktop integration", .unavailable, "Biometric unlock and other desktop-app features need native messaging, which Vane does not provide.")
+            } catch { record("Bitwarden package", authenticated ? .failed : .unavailable, error.localizedDescription) }
         }
 
         private func syntheticRuntime(tab: Tab) async {
@@ -416,9 +550,32 @@ import WebKit
         private func waitJavaScript(_ description: String, in web: WKWebView, script: String, seconds: Int = 10) async throws {
             let deadline = ContinuousClock.now + .seconds(seconds)
             while true {
-                if !web.isLoading, (try? await web.evaluateJavaScript(script)) as? Bool == true { return }
+                if !web.isLoading, (try? await evaluate("return (" + script + ") === true ? 'true' : 'false';", in: web, seconds: 5)) == "true" { return }
                 guard ContinuousClock.now < deadline else { throw Failure("Timed out: " + description) }
                 try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+
+        /// Bounded: a page that is busy, navigating or closed never completes its reply,
+        /// and an unbounded wait would hold the whole run until the overall deadline.
+        private func evaluate(_ script: String, in web: WKWebView, arguments: [String: Any] = [:], seconds: Double = 20) async throws -> String {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                var finished = false
+                web.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { result in
+                    guard !finished else { return }
+                    finished = true
+                    switch result {
+                    case .success(let value): continuation.resume(returning: value as? String ?? "")
+                    case .failure(let error):
+                        let message = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
+                        continuation.resume(throwing: Failure(message ?? error.localizedDescription))
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                    guard !finished else { return }
+                    finished = true
+                    continuation.resume(throwing: Failure("Timed out: page JavaScript did not reply within \(Int(seconds)) seconds."))
+                }
             }
         }
 
@@ -491,6 +648,8 @@ import WebKit
                 else if path == "/blocked-by-fixture.js" { body = "window.fixtureBlocked=true;" }
                 else if path == "/block-check" {
                     body = "<title>Vane DNR fixture</title><body><h1>Controlled DNR check</h1><script src='/allowed-by-fixture.js'></script><script src='/blocked-by-fixture.js'></script></body>"
+                } else if path == "/login" {
+                    body = "<title>Vane login fixture</title><body><h1>Sign in</h1><form action='/page' method='get'><label>Username <input id='username' name='username' type='text' autocomplete='username'></label> <label>Password <input id='password' name='password' type='password' autocomplete='current-password'></label> <button type='submit'>Sign in</button></form></body>"
                 } else {
                     body = "<title>Vane extension fixture</title><style>body{background:#fff;color:#111;font:20px system-ui;padding:40px}</style><body><h1>Extension fixture</h1><p>A controlled white page for content-script checks.</p><a href='/page'>Fixture link</a></body>"
                 }
