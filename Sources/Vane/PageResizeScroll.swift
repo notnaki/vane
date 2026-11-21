@@ -50,10 +50,14 @@ import WebKit
         // short of the visible one.
         // A scroll's event runs after the resize event of the same frame, by
         // which time the range it was made in is gone. So a resize settles what
-        // moved first, and there forward from the end to the end of that earlier
-        // range was following it. Forward to anywhere else was made in this one,
-        // by a resize handler (a reader keeping its paragraph in place). One
-        // already following stays so: content added since has moved that end.
+        // moved first, ahead of the page's own handlers, and there forward from
+        // the end to the end of that earlier range was following it. One already
+        // following stays so: content added since has moved that end. Forward to
+        // anywhere but the end after those handlers was made in this range, by
+        // one of them (a reader keeping its paragraph in place), and is where it
+        // wants to be even if it was following until then.
+        // ponytail: a handler the page added in the capture phase runs ahead of
+        // that first look, and its scroll reads as made before the resize.
         // ponytail: a scroller the page itself empties below its position mid-drag
         // reads as clamped and returns if the content does, until tracking stops.
         const settle = (el, resizing) => {
@@ -76,10 +80,10 @@ import WebKit
           if (el && el.nodeType === 1) settle(el, false);
         };
         // Only ever forward, toward what a clamp took: never back over a scroll.
-        const restore = () => {
+        const restore = resizing => {
           for (const [el, record] of wants) {
             if (!el.isConnected) { wants.delete(el); continue; }
-            settle(el, true);
+            settle(el, resizing);
             const [left, top] = axes.map((axis, i) => {
               const want = isFinite(record[i].want) ? record[i].want : Math.sign(record[i].want) * el[axis[1]];
               return Math.abs(el[axis[0]]) < Math.abs(want) ? want : el[axis[0]];
@@ -89,22 +93,26 @@ import WebKit
           }
         };
         // Once with the new viewport laid out, and again after the page's own
-        // resize handlers have sized what they size.
-        const resized = () => { if (wants.size) { restore(); requestAnimationFrame(restore); } };
+        // resize handlers have sized what they size. Capturing listeners on the
+        // window run before the page's ordinary ones.
+        const resizing = () => { for (const el of wants.keys()) settle(el, true); };
+        const resized = () => { if (wants.size) { restore(false); requestAnimationFrame(() => restore(true)); } };
         // A page hidden mid-drag (into the back/forward cache) never hears its end.
         const stop = () => {
           clearTimeout(state.timer);
           document.removeEventListener('scroll', scrolled, true);
+          removeEventListener('resize', resizing, true);
           removeEventListener('resize', resized);
           removeEventListener('pagehide', stop);
           delete globalThis.__vaneResizeScroll;
         };
         state = globalThis.__vaneResizeScroll = { timer: 0, end() {
-          restore();
+          restore(true);
           clearTimeout(state.timer);
           state.timer = setTimeout(stop, 500);
         } };
         document.addEventListener('scroll', scrolled, { capture: true, passive: true });
+        addEventListener('resize', resizing, true);
         addEventListener('resize', resized);
         addEventListener('pagehide', stop);
       } catch (_) { }
