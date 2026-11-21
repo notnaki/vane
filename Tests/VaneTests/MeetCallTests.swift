@@ -383,7 +383,14 @@ import XCTest
             }
             let tab = store.newBlankTab(focus: true)
             tab.web.loadHTMLString("<title>Call fixture</title><button><span>call_end</span></button>", baseURL: URL(string: "https://meet.google.com/abc-defg-hij"))
-            try await compatibilityWait { tab.inMeetCall && tab.web.window === window && !tab.web.isHiddenOrHasHiddenAncestor }
+            try await compatibilityWait {
+                // An earlier fixture's hide or activation-policy transition can settle
+                // during this wait. A hidden app's windows are not visible, so a returning
+                // call rightly stays popped out; nothing below yields once this holds.
+                reassertForeground(window, key: false)
+                return tab.inMeetCall && tab.web.window === window && !tab.web.isHiddenOrHasHiddenAncestor
+                    && !NSApp.isHidden && window.isVisible
+            }
             store.switchTo(space: second)
             XCTAssertNotNil(CallPopout.window(for: tab))
             store.switchTo(space: source)
