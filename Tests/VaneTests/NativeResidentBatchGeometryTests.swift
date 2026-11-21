@@ -13,18 +13,20 @@ import XCTest
     private final class Controls {
         var fields: [String: WeakButton] = [:]
         var activationUpdates = 0
+        var activeState: ControlActiveState?
     }
     /// Counts the hosting window's activation changes as SwiftUI delivers them, in the
-    /// same pass as the section's. It sits outside the scroll view and the section, so
-    /// nothing they do reaches it.
+    /// same pass as the section's. It sits outside the scroll view, and counts only a
+    /// changed `controlActiveState`, so nothing scrolling does reaches it.
     private struct ActivationProbe: NSViewRepresentable {
         let controls: Controls
         func makeNSView(context: Context) -> NSView { NSView() }
         func updateNSView(_ view: NSView, context: Context) {
             // macOS 26 updates a representable for any environment change; macOS 27
             // only for the values it reads.
-            _ = context.environment.controlActiveState
-            controls.activationUpdates += 1
+            let state = context.environment.controlActiveState
+            if controls.activeState != nil, controls.activeState != state { controls.activationUpdates += 1 }
+            controls.activeState = state
         }
     }
     private struct Control: NSViewRepresentable {
@@ -116,7 +118,8 @@ import XCTest
         if let failure { throw failure }
     }
 
-    /// False when the window's activation changed while scrolling, leaving reuse unmeasured.
+    /// False when the window's activation changed while scrolling and roots were
+    /// resubmitted, leaving reuse unmeasured.
     private func checkDefaultGeometry(count: Int) async throws -> Bool {
         let store = TabStore(isPrivate: true, session: [])
         store.sharingReady = false
@@ -276,7 +279,8 @@ import XCTest
         host.layoutSubtreeIfNeeded()
         let activationUpdates = controls.activationUpdates - admittedActivationUpdates
         print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates) activationUpdates=\(activationUpdates)")
-        if activationUpdates == 0 {
+        let reused = report.batchCounts.rootUpdates == admittedRootUpdates
+        if activationUpdates == 0 || reused {
             XCTAssertEqual(report.batchCounts.rootUpdates, admittedRootUpdates,
                            "Scrolling alone must reuse roots rather than resubmit SwiftUI content")
         }
@@ -306,6 +310,6 @@ import XCTest
                 XCTAssertTrue(previous === field, "Reordering preserves the existing native control identity")
             }
         }
-        return activationUpdates == 0
+        return activationUpdates == 0 || reused
     }
 }
