@@ -7,8 +7,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 const [server, output] = process.argv.slice(2);
-if (!server?.startsWith('https://') || !output) {
-  console.error('usage: seed-extensioncheck-vault.mjs <https server> <output json>');
+const loopback = ['127.0.0.1', 'localhost', '127-0-0-1.local-ip.sh'];
+if (!server?.startsWith('https://') || !loopback.includes(new URL(server).hostname) || !output) {
+  console.error('usage: seed-extensioncheck-vault.mjs <https loopback server> <output json>');
   process.exit(2);
 }
 const account = {

@@ -298,8 +298,13 @@ import WebKit
                     record("Bitwarden authenticated workflows", .unavailable, "No fixtures/bitwarden-account.json; account login, vault unlock and autofill were not tested.")
                     return
                 }
-                let account = try JSONDecoder().decode(VaultAccount.self, from: Data(contentsOf: accountURL))
                 authenticated = true
+                let account = try JSONDecoder().decode(VaultAccount.self, from: Data(contentsOf: accountURL))
+                // The account file must never carry real credentials: loopback servers only.
+                guard let server = URL(string: account.server), server.scheme == "https",
+                      ["127.0.0.1", "localhost", "127-0-0-1.local-ip.sh"].contains(server.host?.lowercased() ?? "") else {
+                    throw Failure("bitwarden-account.json must name an https loopback server.")
+                }
                 // Bitwarden selects its Safari code on WebKit and retries a missing desktop
                 // "sleep" request without yielding. The user-facing remedy is the explicit
                 // error-only mode in the extension manager; accept that same review here.
@@ -313,7 +318,9 @@ import WebKit
                 record("Bitwarden error-only desktop compatibility", .verified,
                        "Explicit review accepted; desktop requests receive paced errors and no desktop app is contacted.")
                 guard let popup = await popup(context, tab: tab, label: "Bitwarden \(version) popup",
-                    expected: "/^#\\/(intro-carousel|login|lock|tabs\\/)/.test(location.hash) && document.body.innerText.trim().length > 20") else { return }
+                    expected: "/^#\\/(intro-carousel|login|lock|tabs\\/)/.test(location.hash) && document.body.innerText.trim().length > 20") else {
+                    throw Failure("The Bitwarden popup did not become usable.")
+                }
                 let helpers = """
                     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
                     const control = text => [...document.querySelectorAll('button,a')]
@@ -360,7 +367,7 @@ import WebKit
                     document.querySelector('button[type=submit]').click();
                     await until('vault opens', unlocked, 40000);
                     return locked ? 'unlocked a locked vault with the master password' : 'logged in and unlocked with email and master password';
-                    """, in: popup, arguments: ["account": ["server": account.server, "email": account.email, "masterPassword": account.masterPassword]], seconds: 90)
+                    """, in: popup, arguments: ["account": ["server": account.server, "email": account.email, "masterPassword": account.masterPassword]], seconds: 150) // above the script's own waits (≤130 s)
                 record("Bitwarden \(version) vault unlock", .verified,
                        "Real popup form: \(outcome); vault synced from the throwaway self-hosted server \(URL(string: account.server)?.host ?? "unknown").")
                 // Like a person opening a sign-in page in a new tab with the vault unlocked.
@@ -375,7 +382,9 @@ import WebKit
                 store.current = page.id
                 try await wait("login fixture is the selected tab") { store.active === page }
                 guard let reader = await self.popup(context, tab: page, label: "Bitwarden \(version) popup on the login page",
-                    expected: "location.hash.startsWith('#/tabs/') && document.body.innerText.trim().length > 20") else { return }
+                    expected: "location.hash.startsWith('#/tabs/') && document.body.innerText.trim().length > 20") else {
+                    throw Failure("The Bitwarden popup did not become usable.")
+                }
                 // Bitwarden injects its form reader after each page load, and its popup reads
                 // the page once when it opens. Observe that reader instead of guessing a delay;
                 // reopening the popup afterwards makes it read the ready page.
@@ -393,7 +402,9 @@ import WebKit
                 host.closeActionPopup(context, for: page)
                 try await wait("Bitwarden popup closes") { host.actionPopupWindow(context, for: page) == nil }
                 guard let filler = await self.popup(context, tab: page, label: "Bitwarden \(version) popup on the ready login page",
-                    expected: "location.hash.startsWith('#/tabs/') && document.body.innerText.trim().length > 20") else { return }
+                    expected: "location.hash.startsWith('#/tabs/') && document.body.innerText.trim().length > 20") else {
+                    throw Failure("The Bitwarden popup did not become usable.")
+                }
                 let toast = try await evaluate(helpers + """
                     (await until('Fill control for the matching login', () => control('Fill'), 20000)).click();
                     await sleep(1500);
