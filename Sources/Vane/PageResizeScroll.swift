@@ -19,9 +19,11 @@ import WebKit
         web.evaluateJavaScript("globalThis.__vaneResizeScroll?.end()", in: nil, in: PageResizeStyle.world) { _ in }
     }
 
-    // ponytail: main frame, light DOM, and a 4ms walk for already-scrolled elements;
-    // scrollers in subframes or shadow trees, or past that budget on a huge page,
-    // keep WebKit's clamped position. Track them from an injected script if needed.
+    // ponytail: main frame, light DOM, and a walk for already-scrolled elements
+    // that stops after 4ms once past the first 4096, so a stalled process cannot
+    // cost an ordinary page its scrollers; those in subframes or shadow trees, or
+    // past that budget on a huge page, keep WebKit's clamped position. Track them
+    // from an injected script if needed.
     private static let beginSource = """
     (() => {
       try {
@@ -38,7 +40,7 @@ import WebKit
         if (document.scrollingElement) note(document.scrollingElement);
         const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
         const deadline = performance.now() + 4;
-        for (let el, n = 0; (el = walker.nextNode()) && (++n % 256 || performance.now() < deadline);) note(el);
+        for (let el, n = 0; (el = walker.nextNode()) && (++n % 256 || n < 4096 || performance.now() < deadline);) note(el);
         // Layout clamps a position to the end of its range, so a clamp is exactly
         // a move backward that sits at the end: it still wants to go back. Every
         // other move backward is a real scroll (a carousel realigning to the new
@@ -50,7 +52,8 @@ import WebKit
         // which time the range it was made in is gone. So a resize settles what
         // moved first, and there forward from the end to the end of that earlier
         // range was following it. Forward to anywhere else was made in this one,
-        // by a resize handler (a reader keeping its paragraph in place).
+        // by a resize handler (a reader keeping its paragraph in place). One
+        // already following stays so: content added since has moved that end.
         // ponytail: a scroller the page itself empties below its position mid-drag
         // reads as clamped and returns if the content does, until tracking stops.
         const settle = (el, resizing) => {
@@ -60,7 +63,7 @@ import WebKit
             const state = record[i], at = el[axis[0]];
             if (at === state.at) return;
             const forward = Math.abs(at) > Math.abs(state.at), end = atEnd(el, axis);
-            const followed = resizing && state.end && Math.abs(el[axis[1]] - state.client - Math.abs(at)) <= 1;
+            const followed = resizing && state.end && (!isFinite(state.want) || Math.abs(el[axis[1]] - state.client - Math.abs(at)) <= 1);
             if (forward && (end ? state.end || Math.abs(at) >= Math.abs(state.want) : followed)) state.want = Math.sign(at) * Infinity;
             else if (!end) state.want = at;
             state.at = at;

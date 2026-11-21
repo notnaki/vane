@@ -429,6 +429,37 @@ import XCTest
         }
     }
 
+    /// A page hears of a new viewport a frame after it is laid out, later when it
+    /// is busy. A log that grows in between is by then neither at its end nor at
+    /// the end it last followed to; it was following all the same.
+    func testALogStillFollowsWhenItGrowsBeforeTheResizeEvent() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            // The log's own height stands in for the viewport's, and a `resize`
+            // event is when the tracking looks.
+            @MainActor func gap(after script: String) async throws -> Double? {
+                try await web.evaluateJavaScript(script + "; log.scrollHeight - log.scrollTop - log.clientHeight") as? Double
+            }
+            let start = try await gap(after: """
+                const log = document.createElement('div');
+                log.style.cssText = 'position:fixed;right:0;top:0;width:160px;height:200px;overflow:auto';
+                const line = () => { const p = document.createElement('p'); p.textContent = 'line'; log.append(p) };
+                const follow = () => { line(); log.scrollTop = log.scrollHeight };
+                const resized = height => { log.style.height = height + 'px'; dispatchEvent(new Event('resize')) };
+                for (let i = 0; i < 50; i++) line();
+                document.body.append(log);
+                log.scrollTop = log.scrollHeight
+                """)
+            XCTAssertEqual(start, 0, "The log must start at its end")
+            PageResizeScroll.begin(web)
+            // Laid out ahead and seen following there. Then it follows once more,
+            // the viewport returns, and off its end it grows without following.
+            let returned = try await gap(after: "resized(250); follow(); resized(250); follow(); log.style.height = '200px'; line(); resized(200)")
+            XCTAssertEqual(returned, 0, "The log stopped following its end")
+            PageResizeScroll.end(web)
+        }
+    }
+
     /// A page that enters the back/forward cache mid-drag never hears the drag
     /// end, so it stops tracking as it is hidden.
     func testScrollTrackingStopsWhenThePageIsHidden() async throws {
