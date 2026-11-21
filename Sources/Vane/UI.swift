@@ -670,6 +670,10 @@ private struct BrowserWindowContent: View {
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .onChange(of: store.sidebarShown) { peekTask?.cancel() }
+        // A new Space is named in the sidebar's inline editor, which the bar has no room for.
+        .onChange(of: store.editingSpace) { _, id in
+            if id != nil && stripShown { store.sidebarShown = true }
+        }
         // Turning the bar on folds the sidebar away; turning it off brings it back.
         .onChange(of: tabStripOn) { _, on in
             if store.sidebarShown == on { store.toggleSidebar() }
