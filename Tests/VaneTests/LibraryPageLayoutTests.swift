@@ -157,8 +157,16 @@ import XCTest
                 try await compatibilityWait { !pending(host) }
             }
             let bounds = card.convert(card.bounds, to: host)
+            // ponytail: state dump for a once-seen CI miss (card left at the previous
+            // step, run 44905716207) that does not reproduce locally; drop it once explained.
+            func bridges(_ view: NSView) -> [LibraryPaintView] {
+                (view as? LibraryPaintView).map { [$0] } ?? view.subviews.flatMap(bridges)
+            }
+            let paintState = bridges(host).map {
+                "target=\($0.target) progress=\(String(describing: $0.paint?.progress)) preparing=\(String(describing: $0.paint?.isPreparing))"
+            }
             XCTAssertEqual(bounds.minX, floating ? 11 + 381 * progress : 228 + 164 * progress, accuracy: 1,
-                "The real card must start after navigation, during navigation")
+                "The real card must start after navigation, during navigation (step \(progress); \(paintState); needsLayout=\(host.needsLayout))")
             XCTAssertEqual(bounds.maxX, 629, accuracy: 1,
                 "The real card's rim must stay eleven points inside the narrow window")
             if let second {
