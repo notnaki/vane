@@ -11,7 +11,7 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     let libraryOpen: Bool
     let peeking: Bool
     /// Tabs across the top: the lights stay, risen to the bar's centre line.
-    let strip: Bool
+    var strip = false
 
     nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
         get { AnimatablePair(AnimatablePair(slide, inset), visibility) }
