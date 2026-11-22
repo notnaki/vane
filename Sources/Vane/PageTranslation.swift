@@ -39,7 +39,7 @@ import WebKit
     /// configuration per window, so the one being asked is the one that shows the download
     /// sheet when a language is not installed yet.
     @Published fileprivate var configs: [ObjectIdentifier: TranslationSession.Configuration] = [:]
-    fileprivate var pending: [ObjectIdentifier: Job] = [:]
+    fileprivate(set) var pending: [ObjectIdentifier: Job] = [:]
     /// The job each window's session last began, so one it stopped for a newer job reads
     /// as cancelled even when the restart ended it with an error instead.
     private var running: [ObjectIdentifier: UUID] = [:]
@@ -64,7 +64,10 @@ import WebKit
 
     private static func site(of tab: Tab) -> String? { tab.existingWeb?.url?.host().map(site) }
 
-    static func toggle(_ tab: Tab?, in store: TabStore? = Windows.current) {
+    /// `automatic` is a later page of a site the user chose to translate: it never toasts
+    /// "nothing to translate" or "already in", and offers instead of taking a window's
+    /// session from another tab.
+    static func toggle(_ tab: Tab?, in store: TabStore? = Windows.current, automatic: Bool = false) {
         guard let tab, tab.easelID == nil, let web = tab.existingWeb else { return }
         shared.offers[tab.id] = nil
         if isOn(tab) {
@@ -81,12 +84,14 @@ import WebKit
             // A download or a 204 that began meanwhile is not "nothing to translate".
             guard tab.readingDocumentGeneration == generation else { return }
             guard let result, let texts = result["texts"] as? [String], !texts.isEmpty else {
-                Toasts.show("Nothing on this page to translate", in: store); return
+                if !automatic { Toasts.show("Nothing on this page to translate", in: store) }
+                return
             }
             let target = preferredLanguage()
             let source = sourceLanguage(lang: result["lang"] as? String, sample: texts)
             if let source, sameLanguage(source, target) {
-                Toasts.show("This page is already in \(name(of: target))", in: store); return
+                if !automatic { Toasts.show("This page is already in \(name(of: target))", in: store) }
+                return
             }
             if let source, await LanguageAvailability().status(from: source, to: target) == .unsupported {
                 Toasts.show("Translation from \(name(of: source)) isn't available", in: store); return
@@ -94,6 +99,12 @@ import WebKit
             // The awaits above can outlast a navigation; a job for the old text must not land.
             guard tab.readingDocumentGeneration == generation else { return }
             let window = ObjectIdentifier(store)
+            if automatic, busy(window, besides: tab) {
+                if let source, let host = web.url?.host() {
+                    shared.offers[tab.id] = Offer(host: host, language: name(of: source))
+                }
+                return
+            }
             // A job still running in this window is cancelled by the new configuration
             // below; `stopped` puts its page back and says so.
             shared.pending[window] = Job(tab: tab, texts: texts)
@@ -103,6 +114,13 @@ import WebKit
             if shared.configs[window] == config { shared.configs[window]?.invalidate() }
             else { shared.configs[window] = config }
         }
+    }
+
+    /// Another tab's job is waiting for, or running in, the window's one session.
+    private static func busy(_ window: ObjectIdentifier, besides tab: Tab) -> Bool {
+        if let job = shared.pending[window], job.tab !== tab { return true }
+        guard let id = shared.running[window] else { return false }
+        return shared.tabs.contains { $0.key != tab.id && $0.value == id }
     }
 
     /// Runs inside `.translationTask` for `window`. Batches go back to the page as they
@@ -155,6 +173,9 @@ import WebKit
         // with an error rather than a cancellation; a newer job waiting or begun says why.
         let cancelled = cancelled || shared.pending[window] != nil || shared.running[window] != job.id
         shared.tabs[job.tab.id] = nil
+        // A failure (a dismissed download sheet, a session error) must not refire on every
+        // later page of the site.
+        if !cancelled { shared.answered[job.tab.id] = nil }
         job.tab.existingWeb?.evaluateJavaScript(restoreJS, in: nil, in: world) { _ in }
         SiteChanges.shared.bump()
         Toasts.show(cancelled ? "Stopped translating \u{201C}\(job.tab.title)\u{201D}" : "Couldn't translate this page")
@@ -169,8 +190,7 @@ import WebKit
     static func offer(_ tab: Tab) {
         let here = site(of: tab)
         if let a = shared.answered[tab.id], a.site != here { shared.answered[tab.id] = nil }
-        let remembered = shared.answered[tab.id]?.translate
-        if remembered == false { return }
+        if shared.answered[tab.id]?.translate == false { return }
         guard !tab.isPrivate, tab.easelID == nil, !isOn(tab), shared.offers[tab.id] == nil,
               let web = tab.existingWeb, let url = web.url,
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
@@ -186,10 +206,16 @@ import WebKit
                   tab.readingDocumentGeneration == generation, tab.existingWeb === web, !isOn(tab),
                   !shared.pending.values.contains(where: { $0.tab === tab })
             else { return }
-            if remembered == true {
-                // Only where the tab is on screen, so the job runs in that tab's window.
-                if let store = TabStore.all.first(where: { $0.active === tab }) { toggle(tab, in: store) }
-                return
+            // Read again: Show Original or Not now may have answered during the awaits.
+            switch shared.answered[tab.id]?.translate {
+            case false?: return
+            case true?:
+                // Only where the tab is on screen, so the job runs in that tab's window; a tab
+                // in the background gets the offer for when the user comes back.
+                if let store = TabStore.all.first(where: { $0.active === tab }) {
+                    return toggle(tab, in: store, automatic: true)
+                }
+            case nil: break
             }
             shared.offers[tab.id] = Offer(host: host, language: name(of: source))
         }
@@ -294,10 +320,10 @@ import WebKit
     /// `innerText`. Empty for a page that asks not to be translated.
     static let sampleJS = """
     const d = document, h = d.documentElement, b = d.body;
-    const optOut = e => e && (e.getAttribute('translate') === 'no' || e.classList.contains('notranslate'));
+    const optOut = e => e && (e.getAttribute('translate')?.toLowerCase() === 'no' || e.classList.contains('notranslate'));
     if (optOut(h) || optOut(b) || [...d.querySelectorAll('meta[name="google" i]')]
         .some(m => /notranslate/i.test(m.content || ''))) return { lang: '', text: '' };
-    const skip = 'script,style,noscript,textarea,code,pre,svg,math,template,[translate="no"],.notranslate';
+    const skip = 'script,style,noscript,textarea,code,pre,svg,math,template,[translate="no" i],.notranslate';
     const walker = d.createTreeWalker(b || h, NodeFilter.SHOW_TEXT, { acceptNode(n) {
       const p = n.parentElement;
       if (!p || !/\\p{L}/u.test(n.data) || p.closest(skip)) return NodeFilter.FILTER_REJECT;
@@ -324,7 +350,7 @@ import WebKit
     const prior = globalThis.__vaneTranslation;
     if (prior) prior.nodes.forEach((n, i) => { if (n.data === prior.done[i]) n.data = prior.originals[i]; });
     const skip = 'script,style,noscript,textarea,input,select,option,code,pre,kbd,samp,var,svg,math,template,' +
-      '[contenteditable]:not([contenteditable="false"]),[translate="no"],.notranslate';
+      '[contenteditable]:not([contenteditable="false"]),[translate="no" i],.notranslate';
     const nodes = [], originals = [], lead = [], trail = [], texts = [];
     const root = document.body || document.documentElement;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {

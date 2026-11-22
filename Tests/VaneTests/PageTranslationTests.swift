@@ -1,20 +1,25 @@
 import AppKit
 import SwiftUI
+import Translation
 import XCTest
 @testable import vane
 
 @MainActor final class PageTranslationTests: XCTestCase {
     override func setUp() async throws { TestEnvironment.prepare(); _ = NSApplication.shared }
 
-    /// A foreign page is offered once; Not now holds through a reload on the same site.
+    /// A foreign page is offered once; Not now holds through a reload on the same site, and
+    /// after Translate the next page of the site queues its own translation.
     /// With `VANE_TRANSLATE_CAPTURE` set to a directory, also writes the offer card and the
     /// Site Controls popover (with "Offer to Translate" off) as PNGs for visual sign-off.
     func testOfferOnceNotNowHoldsAndCaptures() async throws {
         let target = PageTranslation.preferredLanguage()
         try XCTSkipIf(target.languageCode?.identifier == "de", "The fixture page is German")
+        let pair = await LanguageAvailability().status(from: Locale.Language(identifier: "de"), to: target)
+        try XCTSkipIf(pair == .unsupported, "Translation doesn't support German to the system language")
         let profile = UUID()
         let store = TabStore(isPrivate: false, profileID: profile, session: [])
         let tab = Tab(isPrivate: false, profileID: profile)
+        store.tabs.append(tab)
         addTeardownBlock { @MainActor in
             PageTranslation.setOffers(true, host: "zeitung.example", tab: tab)
             tab.tearDown()
@@ -25,8 +30,12 @@ import XCTest
         let html = "<html><body><p>" + String(repeating: "Die Katze sitzt auf der Matte und schläft den ganzen Tag. ", count: 4)
             + "</p></body></html>"
         func load() async throws {
+            let generation = tab.readingDocumentGeneration
             tab.web.loadHTMLString(html, baseURL: URL(string: "https://www.zeitung.example/"))
-            try await compatibilityWait { !tab.web.isLoading && tab.web.url?.host() == "www.zeitung.example" }
+            try await compatibilityWait {
+                tab.readingDocumentGeneration != generation && !tab.web.isLoading
+                    && tab.web.url?.host() == "www.zeitung.example"
+            }
         }
         try await load()
         try await compatibilityWait { PageTranslation.shared.offers[tab.id] != nil }
@@ -44,6 +53,15 @@ import XCTest
         try await load()
         try await Task.sleep(for: .seconds(1))
         XCTAssertNil(PageTranslation.shared.offers[tab.id], "Not now must hold on the same site in this tab")
+
+        // Site Controls' Translate Page answers the site too; the next page queues itself.
+        store.current = tab.id
+        let window = ObjectIdentifier(store)
+        PageTranslation.toggle(tab, in: store)
+        try await compatibilityWait { PageTranslation.shared.pending[window]?.tab === tab }
+        try await load()
+        XCTAssertNil(PageTranslation.shared.offers[tab.id])
+        try await compatibilityWait { PageTranslation.shared.pending[window]?.tab === tab }
 
         PageTranslation.setOffers(false, host: offer.host, tab: tab)
         let row = SiteControlModel(tab).rows.first { $0.id == .translateOffers }
