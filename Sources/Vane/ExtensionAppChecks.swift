@@ -498,6 +498,7 @@ import WebKit
         /// references to the extension's own origin (including open shadow roots) and WebKit's answer.
         private func storePackage(_ item: String, base: String) async {
             let parts = item.split(separator: ",", maxSplits: 2).map(String.init)
+            guard !parts.isEmpty else { record("package " + item, .failed, "Expected --store <ID or fixture>."); return }
             let source = try? ChromeWebStore(input: parts[0])
             let fixture = !parts[0].contains("/") && !parts[0].hasPrefix(".")
                 && FileManager.default.fileExists(atPath: directory.appendingPathComponent("fixtures/" + parts[0] + "/manifest.json").path)

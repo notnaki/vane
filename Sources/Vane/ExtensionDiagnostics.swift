@@ -29,7 +29,7 @@ import WebKit
                 ? "connections to native messaging hosts." : "extension items in page menus."))
         }
         if ext.errors.contains(where: isPartialExternallyConnectable) {
-            issues.append("externally_connectable: WebKit skips website patterns it does not support; pages matching only those cannot message this extension.")
+            issues.append("externally_connectable: WebKit skips website patterns it does not support; pages matching only those, or every website when none remain, cannot message this extension.")
         }
         if declared.contains("webRequestBlocking") {
             issues.append("webRequestBlocking: system WebKit cannot cancel or redirect requests or change headers through webRequest. MV2 background pages, actions and content scripts can run. uBlock Origin can use Vane’s partial static-filter compatibility; dynamic request decisions remain unavailable.")

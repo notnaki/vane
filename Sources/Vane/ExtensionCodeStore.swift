@@ -444,7 +444,7 @@ struct ExtensionCodeStore: Sendable {
                 }
                 let data = try handle.read(upToCount: min(Self.fileLimit, Self.totalLimit - budget.bytes) + 1) ?? Data()
                 guard data.count <= Self.fileLimit, data.count <= Self.totalLimit - budget.bytes else {
-                    throw Problem("This extension exceeds the 64 MB file or 256 MB total size limit.")
+                    throw Problem("This extension exceeds the \(Self.fileLimit >> 20) MB file or \(Self.totalLimit >> 20) MB total size limit.")
                 }
                 budget.bytes += data.count
                 try data.write(to: target, options: .withoutOverwriting)
@@ -477,6 +477,8 @@ struct ExtensionCodeStore: Sendable {
         // Large accepted resources stay file-backed: the runtime snapshot keeps every
         // resource for the extension's lifetime, and clean mapped pages can be evicted.
         // Accepted revisions are never rewritten in place (see resources(in:)).
+        // ponytail: an outside process truncating a mapped file under Vane's container would
+        // fault (SIGBUS) on the next read of an unread page; copy instead if that ever matters.
         if info.st_size >= 1024 * 1024 {
             let size = Int(info.st_size)
             guard let mapped = mmap(nil, size, PROT_READ, MAP_PRIVATE, descriptor, 0), mapped != MAP_FAILED else {
