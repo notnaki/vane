@@ -421,7 +421,8 @@ struct TitleReveal: Equatable, Sendable {
     var readingDocumentGeneration = UUID()
     /// Runs when a new main-frame document commits. Fragment links and pushState don't
     /// commit, so a page that rewrites its own address keeps its Ask on Page conversation.
-    var onDocumentCommit: (@MainActor () -> Void)?
+    /// Keyed by owner, since two windows can show the same shared tab.
+    var documentCommitHooks: [ObjectIdentifier: @MainActor () -> Void] = [:]
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
     /// maintenance and session persistence use `existingWeb` to avoid creating one.
@@ -2061,7 +2062,7 @@ struct TitleReveal: Equatable, Sendable {
         updatePageTitle(from: w)
         if w === existingWeb {
             Reader.navigationCommitted(self)
-            onDocumentCommit?()
+            for hook in Array(documentCommitHooks.values) { hook() }
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()

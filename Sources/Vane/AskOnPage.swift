@@ -43,12 +43,13 @@ import WebKit
     @discardableResult func ask(_ raw: String, in tab: Tab) -> Bool {
         let question = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !busy, let web = tab.existingWeb else { return false }
-        // The document, not the URL: hash links, pushState and replaceState keep the page.
-        let key = tab.id.uuidString + " " + tab.readingDocumentGeneration.uuidString
+        // The commit hook ends the conversation when a new document arrives; hash links,
+        // pushState, replaceState and links that become downloads keep the page.
+        let key = tab.id.uuidString + " " + String(describing: ObjectIdentifier(web))
         if page != key {
             reset(); page = key
             watched = tab
-            tab.onDocumentCommit = { [weak self] in self?.reset() }
+            tab.documentCommitHooks[ObjectIdentifier(self)] = { [weak self] in self?.reset() }
         }
         let history = turns.filter { !$0.failed && !$0.answer.isEmpty }.map { (question: $0.question, answer: $0.answer) }
         turns.append(Turn(question: question))
@@ -77,7 +78,7 @@ import WebKit
 
     func reset() {
         task?.cancel(); task = nil
-        watched?.onDocumentCommit = nil; watched = nil
+        watched?.documentCommitHooks[ObjectIdentifier(self)] = nil; watched = nil
         turns = []; page = nil
     }
 }

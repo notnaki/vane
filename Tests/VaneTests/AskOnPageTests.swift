@@ -64,16 +64,19 @@ import XCTest
         defer { TabStore.all.removeAll { $0 === store }; SharedTabs.release(store.tabs) }
         let tab = store.newBlankTab(focus: true)
         let ask = Find.session(for: store).ask
-        if tab.existingWeb == nil {
-            XCTAssertFalse(ask.ask("Q", in: tab), "no page: the question stays with the caller")
-        }
+        XCTAssertNil(tab.existingWeb)
+        XCTAssertFalse(ask.ask("Q", in: tab), "no page: the question stays with the caller")
         _ = tab.web
         XCTAssertTrue(ask.ask("Q", in: tab))
         XCTAssertEqual(ask.turns.count, 1)
-        XCTAssertNotNil(tab.onDocumentCommit)
-        tab.onDocumentCommit?()
+        // A second window asking about the same shared tab gets its own hook.
+        let other = AskOnPage()
+        XCTAssertTrue(other.ask("Q2", in: tab))
+        XCTAssertEqual(tab.documentCommitHooks.count, 2)
+        for hook in Array(tab.documentCommitHooks.values) { hook() }
         XCTAssertTrue(ask.turns.isEmpty, "a committed document is a different page")
-        XCTAssertNil(tab.onDocumentCommit)
+        XCTAssertTrue(other.turns.isEmpty)
+        XCTAssertTrue(tab.documentCommitHooks.isEmpty)
     }
 
     /// Set VANE_ASK_CAPTURE_DIR to write the panel's look for review.
