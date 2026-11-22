@@ -582,6 +582,7 @@ private struct GeneralPane: View {
     @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
     @AppStorage(TabStrip.prefKey) private var tabStrip = false
     @AppStorage(TabStrip.focusKey) private var tabStripFocus = false
+    @AppStorage(Look.interfaceStyleKey) private var interfaceStyle = "default"
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -615,6 +616,13 @@ private struct GeneralPane: View {
                     Toggle("Hide tabs until hover", isOn: $tabStripFocus).labelsHidden()
                         .disabled(!tabStrip)
                         .help("Focus mode: the page fills the window and the tab bar slides down when the pointer reaches the top edge.")
+                }
+                SettingsRow("Interface style", icon: "rectangle.compress.vertical", tint: .gray) {
+                    Picker("Interface style", selection: $interfaceStyle) {
+                        Text("Default").tag("default")
+                        Text("Streamlined").tag("streamlined")
+                    }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
+                        .help("Streamlined tightens the sidebar and command bar. Applies the next time Vane opens.")
                 }
             }
 
