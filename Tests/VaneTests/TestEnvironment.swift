@@ -29,7 +29,14 @@ import XCTest
         _ = cleanup
         NativeFixtureRetirement.registerHostIfEnabled()
         _ = resourceBaseline
+        _ = approvedPasswordFills
     }
+
+    /// Fixtures that fill a saved password have nobody to answer a system prompt. Cases
+    /// about the prompt itself give their tab a gate of its own.
+    private static let approvedPasswordFills: Void = {
+        PasswordFillGate.shared.authenticate = { _, done in done(true) }
+    }()
 
     static func supportsPiPMotion(in frames: [NSRect]) -> Bool {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion

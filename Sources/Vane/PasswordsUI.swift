@@ -1524,6 +1524,22 @@ struct PasswordSavingPreference: View {
                     .labelsHidden()
             }
             Footnote("Applies to this profile. Saved-password autofill, manual edits, and imports remain available.")
+            PasswordFillAuthenticationRow()
         }
+    }
+}
+
+/// App-wide: who may sit at this Mac is not a per-profile question.
+struct PasswordFillAuthenticationRow: View {
+    @AppStorage(PasswordFillGate.requiredKey, store: UserDefaults.vane) private var required = true
+
+    var body: some View {
+        SettingsRow("Require Touch ID to fill passwords") {
+            Toggle("Require Touch ID to fill passwords", isOn: Binding(
+                get: { required },
+                set: { PasswordFillGate.shared.setRequired($0) }))
+                .labelsHidden()
+        }
+        Footnote("Asks once, then not again for five minutes or until the Mac locks or sleeps. Uses your login password when Touch ID is unavailable.")
     }
 }

@@ -17,6 +17,22 @@ same-origin password page for up to two minutes. A hidden or read-only account i
 must match that choice. An explicit account choice can fill an `off` form. Filling never
 submits.
 
+Only the browser's own focus and click events open the chooser; events a page dispatches
+from script do not. A list opened by focusing a field fills only while the focus is still
+in that login: the fill asks the document for its active element (through open shadow
+roots and same-origin frames) before the username and again before the password, so a
+page that hides the blur and moves focus elsewhere gets nothing from Return. The **Fill
+Password** menu command and a continued sign-in do not depend on focus.
+
+Filling a password asks macOS for device-owner authentication first — Touch ID, an Apple
+Watch, or the login password. One successful prompt covers every tab for five minutes;
+locking the screen, sleep or fast user switching ends that window at once. A username-only
+step asks nobody and reads no secret from the Keychain. If the prompt is cancelled or
+fails, nothing fills and the chooser stays closed. The page, document and origin are
+rechecked after the prompt: a navigation while it is up ends the fill before the secret
+is read. **Settings → Passwords → Require Touch ID to fill passwords** is on by default
+and applies to the whole app; turning it off asks for the same authentication.
+
 Detection prefers `autocomplete=username`, `current-password`, and `new-password`, then
 conservative field names and email fields. New fields and visibility/type changes are
 rediscovered after a short coalesced delay. Username-first flows retain an account only
@@ -104,6 +120,7 @@ remain manageable at their original origin but cannot be autofilled.
 
 Reveal, password copy, edit and the existing export flow use macOS device-owner
 authentication, including its login-password fallback when Touch ID is unavailable.
+Autofill uses the same authentication with a five-minute window (see above).
 Custom data directories no longer bypass authentication. Reveals hide after 60 seconds;
 closing Settings or leaving the manager clears temporary secrets and invalidates pending
 authentication. Draft/save-offer reveals also hide automatically. Copy password buttons mark clipboard items concealed for cooperating clipboard managers and expire after 60 seconds only if
@@ -142,7 +159,10 @@ and the path that could enable this are in
 flows, signup/change fields, account choice, rejected attempts, form abandonment,
 navigation/field races, frame/origin/action boundaries, profiles/private mode, generator
 options, Keychain errors/collisions, manager sorting, clipboard ownership, popup rendering,
-and keyboard scrolling. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
+keyboard scrolling, script-dispatched focus/click, fill-time focus, and the autofill
+authentication gate (prompt, refusal, five-minute window, lock/sleep, navigation during the
+prompt). Those gate cases stub the authenticator and the Keychain reader; no test raises a
+system prompt, and under XCTest the unstubbed gate refuses instead of prompting. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
 Keychain-dependent tests skip explicitly if the host cannot store disposable items.
 `VANE_PASSWORD_SNAPSHOTS=/tmp/vane-password-ui` writes native fixture PNGs.
 
@@ -168,7 +188,10 @@ existing foreground suites in required CI; focus-free fixtures do not prove thos
 These are controlled fixtures, not verified provider sign-ins. Unusual SPA login-completion
 signals, closed shadow roots, cross-origin identity-provider frames and nonstandard fetch
 buttons can require manual entry or adding a login in Settings. Visible rejection markers
-are heuristics and cannot establish authentication success. Touch ID/VoiceOver behavior,
+are heuristics and cannot establish authentication success. The autofill requirement is a
+preference: someone who can already edit the app's preferences outside Vane can turn it
+off, and a Mac that cannot evaluate device-owner authentication cannot fill while it is on.
+Touch ID/VoiceOver behavior,
 Developer ID upgrades, notarized clean-Mac persistence, and broad real-site compatibility
 need separate device/user validation. The existing import/export and isolated signed
 persistence checks do not establish those claims.
