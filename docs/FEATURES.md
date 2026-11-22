@@ -23,6 +23,26 @@ navigation. It remains heuristic: unavailable/paywalled text, embedded frames, a
 articles below the 140-word threshold are not recovered. Exit Reader reloads the
 original page; it does not add a history entry.
 
+## Translate Page
+
+Choose **Translate Page** from Page Actions, Site Controls, **View → Translate Page**,
+or the command bar to translate the page in place into your first preferred macOS
+language. Translation runs on this Mac through Apple's Translation framework; no page
+text is sent to a translation service. The page language is detected from its text, with
+its `lang` attribute as a fallback. If the language pair is not downloaded yet, macOS asks
+before downloading it. A page already in your language shows a notice instead.
+
+Vane rewrites only visible text. Form fields, code, hidden text, and anything the page
+marks `translate="no"` or `notranslate` stay unchanged, so layout and typing are not
+affected. **Show Original**, in the same places, restores the original text; navigating
+away also ends the translation. Translation in private windows works the same way and
+saves nothing.
+
+Limits: text is translated one text node at a time, so a sentence split by a link or bold
+text loses some context. Text the page adds after translating, such as more items in a
+feed, is not translated; choose Show Original and translate again. Vane does not offer
+translation automatically, so there is no list of sites to never translate.
+
 ## Offline reading queue
 
 Choose **Page Actions → Save for Offline** or **View → Save for Offline** on a readable

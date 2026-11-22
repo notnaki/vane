@@ -113,6 +113,7 @@ extension PaletteCommand {
             if tab.canGoForward { out.append(PaletteCommand(.forward, icon: "chevron.right")) }
             out += [
                 PaletteCommand(.showReader, icon: "doc.plaintext", title: "Reader Mode"),
+                PaletteCommand(.translatePage, icon: "translate", title: PageTranslation.title(for: tab)),
                 PaletteCommand(.pictureInPicture, icon: "pip"),
                 PaletteCommand(.muteTab, icon: TabAudio.isMuted(tab) ? "speaker.wave.2" : "speaker.slash",
                                title: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab"),
@@ -302,7 +303,7 @@ extension PaletteCommand {
         .newEasel, .showEasels, .captureToEasel,
         .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
-        .showReader, .pictureInPicture, .muteTab, .pauseAllMedia, .zoomIn, .zoomOut, .actualSize,
+        .showReader, .translatePage, .pictureInPicture, .muteTab, .pauseAllMedia, .zoomIn, .zoomOut, .actualSize,
         .sharePage, .savePageAs, .capturePage, .captureFullPage, .showWebInspector,
         .toggleSidebar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
         .tidyTabs, .clearTabs, .newSpace, .nextSpace, .previousSpace,

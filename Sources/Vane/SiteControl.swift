@@ -63,6 +63,7 @@ struct SiteControlModel: Equatable, Sendable {
     var profileBlocking = true
     var reader = false
     var readerAvailable = false
+    var translated = false
     var extensions: [Ext] = []
     /// The apps this site is allowed to open without asking. See ExternalApps.swift.
     var apps: [App] = []
@@ -74,7 +75,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, boost, clearData, developer
+        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -200,6 +201,8 @@ extension SiteControlModel {
                 control: .toggle(reader),
                 note: reader || readerAvailable ? nil : "This page has no article to read.",
                 inert: !(reader || readerAvailable)),
+            Row(id: .translate, title: "Translate Page", glyph: "translate",
+                control: .toggle(translated)),
         ]
         for (i, ext) in extensions.enumerated() {
             out.append(Row(id: .ext(i), title: ext.name,
@@ -277,6 +280,7 @@ extension SiteControlModel {
         blocking = Blocker.enabled(for: tab.profileID, url: url)
         reader = Reader.isOn(tab)
         readerAvailable = tab.readerAvailable
+        translated = PageTranslation.isOn(tab)
         let host = tab.extensions
         extensions = host.visible(in: tab).map { context in
             let action = host.action(context, for: tab)
@@ -344,6 +348,7 @@ extension SiteControlModel {
             Blocker.refresh(completion: { [weak tab] in tab?.reload() })
         case .blockerSettings: SettingsWindow.show(tab: "privacy", profileID: tab.profileID)
         case .reader: Reader.toggle(tab)
+        case .translate: PageTranslation.toggle(tab)
         case .capture: PageCapture.start(tab)
         case .boost: SiteBoostEditor.open(tab: tab)
         case .ext(let i): toggleExtension(i, on: tab)

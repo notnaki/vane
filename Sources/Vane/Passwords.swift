@@ -1215,6 +1215,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("certificate trust", CertificateTrust.check),
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
+                               ("page translation", PageTranslation.check),
                                ("command palette", Palette.check),
                                ("find in page", Find.check),
                                ("clear browsing data", BrowsingData.check),
