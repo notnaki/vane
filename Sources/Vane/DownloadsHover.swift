@@ -173,7 +173,7 @@ private struct RecentLibraryRow: View {
             }
             .padding(.leading, Look.rowInset)
             .padding(.trailing, Look.rowTrailingInset)
-            .frame(height: Look.rowHeight).contentShape(.rect)
+            .frame(height: Look.pillHeight).contentShape(.rect) // ponytail: two-line rows keep 36pt; Streamlined's 30pt row clips them
             .background(hovered ? chromeTheme.selected : chromeTheme.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
         }
@@ -223,7 +223,7 @@ private struct RecentDownloadRow: View {
             }
             .padding(.leading, Look.rowInset)
             .padding(.trailing, Look.rowTrailingInset)
-            .frame(height: Look.rowHeight)
+            .frame(height: Look.pillHeight) // ponytail: two-line rows keep 36pt; Streamlined's 30pt row clips them
             .contentShape(.rect)
             .background(hovered ? chromeTheme.selected : chromeTheme.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))

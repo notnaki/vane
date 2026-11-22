@@ -1120,7 +1120,7 @@ private struct Sidebar: View {
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
     private var previewHeight: CGFloat {
         _ = previewHeightRevision
-        return min(CGFloat(previewItems.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap,
+        return min(CGFloat(previewItems.count) * (Look.pillHeight + Look.rowGap) - Look.rowGap, // rows are pillHeight (DownloadsHover)
                    max(0, sidebarHeight.value - Look.footer - Look.footerInset - Look.topInset - 48))
     }
     /// Preferences and their renderer, and both ends of a row/tile morph, belong
