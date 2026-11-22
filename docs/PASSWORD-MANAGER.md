@@ -95,12 +95,32 @@ with Allow saving under Never Saved in Settings → Passwords.
 
 ## Manage and protect credentials
 
+**Require Touch ID to view passwords** (on by default, for every profile) locks Settings →
+Passwords. Opening the pane shows only an Unlock button and asks once with the same
+device-owner authentication as reveal (login-password fallback). The list locks again after
+five minutes without a key press, click or scroll in Settings, and when Settings closes, the
+screen locks, the Mac sleeps, the session switches or another profile is selected. Switching
+to another Settings pane and back does not ask again. Turning the setting on while the list
+is open keeps it open. Reveal, copy and edit still authenticate on their own.
+
 Settings → Passwords searches website/account names and sorts by website, username or
-recent use. Open a website for each account’s full origin and actions to edit, reveal,
-copy or delete. Repeated usernames for different origins are explained. Refresh passwords
-retries failed reads; locked, denied and missing Keychain items are distinguished.
-Renaming or changing a website cannot overwrite an existing account. Imported HTTP items
-remain manageable at their original origin but cannot be autofilled.
+recent use. The ⓘ beside the heading explains iCloud sync and passkeys; Import passwords…
+is in the ⋯ menu beside Add password. Open a website for each account’s origin, username and
+password as label-left rows with copy, reveal, edit and delete. Repeated usernames for
+different origins are explained. Refresh passwords retries failed reads; locked, denied and
+missing Keychain items are distinguished. Renaming or changing a website cannot overwrite
+an existing account. Imported HTTP items remain manageable at their original origin but
+cannot be autofilled. The folder unlock method moved to Settings → Privacy and Security →
+Locked Folders.
+
+Delete removes the row at once and shows “Deleted <account> · Undo” for five seconds. The
+Keychain item is deleted when the toast expires, or straight away when the pane disappears,
+Settings closes, the pane locks, the profile changes or Vane quits. Undo writes nothing. A
+delete that fails puts the row back with an error; one failing during quit stops the quit
+with the usual “Changes couldn’t be saved” alert.
+
+Hidden passwords are always eight bullets. Revealed passwords are monospaced, with digits
+blue and symbols pink so l/1/I and O/0 are distinguishable; VoiceOver reads the plain value.
 
 Reveal, password copy, edit and the existing export flow use macOS device-owner
 authentication, including its login-password fallback when Touch ID is unavailable.
@@ -144,7 +164,11 @@ navigation/field races, frame/origin/action boundaries, profiles/private mode, g
 options, Keychain errors/collisions, manager sorting, clipboard ownership, popup rendering,
 and keyboard scrolling. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
 Keychain-dependent tests skip explicitly if the host cannot store disposable items.
-`VANE_PASSWORD_SNAPSHOTS=/tmp/vane-password-ui` writes native fixture PNGs.
+`VANE_PASSWORD_SNAPSHOTS=/tmp/vane-password-ui` writes native fixture PNGs, including the
+manager's list, locked, detail, undo-toast and add-sheet states in light and dark
+(`PasswordManagerSnapshotTests`, a names-only fixture list and a stubbed lock). Tests never
+show a real Touch ID prompt: `TestEnvironment.prepare()` installs a denying
+`Passwords.authenticator`, and `PasswordPaneLockTests` inject their own.
 
 `python3 scripts/check-browser-smoke.py --binary .build/debug/vane` assembles an ad-hoc
 signed sandbox fixture. It also writes disposable credentials, exits, reads them from a

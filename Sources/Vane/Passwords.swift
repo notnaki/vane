@@ -820,6 +820,10 @@ enum Passwords {
 
     // MARK: Revealing
 
+    /// Tests replace the system prompt; nil in the app. A fixture must never put a real
+    /// Touch ID sheet in front of whoever is using the Mac.
+    @MainActor static var authenticator: (@MainActor (String, @escaping @MainActor (Bool) -> Void) -> Void)?
+
     /// Turning a row of bullets into a password asks the Mac who you are first — Touch ID,
     /// an Apple Watch, or the login password. `.deviceOwnerAuthentication` rather than the
     /// biometrics-only policy so a Mac without Touch ID gets the password sheet instead of a
@@ -828,6 +832,7 @@ enum Passwords {
     /// The callback runs on the main actor, because everything that acts on it is a view.
     @MainActor static func authenticate(_ reason: String,
                                         _ done: @escaping @MainActor (Bool) -> Void) {
+        if let authenticator { authenticator(reason, done); return }
         let ctx = LAContext()
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
             done(false)

@@ -1717,6 +1717,7 @@ private struct PrivacyPane: View {
     @AppStorage("httpsOnly") private var httpsOnly = true
     @State private var blocking = true
     @AppStorage("searchSuggestions") private var suggestions = false
+    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     @ObservedObject private var manager = ProfileManager.shared
     /// Read once per appearance: they come out of UserDefaults, not out of a publisher.
     @State private var grants: [SitePermissions.Grant] = []
@@ -1749,6 +1750,18 @@ private struct PrivacyPane: View {
             }
 
             BlockerSettingsSection(profileID: profile.id)
+
+            SettingsSection("Locked Folders") {
+                SettingsCard {
+                    SettingsRow("Unlock folders using", icon: "lock.fill", tint: .indigo) {
+                        Picker("Folder unlock method", selection: $folderUnlockMethod) {
+                            Text("Touch ID").tag(FolderUnlockMethod.touchID)
+                            Text("System").tag(FolderUnlockMethod.system)
+                        }.labelsHidden().fixedSize()
+                    }
+                    Footnote("Applies to every profile. Macs without Touch ID use system authentication automatically.")
+                }
+            }
 
             SettingsSection("Site Permissions") {
                 SettingsCard {
