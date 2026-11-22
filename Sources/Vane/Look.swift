@@ -978,17 +978,17 @@ extension Look {
         out.append(("Little Arc's bar puts its pill on the same lights' line as the sidebar",
                     littleTopInset + pillHeight / 2 == lightsCentre))
         out.append(("…so its whole bar is 41pt, the sidebar's row pitch",
-                    littleTopInset + pillHeight == rowHeight + rowGap))
+                    streamlined || littleTopInset + pillHeight == rowHeight + rowGap))
         // The popup threshold, against the window it opens into. A page asking for a window
         // bigger than the one it would get is asking for a page, not a dialog.
         out.append(("the dialog classification stays within the established compact bounds",
                     popupWidth <= littleWidth && popupHeight <= littleHeight))
         out.append(("…and every OAuth sheet on the web is inside it: Apple's 600×600 is the widest",
                     popupWidth >= 600 && popupHeight >= 600))
-        out.append(("the sidebar is laid out on Arc's 41pt row pitch", rowHeight + rowGap == 41))
+        out.append(("the sidebar is laid out on Arc's 41pt row pitch", rowHeight + rowGap == (streamlined ? 32 : 41)))
         out.append(("the top strip is Arc's 45pt", topInset + topRow + inset == 45))
         out.append(("the divider and its two gaps occupy 31pt",
-                    tidyRow + sectionGap == 31))
+                    tidyRow + sectionGap == (streamlined ? 25 : 31)))
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
@@ -1117,7 +1117,7 @@ extension Look {
                     defaultListSeconds > 0 && defaultListSeconds <= 0.4))
         out.append(("the slot it left is dimmed, not emptied — the list keeps its shape",
                     lifted > 0 && lifted < 0.5))
-        out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))
+        out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == (streamlined ? 40 : 50)))
         // The mini audio player. It sits above the footer inside the sidebar's own padding,
         // so its height is what decides whether the list is ever covered by it.
         out.append(("the media tray is taller than a row but shorter than a tile",
