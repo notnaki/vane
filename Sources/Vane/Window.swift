@@ -2186,7 +2186,8 @@ extension TabStore {
             window.makeFirstResponder(page)
             return
         }
-        if libraryOpen || !sidebarShown {
+        // With the toolbar up the pill is already on screen; no sidebar to open for it.
+        if libraryOpen || !(sidebarShown || MainToolbar.shown) {
             Motion.list {
                 libraryOpen = false
                 sidebarShown = true

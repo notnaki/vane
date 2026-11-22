@@ -73,6 +73,12 @@ import SwiftUI
     }
 }
 
+extension TabStore {
+    /// Where the address pill is on screen: Little Vane's bar, the sidebar, or the main
+    /// window's View › Show Toolbar row, which keeps it with the sidebar hidden.
+    var addressChromeShown: Bool { isLittle || sidebarShown || sidebarPeeking || MainToolbar.shown }
+}
+
 /// One exact native keyboard/AX endpoint for the address surface. It never
 /// discovers a SwiftUI responder or borrows the surrounding browser's host.
 @MainActor final class MountedAddressButton: NSButton {
@@ -113,7 +119,7 @@ import SwiftUI
 
     private var available: Bool {
         guard isEnabled, let store, let window, store.window === window,
-              store.profileVisible, (store.isLittle || store.sidebarShown || store.sidebarPeeking), !store.libraryOpen,
+              store.profileVisible, store.addressChromeShown, !store.libraryOpen,
               !isHiddenOrHasHiddenAncestor, bounds.width > 0, bounds.height > 0 else { return false }
         return store.mountedAddressEndpoint === self
     }
@@ -189,7 +195,7 @@ import SwiftUI
         guard let store, store.chromeFocusRequested, store.mountedAddressEndpoint === self,
               let window, store.window === window else { return }
         guard store.profileVisible, store.palette == nil, !store.libraryOpen,
-              store.isLittle || store.sidebarShown || store.sidebarPeeking,
+              store.addressChromeShown,
               isEnabled, !isHiddenOrHasHiddenAncestor,
               window.attachedSheet == nil, NSApp.modalWindow == nil,
               store.addressFocusRequest?.isCurrent(in: window) == true else {

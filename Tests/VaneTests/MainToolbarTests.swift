@@ -91,17 +91,35 @@ import XCTest
             XCTAssertGreaterThan(try ink(toggleStrip), 0.02, "the sidebar keeps its toggle: \(message)")
         }
 
+        // Empty Favourites opens its drop tile under the pill. With the toolbar up the pill
+        // anchor stays where the pill stood, so the tile lands under the top row instead.
+        XCTAssertFalse(store.tabs.contains { $0.kind == .favourite })
+        func landing() throws -> CGRect {
+            let preview = try XCTUnwrap(store.sidebarDragPreview)
+            let root = try XCTUnwrap(preview.root), pill = try XCTUnwrap(preview.pill)
+            XCTAssertTrue(pill.window === window, "the pill anchor is mounted")
+            return FavouriteLanding.emptyFrame(below: root.convert(pill.bounds, from: pill), revealed: true)
+        }
+
         for sidebar in [true, false] {
             store.sidebarShown = sidebar
             try await settle()
             let without = try page()
             if sidebar { try assertSidebarChrome(true, "toolbar off") }
+            let landingWithout = try sidebar ? landing() : .zero
             MainToolbar.toggle()
             XCTAssertTrue(MainToolbar.shown)
             try await settle()
             let with = try page()
             capture(window, sidebar: sidebar)
             if sidebar { try assertSidebarChrome(false, "the toolbar has them") }
+            if sidebar {
+                let tile = try landing()
+                XCTAssertEqual(tile.minY, landingWithout.minY - Look.pillHeight - Look.inset, accuracy: 1,
+                               "the drop tile moves up by the pill's row, no further")
+                XCTAssertEqual(tile.minX, landingWithout.minX, accuracy: 1)
+                XCTAssertEqual(tile.width, landingWithout.width, accuracy: 1)
+            }
             // Screen coordinates: the top edge is maxY.
             XCTAssertEqual(without.maxY - with.maxY, room, accuracy: 1, "sidebar shown: \(sidebar)")
             XCTAssertEqual(without.minY, with.minY, accuracy: 1)

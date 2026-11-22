@@ -1157,6 +1157,14 @@ private struct Sidebar: View {
         #endif
         SidebarChrome {
             TopRow(showsNavigation: !toolbar)
+                .overlay(alignment: .bottom) {
+                    // Where the pill stood, so empty Favourites still opens its drop tile
+                    // under the top row while the toolbar has the pill.
+                    if toolbar {
+                        SidebarDragAnchor(preview: dragPreview, store: store, region: .pill)
+                            .frame(height: 0)
+                    }
+                }
             // View › Show Toolbar takes the pill and buttons up to its own row, as Arc does.
             if !toolbar {
                 ActiveAddressPill().transition(.opacity)
