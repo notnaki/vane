@@ -22,9 +22,11 @@ extension EnvironmentValues {
 /// Keep full-size header targets until they touch, then move secondary actions into a menu.
 struct SidebarChromeLayout {
     let width: CGFloat
+    /// Full screen hides the traffic lights, so their gap is not reserved.
+    var fullScreen = false
     // The address pill has its own compact presentation, independent of header overflow.
     var compact: Bool { width < Look.sidebarWidth }
-    private var fullTargetsWidth: CGFloat { Look.inset * 2 + Look.trafficLights + Look.control * 4 }
+    private var fullTargetsWidth: CGFloat { Look.inset * 2 + (fullScreen ? 0 : Look.trafficLights) + Look.control * 4 }
     var usesOverflow: Bool { width < fullTargetsWidth }
 
     /// Close gaps continuously; never shrink the glyphs or their 24pt hit areas.

@@ -264,6 +264,9 @@ final class VaneWindow: NSWindow {
         super.toggleFullScreen(sender)
     }
 
+    /// Posted with the window when a full-screen transition fails; AppKit tells only the delegate.
+    static let fullScreenFailed = Notification.Name("VaneWindowFullScreenFailed")
+
     /// In full screen AppKit lifts the titlebar out into a window of its own, laid over the
     /// top of this one. A toolbar keeps that window on screen for good, and there the
     /// titlebar is no longer transparent: an opaque strip as tall as the toolbar that covers
@@ -1128,6 +1131,14 @@ extension VaneWindow {
         }
         func windowDidEnterFullScreen(_ n: Notification) { recentre() }
         func windowDidExitFullScreen(_ n: Notification) { recentre() }
+        /// AppKit reports a failed transition only to the delegate; the sidebar's top row
+        /// listens for it to undo the corner it moved its toggle into.
+        func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+            NotificationCenter.default.post(name: VaneWindow.fullScreenFailed, object: window)
+        }
+        func windowDidFailToExitFullScreen(_ window: NSWindow) {
+            NotificationCenter.default.post(name: VaneWindow.fullScreenFailed, object: window)
+        }
         /// Arc's auto picture-in-picture, the other way out of a page: minimising the window
         /// pops the playing video out, and bringing the window back puts it home. *Will*, not
         /// did: the page has to still be on screen when it is asked, the same reason

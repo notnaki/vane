@@ -202,7 +202,7 @@ private final class LibraryRenderingReadGate: @unchecked Sendable {
         }
         let pencil = try XCTUnwrap(descendants(TabTooltipAnchorView.self, in: savedFixture.host)
             .first { $0.title == "Edit Space" })
-        XCTAssertFalse(pencil.enabled, "Retained metadata must not admit a stale card editor")
+        XCTAssertTrue(pencil.enabled, "Withholding saved rows during a refresh must not disable the card's editor")
         for _ in 0..<3 {
             let painted = try await renderedStrings(in: savedFixture.host)
             XCTAssertTrue(contains(space.name, in: painted), "Card metadata survives the pending shape refresh")

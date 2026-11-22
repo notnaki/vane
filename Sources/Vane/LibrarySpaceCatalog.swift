@@ -256,9 +256,19 @@ import SwiftUI
         }
     }
 
+    /// The Space as the manager has it now, or nil once it is deleted, moved to another
+    /// profile, or the catalog is dismissed. A reload or revoked rows withhold saved pages,
+    /// not the right to rename: this never consults `entry`, and it never returns the
+    /// retained card's copy, so an editor cannot start from (and write back) an old Space.
+    func editable(_ space: Space, manager: ProfileManager = .shared) -> Space? {
+        guard owner === manager, observingContents,
+              manager.profiles.contains(where: { $0.id == space.profileID }) else { return nil }
+        return manager.spaces(for: space.profileID).first { $0.id == space.id }
+    }
+
     func beginEditing(for space: Space, manager: ProfileManager = .shared) -> Editing? {
-        guard let entry = entry(for: space, manager: manager) else { return nil }
-        return Editing(space: entry.space, catalog: self, manager: manager)
+        guard let current = editable(space, manager: manager) else { return nil }
+        return Editing(space: current, catalog: self, manager: manager)
     }
 
 }

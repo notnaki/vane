@@ -2272,7 +2272,7 @@ private struct SpaceCard: View {
                 .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
                 .vaneTooltip("Edit Space", hint: "Rename, icon, and colour")
                 .accessibilityLabel("Edit \(space.name)")
-                .disabled(catalog.entry(for: space, manager: profiles) == nil && editing?.isCurrent != true)
+                .disabled(catalog.editable(space, manager: profiles) == nil && editing?.isCurrent != true)
                 .popover(item: $editing, arrowEdge: .bottom) { session in
                     ThemeEditor(store: live ?? store, space: session.space, naming: true,
                                 canEdit: { session.isCurrent }, saveSpace: { copy in
@@ -2310,7 +2310,7 @@ private struct SpaceCard: View {
             Menu {
                 Button("Go to \(space.name)") { Library.show(space, from: store) }
                 Button("Rename…") { _ = beginEditing() }
-                    .disabled(catalog.entry(for: space, manager: profiles) == nil)
+                    .disabled(catalog.editable(space, manager: profiles) == nil)
             } label: {
                 Image(systemName: "ellipsis")
             }
