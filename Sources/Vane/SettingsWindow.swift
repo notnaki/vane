@@ -165,16 +165,6 @@ enum LinkTarget {
         show()
     }
 
-    /// Open Settings → Profiles with this profile's "Manage Profile and Spaces" expanded.
-    /// The pencil on a Manage Spaces card goes here, since that is where a Space's profile
-    /// and its Space list are managed.
-    static func showProfileSpaces(profileID: UUID) {
-        selection.profileID = profileID
-        selection.revealSpaces = true
-        selection.id = "profiles"
-        show()
-    }
-
     /// The title bar names the pane you are looking at, the way Arc's and System Settings'
     /// do — the tab bar is icons, so the title is where the full word lives.
     static func retitle(_ title: String) { window?.title = title }
@@ -255,9 +245,6 @@ enum LinkTarget {
         }
     }
     @Published var profileID: UUID?
-    /// Set by a Manage Spaces card's pencil: the profiles pane opens "Manage Profile and
-    /// Spaces" for `profileID` and clears this again.
-    @Published var revealSpaces = false
     weak var toolbar: NSToolbar?
 }
 
@@ -729,16 +716,6 @@ private struct ProfilesPane: View {
         get { selection.profileID ?? manager.active.id }
         nonmutating set { selection.profileID = newValue }
     }
-    /// Whether "Manage Profile and Spaces" is open. Opened from a Manage Spaces card's pencil.
-    @State private var spacesExpanded = false
-
-    /// Opens the section when a card asked for it, whether this pane was already showing or
-    /// is only now being built, then clears the request so it does not reopen later.
-    private func revealSpacesIfRequested() {
-        guard selection.revealSpaces else { return }
-        spacesExpanded = true
-        selection.revealSpaces = false
-    }
     @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
     @AppStorage("searchSuggestions") private var suggestions = false
     @State private var archiveAfter = Prefs.archiveAfter
@@ -787,7 +764,7 @@ private struct ProfilesPane: View {
                     searchCard
                     downloadsCard
                     SettingsSection("Your Data and Settings") { data }
-                    DisclosureGroup("Manage Profile and Spaces", isExpanded: $spacesExpanded) {
+                    DisclosureGroup("Manage Profile and Spaces") {
                         VStack(alignment: .leading, spacing: 12) {
                             identity
                             spacesCard
@@ -796,8 +773,6 @@ private struct ProfilesPane: View {
                     }
                     .font(Look.text)
                     .padding(.horizontal, Look.cardInset)
-                    .onAppear(perform: revealSpacesIfRequested)
-                    .onChange(of: selection.revealSpaces) { _, _ in revealSpacesIfRequested() }
                 }
             }
         }

@@ -2268,10 +2268,11 @@ private struct SpaceCard: View {
                     .background(chromeTheme.hovered, in: .rect(cornerRadius: Look.chipRadius))
                     .accessibilityLabel("Profile \(profile.name)")
             }
-            Button { SettingsWindow.showProfileSpaces(profileID: space.profileID) } label: { Image(systemName: "pencil") }
+            Button { _ = beginEditing() } label: { Image(systemName: "pencil") }
                 .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
-                .vaneTooltip("Manage \(space.name)", hint: "Opens this profile's spaces in Settings")
-                .accessibilityLabel("Manage \(space.name) in Settings")
+                .vaneTooltip("Edit Space", hint: "Rename, icon, and colour")
+                .accessibilityLabel("Edit \(space.name)")
+                .disabled(catalog.editable(space, manager: profiles) == nil && editing?.isCurrent != true)
                 .popover(item: $editing, arrowEdge: .bottom) { session in
                     ThemeEditor(store: live ?? store, space: session.space, naming: true,
                                 canEdit: { session.isCurrent }, saveSpace: { copy in
@@ -2309,7 +2310,7 @@ private struct SpaceCard: View {
             Menu {
                 Button("Go to \(space.name)") { Library.show(space, from: store) }
                 Button("Rename…") { _ = beginEditing() }
-                    .disabled(catalog.entry(for: space, manager: profiles) == nil)
+                    .disabled(catalog.editable(space, manager: profiles) == nil)
             } label: {
                 Image(systemName: "ellipsis")
             }
