@@ -1046,6 +1046,9 @@ extension PasswordChooser {
             return false
         }
         if event.modifierFlags.contains(.shift), [126, 125, 36, 76].contains(event.keyCode) { return false }
+        // A held Return auto-repeating into a list that just opened on its own (say the page
+        // got the keyboard back when the command bar closed) is not a choice of account.
+        if event.isARepeat, tab.chooserFollowsFocus, [36, 76].contains(event.keyCode) { return true }
         switch event.keyCode {
         case 126: tab.moveChoice(-1)
         case 125: tab.moveChoice(1)

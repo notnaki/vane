@@ -2463,11 +2463,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     }
 
     /// A key through the app-wide monitor's handler, the way the real one arrives.
-    private func press(_ keyCode: UInt16, in tab: Tab) throws -> Bool {
+    private func press(_ keyCode: UInt16, in tab: Tab, repeat isARepeat: Bool = false) throws -> Bool {
         let window = try XCTUnwrap(tab.web.window)
         return PasswordChooser.handleKey(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
-            characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: keyCode)))
+            characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: isARepeat, keyCode: keyCode)))
     }
 
     private func loadGatedPage(_ tab: Tab, _ html: String) async throws {
@@ -2680,6 +2680,20 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             expectTrue(try press(125, in: tab))
             expectTrue(try press(36, in: tab))
             try await wait(for: "the chosen account") { try await gatedValues(tab) == "bob|bob-secret" }
+        }
+    }
+
+    func testHeldReturnDoesNotChooseFromAListThatOpenedOnItsOwn() async throws {
+        try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, prompt, reads in
+            _ = try await js(tab.web, "password.focus()")
+            try await wait(for: "the list from a focus in the page") { tab.passwordChoice != nil }
+            expectTrue(try press(36, in: tab, repeat: true), "A repeat is swallowed, not passed to the page")
+            expectTrue(try press(76, in: tab, repeat: true))
+            try await Task.sleep(for: .milliseconds(250))
+            XCTAssertNotNil(tab.passwordChoice, "The list stays up for a fresh press")
+            expectEqual(try await gatedValues(tab), "|", "A held Return must fill nothing")
+            expectEqual(prompt.reasons.count, 0)
+            expectEqual(reads.count, 0)
         }
     }
 

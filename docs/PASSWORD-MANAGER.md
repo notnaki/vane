@@ -33,7 +33,9 @@ menu command and a continued sign-in do not depend on focus.
 
 One case remains open. A page whose own text field already has the keyboard, or one that
 focuses a field while no control holds the keyboard, can call `focus()` on its login field
-just before a Return it expects, such as the end of a search.
+just before a Return it expects, such as the end of a search. The same applies when
+closing Find or the command bar hands the keyboard back to a page that was focusing its
+login; a held, auto-repeating Return never chooses from such a list, only a fresh press does.
 That Return chooses the first account. The list is drawn before the key can reach it, and
 the password fill asks for Touch ID unless a prompt was answered in the last five minutes;
 nothing else stands in the way.
