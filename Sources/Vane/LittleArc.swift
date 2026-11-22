@@ -372,6 +372,8 @@ import SwiftUI
         let frame = window.frame
         let at = NSPoint(x: frame.maxX - Look.inset - menuWidth,
                          y: frame.maxY - Look.littleTopInset - Look.pillHeight)
+        store.barHeld += 1
+        defer { store.barHeld -= 1 }
         spaceMenu(store).popUp(positioning: nil, at: at, in: nil)
     }
 
@@ -459,6 +461,9 @@ import SwiftUI
         func windowDidEndLiveResize(_ n: Notification) { recentre() }
         func windowDidBecomeKey(_ n: Notification) { recentre() }
         func windowDidResignKey(_ n: Notification) { recentre() }
+        func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposed: NSApplication.PresentationOptions = []) -> NSApplication.PresentationOptions {
+            VaneWindow.fullScreenPresentation(proposed)
+        }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 store.clearSuggestions()
@@ -579,14 +584,23 @@ struct LittleArcView: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(CompactBar.prefKey, store: .vane) private var autoHide = false
+
+    /// The traffic lights are part of the bar: they go and come back with it.
+    private func showLights(_ shown: Bool) {
+        (store.window as? VaneWindow)?.lightsHiddenByBar = !shown
+    }
 
     var body: some View {
         ZStack {
             WindowGlass()
             SpaceGround()
-            VStack(spacing: 0) {
+            CompactBarStack(shownChanged: showLights) {
                 LittleArcBar()
                     .padding(.bottom, Look.littleTopInset)
+                    // Over the page it needs a ground of its own; above it, the window's shows.
+                    .background { if autoHide { ZStack { WindowGlass(); SpaceGround() } } }
+            } page: {
                 WebCard(topGap: 0, edgeToEdge: true)
             }
             // Last, so ⌘L's bar composites over the bar as well as the page.
@@ -633,6 +647,114 @@ struct LittleArcBar: View {
         .background(WindowDragArea())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Little Vane")
+    }
+}
+
+// MARK: - Auto-hidden toolbar
+
+/// Settings › Links › "Auto-hide toolbar in Little Vane and Peek". Off by default, and off
+/// is exactly the old layout: the bar above, the page under it. On, the page takes the bar's
+/// room and the bar slides down over it — never pushing it — from the window's top edge.
+/// Website dialogs (`WebsitePopupWindow`) keep their origin strip regardless.
+enum CompactBar {
+    static let prefKey = "compactAutoHideToolbar"
+    /// The strip along the top edge that brings a hidden bar back.
+    static let edge: CGFloat = 6
+    /// How long a shortcut keeps the bar up, and how long the pointer may stray before it goes.
+    static let pulse: Duration = .seconds(1.5)
+    static let linger: Duration = .milliseconds(400)
+}
+
+/// Something in the bar is in use — its field has focus, a popover is open.
+struct CompactBarEngaged: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+/// A Little Vane's or a Peek's bar over its page. See `CompactBar`.
+struct CompactBarStack<Bar: View, Page: View>: View {
+    var shownChanged: (Bool) -> Void = { _ in }
+    @ViewBuilder var bar: Bar
+    @ViewBuilder var page: Page
+    @EnvironmentObject private var store: TabStore
+    @AppStorage(CompactBar.prefKey, store: .vane) private var autoHide = false
+    @State private var overEdge = false
+    @State private var overBar = false
+    @State private var engaged = false
+    @State private var menuOpen = false
+    @State private var pulsed = false
+    @State private var voiceOver = NSWorkspace.shared.isVoiceOverEnabled
+    @State private var shown = !UserDefaults.vane.bool(forKey: CompactBar.prefKey)
+    @State private var measured: CGFloat?
+
+    /// Anything using the bar holds it; only the setting lets it go.
+    private var wanted: Bool {
+        !autoHide || overEdge || overBar || engaged || menuOpen || store.barHeld > 0
+            || store.palette != nil || pulsed || voiceOver
+    }
+
+    var body: some View {
+        // Off, this is main's VStack exactly; on, the page takes the bar's room and the bar
+        // slides over it. `AnyLayout` keeps both children's identity, so flipping the setting
+        // never rebuilds the page.
+        let layout = autoHide ? AnyLayout(ZStackLayout(alignment: .top)) : AnyLayout(VStackLayout(spacing: 0))
+        layout {
+            // Slid out rather than faded, so VoiceOver still finds it — faded only until its
+            // height is known, so a bar that starts hidden never shows on the first frame.
+            bar.onHover { overBar = $0 }
+                .onPreferenceChange(CompactBarEngaged.self) { engaged = $0 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { measured = $0 }
+                .offset(y: shown ? 0 : -(measured ?? 0))
+                .opacity(shown || measured != nil ? 1 : 0)
+                .allowsHitTesting(shown)
+                .zIndex(1)
+            page.overlay(alignment: .top) {
+                if autoHide { EdgeHover { overEdge = $0 }.frame(height: CompactBar.edge) }
+            }
+        }
+        .task(id: wanted) {
+            // Leaving is forgiven for a moment; coming back is immediate.
+            if !wanted, (try? await Task.sleep(for: CompactBar.linger)) == nil { return }
+            Motion.animate(Look.quick) { shown = wanted }
+        }
+        .task(id: store.barReveal) {
+            guard store.barReveal > 0 else { return }
+            pulsed = true
+            if (try? await Task.sleep(for: CompactBar.pulse)) != nil { pulsed = false }
+        }
+        // The bar's own menus (Open in, the page menu, pinned extensions). Only one that opens
+        // in this window while the bar is up holds it, so a page's context menu never shows it.
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
+            if shown, store.window?.isKeyWindow == true { menuOpen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
+            menuOpen = false
+        }
+        .onChange(of: shown, initial: true) { shownChanged(shown) }
+        .onReceive(NSWorkspace.shared.publisher(for: \.isVoiceOverEnabled)) { voiceOver = $0 }
+        .vaneMotionPolicy()
+    }
+}
+
+/// The window's top edge, heard without being hit: clicks, scrolls and window drags there
+/// still reach the page and the window. The `AnchorView` pattern, with a tracking area.
+private struct EdgeHover: NSViewRepresentable {
+    let changed: (Bool) -> Void
+    func makeNSView(context: Context) -> Strip { Strip(changed: changed) }
+    func updateNSView(_ view: Strip, context: Context) { view.changed = changed }
+
+    final class Strip: NSView {
+        var changed: (Bool) -> Void
+        init(changed: @escaping (Bool) -> Void) {
+            self.changed = changed
+            super.init(frame: .zero)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                           owner: self))
+        }
+        required init?(coder: NSCoder) { nil }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func mouseEntered(with event: NSEvent) { changed(true) }
+        override func mouseExited(with event: NSEvent) { changed(false) }
     }
 }
 

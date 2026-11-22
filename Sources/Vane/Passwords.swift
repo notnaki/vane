@@ -1255,6 +1255,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("the pages the card holds", WebHost.check),
                                ("split view", Split.check),
                                ("mini audio player", MediaTray.check),
+                               ("pause all media", PauseAllMedia.check),
                                ("multi-select", Selection.check),
                                ("⌘Q asks before quitting", QuitAsk.check),
                                ("local files", Files.check),

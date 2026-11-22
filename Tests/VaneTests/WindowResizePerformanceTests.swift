@@ -429,6 +429,111 @@ import XCTest
         }
     }
 
+    /// The same page through one drag out, back and on to narrower. Back at the
+    /// width it began at, it scrolled forward to its end like a log would; what
+    /// it asks for at the next width is still its own scroll.
+    func testAPageKeepingItsPlaceIsNotPulledToItsEndAfterReturningThere() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            // The reader's own width stands in for the viewport's, and a `resize`
+            // event is when the tracking looks.
+            @MainActor func resized(_ width: Int) async throws -> [Double] {
+                let json = try await web.evaluateJavaScript("""
+                    reader.style.width = '\(width)px'; dispatchEvent(new Event('resize'));
+                    JSON.stringify([reader.scrollTop, reader.scrollHeight - reader.clientHeight - reader.scrollTop, __asked])
+                    """) as? String
+                return try JSONDecoder().decode([Double].self, from: Data(try XCTUnwrap(json).utf8))
+            }
+            _ = try await web.evaluateJavaScript("""
+                const reader = document.createElement('div');
+                reader.style.cssText = 'position:fixed;left:0;top:0;width:300px;height:200px;overflow:auto;font:14px/20px system-ui';
+                for (let i = 0; i < 60; i++) reader.append(Object.assign(document.createElement('p'), {textContent: (i + ' word ').repeat(30)}));
+                document.body.append(reader);
+                reader.scrollTop = reader.scrollHeight;
+                const anchor = [...reader.children].find(p => p.offsetTop > reader.scrollTop);
+                const offset = anchor.offsetTop - reader.scrollTop;
+                addEventListener('resize', () => { window.__asked = anchor.offsetTop - offset; reader.scrollTop = __asked }); 0
+                """)
+            PageResizeScroll.begin(web)
+            let wider = try await resized(400)
+            XCTAssertEqual(wider[1], 0, "Wider, the reader must be held at its end")
+            let back = try await resized(300)
+            XCTAssertGreaterThan(back[0], wider[0], "The reader must have scrolled forward")
+            XCTAssertEqual(back[1], 0, "The reader must be back at its end")
+            let narrower = try await resized(220)
+            XCTAssertGreaterThan(narrower[1], 1, "The reader must not have asked for its end")
+            XCTAssertEqual(narrower[0], narrower[2], "The reader was moved from where it scrolled itself")
+            PageResizeScroll.end(web)
+        }
+    }
+
+    /// And through a real drag: out, back past the size it began at, and left
+    /// narrower, without a pause for the tracking to forget the way there.
+    func testAPageKeepingItsPlaceThroughOneDragIsNotPulledToItsEnd() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            _ = try await web.evaluateJavaScript("""
+                const wrap = document.createElement('div');
+                for (let i = 0; i < 400; i++) wrap.append(Object.assign(document.createElement('p'), {textContent: (i + ' word ').repeat(30)}));
+                document.body.append(wrap);
+                scrollTo(0, document.documentElement.scrollHeight);
+                window.__anchor = [...wrap.children].find(p => p.getBoundingClientRect().top > 0);
+                window.__offset = __anchor.getBoundingClientRect().top;
+                window.__ends = 0;
+                addEventListener('resize', () => {
+                    const from = scrollY;
+                    window.__asked = __anchor.offsetTop - __offset; scrollTo(0, __asked);
+                    if (scrollY > from && document.documentElement.scrollHeight - innerHeight - scrollY <= 1) __ends++;
+                }); 0
+                """)
+            try await Task.sleep(for: .milliseconds(700))
+            try await ResizeNativeWindowAdmission.wait(window, web: web)
+            _ = try await self.drag(window, speed: -100, travel: -90, corner: true, returns: false, via: 120)
+            try await Task.sleep(for: .milliseconds(700))
+            XCTAssertTrue(window.occlusionState.contains(.visible) && NSApp.isActive, "The fixture lost the foreground during the drag")
+            let json = try await web.evaluateJavaScript("""
+                JSON.stringify([scrollY, document.documentElement.scrollHeight - innerHeight - scrollY, __asked,
+                    __anchor.getBoundingClientRect().top, __offset, __ends])
+                """) as? String
+            let shrunk = try JSONDecoder().decode([Double].self, from: Data(try XCTUnwrap(json).utf8))
+            XCTAssertGreaterThan(shrunk[5], 0, "The page must have scrolled forward to its end on the way back")
+            XCTAssertGreaterThan(shrunk[1], 1, "The page must not have asked for its end")
+            XCTAssertEqual(shrunk[0], shrunk[2], "The page was moved from where it scrolled itself")
+            XCTAssertEqual(shrunk[3], shrunk[4], accuracy: 1, "The paragraph the page keeps in place moved")
+        }
+    }
+
+    /// A page hears of a new viewport a frame after it is laid out, later when it
+    /// is busy. A log that grows in between is by then neither at its end nor at
+    /// the end it last followed to; it was following all the same.
+    func testALogStillFollowsWhenItGrowsBeforeTheResizeEvent() async throws {
+        try await withFixture(count: 20, sidebarShown: true) { window, _ in
+            let web = try XCTUnwrap(window.contentView.flatMap(Self.page))
+            // The log's own height stands in for the viewport's, and a `resize`
+            // event is when the tracking looks.
+            @MainActor func gap(after script: String) async throws -> Double? {
+                try await web.evaluateJavaScript(script + "; log.scrollHeight - log.scrollTop - log.clientHeight") as? Double
+            }
+            let start = try await gap(after: """
+                const log = document.createElement('div');
+                log.style.cssText = 'position:fixed;right:0;top:0;width:160px;height:200px;overflow:auto';
+                const line = () => { const p = document.createElement('p'); p.textContent = 'line'; log.append(p) };
+                const follow = () => { line(); log.scrollTop = log.scrollHeight };
+                const resized = height => { log.style.height = height + 'px'; dispatchEvent(new Event('resize')) };
+                for (let i = 0; i < 50; i++) line();
+                document.body.append(log);
+                log.scrollTop = log.scrollHeight
+                """)
+            XCTAssertEqual(start, 0, "The log must start at its end")
+            PageResizeScroll.begin(web)
+            // Laid out ahead and seen following there. Then it follows once more,
+            // the viewport returns, and off its end it grows without following.
+            let returned = try await gap(after: "resized(250); follow(); resized(250); follow(); log.style.height = '200px'; line(); resized(200)")
+            XCTAssertEqual(returned, 0, "The log stopped following its end")
+            PageResizeScroll.end(web)
+        }
+    }
+
     /// A page that enters the back/forward cache mid-drag never hears the drag
     /// end, so it stops tracking as it is hidden.
     func testScrollTrackingStopsWhenThePageIsHidden() async throws {
@@ -619,7 +724,7 @@ import XCTest
     /// the main thread finishes a frame, so the app rather than the fixture sets
     /// the cadence. Out and back along the right edge (and bottom, for a corner).
     private func drag(_ window: VaneWindow, speed: Double, travel: Double, corner: Bool = false, laps: Int = 1,
-                      returns: Bool = true, beforeRelease: () -> Void = {}) async throws -> Drag {
+                      returns: Bool = true, via: Double = 0, beforeRelease: () -> Void = {}) async throws -> Drag {
         let baseline = window.frame
         let record = ResizeLayoutRecord()
         let observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
@@ -636,8 +741,11 @@ import XCTest
                 guard !record.finished else { return }
                 let elapsed = min(CACurrentMediaTime() - began, duration)
                 let phase = elapsed >= duration ? 0 : elapsed.truncatingRemainder(dividingBy: lap)
-                // One way, a drag ends `travel` past where it began instead of returning.
-                let offset = returns ? (phase < lap / 2 ? phase : lap - phase) * speed : travel * elapsed / duration
+                // One way, a drag ends `travel` past where it began instead of returning,
+                // by way of `via` when that is not on the way.
+                let gone = (abs(via) + abs(travel - via)) * elapsed / duration
+                let oneWay = gone < abs(via) ? (via < 0 ? -gone : gone) : via + (travel < via ? -gone + abs(via) : gone - abs(via))
+                let offset = returns ? (phase < lap / 2 ? phase : lap - phase) * speed : oneWay
                 let size = NSSize(width: (baseline.width + CGFloat(offset)).rounded(),
                                   height: corner ? (baseline.height + CGFloat(offset / 3)).rounded() : baseline.height)
                 let accepted = window.proposedPageResize(size)

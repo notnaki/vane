@@ -10,6 +10,8 @@ import SwiftUI
     let persistentAllowTitle: String
     private let symbol: String
     private var continuation: CheckedContinuation<NSApplication.ModalResponse, Never>?
+    /// Cancelled before the bubble was up (during the wait for an auto-hidden bar).
+    private var aborted = false
 
     init(message: String, information: String, persistentAllowTitle: String, symbol: String) {
         self.messageText = message
@@ -22,8 +24,15 @@ import SwiftUI
     }
 
     func present(in window: NSWindow, tabID: UUID) async -> NSApplication.ModalResponse {
-        guard let content = window.contentView, window.isVisible else { return .abort }
-        let anchor = SitePermissionAnchor.find(tabID: tabID, in: content)
+        guard var content = window.contentView, window.isVisible else { return .abort }
+        var anchor = SitePermissionAnchor.find(tabID: tabID, in: content)
+        // A Little Vane's auto-hidden bar is sliding back for this; point at it once it is in.
+        if anchor == nil, LittleArc.store(of: window) != nil, UserDefaults.vane.bool(forKey: CompactBar.prefKey) {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !aborted, !Task.isCancelled, let now = window.contentView, window.isVisible else { return .abort }
+            content = now
+            anchor = SitePermissionAnchor.find(tabID: tabID, in: content)
+        }
         let positioningView = anchor ?? content
         let bounds = positioningView.bounds
         // A collapsed sidebar or a script-created window may have no address control.
@@ -55,7 +64,7 @@ import SwiftUI
     }
 
     func finish(_ response: NSApplication.ModalResponse) {
-        guard let continuation else { return }
+        guard let continuation else { aborted = true; return }
         self.continuation = nil
         popover.animates = !Motion.reduced
         popover.close()
