@@ -58,6 +58,24 @@ import XCTest
         XCTAssertFalse(session.asking, "⌘F goes back to find")
     }
 
+    func testAskNeedsAPageAndANewDocumentEndsTheConversation() {
+        TestEnvironment.prepare()
+        let store = TabStore(isPrivate: true, profileID: UUID())
+        defer { TabStore.all.removeAll { $0 === store }; SharedTabs.release(store.tabs) }
+        let tab = store.newBlankTab(focus: true)
+        let ask = Find.session(for: store).ask
+        if tab.existingWeb == nil {
+            XCTAssertFalse(ask.ask("Q", in: tab), "no page: the question stays with the caller")
+        }
+        _ = tab.web
+        XCTAssertTrue(ask.ask("Q", in: tab))
+        XCTAssertEqual(ask.turns.count, 1)
+        XCTAssertNotNil(tab.onDocumentCommit)
+        tab.onDocumentCommit?()
+        XCTAssertTrue(ask.turns.isEmpty, "a committed document is a different page")
+        XCTAssertNil(tab.onDocumentCommit)
+    }
+
     /// Set VANE_ASK_CAPTURE_DIR to write the panel's look for review.
     func testPanelRendersAConversation() throws {
         TestEnvironment.prepare()

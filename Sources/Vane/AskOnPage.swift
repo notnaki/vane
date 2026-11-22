@@ -5,7 +5,7 @@ import WebKit
 
 /// Arc's ⌘F → Ask: free-form questions about the page in front of you, answered from its
 /// text. One conversation per window, held by the find session; it is cleared when the bar
-/// closes, the window switches tabs, or the page it is about navigates.
+/// closes, the window switches tabs, or a new document commits in the asked-about tab.
 ///
 /// ponytail: page text comes from `Reader.extract`, the summarizer's extraction. Ceiling: a
 /// page Reader reads poorly (a dashboard, a listing) gets a poor answer. Upgrade path is a
@@ -22,8 +22,8 @@ import WebKit
     @Published var turns: [Turn] = []
     private var page: String?
     private var task: Task<Void, Never>?
-    /// The asked-about page's URL. Any change is a different page, so the conversation ends.
-    private var watch: NSKeyValueObservation?
+    /// The asked-about tab. A new document committing in it ends the conversation.
+    private weak var watched: Tab?
 
     var busy: Bool { turns.last?.pending == true }
 
@@ -43,10 +43,12 @@ import WebKit
     @discardableResult func ask(_ raw: String, in tab: Tab) -> Bool {
         let question = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !busy, let web = tab.existingWeb else { return false }
-        let key = tab.id.uuidString + " " + (web.url?.absoluteString ?? "")
+        // The document, not the URL: hash links, pushState and replaceState keep the page.
+        let key = tab.id.uuidString + " " + tab.readingDocumentGeneration.uuidString
         if page != key {
             reset(); page = key
-            watch = web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.reset() } }
+            watched = tab
+            tab.onDocumentCommit = { [weak self] in self?.reset() }
         }
         let history = turns.filter { !$0.failed && !$0.answer.isEmpty }.map { (question: $0.question, answer: $0.answer) }
         turns.append(Turn(question: question))
@@ -74,7 +76,8 @@ import WebKit
     }
 
     func reset() {
-        task?.cancel(); task = nil; watch = nil
+        task?.cancel(); task = nil
+        watched?.onDocumentCommit = nil; watched = nil
         turns = []; page = nil
     }
 }

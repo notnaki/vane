@@ -402,7 +402,8 @@ sparkles button (**Ask on Page**) in the find bar, or type **Ask on Page** in th
 bar. Whatever is already typed in the find field is asked right away. Press Return to
 ask; ask follow-ups about the same page in the same field. The magnifying glass returns to
 find, as do ⌘F and ⌘G, and Escape or × closes the bar and clears the conversation.
-Switching tabs or navigating the page ends the conversation. Answers come only from the
+Switching tabs or loading a new page ends the conversation; a page changing its own
+address (a `#` link or a history update) does not. Answers come only from the
 page's extracted title and text, the same extraction link-preview summaries use, cut to the on-device model's
 8,000-character input budget; follow-ups carry the last two exchanges. Apple's on-device
 model shows its answer as it is generated; a cloud connection shows the whole answer when

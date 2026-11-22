@@ -419,6 +419,9 @@ struct TitleReveal: Equatable, Sendable {
     let draftProtection = DraftProtection()
     var dialogPolicy = PageDialogPolicy()
     var readingDocumentGeneration = UUID()
+    /// Runs when a new main-frame document commits. Fragment links and pushState don't
+    /// commit, so a page that rewrites its own address keeps its Ask on Page conversation.
+    var onDocumentCommit: (@MainActor () -> Void)?
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
     /// maintenance and session persistence use `existingWeb` to avoid creating one.
@@ -2058,6 +2061,7 @@ struct TitleReveal: Equatable, Sendable {
         updatePageTitle(from: w)
         if w === existingWeb {
             Reader.navigationCommitted(self)
+            onDocumentCommit?()
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()
