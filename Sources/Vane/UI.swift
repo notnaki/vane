@@ -1007,6 +1007,8 @@ struct WebCard: View {
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
+        .modifier(ExtensionSidePanelDock(host: store.extensions, store: store, current: store.current,
+                                         radius: radius, edgeToEdge: edgeToEdge))
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)

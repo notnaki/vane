@@ -206,8 +206,28 @@ Popup/options behavior still depends on the extension and WebKit.
 Tab selection returns a clear error for rows hidden by folded folders, a collapsed
 Pinned section, or a non-leading Split View pane. Activating those tabs remains supported.
 
-Vane does not provide native messaging hosts, replacement browser pages, extension side
-panels, developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
+**Side panels.** WebKit has no `chrome.sidePanel`, so Vane supplies it for extensions
+that request the `sidePanel` permission. The panel is docked on the right of the page as
+a second card, 360 points wide, and shows the extension's own page in its extension
+context. It honours `side_panel.default_path`, `setOptions` (per tab or for the whole
+extension), `open`, `close`, `getOptions`, `getLayout` and
+`setPanelBehavior({openPanelOnActionClick})`. A panel opened for one tab shows only while
+that tab is selected. Clicking the extension's button closes its open panel; the page's
+own `window.close()` does too. Limits: the width is fixed, options and behaviour are
+forgotten when the extension reloads or Vane restarts, `getOptions` answers from the
+calling context's own writes, `open` does not require a user gesture, and
+`sidePanel.onOpened`/`onClosed` and `runtime.getContexts` are not available.
+
+**Chromium-only namespaces.** When an MV3 extension declares `debugger`, `downloads`,
+`identity`, `notifications`, `offscreen` or `tabGroups`, WebKit leaves the namespace out
+and the extension's background would stop at its first use. Vane defines these as
+explicit failures: their events never fire and their methods reject with “Vane does not
+support …”. This lets the rest of the extension start; the features behind them do not
+work. The manager still lists each one as unrecognized. `storage.managed` reads as
+empty, because Vane has no administrator policy.
+
+Vane does not provide native messaging hosts, replacement browser pages,
+developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
 messaging has public WebKit hooks, but Vane has no approved host-execution mechanism.
 ZIP/native-host feasibility, exact upstream package provenance, regression scope, and
 assembled-app results are in [Extension validation](EXTENSION-VALIDATION.md). No Vane

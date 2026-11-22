@@ -4,6 +4,41 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Side panels and Claude in Chrome — 2026-11-22
+
+Vane now supplies `chrome.sidePanel` and explicit-failure stand-ins for Chromium-only namespaces. The unmodified official **Claude** extension (“Claude in Chrome”, Web Store ID `fcoeoabgfenejglbffodgkkbkcdhcgfn`, version **1.0.107**, MV3) installs, and its button opens its side panel docked beside the page, showing Claude's signed-out **Log in** screen. Nothing past that screen was tested, and Claude's page actions cannot work on WebKit.
+
+**Build and package.** macOS 27.0, debug test host built from this change on `main` at `3d703fd7`, with an isolated temporary `VANE_DATA_DIR` and a fresh profile. The CRX came from Google's public update endpoint (SHA-256 `be64eb4dd905ed7ff50a421d9fd423293e4ce8b56c0fdee24fa4eaf17987a434`) and was unpacked without changes. No Claude account was used.
+
+**How it works.** A script defines `chrome.sidePanel` in the extension's worker (through the existing worker bootstrap) and in its pages. Calls reach the host as a `tabs.create` for a reserved URL inside the extension's own origin, which the host consumes before any tab exists. WebKit resolves `tabId` and `windowId`. The same bootstrap defines the missing namespaces listed in [Extensions and integrations](INTEGRATIONS.md#compatibility-and-validation).
+
+| Step | Before this change | With this change |
+| --- | --- | --- |
+| Install and background start | Failed: “The background content failed to load due to an error” (`WKWebExtensionContextErrorDomain:6`). The worker's top level calls `chrome.notifications.onClicked.addListener` and other absent namespaces. | Installed and started; no context errors reported in the run. |
+| Button | Not reachable. | `action.onClicked` ran Claude's own `sidePanel.setOptions({tabId, path})` and `sidePanel.open({tabId})`. No tab was created. |
+| Panel | None. | `sidepanel.html?tabId=…` loaded in the extension context, 360 points wide beside a 590-point page in a 1200-point window. Text: “Log in — Claude in Chrome is available to all paid plan subscribers”. |
+| Toggle | None. | A second button press closed the panel and the page returned to full width; a third reopened it. |
+
+One crash was found and fixed on the way: an extension page hosted by Vane (options window or side panel) that navigated a subframe raised `WKWebpagePreferences._customUserAgent must be nil for subframe navigations`. Claude's panel does this.
+
+**API availability measured in WebKit** with Claude's exact permission list, in both the worker and a page (134 `chrome.*` paths that Claude's code references were probed):
+
+| Claude needs | WebKit | Consequence |
+| --- | --- | --- |
+| `sidePanel` | Absent; supplied by Vane | Panel opens. |
+| `debugger` (`attach`, `sendCommand`, `onEvent`) | Absent; rejects in Vane | **Page actions do not work.** Claude clicks, types and takes screenshots through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`, `Network.*`). WebKit offers extensions no equivalent. |
+| `tabGroups`, `tabs.group`/`ungroup` | Absent; rejects | Claude's tab group is not created. |
+| `identity.launchWebAuthFlow` | Absent; rejects | Claude's silent OAuth refresh path fails. Whether interactive sign-in completes was not tested. |
+| `notifications`, `offscreen`, `downloads` | Absent; rejects | No notifications, no offscreen audio/GIF document, no downloads from the extension. |
+| `runtime.connectNative` | Hidden by Vane | Claude reports the desktop app and Claude Code connection as absent. |
+| `runtime.getContexts` | Absent | Claude's ⌘E command cannot tell that its panel is open, so it does not toggle. |
+| `action.getUserSettings`, `action.setBadgeTextColor`, `favicon` | Absent | Cosmetic. |
+| `scripting`, `tabs`, `storage` (local and session), `alarms`, `webNavigation`, `declarativeNetRequest`, `permissions`, `commands`, `windows`, `runtime.onMessageExternal`, `tabs.captureVisibleTab` | Present | Not exercised beyond start-up. |
+
+**Not tested:** signing in, chatting, reading a page, any tool call, the options page, the `claude.ai` content scripts, shortcuts, and an assembled signed app. Presence of an API in the table is not evidence that Claude's use of it works.
+
+Automated coverage: `ExtensionSidePanelTests` loads a synthetic MV3 worker that registers listeners on absent namespaces at its top level, opens a per-tab panel from `action.onClicked`, and checks the panel page, tab scoping, button toggle, `window.close()`, `openPanelOnActionClick`, the shared panel, explicit `debugger` rejection and unload cleanup. The Claude run itself was a local probe and is not in the suite; its log and snapshots are under `~/.cache/vane-task-evidence/claude-side-panel-2026-11-22/`.
+
 ## Password-manager unlock and autofill — 2026-11-21
 
 The unmodified official Bitwarden **2026.11.0** Firefox (Manifest V2) package signs in to a vault, unlocks it again after a restart, and fills a login form in Vane. The same runs repeat the ad-blocker and page-changer checks with current packages. This is the first authenticated password-manager result; the earlier sections keep their original verdicts.
