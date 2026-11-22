@@ -16,7 +16,18 @@ enum UpdateArchive {
         var seconds: TimeInterval = 120
     }
 
-    enum Failure: Error { case invalidZIP, limit, unsafePath, unsupportedEntry, filesystem }
+    enum Failure: LocalizedError {
+        case invalidZIP, limit, unsafePath, unsupportedEntry, filesystem
+        var errorDescription: String? {
+            switch self {
+            case .invalidZIP: "The archive is damaged or not a supported ZIP file."
+            case .limit: "The archive is larger than Vane allows."
+            case .unsafePath: "The archive contains an unsafe file path."
+            case .unsupportedEntry: "The archive contains an unsupported entry."
+            case .filesystem: "The archive could not be written to disk."
+            }
+        }
+    }
 
     private struct Entry {
         var name: Data

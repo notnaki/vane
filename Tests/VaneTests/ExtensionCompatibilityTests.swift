@@ -77,6 +77,18 @@ import XCTest
             "Recognizing MV2 is insufficient: consent must disclose ineffective request cancellation")
     }
 
+    /// Revision History 1.14.1 lists these patterns; WebKit skips unsupported ones and keeps the rest.
+    func testPartlyUnsupportedExternallyConnectableInstallsWithALimitation() async throws {
+        let manifest: [String: Any] = ["manifest_version": 3, "name": "Connectable", "version": "1",
+            "externally_connectable": ["matches": ["https://localhost:3000/*", "https://*.vercel.app/*", "https://example.com/*"]]]
+        try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
+        let ext = try await WKWebExtension(resourceBaseURL: folder)
+        XCTAssertTrue(ext.errors.contains(where: ExtensionDiagnostics.isPartialExternallyConnectable), "\(ext.errors)")
+        XCTAssertTrue(ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest).isEmpty)
+        XCTAssertTrue(ExtensionDiagnostics.limitations(manifest, extension: ext).contains { $0.hasPrefix("externally_connectable:") })
+        _ = try await load()
+    }
+
     func testMissingCapabilitiesAndKeysCountAsUnsupportedButPartialSupportDoesNot() async throws {
         func limitations(_ extra: [String: Any]) async throws -> [String] {
             let manifest = (["manifest_version": 2, "name": "Fixture", "version": "1"] as [String: Any]).merging(extra) { $1 }

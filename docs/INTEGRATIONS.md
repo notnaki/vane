@@ -40,7 +40,7 @@ Downloads go directly to Google's HTTPS delivery services without browser cookie
 Before unpacking, Vane verifies the CRX3 developer signature against the requested
 extension ID and the production Chrome Web Store publisher signature. The bounded
 extractor rejects unsafe paths, links, special files, conflicting entries and corrupt
-archives. Downloads are capped at 128 MiB; expanded code has the same 256 MiB total,
+archives. Downloads are capped at 128 MiB; expanded code has the same 512 MiB total,
 64 MiB per-file and 20,000-entry limits as folder imports. Vane then reviews access
 before activation and saves a private, profile-scoped managed copy.
 
@@ -75,7 +75,7 @@ Info.plist team. Its runtime ID is the genuine Safari `<extension bundle ID> (<T
 so sites can address an allowlisted Safari extension through external messaging.
 
 For unpacked folders, Vane copies regular files into profile-owned staging, rejects internal symbolic links
-and special files, and limits imports to 20,000 files/folders, 64 MB per file, 256 MB total,
+and special files, and limits imports to 20,000 files/folders, 64 MB per file, 512 MB total,
 and 64 nested folder levels. It validates the manifest and referenced scripts, popups,
 options pages, and rulesets before presenting installation consent. Review capabilities,
 website access, and compatibility limitations before installing. Cancel leaves the

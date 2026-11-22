@@ -25,7 +25,12 @@ import WebKit
               Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
             refuse("Requires a signed sandboxed .app and an existing isolated VANE_DATA_DIR under Downloads.")
         }
-        let syntheticOnly = ProcessInfo.processInfo.arguments.contains("--synthetic-only")
+        let arguments = ProcessInfo.processInfo.arguments
+        // --store ID[,URL[,CSS selector]]: install from the Chrome Web Store (or a fixtures/ folder)
+        // instead of the bundled fixtures. A URL starting with "/" is a loopback fixture page;
+        // the selector counts the extension's own injected elements there.
+        let store = arguments.indices.filter { arguments[$0] == "--store" && $0 + 1 < arguments.count }.map { arguments[$0 + 1] }
+        let syntheticOnly = arguments.contains("--synthetic-only") || !store.isEmpty
         for name in (syntheticOnly ? [] : ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"]) {
             let fixture = directory.appendingPathComponent("fixtures/" + name)
             guard fixture.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
@@ -55,7 +60,7 @@ import WebKit
                 try JSONEncoder().encode(identity).write(to: marker, options: .withoutOverwriting)
             } catch { refuse("Could not mint the isolated fixture-directory marker.") }
         }
-        let check = Runner(directory: directory, syntheticOnly: syntheticOnly)
+        let check = Runner(directory: directory, syntheticOnly: syntheticOnly, store: store)
         runner = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) {
             check.record("overall deadline", .failed, "Exceeded 240 seconds; a platform callback did not finish.")
@@ -97,6 +102,7 @@ import WebKit
     @MainActor private final class Runner {
         let directory: URL
         let syntheticOnly: Bool
+        let storeItems: [String]
         var profileID: UUID?
         var store: TabStore?
         var server: Server?
@@ -104,7 +110,9 @@ import WebKit
         var permissionTimer: Timer?
         var popupAnchors: [NSView] = []
 
-        init(directory: URL, syntheticOnly: Bool) { self.directory = directory; self.syntheticOnly = syntheticOnly }
+        init(directory: URL, syntheticOnly: Bool, store: [String]) {
+            self.directory = directory; self.syntheticOnly = syntheticOnly; storeItems = store
+        }
 
         func record(_ workflow: String, _ result: Result, _ detail: String) {
             findings.append(Finding(workflow: workflow, result: result, detail: detail))
@@ -151,7 +159,8 @@ import WebKit
                     await blocker(tab: tab, base: base)
                     await passwordManager(tab: tab, base: base)
                 }
-                await syntheticRuntime(tab: tab)
+                if storeItems.isEmpty { await syntheticRuntime(tab: tab) }
+                for item in storeItems { await storePackage(item, base: base) }
             } catch {
                 record("harness setup", .failed, error.localizedDescription)
             }
@@ -484,6 +493,77 @@ import WebKit
             } catch { record("Synthetic runtime fixture", .failed, error.localizedDescription) }
         }
 
+        /// Unmodified store package through the production download, CRX verification and review path,
+        /// or a folder under fixtures/. Content scripts are observed from outside: page-world DOM
+        /// references to the extension's own origin (including open shadow roots) and WebKit's answer.
+        private func storePackage(_ item: String, base: String) async {
+            let parts = item.split(separator: ",", maxSplits: 2).map(String.init)
+            let source = try? ChromeWebStore(input: parts[0])
+            let fixture = !parts[0].contains("/") && !parts[0].hasPrefix(".")
+                && FileManager.default.fileExists(atPath: directory.appendingPathComponent("fixtures/" + parts[0] + "/manifest.json").path)
+            guard let profileID, let store = self.store, source != nil || fixture else {
+                record("package " + item, .failed, "Expected --store <32-letter ID or fixtures/ folder>[,URL[,CSS selector]]."); return
+            }
+            let label = "package " + (source?.id ?? parts[0])
+            let host = ExtensionHost.host(for: profileID)
+            do {
+                let context: WKWebExtensionContext
+                if let source {
+                    try await wait("prior extension operations settle", seconds: 25) { !host.isBusy }
+                    let accepted = try await host.installStore(source, review: { [weak self] _ in
+                        self?.record(label + " review", .verified, "Explicit test acceptance of the store package before activation.")
+                        return true
+                    })
+                    guard let loaded = host.loaded.first(where: { $0.path == source.key })?.context else {
+                        let failure = host.entries.first(where: { $0.path == source.key })?.failure
+                        throw Failure(failure ?? "Not activated (accepted=\(accepted)).")
+                    }
+                    context = loaded
+                    for limitation in host.entries.first(where: { $0.path == source.key })?.compatibility ?? [] {
+                        record(label + " compatibility", .unavailable, limitation)
+                    }
+                } else { context = try await install(parts[0]) }
+                record(label + " install", .verified, "\(context.webExtension.displayName ?? "?") \(context.webExtension.version ?? "?") MV\(context.webExtension.manifestVersion) activated.")
+                try? await Task.sleep(for: .seconds(4))
+                record(label + " background", context.errors.isEmpty ? .verified : .unavailable,
+                       context.errors.isEmpty ? "No context errors after startup." : ExtensionDiagnostics.describe(context.errors))
+                let tab = store.newBlankTab()
+                tab.go(URL(string: base + "/page")!)
+                try await wait("store page loads") { !tab.web.isLoading && tab.web.url?.path == "/page" }
+                if let web = await popup(context, tab: tab, label: label + " popup",
+                                         expected: "[...document.querySelectorAll('button,input,a,h1,h2,p,img,svg')].some(e => e.getClientRects().length > 0)") {
+                    let text = (try? await evaluate("return document.body.innerText.replace(/\\s+/g, ' ').slice(0, 300);", in: web)) ?? ""
+                    record(label + " popup text", .verified, text)
+                }
+                for window in NSApp.windows where window !== store.window && window.isVisible && window.styleMask.contains(.titled)
+                    && window.contentView.map({ webView(in: $0, url: context.baseURL) != nil }) == true { window.close() }
+                guard parts.count >= 2, let url = URL(string: parts[1].hasPrefix("/") ? base + parts[1] : parts[1]) else { return }
+                server?.requests = [:]
+                tab.go(url)
+                try await wait("content page loads", seconds: 45) { !tab.web.isLoading && tab.web.url != nil }
+                try? await Task.sleep(for: .seconds(12))
+                let origin = context.baseURL.absoluteString
+                let probe = try await evaluate("""
+                    const seen = [], roots = [document];
+                    for (let i = 0; i < roots.length && i < 5000; i++) for (const e of roots[i].querySelectorAll('*')) {
+                      if (e.shadowRoot) roots.push(e.shadowRoot);
+                      for (const a of e.attributes) if (a.value.includes(origin)) seen.push(e.tagName.toLowerCase() + '[' + a.name + ']');
+                      if (e.tagName === 'STYLE' && e.textContent.includes(origin)) seen.push('style');
+                    }
+                    const marked = selector ? roots.flatMap(r => [...r.querySelectorAll(selector)]) : [];
+                    return JSON.stringify({title: document.title.slice(0, 80), shadowRoots: roots.length - 1, references: seen.slice(0, 12), count: seen.length,
+                      selector, selected: marked.length, selectedVisible: marked.filter(e => e.getClientRects().length > 0).length,
+                      selectedSample: marked.slice(0, 6).map(e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + '.' + String(e.className).slice(0, 40)),
+                      fixtureAllowed: window.fixtureAllowed === true, fixtureBlocked: window.fixtureBlocked === true});
+                    """, in: tab.web, arguments: ["origin": origin, "selector": parts.count == 3 ? parts[2] : ""])
+                let injected = context.hasInjectedContent(for: url)
+                let requests = server?.requests.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ") ?? ""
+                record(label + " content page", .verified, "\(url.absoluteString): WebKit injected content=\(injected); page probe \(probe); loopback requests [\(requests)]")
+                record(label + " errors after page", context.errors.isEmpty ? .verified : .unavailable,
+                       context.errors.isEmpty ? "None." : ExtensionDiagnostics.describe(context.errors))
+            } catch { record(label, .failed, error.localizedDescription) }
+        }
+
         private func popup(_ context: WKWebExtensionContext, tab: Tab, label: String, expected: String) async -> WKWebView? {
             do {
                 guard let profileID, let window = store?.window, let content = window.contentView else { throw Failure("No browser anchor window.") }
@@ -646,7 +726,11 @@ import WebKit
                 let body: String
                 if path == "/allowed-by-fixture.js" { body = "window.fixtureAllowed=true;" }
                 else if path == "/blocked-by-fixture.js" { body = "window.fixtureBlocked=true;" }
-                else if path == "/block-check" {
+                else if path == "/88/tag.min.js" { body = "window.fixtureBlocked=true;" }
+                else if path == "/ad-check" {
+                    // `/88/tag.min.js` is a generic path rule in EasyList-derived rulesets.
+                    body = "<title>Vane ad fixture</title><body><h1>Controlled ad-path check</h1><script src='/allowed-by-fixture.js'></script><script src='/88/tag.min.js'></script></body>"
+                } else if path == "/block-check" {
                     body = "<title>Vane DNR fixture</title><body><h1>Controlled DNR check</h1><script src='/allowed-by-fixture.js'></script><script src='/blocked-by-fixture.js'></script></body>"
                 } else if path == "/login" {
                     body = "<title>Vane login fixture</title><body><h1>Sign in</h1><form action='/page' method='get'><label>Username <input id='username' name='username' type='text' autocomplete='username'></label> <label>Password <input id='password' name='password' type='password' autocomplete='current-password'></label> <button type='submit'>Sign in</button></form></body>"
