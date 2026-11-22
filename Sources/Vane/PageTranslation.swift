@@ -94,7 +94,8 @@ import WebKit
                 return
             }
             if let source, await LanguageAvailability().status(from: source, to: target) == .unsupported {
-                Toasts.show("Translation from \(name(of: source)) isn't available", in: store); return
+                if !automatic { Toasts.show("Translation from \(name(of: source)) isn't available", in: store) }
+                return
             }
             // The awaits above can outlast a navigation; a job for the old text must not land.
             guard tab.readingDocumentGeneration == generation else { return }
@@ -140,11 +141,17 @@ import WebKit
                 for r in try await session.translations(from: requests) {
                     if let id = r.clientIdentifier { out[id] = r.targetText }
                 }
-                guard await apply(out, job) else { return }
+                guard await apply(out, job) else { break }
             }
         } catch {
             await stopped(job, window: window, cancelled: Task.isCancelled)
         }
+        await finished(job, window: window)
+    }
+
+    /// The session is free again; a translation left on screen does not keep it busy.
+    private static func finished(_ job: Job, window: ObjectIdentifier) {
+        if shared.running[window] == job.id { shared.running[window] = nil }
     }
 
     /// `forget` drops a job whose document was replaced before it began.
