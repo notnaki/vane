@@ -260,6 +260,12 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     return name.isEmpty ? nil : name
 }
 
+@MainActor private func toolbarItem() -> NSMenuItem {
+    let entry = item(.toggleToolbar) { MainToolbar.toggle() }
+    entry.state = MainToolbar.shown ? .on : .off
+    return entry
+}
+
 @MainActor private func readerTypefaceItem() -> NSMenuItem {
     let entry = item(.readerSerif) {
         Reader.setSerif(!Reader.serif, in: Windows.current?.active)
@@ -839,6 +845,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.reload) { Windows.current?.active?.reload() },
         item(.hardReload) { Windows.current?.active?.hardReload() },
         item(.toggleSidebar) { Windows.current?.toggleSidebar() },
+        toolbarItem(),
         item(.nextFocusArea) {
             guard let store = Windows.current, store.window === NSApp.keyWindow else { return }
             store.focusNextArea()

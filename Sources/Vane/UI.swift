@@ -913,8 +913,29 @@ struct WebCard: View {
     /// Little Vane's document meets the native window edges beneath its toolbar.
     var edgeToEdge = false
     private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
+    /// View › Show Toolbar belongs to the browser window; Little Vane has its own bar.
+    private var toolbar: Bool { showsToolbar && !edgeToEdge && !store.isLittle }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if toolbar {
+                MainToolbarBar()
+                    .padding(.bottom, Look.cardGap)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            card
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
+        // No inset on the leading edge while the sidebar is docked — its own padding
+        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
+        // column stands in the same place and leaves the same gap.
+        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
+        .padding(.top, topGap)
+        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+    }
+
+    private var card: some View {
         ZStack(alignment: .top) {
             // A split is one card holding several pages; everything that floats over the
             // page — find, the save prompt, the status bar — still belongs to `store.active`,
@@ -1003,13 +1024,7 @@ struct WebCard: View {
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-        // No inset on the leading edge while the sidebar is docked — its own padding
-        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
-        // column stands in the same place and leaves the same gap.
         .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
-        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        .padding(.top, topGap)
-        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 
     /// The native viewport and the card share one width. Freezing only the
@@ -1483,6 +1498,39 @@ private struct NavigationTarget: ViewModifier {
             .onHover { hovering = $0 }
             .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: enabled && hovering)
             .vaneMotionPolicy()
+    }
+}
+
+/// View › Show Toolbar (⇧⌘D, as in Arc): a slim row above the browser window's page card
+/// with the page's back, forward and reload and its address. One app-wide setting that
+/// outlives the window, like the sidebar's width. Little Vane and Peek keep their own bar.
+@MainActor enum MainToolbar {
+    static let prefKey = "mainWindowShowsToolbar"
+    static var shown: Bool { UserDefaults.vane.bool(forKey: prefKey) }
+    static func toggle() {
+        UserDefaults.vane.set(!shown, forKey: prefKey)
+        rebuild()   // the menu item's tick
+    }
+}
+
+/// The toolbar's row. The same pill and buttons as the sidebar's top, for whichever tab —
+/// or split pane — is active. Dragging its empty space moves the window, which matters
+/// with the sidebar hidden: then this row is the window's only title bar.
+private struct MainToolbarBar: View {
+    @EnvironmentObject private var store: TabStore
+
+    var body: some View {
+        HStack(spacing: Look.inset) {
+            NavButtons(tab: store.active)
+            // Sized as the full-width sidebar's pill, never its compact face.
+            AddressPill(tab: store.active, layoutWidth: Look.sidebarWidth)
+        }
+        .font(Look.icon)
+        .foregroundStyle(Look.inkSecondary)
+        .frame(height: Look.pillHeight)
+        .background(WindowDragArea())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Toolbar")
     }
 }
 

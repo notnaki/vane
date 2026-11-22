@@ -151,7 +151,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case printPage, settings
     case openFile, savePageAs, sharePage, capturePage, captureFullPage
     // View
-    case reload, hardReload, openLocation, find, toggleSidebar
+    case reload, hardReload, openLocation, find, toggleSidebar, toggleToolbar
     case nextFocusArea
     case findNext, findPrevious
     case actualSize, zoomIn, zoomOut, fullScreen
@@ -227,6 +227,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext: "Find Next"
         case .findPrevious: "Find Previous"
         case .toggleSidebar: "Toggle Sidebar"
+        case .toggleToolbar: "Show Toolbar"
         case .nextFocusArea: "Next Focus Area"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
@@ -317,7 +318,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
              .sharePage, .capturePage, .captureFullPage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
-             .toggleSidebar, .actualSize,
+             .toggleSidebar, .toggleToolbar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
              .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .copyPageURL, .showLibrary: .view
         case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
@@ -369,6 +370,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext:         Keybinding("g", .command)
         case .findPrevious:     Keybinding("g", [.command, .shift])
         case .toggleSidebar:    Keybinding("s", .command)
+        case .toggleToolbar:    Keybinding("d", [.command, .shift])
         case .nextFocusArea:    Keybinding("\u{F709}") // F6, like other browsers
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)
@@ -379,8 +381,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .forward:          Keybinding("]", .command)
         // Arc's ⌘D pins the tab. Bookmarking keeps the adjacent ⌥⌘D it already had, and
         // Favourite ships unbound — Arc gives it no default either, it is a menu item and
-        // a right-click. ⇧⌘D is left free (Arc spends it on the toolbar, which Vane has
-        // no equivalent of).
+        // a right-click. ⇧⌘D is Arc's View › Show Toolbar, and Vane's too.
         case .bookmarkPage:     Keybinding("d", [.command, .option])
         case .pinTab:           Keybinding("d", .command)
         case .clearTabs:        Keybinding("k", [.command, .shift])
@@ -1031,7 +1032,9 @@ extension Keybindings {
              binding(for: .pinTab).display == "⌘D"),
             ("Favourite Tab ships unbound, as Arc does",
              binding(for: .favouriteTab).display == "---"),
-            ("⇧⌘D is left free", conflicts(Keybinding("d", [.command, .shift])).isEmpty),
+            ("Show Toolbar defaults to ⇧⌘D, the way Arc binds it",
+             binding(for: .toggleToolbar).display == "⇧⌘D"
+                && conflicts(Keybinding("d", [.command, .shift])) == [.toggleToolbar]),
             ("Bookmark This Page keeps ⌥⌘D",
              binding(for: .bookmarkPage).display == "⌥⌘D"),
             ("Clear Tabs defaults to ⇧⌘K", binding(for: .clearTabs).display == "⇧⌘K"),

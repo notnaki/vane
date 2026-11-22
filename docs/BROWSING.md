@@ -49,6 +49,12 @@ in other profiles. Each window keeps its own sidebar visibility.
 **Toggle Sidebar** (`⌘S` by default) also closes Library when it is open. Showing the
 sidebar again returns to your tabs.
 
+**View › Show Toolbar** (`⇧⌘D` by default, as in Arc, or **Show Toolbar** in the command
+bar) adds a slim bar above the page with Back, Forward, Reload, and the page's address,
+for the active tab or split pane. It applies to every browser window and is remembered
+after you quit. With the sidebar hidden, drag the toolbar's empty space to move the
+window. Little Vane and Peek keep their own bar (see Settings › Links).
+
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
 The tab's close button appears at the end of the row while you hover; otherwise the
 title uses the row's full width.
@@ -386,6 +392,7 @@ evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
+| Show Toolbar | `⇧⌘D` |
 
 Shortcuts can be changed in Settings. The menu bar shows the current bindings, including
 numbered tab selection and search commands. Choose **Prefer Website** for a shortcut to
