@@ -1330,13 +1330,15 @@ private struct TopRowContent: View {
     private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebarWidth) }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Full screen hides the traffic lights, so the toggle takes their corner.
+    @State private var fullScreen = false
 
     var body: some View {
         #if DEBUG
         let _ = ResizeTimingDiagnostics.record("sidebar.body.header")
         #endif
         HStack(spacing: layout.headerSpacing) {
-            Spacer().frame(width: Look.trafficLights)
+            if !fullScreen { Spacer().frame(width: Look.trafficLights) }
             if !layout.usesOverflow { toggle }
             Spacer(minLength: 0)
             ActiveNavButtons(spacing: layout.navigationSpacing, showsSidebarToggle: layout.usesOverflow)
@@ -1346,6 +1348,13 @@ private struct TopRowContent: View {
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: layout.usesOverflow)
+        .onAppear { fullScreen = store.window?.styleMask.contains(.fullScreen) ?? false }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) {
+            if $0.object as? NSWindow === store.window { fullScreen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) {
+            if $0.object as? NSWindow === store.window { fullScreen = false }
+        }
     }
 
     private var toggle: some View {
