@@ -820,9 +820,12 @@ enum Passwords {
 
     // MARK: Revealing
 
+    #if DEBUG
     /// Tests replace the system prompt; nil in the app. A fixture must never put a real
-    /// Touch ID sheet in front of whoever is using the Mac.
+    /// Touch ID sheet in front of whoever is using the Mac. Debug builds only (tests build
+    /// debug; `make-app.sh` and releases build release), so shipping code cannot skip it.
     @MainActor static var authenticator: (@MainActor (String, @escaping @MainActor (Bool) -> Void) -> Void)?
+    #endif
 
     /// Turning a row of bullets into a password asks the Mac who you are first — Touch ID,
     /// an Apple Watch, or the login password. `.deviceOwnerAuthentication` rather than the
@@ -830,17 +833,22 @@ enum Passwords {
     /// refusal, and so a laptop with the lid shut still has a way through.
     ///
     /// The callback runs on the main actor, because everything that acts on it is a view.
+    /// Returns the context so a caller can invalidate a prompt it no longer wants.
+    @discardableResult
     @MainActor static func authenticate(_ reason: String,
-                                        _ done: @escaping @MainActor (Bool) -> Void) {
-        if let authenticator { authenticator(reason, done); return }
+                                        _ done: @escaping @MainActor (Bool) -> Void) -> LAContext? {
+        #if DEBUG
+        if let authenticator { authenticator(reason, done); return nil }
+        #endif
         let ctx = LAContext()
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
             done(false)
-            return
+            return nil
         }
         ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in
             Task { @MainActor in done(ok) }
         }
+        return ctx
     }
 
     /// Erasing one instance must leave every other data directory's credentials alone.

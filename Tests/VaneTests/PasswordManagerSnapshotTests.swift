@@ -24,14 +24,15 @@ import XCTest
     }
 
     private func unlockedLock() -> PasswordPaneLock {
-        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in done(true) })
+        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in done(true); return nil })
         lock.unlock(profile)
         return lock
     }
 
     private func pane(lock: PasswordPaneLock, deletion: PasswordPendingDeletion = .init(delete: { _, _ in }),
-                      secrets: PasswordManagerSecrets? = nil, openHost: String? = nil) -> some View {
-        let logins = fixture
+                      secrets: PasswordManagerSecrets? = nil, openHost: String? = nil,
+                      logins: [Passwords.Login]? = nil) -> some View {
+        let logins = logins ?? fixture
         // The window's content area and SettingsView's chrome above a profile pane.
         return VStack(alignment: .leading, spacing: 0) {
             Label("Back to Profiles", systemImage: "chevron.left").foregroundStyle(Color.accentColor)
@@ -88,7 +89,7 @@ import XCTest
             let list = try render(pane(lock: unlockedLock()), name: "list", dark: dark)
             XCTAssertGreaterThan(distinctColors(list), 4)
 
-            let denied = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in })
+            let denied = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in nil })
             try render(pane(lock: denied), name: "locked", dark: dark)
 
             let secrets = PasswordManagerSecrets()
@@ -108,14 +109,165 @@ import XCTest
         }
     }
 
-    /// The locked pane draws no login names at all, and asks once on appearance.
+    /// The locked pane draws no login names at all, and asks once on appearance: what it
+    /// draws must not depend on which logins are saved, while the unlocked list does.
     func testLockedPaneHidesTheListAndPromptsOnAppear() throws {
         var asked = 0
-        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in asked += 1 })
+        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in asked += 1; return nil })
+        let png = { (bitmap: NSBitmapImageRep) in bitmap.representation(using: .png, properties: [:]) }
         let locked = try render(pane(lock: lock), dark: false)
         XCTAssertEqual(asked, 1, "Opening the pane must ask for authentication")
-        let unlocked = try render(pane(lock: unlockedLock()), dark: false)
-        XCTAssertNotEqual(locked.representation(using: .png, properties: [:]),
-                          unlocked.representation(using: .png, properties: [:]))
+        let lockedEmpty = try render(pane(lock: lock, logins: []), dark: false)
+        XCTAssertEqual(png(locked), png(lockedEmpty), "A locked pane must not draw anything of the saved logins")
+        let open = try render(pane(lock: unlockedLock()), dark: false)
+        let openEmpty = try render(pane(lock: unlockedLock(), logins: []), dark: false)
+        XCTAssertNotEqual(png(open), png(openEmpty), "The unlocked list must show, or the check above proves nothing")
+        XCTAssertNotEqual(png(locked), png(open))
+    }
+
+    // MARK: Pane wiring
+
+    private final class Selection: ObservableObject {
+        @Published var profile: UUID?
+        init(_ profile: UUID?) { self.profile = profile }
+    }
+
+    private struct Switching: View {
+        @ObservedObject var selection: Selection
+        let lock: PasswordPaneLock
+        let deletion: PasswordPendingDeletion
+        let logins: [Passwords.Login]
+        var body: some View {
+            PasswordsPane(settingsProfileID: selection.profile, lock: lock, deletion: deletion,
+                          fetch: { [logins] _ in logins })
+                .frame(width: 632, height: 480)
+        }
+    }
+
+    /// An attached, offscreen window that stays up while the test changes state.
+    private func host<V: View>(_ view: V) -> (NSWindow, NSHostingView<V>) {
+        let hosting = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 760, height: 560),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.orderFront(nil)
+        settle(hosting)
+        return (window, hosting)
+    }
+
+    private func settle(_ view: NSView) {
+        for _ in 0..<4 {
+            view.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        }
+    }
+
+    private func deletion(counting deletes: @escaping () -> Void) -> PasswordPendingDeletion {
+        PasswordPendingDeletion(grace: .seconds(60)) { _, _ in deletes() }
+    }
+
+    /// A pane instance that last showed another profile must not keep that unlock.
+    func testOpeningThePaneForAnotherProfileRelocks() throws {
+        var asked = 0
+        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in
+            asked += 1; done(asked == 1); return nil
+        })
+        let elsewhere = UUID()
+        lock.unlock(elsewhere)
+        XCTAssertEqual(lock.unlockedProfile, elsewhere)
+        let (window, _) = host(pane(lock: lock))
+        defer { window.close() }
+        XCTAssertNil(lock.unlockedProfile, "Opening another profile's passwords must relock the first")
+        XCTAssertEqual(asked, 2, "…and ask for this profile")
+    }
+
+    func testChangingProfileLocksAndRunsThePendingDelete() throws {
+        let manager = ProfileManager.shared
+        let other = manager.create(name: "Password pane switch fixture")
+        defer { _ = manager.delete(other.id) }
+        var deletes = 0
+        let deletion = deletion { deletes += 1 }
+        let lock = unlockedLock()
+        let selection = Selection(profile)
+        let (window, hosting) = host(Switching(selection: selection, lock: lock, deletion: deletion, logins: fixture))
+        defer { window.close() }
+        deletion.schedule(fixture[0], profileID: profile)
+        selection.profile = other.id
+        settle(hosting)
+        XCTAssertNil(lock.unlockedProfile, "Switching profile must lock the list")
+        XCTAssertNil(deletion.pending)
+        XCTAssertEqual(deletes, 1, "Switching profile must run the delete waiting on its toast")
+    }
+
+    func testLockingTheOpenPaneRunsThePendingDeleteAndForgetsSecrets() throws {
+        var deletes = 0
+        let deletion = deletion { deletes += 1 }
+        let lock = unlockedLock()
+        let secrets = PasswordManagerSecrets()
+        let (window, hosting) = host(pane(lock: lock, deletion: deletion, secrets: secrets, openHost: "mail.example"))
+        defer { window.close() }
+        secrets.revealed[fixture[0].id] = "fixture-secret"
+        deletion.schedule(fixture[2], profileID: profile)
+        lock.lock()
+        settle(hosting)
+        XCTAssertTrue(secrets.revealed.isEmpty, "A locked pane must not keep a revealed password")
+        XCTAssertEqual(deletes, 1, "Locking must run the delete waiting on its toast")
+    }
+
+    func testPresentingThePaneAgainAsksAgain() throws {
+        var asked = 0
+        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in
+            asked += 1; done(false); return nil
+        })
+        let (window, hosting) = host(pane(lock: lock))
+        defer { window.close() }
+        XCTAssertEqual(asked, 1)
+        NotificationCenter.default.post(name: SettingsWindow.presentationRequest, object: "general")
+        settle(hosting)
+        XCTAssertEqual(asked, 1, "Another pane's presentation is not a reason to ask")
+        NotificationCenter.default.post(name: SettingsWindow.presentationRequest, object: "passwords")
+        settle(hosting)
+        XCTAssertEqual(asked, 2, "Reopening Passwords on a retained view must ask again")
+    }
+
+    /// Delete, leave the pane before the toast expires, save the same login again: the
+    /// next list holds it, and it must be listed rather than stay hidden until relaunch.
+    func testALoginSavedAgainAfterItsDeleteIsListedOnTheNextVisit() async throws {
+        var deletes = 0
+        let deletion = deletion { deletes += 1 }
+        deletion.schedule(fixture[0], profileID: profile)
+        deletion.commit()
+        try await compatibilityWait { deletes == 1 && !deletion.gone.isEmpty }
+        XCTAssertTrue(deletion.hides(fixture[0], profileID: profile))
+        let (window, _) = host(pane(lock: unlockedLock(), deletion: deletion))
+        defer { window.close() }
+        try await compatibilityWait { !deletion.hides(self.fixture[0], profileID: self.profile) }
+    }
+
+    func testUndoShortcutLeavesTextEditingAlone() throws {
+        SettingsWindow.show(tab: "general")
+        let window = try XCTUnwrap(NSApp.windows.first(where: { SettingsWindow.holds($0) }))
+        window.setFrameOrigin(CGPoint(x: -10000, y: -10000))
+        defer { window.close() }
+        func key(_ characters: String, _ flags: NSEvent.ModifierFlags, in target: NSWindow) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                             windowNumber: target.windowNumber, context: nil, characters: characters,
+                             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 6)!
+        }
+        window.makeFirstResponder(nil)
+        XCTAssertTrue(PasswordUndoToast.takesUndo(key("z", .command, in: window)))
+        XCTAssertFalse(PasswordUndoToast.takesUndo(key("z", [.command, .shift], in: window)), "⇧⌘Z is redo")
+        let field = NSTextField(frame: CGRect(x: 0, y: 0, width: 100, height: 22))
+        window.contentView?.addSubview(field)
+        defer { field.removeFromSuperview() }
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertFalse(PasswordUndoToast.takesUndo(key("z", .command, in: window)),
+                       "⌘Z while editing text is text undo, not the toast's")
+        let browser = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 100, height: 100),
+                               styleMask: [.borderless], backing: .buffered, defer: false)
+        browser.isReleasedWhenClosed = false
+        defer { browser.close() }
+        XCTAssertFalse(PasswordUndoToast.takesUndo(key("z", .command, in: browser)), "Only in Settings")
     }
 }

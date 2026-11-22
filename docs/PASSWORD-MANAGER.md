@@ -101,7 +101,8 @@ device-owner authentication as reveal (login-password fallback). The list locks 
 five minutes without a key press, click or scroll in Settings, and when Settings closes, the
 screen locks, the Mac sleeps, the session switches or another profile is selected. Switching
 to another Settings pane and back does not ask again. Turning the setting on while the list
-is open keeps it open. Reveal, copy and edit still authenticate on their own.
+is open keeps it open. Locking also dismisses a Touch ID sheet still on screen. Reveal,
+copy and edit still authenticate on their own.
 
 Settings → Passwords searches website/account names and sorts by website, username or
 recent use. The ⓘ beside the heading explains iCloud sync and passkeys; Import passwords…
@@ -113,11 +114,15 @@ an existing account. Imported HTTP items remain manageable at their original ori
 cannot be autofilled. The folder unlock method moved to Settings → Privacy and Security →
 Locked Folders.
 
-Delete removes the row at once and shows “Deleted <account> · Undo” for five seconds. The
-Keychain item is deleted when the toast expires, or straight away when the pane disappears,
-Settings closes, the pane locks, the profile changes or Vane quits. Undo writes nothing. A
-delete that fails puts the row back with an error; one failing during quit stops the quit
-with the usual “Changes couldn’t be saved” alert.
+Delete removes the row at once and shows “Deleted <account> · <website>” with Undo for five
+seconds; ⌘Z undoes it too unless a text field is being edited, and VoiceOver announces the
+shortcut. The toast stays while it has VoiceOver or keyboard focus. The Keychain item is
+deleted when the toast expires, or straight away when the pane disappears, Settings closes,
+the pane locks, the profile changes, passwords are imported or Vane quits. Undo writes
+nothing. An item already missing from the Keychain counts as deleted, and saving the same
+login again later lists it again. A delete that fails puts the row back with an error; one
+failing at any point during quit stops the quit with the usual “Changes couldn’t be saved”
+alert.
 
 Hidden passwords are always eight bullets. Revealed passwords are monospaced, with digits
 blue and symbols pink so l/1/I and O/0 are distinguishable; VoiceOver reads the plain value.
@@ -168,7 +173,8 @@ Keychain-dependent tests skip explicitly if the host cannot store disposable ite
 manager's list, locked, detail, undo-toast and add-sheet states in light and dark
 (`PasswordManagerSnapshotTests`, a names-only fixture list and a stubbed lock). Tests never
 show a real Touch ID prompt: `TestEnvironment.prepare()` installs a denying
-`Passwords.authenticator`, and `PasswordPaneLockTests` inject their own.
+`Passwords.authenticator` (debug builds only, so release builds cannot reach it), and
+`PasswordPaneLockTests` inject their own.
 
 `python3 scripts/check-browser-smoke.py --binary .build/debug/vane` assembles an ad-hoc
 signed sandbox fixture. It also writes disposable credentials, exits, reads them from a

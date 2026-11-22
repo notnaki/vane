@@ -30,7 +30,9 @@ import XCTest
         NativeFixtureRetirement.registerHostIfEnabled()
         // Deny by default: mounting the Passwords pane prompts, and no fixture may show a
         // real Touch ID sheet. Tests that need a grant install their own.
+        #if DEBUG
         if Passwords.authenticator == nil { Passwords.authenticator = { _, done in done(false) } }
+        #endif
         _ = resourceBaseline
     }
 

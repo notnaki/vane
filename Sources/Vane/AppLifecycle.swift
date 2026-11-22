@@ -341,6 +341,7 @@ enum QuitAsk {
         Crash.stopAutosave()
         Task { [self] in
             var succeeded = true
+            let passwordDeleteFailures = PasswordPendingDeletion.shared.failures
             await ICloudController.suspendIfRunning()
             await ImportOperations.drain()
             await PendingSessionTransactions.drain()
@@ -351,10 +352,7 @@ enum QuitAsk {
             do { try await EaselStore.flushAll(directory: Store.directory) } catch { succeeded = false }
             // An undoable delete still on its toast is accepted intent: run it now, and
             // treat a failure like any other unsaved change rather than quitting silently.
-            let deleteFailures = PasswordPendingDeletion.shared.failures
-            PasswordPendingDeletion.shared.commit()
-            do { try await Passwords.flushPendingOperations() } catch { succeeded = false }
-            if PasswordPendingDeletion.shared.failures != deleteFailures { succeeded = false }
+            if !(await PasswordPendingDeletion.shared.finishForQuit(failuresAtStart: passwordDeleteFailures)) { succeeded = false }
             if !(await AppIcon.flushPersistence()) { succeeded = false }
             if !(await ICloudController.finishIfRunning()) { succeeded = false }
             await Updater.markHealthyLaunchAsync()

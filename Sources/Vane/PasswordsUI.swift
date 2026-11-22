@@ -114,15 +114,18 @@ import SwiftUI
                 header
                 SettingsCard {
                     PasswordSavingPreference(profileID: profileID)
-                    SettingsRow("Require Touch ID to view passwords") {
-                        Toggle("Require Touch ID to view passwords", isOn: Binding(
-                            get: { requiresUnlock },
-                            set: { on in
-                                // Already looking at the list: turning the lock on must
-                                // not snap it shut on the person who just turned it on.
-                                if on { lock.keepOpen(profileID) }
-                                requiresUnlock = on
-                            })).labelsHidden()
+                    VStack(alignment: .leading, spacing: Look.captionGap) {
+                        SettingsRow("Require Touch ID to view passwords") {
+                            Toggle("Require Touch ID to view passwords", isOn: Binding(
+                                get: { requiresUnlock },
+                                set: { on in
+                                    // Already looking at the list: turning the lock on must
+                                    // not snap it shut on the person who just turned it on.
+                                    if on { lock.keepOpen(profileID) }
+                                    requiresUnlock = on
+                                })).labelsHidden()
+                        }
+                        Footnote("Applies to every profile.")
                     }
                 }
                 HStack(spacing: Look.inset) {
@@ -168,7 +171,7 @@ import SwiftUI
         .padding(.top, Look.inset * 2)
         .overlay(alignment: .bottom) {
             if unlocked, let pending = deletion.pending, pending.profileID == profileID {
-                PasswordUndoToast(text: Self.deletedText(pending.login)) {
+                PasswordUndoToast(text: Self.deletedText(pending.login), hold: { deletion.hold($0) }) {
                     deletion.undo()
                     axAnnounce("Restored the saved login for \(pending.login.host).")
                 }
@@ -181,6 +184,8 @@ import SwiftUI
         .onAppear {
             reload(); secrets.watchSettingsClose()
             lock.watchSettings(); deletion.watchSettingsClose()
+            // Another pane instance may have unlocked a different profile.
+            if let open = lock.unlockedProfile, open != profileID { lock.lock() }
             if !unlocked { lock.unlock(profileID) }
         }
         .onDisappear { deletion.commit(); secrets.stopWatching(); metadata.stopWatching() }
@@ -199,7 +204,9 @@ import SwiftUI
             }
             if let selected, !logins.contains(where: { $0.id == selected || $0.host == selected }) { self.selected = nil }
         }
-        .onChange(of: metadata.logins) { deletion.prune(metadata.logins, profileID: profileID) }
+        .onChange(of: metadata.fetchedAt) {
+            if let fetched = metadata.fetchedAt { deletion.prune(metadata.logins, profileID: profileID, fetchedAt: fetched) }
+        }
         .onChange(of: deletion.gone) { old, new in if new.count > old.count { reload() } }
         .onChange(of: lock.unlockedProfile) { if !unlocked { deletion.commit(); forgetSecrets() } }
         .onChange(of: selectedHost) { forgetSecrets(); problem = nil; feedback = nil }
@@ -257,7 +264,11 @@ import SwiftUI
             Button { beginAdding() } label: { Label("Add password", systemImage: "plus") }
                 .buttonStyle(.borderedProminent)
             Menu {
-                Button("Import passwords…") { PasswordImport.chooseAndImport(profileID: profileID); reload() }
+                Button("Import passwords…") {
+                    // A delete still on its toast must not race the imported items.
+                    deletion.commit()
+                    PasswordImport.chooseAndImport(profileID: profileID); reload()
+                }
             } label: { Image(systemName: "ellipsis").frame(height: 16) }
                 .menuStyle(.button).buttonStyle(.bordered).menuIndicator(.hidden).fixedSize()
                 .help("More password actions").accessibilityLabel("More password actions")
@@ -378,7 +389,9 @@ import SwiftUI
                 } else {
                     Button("Edit…") { startEditing(login) }
                     Spacer()
-                    Button("Delete", role: .destructive) { remove(login) }
+                    Button(role: .destructive) { remove(login) } label: {
+                        Text("Delete").foregroundStyle(.red)
+                    }
                 }
             }
             .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset + 2)
@@ -591,7 +604,7 @@ import SwiftUI
         if secrets.editing == login.id { cancelEditing() }
         problem = nil; feedback = nil
         guard deletion.schedule(login, profileID: profileID) else { return }
-        axAnnounce(Self.deletedText(login) + ". Undo is available for a few seconds.")
+        axAnnounce(Self.deletedText(login) + ". Press Command-Z to undo.")
     }
 
     // MARK: Keyboard
@@ -619,15 +632,29 @@ import SwiftUI
 /// Settings has no toast host of its own, so the Undo pill is drawn in the pane with the
 /// same surface as Vane's sidebar toasts.
 struct PasswordUndoToast: View {
+    private enum Part: Hashable { case text, button }
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let text: String
+    /// True while the toast has VoiceOver or keyboard focus, so it does not expire under them.
+    var hold: (Bool) -> Void = { _ in }
     let undo: () -> Void
+    @FocusState private var keyFocused: Bool
+    @AccessibilityFocusState private var spoken: Part?
+    @State private var monitor: Any?
+
+    /// ⌘Z is the toast's only while no text field is being edited: there it is text undo.
+    static func takesUndo(_ event: NSEvent) -> Bool {
+        event.type == .keyDown && event.charactersIgnoringModifiers?.lowercased() == "z"
+            && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+            && SettingsWindow.holds(event.window) && !(event.window?.firstResponder is NSText)
+    }
 
     var body: some View {
         HStack(spacing: Look.inset) {
             Text(text).font(Look.Typography.secondary.font)
                 .foregroundStyle(Look.barSelectedText)
                 .lineLimit(1).truncationMode(.middle)
+                .accessibilityFocused($spoken, equals: .text)
             Button("Undo", action: undo)
                 .buttonStyle(TactileButtonStyle(scales: false))
                 .font(Look.Typography.shortcut.font)
@@ -635,7 +662,9 @@ struct PasswordUndoToast: View {
                 .padding(.horizontal, Look.inset)
                 .frame(minHeight: Look.control)
                 .background(chromeTheme.barSelected, in: .capsule)
-                .keyboardShortcut("z", modifiers: .command)
+                .focused($keyFocused)
+                .accessibilityFocused($spoken, equals: .button)
+                .accessibilityHint("Or press Command-Z.")
         }
         .padding(.leading, Look.pillInset)
         .padding(.trailing, Look.inset / 2)
@@ -647,6 +676,19 @@ struct PasswordUndoToast: View {
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(text)
+        .onChange(of: keyFocused || spoken != nil) { _, held in hold(held) }
+        .onAppear {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard Self.takesUndo(event) else { return event }
+                undo()
+                return nil
+            }
+        }
+        .onDisappear {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            hold(false)
+        }
     }
 }
 
@@ -884,7 +926,7 @@ extension PasswordsPane {
     /// The Undo toast's words. Named so it can be asserted: a dangling account name is
     /// exactly the wording bug a delete notice must not have.
     static func deletedText(_ login: Passwords.Login) -> String {
-        login.account.isEmpty ? "Deleted login for \(login.host)" : "Deleted \(login.account)"
+        "Deleted \(login.account.isEmpty ? "login" : login.account) · \(login.host)"
     }
 
     static func check() -> [(String, Bool)] {
@@ -948,9 +990,9 @@ extension PasswordsPane {
 
             ("a hidden password is never spoken", spoken(nil) == "Password hidden"),
             ("a revealed one is", spoken("hunter2") == "hunter2"),
-            ("the delete toast names the account", deletedText(all[0]) == "Deleted ada"),
+            ("the delete toast names the account and site", deletedText(all[0]) == "Deleted ada · bank.example"),
             ("…and copes with a login that has none",
-             deletedText(.init(host: "x.example", account: "")) == "Deleted login for x.example"),
+             deletedText(.init(host: "x.example", account: "")) == "Deleted login · x.example"),
         ]
     }
 }

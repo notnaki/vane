@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import LocalAuthentication
 
 /// The manager's temporary plaintext, separate from its names-only login list. Settings
 /// retains its hosting view on close, so these values need an explicit window lifetime.
@@ -73,7 +74,8 @@ import Combine
 /// Settings, locking the screen, sleeping, switching profile or five idle minutes are.
 /// Reveal, copy and edit still ask on their own — this only hides the list.
 @MainActor final class PasswordPaneLock: ObservableObject {
-    typealias Authenticate = @MainActor (String, @escaping @MainActor (Bool) -> Void) -> Void
+    /// Returns the prompt's context, if any, so locking can take a sheet still on screen down.
+    typealias Authenticate = @MainActor (String, @escaping @MainActor (Bool) -> Void) -> LAContext?
     static let requiredKey = "passwordsRequireAuthentication"
     static var required: Bool { UserDefaults.vane.object(forKey: requiredKey) as? Bool ?? true }
     static let shared = PasswordPaneLock(observing: true)
@@ -85,6 +87,7 @@ import Combine
     let idle: Duration
     private let authenticate: Authenticate
     private var request = UUID()
+    private var context: LAContext?
     private var lastInteraction = ContinuousClock.now
     private var expiry: Task<Void, Never>?
     /// ponytail: never removed — the app has one lock for its lifetime, and the blocks hold
@@ -134,8 +137,9 @@ import Combine
         self.request = request
         authenticating = true
         problem = nil
-        authenticate("view your saved passwords") { [weak self] ok in
+        context = authenticate("view your saved passwords") { [weak self] ok in
             guard let self, self.request == request else { return }
+            self.context = nil
             self.authenticating = false
             guard ok else {
                 self.problem = "Authentication was not completed. Try again and use your Mac login password if Touch ID is unavailable."
@@ -151,6 +155,7 @@ import Combine
     /// person has the list in front of them, and asking now proves nothing new.
     func keepOpen(_ profile: UUID) {
         request = UUID()
+        context?.invalidate(); context = nil
         authenticating = false
         unlockedProfile = profile
         touch()
@@ -161,9 +166,10 @@ import Combine
     func touch() { lastInteraction = .now }
 
     /// Also invalidates an authentication still on screen, so a late success cannot
-    /// reopen a pane that was locked while its prompt was up.
+    /// reopen a pane that was locked while its prompt was up, and its sheet goes away.
     func lock() {
         request = UUID()
+        context?.invalidate(); context = nil
         authenticating = false
         expiry?.cancel(); expiry = nil
         if unlockedProfile != nil { unlockedProfile = nil }
@@ -201,15 +207,18 @@ import Combine
     @Published private(set) var pending: Pending?
     /// Deletes already in the Keychain lane. Still hidden until they settle.
     @Published private(set) var deleting: Set<String> = []
-    /// Deleted, but the pane's list has not reloaded yet. Kept hidden until a list arrives
-    /// without them, so a finished delete never flashes its row back for one reload.
-    @Published private(set) var gone: Set<String> = []
+    /// Deleted, but the pane's list has not reloaded yet, with when each delete finished.
+    /// Kept hidden until a list fetched after that instant arrives (or one without it), so
+    /// a finished delete never flashes its row back for one stale reload — and a login
+    /// saved again later is listed again.
+    @Published private(set) var gone: [String: ContinuousClock.Instant] = [:]
     @Published var failure: String?
     /// Counts failed deletes, so quitting can tell whether one failed on its watch.
     private(set) var failures = 0
     let grace: Duration
     private let delete: Delete
     private var timer: Task<Void, Never>?
+    private var held = false
     private var closing: Any?
 
     init(grace: Duration = PasswordPendingDeletion.grace,
@@ -225,15 +234,16 @@ import Combine
     func hides(_ login: Passwords.Login, profileID: UUID) -> Bool {
         if let pending, pending.profileID == profileID, pending.login.id == login.id { return true }
         let key = Self.key(login, profileID)
-        return deleting.contains(key) || gone.contains(key)
+        return deleting.contains(key) || gone[key] != nil
     }
 
-    /// The pane's fresh list: anything deleted that it no longer contains has settled.
-    func prune(_ logins: [Passwords.Login], profileID: UUID) {
+    /// The pane's fresh list, fetched at `fetchedAt`: a delete has settled once a list
+    /// fetched after it finished arrives, whether or not that list holds the login again.
+    func prune(_ logins: [Passwords.Login], profileID: UUID, fetchedAt: ContinuousClock.Instant) {
         let present = Set(logins.map { Self.key($0, profileID) })
         let prefix = profileID.uuidString + "\n"
-        let settled = gone.filter { $0.hasPrefix(prefix) && !present.contains($0) }
-        if !settled.isEmpty { gone.subtract(settled) }
+        let settled = gone.filter { $0.key.hasPrefix(prefix) && ($0.value < fetchedAt || !present.contains($0.key)) }
+        for key in settled.keys { gone[key] = nil }
     }
 
     /// The intent is admitted now, so quitting waits for it (see `commit`).
@@ -242,11 +252,25 @@ import Combine
         guard let operation = Passwords.beginUIOperation() else { return false }
         failure = nil
         pending = Pending(login: login, profileID: profileID, operation: operation)
+        held = false
+        startTimer()
+        return true
+    }
+
+    /// While the toast has VoiceOver or keyboard focus it stays; the full grace restarts
+    /// when focus leaves.
+    func hold(_ on: Bool) {
+        guard held != on else { return }
+        held = on
+        timer?.cancel(); timer = nil
+        if !on, pending != nil { startTimer() }
+    }
+
+    private func startTimer() {
         timer = Task { [weak self, grace] in
             do { try await Task.sleep(for: grace) } catch { return }
             self?.commit()
         }
-        return true
     }
 
     func undo() {
@@ -265,8 +289,10 @@ import Combine
         Task { [delete] in
             defer { pending.operation.finish() }
             do {
-                try await delete(pending.login, pending.profileID)
-                gone.insert(key)
+                do { try await delete(pending.login, pending.profileID) }
+                // Already gone from the Keychain is what was asked for.
+                catch let refusal as Passwords.Failure where refusal.status == errSecItemNotFound {}
+                gone[key] = .now
             } catch {
                 let who = pending.login.account.isEmpty ? "the login" : "\u{201C}\(pending.login.account)\u{201D}"
                 failures += 1
@@ -275,6 +301,15 @@ import Combine
             }
             deleting.remove(key)
         }
+    }
+
+    /// Quitting: runs the delete still on its toast and waits for every accepted one.
+    /// `failuresAtStart` is read when quitting begins, so a delete that fails during an
+    /// earlier quit step stops the quit too.
+    func finishForQuit(failuresAtStart: Int) async -> Bool {
+        commit()
+        do { try await Passwords.flushPendingOperations() } catch { return false }
+        return failures == failuresAtStart
     }
 
     /// Settings keeps its hosting view on close, so the pane's onDisappear never sees it.

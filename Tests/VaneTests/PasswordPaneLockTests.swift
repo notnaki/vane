@@ -1,17 +1,29 @@
 import AppKit
+import LocalAuthentication
 import XCTest
 @testable import vane
+
+/// Records whether the lock took its prompt down. Never evaluated, so never on screen.
+final class SpyContext: LAContext {
+    private(set) var invalidated = false
+    override func invalidate() { invalidated = true; super.invalidate() }
+}
 
 /// A stub that answers authentication requests when the test says so. Never a real prompt.
 @MainActor final class StubAuthenticator {
     var reasons: [String] = []
     var pending: [@MainActor (Bool) -> Void] = []
+    var contexts: [SpyContext] = []
     var answer: Bool?
 
     var authenticate: PasswordPaneLock.Authenticate {
         { [unowned self] reason, done in
             reasons.append(reason)
-            if let answer { done(answer) } else { pending.append(done) }
+            if let answer { done(answer); return nil }
+            pending.append(done)
+            let context = SpyContext()
+            contexts.append(context)
+            return context
         }
     }
 }
@@ -69,6 +81,7 @@ import XCTest
         lock.unlock(profile)
         XCTAssertTrue(lock.authenticating)
         lock.lock()
+        XCTAssertEqual(stub.contexts.map(\.invalidated), [true], "Locking must take the Touch ID sheet down")
         stub.pending.forEach { $0(true) }
         XCTAssertFalse(lock.isUnlocked(profile))
     }
@@ -143,16 +156,78 @@ private struct DeleteFailure: LocalizedError { var errorDescription: String? { "
     func testTheDeleteRunsWhenTheToastExpires() async throws {
         var deleted: [String] = []
         let deletion = PasswordPendingDeletion(grace: .milliseconds(60)) { login, _ in deleted.append(login.id) }
+        let before = ContinuousClock.now
         deletion.schedule(login, profileID: profile)
         XCTAssertTrue(deleted.isEmpty, "Nothing is deleted while Undo is still offered")
         XCTAssertTrue(Passwords.hasPendingOperations, "Quitting must wait for an accepted delete")
         try await compatibilityWait { deleted == [self.login.id] && !Passwords.hasPendingOperations }
         XCTAssertNil(deletion.pending)
         XCTAssertTrue(deletion.hides(login, profileID: profile), "The row stays gone until the list reloads")
-        deletion.prune([login], profileID: profile)
-        XCTAssertTrue(deletion.hides(login, profileID: profile), "A list still holding it has not settled")
-        deletion.prune([], profileID: profile)
+        deletion.prune([login], profileID: profile, fetchedAt: before)
+        XCTAssertTrue(deletion.hides(login, profileID: profile), "A list fetched before the delete finished has not settled")
+        deletion.prune([login], profileID: profile, fetchedAt: .now)
+        XCTAssertFalse(deletion.hides(login, profileID: profile),
+                       "The first list fetched after the delete is settled, even holding the login again")
+    }
+
+    func testAListFetchedBeforeTheDeleteWithoutTheLoginAlsoSettles() async throws {
+        let deletion = PasswordPendingDeletion(grace: .seconds(60)) { _, _ in }
+        let before = ContinuousClock.now
+        deletion.schedule(login, profileID: profile)
+        deletion.commit()
+        try await compatibilityWait { !deletion.gone.isEmpty }
+        deletion.prune([], profileID: UUID(), fetchedAt: .now)
+        XCTAssertTrue(deletion.hides(login, profileID: profile), "Another profile's list settles nothing here")
+        deletion.prune([], profileID: profile, fetchedAt: before)
         XCTAssertFalse(deletion.hides(login, profileID: profile))
+    }
+
+    func testFocusOnTheToastHoldsTheDelete() async throws {
+        var deletes = 0
+        let deletion = PasswordPendingDeletion(grace: .milliseconds(60)) { _, _ in deletes += 1 }
+        deletion.schedule(login, profileID: profile)
+        deletion.hold(true)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(deletes, 0, "A toast with VoiceOver or keyboard focus must not expire")
+        XCTAssertNotNil(deletion.pending)
+        deletion.hold(false)
+        try await compatibilityWait { deletes == 1 }
+    }
+
+    func testAKeychainItemAlreadyGoneCountsAsDeleted() async throws {
+        let deletion = PasswordPendingDeletion(grace: .seconds(60)) { _, _ in
+            throw Passwords.Failure(status: errSecItemNotFound)
+        }
+        deletion.schedule(login, profileID: profile)
+        deletion.commit()
+        try await compatibilityWait { !deletion.gone.isEmpty }
+        XCTAssertNil(deletion.failure)
+        XCTAssertEqual(deletion.failures, 0)
+        XCTAssertTrue(deletion.hides(login, profileID: profile))
+    }
+
+    /// The quit path reads the count when quitting starts, so a delete that failed during
+    /// an earlier quit step (Settings closing, say) still stops the quit.
+    func testQuitStopsForADeleteThatFailedEarlierInTheQuit() async throws {
+        let deletion = PasswordPendingDeletion(grace: .seconds(60)) { _, _ in throw DeleteFailure() }
+        let atStart = deletion.failures
+        deletion.schedule(login, profileID: profile)
+        deletion.commit()
+        try await compatibilityWait { deletion.failures == atStart + 1 }
+        let finished = await deletion.finishForQuit(failuresAtStart: atStart)
+        XCTAssertFalse(finished)
+        let clean = await deletion.finishForQuit(failuresAtStart: deletion.failures)
+        XCTAssertTrue(clean)
+    }
+
+    func testQuitRunsThePendingDelete() async throws {
+        var deletes = 0
+        let deletion = PasswordPendingDeletion(grace: .seconds(60)) { _, _ in deletes += 1 }
+        deletion.schedule(login, profileID: profile)
+        let finished = await deletion.finishForQuit(failuresAtStart: deletion.failures)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(deletes, 1)
+        XCTAssertFalse(Passwords.hasPendingOperations)
     }
 
     func testCommitRunsTheDeleteImmediately() async throws {

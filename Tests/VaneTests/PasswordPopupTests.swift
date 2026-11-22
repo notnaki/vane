@@ -179,7 +179,7 @@ import XCTest
             guard Passwords.save(host: login.host, account: login.account, password: "fixture", profileID: profile)
             else { throw XCTSkip("Fixture Keychain unavailable") }
         }
-        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in done(true) })
+        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in done(true); return nil })
         lock.unlock(profile)
         let bitmap = try render(PasswordsPane(settingsProfileID: profile, lock: lock).frame(height: 400).padding(24), width: 632, name: "manager")
         XCTAssertEqual(bitmap.pixelsWide, 632)
