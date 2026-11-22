@@ -209,22 +209,31 @@ Pinned section, or a non-leading Split View pane. Activating those tabs remains 
 **Side panels.** WebKit has no `chrome.sidePanel`, so Vane supplies it for extensions
 that request the `sidePanel` permission. The panel is docked on the right of the page as
 a second card, 360 points wide, and shows the extension's own page in its extension
-context. It honours `side_panel.default_path`, `setOptions` (per tab or for the whole
-extension), `open`, `close`, `getOptions`, `getLayout` and
-`setPanelBehavior({openPanelOnActionClick})`. A panel opened for one tab shows only while
-that tab is selected. Clicking the extension's button closes its open panel; the page's
-own `window.close()` does too. Limits: the width is fixed, options and behaviour are
-forgotten when the extension reloads or Vane restarts, `getOptions` answers from the
-calling context's own writes, `open` does not require a user gesture, and
+context. It narrows to as little as 280 points so the page keeps 420, and is hidden,
+still open, in a window too narrow for both. It honours `side_panel.default_path`,
+`setOptions` (per tab or for the whole extension, including a per-tab `enabled: false`),
+`open`, `close`, `getOptions`, `getLayout` and `setPanelBehavior({openPanelOnActionClick})`.
+A panel opened for one tab shows only while that tab is selected. It stays with its tab:
+switching to another Space hides it and coming back shows it again, it follows the tab to
+another window, and it closes when the tab or window closes. With
+`openPanelOnActionClick` the extension's button opens and closes its panel; without it
+the click reaches the popup or `action.onClicked` as usual. The page's own
+`window.close()` closes the panel too. `open` needs a user gesture: the extension's
+button or shortcut within the last five seconds, or a click in the extension page that
+calls it. Limits: options and behaviour are forgotten when the extension reloads or Vane
+restarts, `getOptions` answers from the calling context's own writes, and
 `sidePanel.onOpened`/`onClosed` and `runtime.getContexts` are not available.
 
-**Chromium-only namespaces.** When an MV3 extension declares `debugger`, `downloads`,
-`identity`, `notifications`, `offscreen` or `tabGroups`, WebKit leaves the namespace out
-and the extension's background would stop at its first use. Vane defines these as
-explicit failures: their events never fire and their methods reject with “Vane does not
-support …”. This lets the rest of the extension start; the features behind them do not
-work. The manager still lists each one as unrecognized. `storage.managed` reads as
-empty, because Vane has no administrator policy.
+**Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
+`identity`, `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
+the namespace out and the extension's background would stop at its first
+`chrome.notifications.onClicked.addListener(…)`. Vane defines each one with its events,
+which never fire, and its constants. Methods stay undefined, so a check such as
+`chrome.downloads?.download` still reports the feature as missing and the extension can
+fall back; calling one anyway throws as it would in any browser without it. Names listed
+only in `optional_permissions` get nothing. This lets the rest of the extension start;
+the features behind these namespaces do not work. The manager still lists each one as
+unrecognized. `storage.managed` reads as empty, because Vane has no administrator policy.
 
 Vane does not provide native messaging hosts, replacement browser pages,
 developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native

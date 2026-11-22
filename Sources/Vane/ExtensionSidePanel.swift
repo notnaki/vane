@@ -49,7 +49,11 @@ import WebKit
                   return reply(send('setOptions', {tabId}, values), callback);
                 },
                 getOptions(details, callback) { return reply(Promise.resolve(read(details?.tabId)), callback); },
-                open(details, callback) { return reply(send('open', details), callback); },
+                open(details, callback) {
+                  // A click in this page counts as the user's gesture; a worker has none to report.
+                  const gesture = globalThis.navigator?.userActivation?.isActive ? {gesture: 'true'} : {};
+                  return reply(send('open', details, gesture), callback);
+                },
                 close(details, callback) { return reply(send('close', details), callback); },
                 setPanelBehavior(details, callback) {
                   if (typeof details?.openPanelOnActionClick !== 'boolean') return reply(Promise.resolve(), callback);
@@ -84,6 +88,8 @@ import WebKit
     struct Request: Equatable {
         let operation: Operation
         var options = Options()
+        /// The calling page's own report of a user gesture; only `open` reads it.
+        var gesture = false
 
         /// Only the owning extension's bridge URL is a request; anything else is a tab.
         nonisolated init?(_ url: URL?, base: URL) {
@@ -94,6 +100,7 @@ import WebKit
             guard let operation = value("op").flatMap(Operation.init) else { return nil }
             self.operation = operation
             options = Options(path: value("path"), enabled: value("enabled").flatMap(Bool.init))
+            gesture = value("gesture") == "true"
         }
     }
 
@@ -106,7 +113,17 @@ import WebKit
         return url
     }
 
-    static let width: CGFloat = 360
+    nonisolated static let width: CGFloat = 360
+    nonisolated static let minWidth: CGFloat = 280
+    /// What the page keeps beside a panel: the Library's guarantee.
+    nonisolated static let minPage: CGFloat = 420
+
+    /// The panel's width in `available` points shared with the page: narrower before the
+    /// page gives up its minimum, and `nil` (hidden, still open) when both cannot fit.
+    nonisolated static func width(sharing available: CGFloat) -> CGFloat? {
+        let room = min(width, available - minPage)
+        return room >= minWidth ? room : nil
+    }
 }
 
 /// One open panel: an extension page for one tab, or for a whole window when `tabID` is nil.
@@ -154,20 +171,34 @@ struct ExtensionSidePanelDock: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        let panel = host.sidePanel(in: store)
-        HStack(spacing: edgeToEdge ? 0 : Look.cardGap) {
-            content
-            if let panel {
-                ExtensionSidePanelPage(web: panel.web)
-                    .id(ObjectIdentifier(panel))
-                    .frame(width: ExtensionSidePanelAPI.width)
-                    .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-                    .accessibilityLabel("\(panel.context.webExtension.displayName ?? "Extension") side panel")
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+        GeometryReader { geometry in
+            let panel = host.sidePanel(in: store)
+            // Flush pages have no card gap to part them, so a split-view hairline does.
+            let gap = edgeToEdge ? Look.splitDivider : Look.cardGap
+            let width = panel == nil ? nil : ExtensionSidePanelAPI.width(sharing: geometry.size.width - gap)
+            HStack(spacing: 0) {
+                content
+                // Only this slot animates: its width, which the page gives up frame by
+                // frame, and the panel's fade. Nothing in the page's own content joins in.
+                ZStack(alignment: .leading) {
+                    if let panel, let width {
+                        ExtensionSidePanelPage(web: panel.web)
+                            .id(ObjectIdentifier(panel))
+                            .frame(width: width)
+                            .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
+                            .accessibilityLabel("\(panel.context.webExtension.displayName ?? "Extension") side panel")
+                            .padding(.leading, gap)
+                            .background(alignment: .leading) {
+                                if edgeToEdge { Look.pageRim.frame(width: gap) }
+                            }
+                            .transition(.opacity)
+                    }
+                }
+                .frame(width: width.map { $0 + gap } ?? 0, alignment: .leading)
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
+                           value: width == nil ? nil : panel.map(ObjectIdentifier.init))
             }
         }
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear,
-                   value: panel.map(ObjectIdentifier.init))
     }
 }
 

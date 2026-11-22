@@ -1,30 +1,23 @@
 import WebKit
 
-/// Chromium namespaces an MV3 extension has declared and system WebKit does not have.
+/// Chromium namespaces an MV3 extension has requested and system WebKit does not have.
 /// Without them the extension's first `chrome.notifications.onClicked.addListener(…)`
-/// throws and its whole background fails to load. These stand in with explicit
-/// failures: events that never fire and methods that reject. Nothing here pretends a
-/// feature works. Vendor resources remain unchanged.
+/// throws and its whole background fails to load. Each stands in with its events, which
+/// never fire, and its constants. Its methods stay undefined, so `chrome.downloads?.download`
+/// still tells the extension the feature is missing. Vendor resources remain unchanged.
 @MainActor enum ExtensionChromiumGaps {
     /// Permission names whose namespace WebKit omits entirely.
     nonisolated static let namespaces = ["debugger", "downloads", "identity", "notifications", "offscreen", "tabGroups"]
 
-    // ponytail: a callback-style caller gets its callback with no result and no
-    // `runtime.lastError`; set one if an extension is found to branch on it.
     nonisolated static let script = #"""
         ;(() => {
           const event = () => Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false});
-          const unsupported = name => (...args) => {
-            const callback = args.at(-1);
-            if (typeof callback === 'function') { queueMicrotask(() => callback()); return; }
-            return Promise.reject(new Error('Vane does not support ' + name));
-          };
-          const namespace = name => new Proxy({}, {get(target, key) {
-            if (typeof key !== 'string' || key === 'then') return undefined;
+          const namespace = () => new Proxy({}, {get(target, key) {
+            if (typeof key !== 'string') return undefined;
             if (key === 'TAB_GROUP_ID_NONE') return -1;
             // Enumerations such as tabGroups.Color: present, with no members.
-            return target[key] ??= /^[A-Z]/.test(key) ? Object.freeze({})
-              : /^on[A-Z]/.test(key) ? event() : unsupported('chrome.' + name + '.' + key);
+            if (/^[A-Z]/.test(key)) return target[key] ??= Object.freeze({});
+            if (/^on[A-Z]/.test(key)) return target[key] ??= event();
           }});
           const define = (owner, key, value) => {
             if (owner && owner[key] === undefined) Object.defineProperty(owner, key, {configurable: true, value});
@@ -34,8 +27,8 @@ import WebKit
               if (!api?.runtime?.getManifest) continue;
               const manifest = api.runtime.getManifest();
               if (manifest.manifest_version !== 3) continue;
-              const declared = new Set([...(manifest.permissions ?? []), ...(manifest.optional_permissions ?? [])]);
-              for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace(name));
+              const declared = new Set(manifest.permissions ?? []);
+              for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace());
               // WebKit weakly caches nested API wrappers. Keep the real ones alive so
               // the members added below survive garbage collection.
               Object.defineProperty(api, Symbol('Vane Chromium API owners'), {
@@ -53,7 +46,6 @@ import WebKit
                 },
                 onChanged: event()
               }));
-              if (declared.has('tabGroups')) for (const key of ['group', 'ungroup']) define(api.tabs, key, unsupported('chrome.tabs.' + key));
               const rules = api.declarativeNetRequest;
               define(rules, 'RuleActionType', Object.freeze({BLOCK: 'block', REDIRECT: 'redirect', ALLOW: 'allow', UPGRADE_SCHEME: 'upgradeScheme', MODIFY_HEADERS: 'modifyHeaders', ALLOW_ALL_REQUESTS: 'allowAllRequests'}));
               define(rules, 'HeaderOperation', Object.freeze({APPEND: 'append', SET: 'set', REMOVE: 'remove'}));

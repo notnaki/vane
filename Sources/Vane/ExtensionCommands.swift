@@ -39,6 +39,7 @@ import WebKit
         for (_, context) in host.loaded.sorted(by: { $0.path < $1.path }) where context.isLoaded {
             guard context.command(for: event) != nil else { continue }
             host.sync()
+            host.noteSidePanelGesture(context)
             return context.performCommand(for: event)
         }
         return false
