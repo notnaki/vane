@@ -2973,7 +2973,11 @@ struct Stash {
         willSet { selectionPublications += 1 }
         didSet {
             selectionPublications -= 1
-            if oldValue != current { cancelFolderUnlock() }
+            if oldValue != current {
+                cancelFolderUnlock()
+                // Ask on Page answers about the tab that asked; the bar follows the new one.
+                if findOpen { findSession.ask.reset() }
+            }
             // All selection paths enforce the same boundary, before resume or auto PiP.
             if let id = current, isTabLocked(id) {
                 return

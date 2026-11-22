@@ -5,7 +5,7 @@ import WebKit
 
 /// Arc's ⌘F → Ask: free-form questions about the page in front of you, answered from its
 /// text. One conversation per window, held by the find session; it is cleared when the bar
-/// closes or the question is about a different page.
+/// closes, the window switches tabs, or the page it is about navigates.
 ///
 /// ponytail: page text comes from `Reader.extract`, the summarizer's extraction. Ceiling: a
 /// page Reader reads poorly (a dashboard, a listing) gets a poor answer. Upgrade path is a
@@ -22,6 +22,8 @@ import WebKit
     @Published var turns: [Turn] = []
     private var page: String?
     private var task: Task<Void, Never>?
+    /// The asked-about page's URL. Any change is a different page, so the conversation ends.
+    private var watch: NSKeyValueObservation?
 
     var busy: Bool { turns.last?.pending == true }
 
@@ -37,11 +39,15 @@ import WebKit
         return nil
     }
 
-    func ask(_ raw: String, in tab: Tab) {
+    /// Whether the question was asked; false leaves it with the caller.
+    @discardableResult func ask(_ raw: String, in tab: Tab) -> Bool {
         let question = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !busy, let web = tab.existingWeb else { return }
+        guard !question.isEmpty, !busy, let web = tab.existingWeb else { return false }
         let key = tab.id.uuidString + " " + (web.url?.absoluteString ?? "")
-        if page != key { turns = []; page = key }
+        if page != key {
+            reset(); page = key
+            watch = web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.reset() } }
+        }
         let history = turns.filter { !$0.failed && !$0.answer.isEmpty }.map { (question: $0.question, answer: $0.answer) }
         turns.append(Turn(question: question))
         let isPrivate = tab.isPrivate
@@ -59,6 +65,7 @@ import WebKit
             self.update { $0.pending = false; $0.failed = answer.isEmpty }
             axAnnounce(answer.isEmpty ? "No answer" : answer)
         }
+        return true
     }
 
     private func update(_ change: (inout Turn) -> Void) {
@@ -67,7 +74,7 @@ import WebKit
     }
 
     func reset() {
-        task?.cancel(); task = nil
+        task?.cancel(); task = nil; watch = nil
         turns = []; page = nil
     }
 }
@@ -144,13 +151,14 @@ struct AskPanel: View {
                     }
                     .frame(maxHeight: 280)
                     .fixedSize(horizontal: false, vertical: true)
-                    .onChange(of: ask.turns) { proxy.scrollTo(ask.turns.last?.id, anchor: .bottom) }
+                    // Every streamed token lands here: follow it without animating the scroll.
+                    .onChange(of: ask.turns) { Motion.instant { proxy.scrollTo(ask.turns.last?.id, anchor: .bottom) } }
                 }
                 .transition(.opacity)
             }
         }
         .frame(width: Look.findFieldWidth + Look.findCountWidth + 3 * Look.control + 4 * Look.inset + 16)
-        .animation(Motion.reduced ? nil : Look.quick, value: ask.turns)
+        .animation(Motion.reduced ? nil : Look.quick, value: phases)
         .animation(Motion.reduced ? nil : Look.quick, value: blocker)
         .buttonStyle(CompactControlStyle(bar: true)).font(Look.caption).foregroundStyle(Look.barText)
         .padding(.horizontal, Look.rowTrailingInset).padding(.vertical, Look.rowPadding)
@@ -165,7 +173,7 @@ struct AskPanel: View {
             text = session.askDraft
             session.askDraft = ""
             ready = true
-            if !text.isEmpty, ask.turns.isEmpty { submit() }
+            if !text.isEmpty { submit() }
         }
         .onChange(of: revision) { blocker = AskOnPage.blocker(isPrivate: tab.isPrivate) }
         .onChange(of: enabled) { blocker = AskOnPage.blocker(isPrivate: tab.isPrivate) }
@@ -188,9 +196,11 @@ struct AskPanel: View {
         guard blocker == nil, !ask.busy else { return }
         let question = text
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        text = ""
-        ask.ask(question, in: tab)
+        if ask.ask(question, in: tab) { text = "" }
     }
+
+    /// What the panel animates: turns arriving and settling, not each streamed token.
+    private var phases: [Bool] { ask.turns.flatMap { [$0.pending, $0.failed] } }
 
     private func close() {
         store.findOpen = false

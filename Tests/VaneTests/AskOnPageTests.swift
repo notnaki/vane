@@ -37,6 +37,27 @@ import XCTest
         XCTAssertTrue(session.ask.turns.isEmpty)
     }
 
+    func testSwitchingTabsMidAnswerClearsTheConversation() {
+        TestEnvironment.prepare()
+        let store = TabStore(isPrivate: true, profileID: UUID())
+        defer { TabStore.all.removeAll { $0 === store }; SharedTabs.release(store.tabs) }
+        let first = store.newBlankTab(focus: true)
+        let second = store.newBlankTab(focus: false)
+        store.current = first.id
+        let session = Find.session(for: store)
+        store.findOpen = true
+        session.asking = true
+        session.ask.turns = [.init(question: "Q", answer: "Partial")]
+        XCTAssertTrue(session.ask.busy)
+        store.current = second.id
+        XCTAssertTrue(session.ask.turns.isEmpty)
+        XCTAssertFalse(session.ask.busy)
+        XCTAssertTrue(session.asking, "the bar stays in Ask mode for the new tab")
+
+        store.openFind()
+        XCTAssertFalse(session.asking, "⌘F goes back to find")
+    }
+
     /// Set VANE_ASK_CAPTURE_DIR to write the panel's look for review.
     func testPanelRendersAConversation() throws {
         TestEnvironment.prepare()

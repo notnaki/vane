@@ -239,6 +239,8 @@ import WebKit
     static func advance(forward: Bool) {
         guard let store = Windows.current, let tab = store.active else { return }
         let session = session(for: store)
+        // Like ⌘F, ⌘G goes back to find: stepping matches behind the Ask panel shows nothing.
+        session.asking = false
         guard !session.query.isEmpty else {
             store.openFind()
             return
@@ -453,7 +455,9 @@ extension TabStore {
         }
         guard active?.easelID == nil else { return }
         findOpen = true
-        Find.session(for: self).requestFocus()
+        let session = Find.session(for: self)
+        session.asking = false
+        session.requestFocus()
     }
 
     /// Whether the first responder is the page rather than the chrome around it. Asked of
