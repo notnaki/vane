@@ -200,7 +200,8 @@ import SwiftUI
             // Reloads finish asynchronously; reconcile the detail destination only
             // once the refreshed metadata arrives, including the last-login deletion.
             if let selectedHost, !logins.contains(where: { $0.host == selectedHost }) {
-                navigate(to: nil)
+                // Not into search: after deleting a site's last login, ⌘Z must reach the undo toast.
+                navigate(to: nil, focusSearch: false)
             }
             if let selected, !logins.contains(where: { $0.id == selected || $0.host == selected }) { self.selected = nil }
         }
@@ -462,11 +463,11 @@ import SwiftUI
         never = Passwords.neverSaved(profileID: profileID)
     }
 
-    private func navigate(to host: String?) {
+    private func navigate(to host: String?, focusSearch: Bool = true) {
         forgetSecrets()
         selected = host
         selectedHost = host
-        if host == nil { searchFocused = true }
+        if host == nil && focusSearch { searchFocused = true }
     }
 
     private func forgetSecrets() { mutationTask?.cancel(); secrets.forget() }
@@ -670,9 +671,10 @@ struct PasswordUndoToast: View {
         .padding(.trailing, Look.inset / 2)
         .padding(.vertical, Look.inset / 2)
         .frame(minHeight: Look.toastHeight)
-        .background(chromeTheme.barFill, in: .capsule)
-        .background(Look.barMaterial, in: .capsule)
-        .overlay { Capsule().strokeBorder(Look.barStroke, lineWidth: 1).allowsHitTesting(false) }
+        // ponytail: .circular — the default continuous capsule draws edge ticks in offscreen snapshots.
+        .background(chromeTheme.barFill, in: Capsule(style: .circular))
+        .background(Look.barMaterial, in: Capsule(style: .circular))
+        .overlay { Capsule(style: .circular).strokeBorder(Look.barStroke, lineWidth: 1).allowsHitTesting(false) }
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(text)
