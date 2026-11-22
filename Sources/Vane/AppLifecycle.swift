@@ -339,9 +339,10 @@ enum QuitAsk {
         guard beginPersistenceExit() else { return .terminateCancel }
         terminating = true
         Crash.stopAutosave()
+        // Read before the Task: a delete can fail on the main actor before the Task starts.
+        let passwordDeleteFailures = PasswordPendingDeletion.shared.failures
         Task { [self] in
             var succeeded = true
-            let passwordDeleteFailures = PasswordPendingDeletion.shared.failures
             await ICloudController.suspendIfRunning()
             await ImportOperations.drain()
             await PendingSessionTransactions.drain()

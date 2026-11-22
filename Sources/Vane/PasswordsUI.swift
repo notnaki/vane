@@ -645,7 +645,7 @@ struct PasswordUndoToast: View {
     /// ⌘Z is the toast's only while no text field is being edited: there it is text undo.
     static func takesUndo(_ event: NSEvent) -> Bool {
         event.type == .keyDown && event.charactersIgnoringModifiers?.lowercased() == "z"
-            && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+            && event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command
             && SettingsWindow.holds(event.window) && !(event.window?.firstResponder is NSText)
     }
 

@@ -258,6 +258,7 @@ import XCTest
         window.makeFirstResponder(nil)
         XCTAssertTrue(PasswordUndoToast.takesUndo(key("z", .command, in: window)))
         XCTAssertFalse(PasswordUndoToast.takesUndo(key("z", [.command, .shift], in: window)), "⇧⌘Z is redo")
+        XCTAssertTrue(PasswordUndoToast.takesUndo(key("z", [.command, .capsLock], in: window)), "Caps Lock is not a modifier")
         let field = NSTextField(frame: CGRect(x: 0, y: 0, width: 100, height: 22))
         window.contentView?.addSubview(field)
         defer { field.removeFromSuperview() }
