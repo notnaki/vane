@@ -134,10 +134,11 @@ Space there, including beside another profile’s Spaces; dragging a Space butto
 sidebar footer onto another does the same. Spaces have one order across all profiles,
 which swipes, the footer and this page follow. Reordering never changes which profile
 owns a Space. A new Space appears after its own profile’s Spaces. The order is saved
-with your profiles, included in backups, and synced with the **Spaces** iCloud category;
-a Mac running an older version keeps each profile’s Spaces in order, one profile after
-another. Page rows can still be dragged between Spaces. A card’s `…` menu goes to the
-Space, renames it, or deletes it: **Delete Space…** asks first and archives its tabs.
+with your profiles, included in backups, and synced over iCloud while both the **Spaces**
+and **Sidebar folders** categories are on; a Mac running an older version keeps each
+profile’s Spaces in order, one profile after another. Page rows can still be dragged
+between Spaces. A card’s `…` menu goes to the Space, renames it, or deletes it:
+**Delete Space…** asks first and archives its tabs.
 
 Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse or
 expand its pinned tabs; Today stays visible. Double-click its name to rename the Space.

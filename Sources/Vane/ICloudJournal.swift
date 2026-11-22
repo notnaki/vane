@@ -104,9 +104,12 @@ actor ICloudJournal {
         var next = state
         for item in items {
             let old = next.baseline[item.key]
-            guard old != item else { continue }
             let recreating = next.records[item.key]?.deletion != nil
-            if recreating {
+            // Only a version from before the global Space order deletes it, and only by
+            // not knowing it. A Mac that holds one writes it again, even unchanged.
+            let reviving = recreating && item.isSpaceOrder
+            guard old != item || reviving else { continue }
+            if recreating, !reviving {
                 // A received tombstone alone is not permission to revive stale
                 // native state. Require successful, durable observed absence and
                 // subsequent new presence. Ancestor identities stay permanent.
@@ -127,7 +130,8 @@ actor ICloudJournal {
                 record.parentID = item.parentID; record.parentVersion = version
             }
             for key in Set(item.fields.keys).union(old?.fields.keys ?? Dictionary<String, Data>().keys) {
-                if old?.fields[key] != item.fields[key] {
+                // A new incarnation starts with no fields, so it takes every one it has.
+                if recreating || old?.fields[key] != item.fields[key] {
                     record.fields[key] = ICloudField(value: item.fields[key], version: version)
                 }
             }

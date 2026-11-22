@@ -464,8 +464,8 @@ struct Space: Identifiable, Codable, Equatable {
     /// profile after another. It only decides how profiles interleave; within a profile
     /// `spaces.json` stays the order, and `Spaces.strip` puts the two together.
     ///
-    /// Saved in profiles.json, which backups already carry, and synced as one Spaces
-    /// record (`ICloudItem.spaceOrderID`). Not part of `spacesRevision`: moving a Space
+    /// Saved in profiles.json, which backups already carry, and synced as one record
+    /// (`ICloudItem.isSpaceOrder`). Not part of `spacesRevision`: moving a Space
     /// past another profile's changes no Space, so it must not revoke an open editor.
     @Published private(set) var spaceOrder: [UUID] = []
     @Published private var activeID: UUID = ProfileManager.defaultID
@@ -1180,6 +1180,8 @@ struct Space: Identifiable, Codable, Equatable {
         let current = allSpaces
         guard current.indices.contains(from) else { return false }
         let next = Spaces.reordered(current, from: from, to: to)
+        // A drop where it already stands moves nothing, and must not start a saved order.
+        guard next.map(\.id) != current.map(\.id) else { return true }
         let profileID = current[from].profileID
         let saved = saveSpaceOrder(next.map(\.id))
         return saveSpaces(next.filter { $0.profileID == profileID }, for: profileID) && saved

@@ -3,7 +3,7 @@ import XCTest
 @testable import vane
 
 /// The global Space order lives in profiles.json (which backups carry) and syncs as one
-/// Spaces record. Each profile's `spaces.json` stays the order inside that profile.
+/// record with no profile. Each profile's `spaces.json` stays the order inside that profile.
 @MainActor final class SpaceOrderPersistenceTests: XCTestCase {
     private struct Library {
         let directory: URL, manager: ProfileManager, work: Profile
@@ -103,6 +103,13 @@ import XCTest
         XCTAssertEqual(published, 0)
         XCTAssertEqual(l.manager.spacesRevision, revision)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date, before)
+
+        // With no saved order yet, a drop where the Space already stands does not start one.
+        let fresh = try library()
+        XCTAssertTrue(fresh.manager.reorderSpace(from: 1, to: 1))
+        XCTAssertTrue(fresh.manager.reorderSpace(from: 1, to: 2))
+        XCTAssertTrue(fresh.manager.spaceOrder.isEmpty)
+        XCTAssertNil(try savedProfiles(fresh.directory)["spaceOrder"])
     }
 
     func testADamagedSavedOrderNeverCostsTheProfileList() throws {
@@ -212,10 +219,10 @@ import XCTest
                                              deviceID: UUID().uuidString, profiles: manager))
     }
     private func orderItem(_ ids: [UUID]) throws -> ICloudItem {
-        ICloudItem(category: .spaces, id: ICloudItem.spaceOrderID, profileID: nil, parentID: nil,
+        ICloudItem(category: .sidebarFolders, id: ICloudItem.spaceOrderID, profileID: nil, parentID: nil,
                    fields: ["ids": try JSONEncoder().encode(ids)])
     }
-    private let categories: Set<ICloudCategory> = [.profiles, .spaces]
+    private let categories: Set<ICloudCategory> = [.profiles, .spaces, .sidebarFolders]
 
     func testTheOrderSurvivesASyncRoundTripWithoutAnEcho() async throws {
         let l = try library()
@@ -254,14 +261,42 @@ import XCTest
         XCTAssertEqual(names(manager), ["Home", "Mail", "Chat", "Docs"])
         XCTAssertTrue(manager.spaceOrder.isEmpty)
 
-        // And an older version given the order record skips it, as it has no profile; here
-        // that is every other record applying exactly as before with the order left out.
+        // The order needs both of its categories: with either off, none is uploaded.
         XCTAssertTrue(l.manager.reorderSpace(from: 0, to: 4))
-        let new = try await adapter(l).capture(categories)
-        let (older, olderTarget) = try emptyMac()
-        try await olderTarget.apply(new.filter { !$0.isSpaceOrder }, deleted: [], enabled: categories)
-        XCTAssertEqual(older.spaces(for: l.personal).map(\.name), ["Mail", "Home"], "The per-profile order still carries the move")
-        XCTAssertEqual(Set(names(older)), ["Home", "Mail", "Docs", "Chat"], "No Space is lost")
+        for off in ICloudItem.spaceOrderCategories {
+            let partial = try await adapter(l).capture(categories.subtracting([off]))
+            XCTAssertFalse(partial.contains(where: \.isSpaceOrder))
+        }
+    }
+
+    /// All a version from before the order has for a record with no profile are the
+    /// adapter's ordinary loops, the same since 0.2.0. They are also all this adapter runs
+    /// for the record while the order's own handling is off, which is what is applied here.
+    /// Those loops skip it live and deleted in Sidebar folders, and refuse it deleted in
+    /// Spaces, which is why it is not filed there. See `ICloudItem.isSpaceOrder`.
+    func testAVersionFromBeforeTheOrderSkipsItsRecordLiveAndDeleted() async throws {
+        let l = try library()
+        XCTAssertTrue(l.manager.reorderSpace(from: 1, to: 3))       // Home, Docs, Mail, Chat
+        let order = try await adapter(l).capture(categories).filter(\.isSpaceOrder)
+        XCTAssertEqual(order.map(\.key), ["sidebarFolders:global:spaceOrder"], "The shape older versions tolerate")
+
+        let (older, target) = try emptyMac()
+        let ordinary = categories.subtracting([.spaces])
+        try await target.apply(order, deleted: [], enabled: ordinary)
+        try await target.apply([], deleted: order, enabled: ordinary)
+        XCTAssertTrue(older.spaceOrder.isEmpty)
+        XCTAssertEqual(older.profiles.map(\.id), [ProfileManager.defaultID], "No profile or Space is invented for it")
+        XCTAssertTrue(older.allSpaces.isEmpty)
+
+        let asSpaces = ICloudItem(category: .spaces, id: ICloudItem.spaceOrderID, profileID: nil, parentID: nil, fields: [:])
+        do {
+            try await target.apply([], deleted: [asSpaces], enabled: categories)
+            XCTFail("A deleted Spaces record with no profile is refused, by this version and older ones")
+        } catch {}
+
+        // This version, given the tombstone an older build left, keeps the order it holds.
+        try await adapter(l).apply([], deleted: order, enabled: categories)
+        XCTAssertEqual(names(l.manager), ["Home", "Docs", "Mail", "Chat"])
     }
 
     func testALocalReorderSinceTheLastSyncIsNotOverwritten() async throws {
@@ -291,7 +326,7 @@ import XCTest
         // Not a list of ids at all, or no ids field: skipped, and nothing else is refused.
         let before = l.manager.spaceOrder
         for fields in [["ids": Data(#"{"a":1}"#.utf8)], ["ids": Data("[1,2]".utf8)], ["ids": Data()], [:]] {
-            let bad = ICloudItem(category: .spaces, id: ICloudItem.spaceOrderID, profileID: nil, parentID: nil, fields: fields)
+            let bad = ICloudItem(category: .sidebarFolders, id: ICloudItem.spaceOrderID, profileID: nil, parentID: nil, fields: fields)
             try await adapter.apply([bad], deleted: [bad], enabled: categories)
         }
         XCTAssertEqual(l.manager.spaceOrder, before)
@@ -309,31 +344,80 @@ import XCTest
                        "Work's own list says Docs, Chat, Plans; the order says where Work's places are")
     }
 
-    /// Versions from before the order skip the live record but reject its tombstone as
-    /// corrupt, so a Mac that stops holding an order must never delete the record.
+    /// A Mac that stops holding an order is not a Mac whose user removed it, so this
+    /// version never turns the order's absence into a deletion.
     func testTheJournalNeverDeletesTheOrderRecord() async throws {
+        let enabled = ICloudItem.spaceOrderCategories
         let directory = try directory()
         let journal = try ICloudJournal(directory: directory, deviceID: "local")
         let space = ICloudItem(category: .spaces, id: UUID().uuidString, profileID: ProfileManager.defaultID, parentID: nil,
                                fields: ["name": Data(#""Home""#.utf8)])
         let order = try orderItem([UUID(), UUID()])
-        try await journal.capture([space, order], enabled: [.spaces])
-        try await journal.acknowledge(await journal.pending(enabled: [.spaces]))
+        try await journal.capture([space, order], enabled: enabled)
+        try await journal.acknowledge(await journal.pending(enabled: enabled))
 
         // An older build rewrote profiles.json, or an older backup was restored: no order.
-        try await journal.capture([], enabled: [.spaces])
-        var deleted = await journal.deleted(enabled: [.spaces])
+        try await journal.capture([], enabled: enabled)
+        var deleted = await journal.deleted(enabled: enabled)
         XCTAssertEqual(deleted.map(\.id), [space.id], "An ordinary Space's absence is still a deletion")
-        var live = await journal.items(enabled: [.spaces])
+        var live = await journal.items(enabled: enabled)
         XCTAssertEqual(live, [order], "The order record stays live, to be taken back on the next apply")
 
-        try await journal.markApplied([order], enabled: [.spaces])
-        try await journal.markApplied([], enabled: [.spaces])
-        deleted = await journal.deleted(enabled: [.spaces])
-        live = await journal.items(enabled: [.spaces])
+        try await journal.markApplied([order], enabled: enabled)
+        try await journal.markApplied([], enabled: enabled)
+        deleted = await journal.deleted(enabled: enabled)
+        live = await journal.items(enabled: enabled)
         XCTAssertFalse(deleted.contains(where: \.isSpaceOrder))
         XCTAssertEqual(live, [order])
-        let pending = await journal.pending(enabled: [.spaces])
+        let pending = await journal.pending(enabled: enabled)
         XCTAssertFalse(pending.contains { $0.item.isSpaceOrder }, "Nothing about the order is uploaded either")
+    }
+
+    /// An older build run on a Mac that had synced an order does delete the record: it
+    /// finds it in the shared journal's baseline and captures none. A Mac that still
+    /// holds the order writes it again, or it would stop syncing for the whole account.
+    func testAnOrderAnOlderBuildDeletedIsWrittenAgain() async throws {
+        let enabled = ICloudItem.spaceOrderCategories
+        let journal = try ICloudJournal(directory: try directory(), deviceID: "local")
+        let order = try orderItem([UUID(), UUID()])
+        try await journal.capture([order], enabled: enabled)
+        let sent = await journal.pending(enabled: enabled)
+        try await journal.acknowledge(sent)
+
+        // What the older build uploads: this record, deleted after everything it had seen.
+        var tombstone = try XCTUnwrap(sent.first)
+        var vector = tombstone.vector; vector["older"] = 7
+        tombstone.deletion = ICloudVersion(vector: vector, writer: "older", counter: 7)
+        _ = try await journal.merge([tombstone])
+        var deleted = await journal.deleted(enabled: enabled)
+        XCTAssertEqual(deleted.map(\.key), [order.key])
+
+        // Nothing changed on this Mac, and its next capture still revives the record.
+        try await journal.capture([order], enabled: enabled)
+        deleted = await journal.deleted(enabled: enabled)
+        let live = await journal.items(enabled: enabled)
+        XCTAssertTrue(deleted.isEmpty)
+        XCTAssertEqual(live, [order])
+        var pending = await journal.pending(enabled: enabled)
+        let revived = try XCTUnwrap(pending.first { $0.item.isSpaceOrder }, "And uploads it")
+
+        // Every Mac that holds the tombstone, the older one included, takes the revival.
+        for merged in [ICloudRecord.merged(tombstone, revived), ICloudRecord.merged(revived, tombstone)] {
+            XCTAssertNil(merged.deletion)
+            XCTAssertEqual(merged.item, order)
+        }
+
+        // An ordinary record is not revived by a tombstone it never saw the absence of.
+        let folder = ICloudItem(category: .sidebarFolders, id: UUID().uuidString, profileID: ProfileManager.defaultID,
+                                parentID: nil, fields: ["name": Data(#""Work""#.utf8)])
+        try await journal.capture([order, folder], enabled: enabled)
+        pending = await journal.pending(enabled: enabled)
+        var gone = try XCTUnwrap(pending.first { $0.key == folder.key })
+        vector = gone.vector; vector["older"] = 9
+        gone.deletion = ICloudVersion(vector: vector, writer: "older", counter: 9)
+        _ = try await journal.merge([gone])
+        try await journal.capture([order, folder], enabled: enabled)
+        deleted = await journal.deleted(enabled: enabled)
+        XCTAssertEqual(deleted.map(\.key), [folder.key])
     }
 }
