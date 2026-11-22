@@ -580,6 +580,7 @@ private struct GeneralPane: View {
     @AppStorage(UpdateChannel.preferenceKey) private var updateChannel = UpdateChannel.stable.rawValue
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
     @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
+    @AppStorage(Look.interfaceStyleKey) private var interfaceStyle = "default"
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -604,6 +605,13 @@ private struct GeneralPane: View {
                 SettingsRow("Space icons in the footer", icon: "square.grid.2x2.fill", tint: .purple) {
                     Toggle("Show Space icons in the footer", isOn: $showSpaceIcons).labelsHidden()
                         .help("Show every Space’s icon. Turn off to use dots for inactive Spaces.")
+                }
+                SettingsRow("Interface style", icon: "rectangle.compress.vertical", tint: .gray) {
+                    Picker("Interface style", selection: $interfaceStyle) {
+                        Text("Default").tag("default")
+                        Text("Streamlined").tag("streamlined")
+                    }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
+                        .help("Streamlined tightens the sidebar and command bar. Applies the next time Vane opens.")
                 }
             }
 

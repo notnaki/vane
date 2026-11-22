@@ -498,7 +498,7 @@ import SwiftUI
             ("its bar puts the pill's centre on the traffic lights' line",
              Look.littleTopInset + Look.pillHeight / 2 == Look.lightsCentre),
             ("the pill is the sidebar's pill, at the sidebar's height",
-             Look.pillHeight == Look.rowHeight),
+             Look.streamlined || Look.pillHeight == Look.rowHeight),
         ] + openIn()
     }
 

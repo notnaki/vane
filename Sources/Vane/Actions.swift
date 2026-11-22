@@ -101,6 +101,7 @@ extension PaletteCommand {
                 PaletteCommand(.reload, icon: "arrow.clockwise"),
                 PaletteCommand(.hardReload, icon: "arrow.clockwise.circle"),
                 PaletteCommand(.find, icon: "magnifyingglass", title: "Find in Page"),
+                PaletteCommand("Ask on Page", icon: "sparkles") { store.openAsk() },
                 PaletteCommand(.closeTab, icon: "archivebox"),
             ]
             if PageCapture.available(tab) {

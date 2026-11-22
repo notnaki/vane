@@ -459,6 +459,15 @@ struct Space: Identifiable, Codable, Equatable {
     @Published private(set) var hasUnsavedProfileChanges = false
     /// Invalidates Library cards in every window when any profile saves its Spaces.
     @Published private(set) var spacesRevision = 0
+    /// One order for every profile's Spaces: what the swipe, the footer dots and Manage
+    /// Spaces walk. Empty until the first reorder, which is each profile's own order, one
+    /// profile after another. It only decides how profiles interleave; within a profile
+    /// `spaces.json` stays the order, and `Spaces.strip` puts the two together.
+    ///
+    /// Saved in profiles.json, which backups already carry, and synced as one record
+    /// (`ICloudItem.isSpaceOrder`). Not part of `spacesRevision`: moving a Space
+    /// past another profile's changes no Space, so it must not revoke an open editor.
+    @Published private(set) var spaceOrder: [UUID] = []
     @Published private var activeID: UUID = ProfileManager.defaultID
     /// A damaged existing list is kept for recovery; no mutation may replace it with a
     /// newly invented default profile.
@@ -489,6 +498,22 @@ struct Space: Identifiable, Codable, Equatable {
     private struct Disk: Codable {
         var profiles: [Profile]
         var activeID: UUID
+        /// See `spaceOrder`. Left out while there is none, so the file is what a version
+        /// from before it would write; that version ignores the key and drops it on its
+        /// next save, which is the fallback to each profile's own order.
+        var spaceOrder: [UUID]?
+
+        init(profiles: [Profile], activeID: UUID, spaceOrder: [UUID]) {
+            self.profiles = profiles; self.activeID = activeID
+            self.spaceOrder = spaceOrder.isEmpty ? nil : spaceOrder
+        }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            profiles = try values.decode([Profile].self, forKey: .profiles)
+            activeID = try values.decode(UUID.self, forKey: .activeID)
+            // A damaged order must not make the profile list itself unreadable.
+            spaceOrder = try? values.decodeIfPresent([UUID].self, forKey: .spaceOrder)
+        }
     }
 
     init(directory: URL = Store.directory, sandboxed: Bool = false) {
@@ -500,6 +525,7 @@ struct Space: Identifiable, Codable, Equatable {
            !disk.profiles.isEmpty {
             profiles = disk.profiles
             activeID = disk.profiles.contains { $0.id == disk.activeID } ? disk.activeID : disk.profiles[0].id
+            spaceOrder = Self.validSpaceOrder(disk.spaceOrder ?? [])
         } else {
             profiles = [Profile(id: Self.defaultID, name: "Personal", colorHex: Self.palette[0])]
             activeID = Self.defaultID
@@ -558,7 +584,7 @@ struct Space: Identifiable, Codable, Equatable {
     @discardableResult
     private func persist() -> Bool {
         hasUnsavedProfileChanges = true
-        return persist(Disk(profiles: profiles, activeID: activeID))
+        return persist(Disk(profiles: profiles, activeID: activeID, spaceOrder: spaceOrder))
     }
 
     /// Recapture the current list, including edits made since the first failure. Never
@@ -637,7 +663,11 @@ struct Space: Identifiable, Codable, Equatable {
         var remaining = profiles
         remaining.remove(at: i)
         let nextActiveID = activeID == id ? remaining[0].id : activeID
-        guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
+        // Its Spaces leave the global order in the same write that removes the profile.
+        let gone = Set(spaces(for: id).map(\.id))
+        let order = spaceOrder.filter { !gone.contains($0) }
+        guard persist(Disk(profiles: remaining, activeID: nextActiveID, spaceOrder: order), deleting: true) else { return false }
+        if order != spaceOrder { spaceOrder = order }
         deletedProfileIDs.insert(id)
         if !sandboxed { Store.retire(id) }
         WebsitePopupWindow.forget(profileID: id)
@@ -698,7 +728,11 @@ struct Space: Identifiable, Codable, Equatable {
         var remaining = profiles
         remaining.remove(at: i)
         let nextActiveID = activeID == id ? remaining[0].id : activeID
-        guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
+        // Its Spaces leave the global order in the same write that removes the profile.
+        let gone = Set(spaces(for: id).map(\.id))
+        let order = spaceOrder.filter { !gone.contains($0) }
+        guard persist(Disk(profiles: remaining, activeID: nextActiveID, spaceOrder: order), deleting: true) else { return false }
+        if order != spaceOrder { spaceOrder = order }
         deletedProfileIDs.insert(id)
         let faviconRetirement = sandboxed ? nil : Favicons.forget(id, retiring: true)
         if !sandboxed { Store.retire(id) }
@@ -989,9 +1023,12 @@ struct Space: Identifiable, Codable, Equatable {
     /// `directory` never changes, so neither does where a profile's Spaces are kept.
     private var spacesPaths: [UUID: String] = [:]
 
-    /// Every saved Space, in profile order and then each profile's Space order.
+    /// Every saved Space along the strip: `spaceOrder` when there is one, else profile
+    /// order and then each profile's Space order. See `Spaces.strip`.
     /// Read-only: opening the Library must not create Spaces in unused profiles.
-    var allSpaces: [Space] { profiles.flatMap { spaces(for: $0.id) } }
+    var allSpaces: [Space] {
+        Spaces.strip(profiles: profiles, spacesOf: { spaces(for: $0.id) }, order: spaceOrder)
+    }
 
     /// Failed writes leave the committed list intact and publish a recovery warning even
     /// when a caller ignores the result. Transactional callers must retry their action;
@@ -1042,6 +1079,18 @@ struct Space: Identifiable, Codable, Equatable {
         }
         clearSaveFailure(target)
         if previous != owned { spacesRevision += 1 }
+        // A Space made, deleted or moved within its profile. Name every Space where it
+        // stood before this write, then let the new list fill this profile's places: the
+        // deleted one leaves, a new one lands beside its own profile's Spaces, and the
+        // saved order never names a Space that is gone.
+        if !spaceOrder.isEmpty, previous?.map(\.id) != owned.map(\.id) {
+            let before = Spaces.strip(profiles: profiles, spacesOf: {
+                $0.id == profileID ? previous ?? [] : self.spaces(for: $0.id)
+            }, order: spaceOrder).map(\.id)
+            saveSpaceOrder(Spaces.strip(profiles: profiles, spacesOf: {
+                $0.id == profileID ? owned : self.spaces(for: $0.id)
+            }, order: before).map(\.id))
+        }
         return true
     }
 
@@ -1101,6 +1150,41 @@ struct Space: Identifiable, Codable, Equatable {
               spaces(for: profile.id).contains(where: { $0.id == space.id }) else { return existing }
         defaults.removeObject(forKey: key)
         return [space]
+    }
+
+    /// A synced or hand-edited order is data, not a promise: no duplicates, and no more
+    /// entries than any library could own. Unknown ids stay; `Spaces.strip` skips them, and
+    /// the Space they name may simply not have arrived on this Mac yet.
+    static let spaceOrderLimit = 10_000
+    static func validSpaceOrder(_ ids: [UUID]) -> [UUID] {
+        var seen = Set<UUID>()
+        return Array(ids.filter { seen.insert($0).inserted }.prefix(spaceOrderLimit))
+    }
+
+    /// Replace the global order. False only when profiles.json could not be written; the
+    /// order is kept in memory either way, like every other unsaved profile change.
+    @discardableResult
+    func saveSpaceOrder(_ ids: [UUID]) -> Bool {
+        let order = Self.validSpaceOrder(ids)
+        guard order != spaceOrder else { return true }
+        spaceOrder = order
+        return persist()
+    }
+
+    /// Move one Space along the global strip, `Spaces.reordered`'s `from`/`to`. Only the
+    /// order changes, never which profile owns a Space. A move past another profile's
+    /// Spaces writes the global order alone; a move past one of its own also rewrites
+    /// that profile's `spaces.json`, which is the order older versions and sync read.
+    @discardableResult
+    func reorderSpace(from: Int, to: Int) -> Bool {
+        let current = allSpaces
+        guard current.indices.contains(from) else { return false }
+        let next = Spaces.reordered(current, from: from, to: to)
+        // A drop where it already stands moves nothing, and must not start a saved order.
+        guard next.map(\.id) != current.map(\.id) else { return true }
+        let profileID = current[from].profileID
+        let saved = saveSpaceOrder(next.map(\.id))
+        return saveSpaces(next.filter { $0.profileID == profileID }, for: profileID) && saved
     }
 
     @discardableResult
@@ -1868,7 +1952,7 @@ extension ProfileManager {
         let old = profiles.firstIndex { $0.id == profile.id } ?? next.count
         next.insert(profile, at: min(max(0, position ?? old), next.count))
         try ICloudApplyContext.check()
-        guard persist(Disk(profiles: next, activeID: activeID)) else { throw CocoaError(.fileWriteUnknown) }
+        guard persist(Disk(profiles: next, activeID: activeID, spaceOrder: spaceOrder)) else { throw CocoaError(.fileWriteUnknown) }
         profiles = next
         if !placeholder { try markICloudPlaceholder(profile.id, category: "profiles", placeholder: false) }
     }

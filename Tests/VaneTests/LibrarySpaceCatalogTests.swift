@@ -171,7 +171,8 @@ private final class LibraryCatalogReadGate: @unchecked Sendable {
         let pending = catalog.prepare(manager: manager)
         await gate.waitForEntry()
         XCTAssertEqual(catalog.spaces(manager: manager).first?.name, "Original")
-        XCTAssertNil(catalog.beginEditing(for: home, manager: manager), "Display retention must not grant edit permission")
+        XCTAssertEqual(catalog.beginEditing(for: home, manager: manager)?.space.name, "Changed elsewhere",
+                       "Display retention must not grant permission to edit the old copy")
         XCTAssertFalse(session.isCurrent)
         var invoked = false
         XCTAssertFalse(session.perform {
@@ -186,6 +187,40 @@ private final class LibraryCatalogReadGate: @unchecked Sendable {
         gate.resume(); await pending?.value
         await catalog.prepare(manager: manager)?.value
         XCTAssertTrue(catalog.spaces(manager: manager).isEmpty)
+    }
+
+    // Fails if a reload or withheld rows disable the card's pencil and Rename…, cancel an open
+    // editor, or let an editor start from the retained card or write to a deleted Space.
+    func testEditorStaysAvailableThroughReloadAndNeverWritesAStaleOrDeletedSpace() async throws {
+        let manager = try manager()
+        let home = manager.createSpace(name: "Original", in: manager.active.id)
+        let gate = LibraryCatalogReadGate(blockedCall: 2); defer { gate.resume() }
+        let catalog = LibrarySpaceCatalog(load: gate.load)
+        await catalog.prepare(manager: manager)?.value
+        let open = try XCTUnwrap(catalog.beginEditing(for: home, manager: manager))
+        // The reload a protection change or Space switch starts: same revision, rows withheld.
+        let reload = catalog.prepare(manager: manager, force: true, resetEditors: false)
+        await gate.waitForEntry()
+        XCTAssertNil(catalog.entry(for: home, manager: manager))
+        XCTAssertTrue(open.isCurrent, "A reload must not cancel an open editor")
+        XCTAssertEqual(catalog.editable(home, manager: manager), home, "The pencil and Rename… stay enabled while reloading")
+        let during = try XCTUnwrap(catalog.beginEditing(for: home, manager: manager))
+        var renamed = during.space; renamed.name = "Renamed mid-reload"
+        XCTAssertTrue(during.perform { XCTAssertTrue(manager.updateSpace(renamed)) })
+        XCTAssertFalse(open.perform { _ = manager.updateSpace(open.space) }, "The older editor cannot write its copy over the newer name")
+        // Invalidated: nothing has loaded the new revision, and the card still shows the old name.
+        XCTAssertNil(catalog.entry(for: home, manager: manager))
+        XCTAssertEqual(catalog.spaces(manager: manager).first?.name, "Original")
+        let fresh = try XCTUnwrap(catalog.beginEditing(for: home, manager: manager))
+        XCTAssertEqual(fresh.space.name, "Renamed mid-reload", "A stale card must open the editor on the current Space")
+        XCTAssertTrue(manager.deleteSpace(home.id, in: home.profileID))
+        XCTAssertEqual(catalog.spaces(manager: manager).map(\.id), [home.id], "The card is retained until the reload lands")
+        XCTAssertNil(catalog.editable(home, manager: manager), "A deleted Space's retained card disables its editor")
+        XCTAssertNil(catalog.beginEditing(for: home, manager: manager))
+        XCTAssertFalse(fresh.isCurrent)
+        XCTAssertFalse(fresh.perform { _ = manager.updateSpace(fresh.space) })
+        XCTAssertTrue(manager.spaces(for: home.profileID).isEmpty, "An open editor cannot recreate a deleted Space")
+        gate.resume(); await reload?.value
     }
 
     // Fails if normal successive theme commits revoke their own editor, or reopening fails to revoke it.

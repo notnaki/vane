@@ -419,6 +419,10 @@ struct TitleReveal: Equatable, Sendable {
     let draftProtection = DraftProtection()
     var dialogPolicy = PageDialogPolicy()
     var readingDocumentGeneration = UUID()
+    /// Runs when a new main-frame document commits. Fragment links and pushState don't
+    /// commit, so a page that rewrites its own address keeps its Ask on Page conversation.
+    /// Keyed by owner, since two windows can show the same shared tab.
+    var documentCommitHooks: [ObjectIdentifier: @MainActor () -> Void] = [:]
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
     /// maintenance and session persistence use `existingWeb` to avoid creating one.
@@ -2062,6 +2066,7 @@ struct TitleReveal: Equatable, Sendable {
             // At commit, not provisional start: a link that turns out to be a download
             // leaves the translated page on screen, and its state with it.
             PageTranslation.forget(tab: self)
+            for hook in Array(documentCommitHooks.values) { hook() }
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()
@@ -2978,7 +2983,11 @@ struct Stash {
         willSet { selectionPublications += 1 }
         didSet {
             selectionPublications -= 1
-            if oldValue != current { cancelFolderUnlock() }
+            if oldValue != current {
+                cancelFolderUnlock()
+                // Ask on Page answers about the tab that asked; the bar follows the new one.
+                if findOpen { findSession.ask.reset() }
+            }
             // All selection paths enforce the same boundary, before resume or auto PiP.
             if let id = current, isTabLocked(id) {
                 return
@@ -3099,7 +3108,10 @@ struct Stash {
     @Published var findOpen = false {
         didSet {
             if oldValue && !findOpen {
-                Find.session(for: self).clearHighlight(in: tabs.first { $0.id == current })
+                let session = Find.session(for: self)
+                session.clearHighlight(in: tabs.first { $0.id == current })
+                session.asking = false
+                session.ask.reset()
             }
         }
     }
@@ -4374,9 +4386,7 @@ struct Stash {
     /// `switchTo(space:)` and `Windows.hop`.
     var strip: [Space] {
         guard !isPrivate else { return [] }
-        return fold(preview: Spaces.strip(profiles: ProfileManager.shared.profiles) {
-            ProfileManager.shared.spaces(for: $0.id)
-        })
+        return fold(preview: ProfileManager.shared.allSpaces)
     }
 
     /// A list off the disk with the theme editor's unsaved frame put back over it, so a drag
@@ -4546,13 +4556,11 @@ struct Stash {
         Spaces.direction(from: currentSpaceID, to: space.id, in: strip.map(\.id))
     }
 
-    /// Drag the footer dots: one profile's space order, rewritten. The dots are the whole
-    /// strip now, so which profile is being reordered is the dragged dot's, not necessarily
-    /// this window's. See `SpaceDrop`, which refuses a drag across the boundary.
-    func reorderSpaces(from: Int, to: Int, in owner: UUID? = nil) {
-        let profileID = owner ?? self.profileID
-        let list = Spaces.reordered(ProfileManager.shared.spaces(for: profileID), from: from, to: to)
-        ProfileManager.shared.saveSpaces(list, for: profileID)
+    /// Drag the footer dots or a Manage Spaces card: one Space moves along the global strip,
+    /// so it can pass one from another profile. Only the order changes. Which profile a
+    /// Space belongs to is never touched here; that is still "Set Profile".
+    func reorderSpaces(from: Int, to: Int) {
+        ProfileManager.shared.reorderSpace(from: from, to: to)
         spacesChanged()
     }
 
