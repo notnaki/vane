@@ -84,6 +84,28 @@ struct ICloudItem: Codable, Equatable, Sendable {
     }
 }
 
+extension ICloudItem {
+    /// `ProfileManager.spaceOrder`, as `ids`: one record that no profile owns. It syncs
+    /// while both `spaceOrderCategories` are on.
+    ///
+    /// It is filed under Sidebar folders, not Spaces, because of what a version from
+    /// before it existed does with a record that has no profile. In every library
+    /// category but Profiles and Spaces that version skips the record, live or deleted.
+    /// A deleted *Spaces* record with no profile it rejects as corrupt, on every sync,
+    /// and a deleted *Profiles* one retires every record that has no profile.
+    ///
+    /// Such a version does delete the record: run on a data directory where a newer
+    /// build has synced an order, it finds the record in the journal's baseline, captures
+    /// no order, and reads that as a deletion. So the tombstone has to be harmless to
+    /// older versions, which here it is, and a Mac that holds an order writes the record
+    /// again (`ICloudJournal.capture`). This version never deletes it: a Mac that no
+    /// longer holds an order (an older build rewrote profiles.json, or a backup from
+    /// before was restored) just stops capturing it, and takes it back on the next apply.
+    static let spaceOrderID = "spaceOrder"
+    static let spaceOrderCategories: Set<ICloudCategory> = [.spaces, .sidebarFolders]
+    var isSpaceOrder: Bool { category == .sidebarFolders && profileID == nil && id == Self.spaceOrderID }
+}
+
 enum ICloudLimits {
     static let inlineBytes = 256 * 1024
     static let assetBytes = 32 * 1024 * 1024

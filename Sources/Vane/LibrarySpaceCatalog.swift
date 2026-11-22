@@ -210,9 +210,13 @@ import SwiftUI
     func spaces(manager: ProfileManager = .shared, preview: Space? = nil) -> [Space] {
         guard owner === manager else { return [] }
         // Filter removed owners immediately, even before the metadata observer fires.
-        var spaces = manager.profiles.flatMap { profile in
-            persisted.filter { $0.space.profileID == profile.id }.map(\.space)
-        }
+        let owners = Set(manager.profiles.map(\.id))
+        // Cards stand in the live strip's order, the footer's and the swipe's, rather than
+        // the snapshot's: a reorder shows at once, not when the reload it may cause lands.
+        let rank = Dictionary(manager.allSpaces.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var spaces = persisted.map(\.space).filter { owners.contains($0.profileID) }.enumerated().sorted {
+            (rank[$0.element.id] ?? .max, $0.offset) < (rank[$1.element.id] ?? .max, $1.offset)
+        }.map(\.element)
         if let preview, let index = spaces.firstIndex(where: {
             $0.id == preview.id && $0.profileID == preview.profileID
         }) { spaces[index] = preview }

@@ -3128,7 +3128,9 @@ private struct SpaceMenu: View {
     return TabStore.all.first { $0.window === window && $0.currentSpaceID == space.id }
 }
 
-@MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
+/// Asks before deleting. Shared by the sidebar's Space menu and the Manage Spaces card, so
+/// both routes show the same warning and the same archive behaviour.
+@MainActor func deleteSpace(_ space: Space, in store: TabStore) {
     let a = NSAlert()
     a.messageText = "Delete the space “\(space.name)”?"
     a.informativeText = "Its tabs and pinned tabs go to the Archive, where the Library can "
