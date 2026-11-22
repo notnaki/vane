@@ -1120,7 +1120,7 @@ private struct Sidebar: View {
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
     private var previewHeight: CGFloat {
         _ = previewHeightRevision
-        return min(CGFloat(previewItems.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap,
+        return min(CGFloat(previewItems.count) * (Look.pillHeight + Look.rowGap) - Look.rowGap, // rows are pillHeight (DownloadsHover)
                    max(0, sidebarHeight.value - Look.footer - Look.footerInset - Look.topInset - 48))
     }
     /// Preferences and their renderer, and both ends of a row/tile morph, belong
@@ -1327,16 +1327,20 @@ private struct TopRowContent: View {
     @ChromeObserved var store: TabStore
     @WindowSidebarWidth private var sidebarWidth
     var layoutWidth: CGFloat? = nil
-    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebarWidth) }
+    private var layout: SidebarChromeLayout {
+        SidebarChromeLayout(width: layoutWidth ?? sidebarWidth, fullScreen: fullScreen)
+    }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Full screen hides the traffic lights, so the toggle takes their corner.
+    @State private var fullScreen = false
 
     var body: some View {
         #if DEBUG
         let _ = ResizeTimingDiagnostics.record("sidebar.body.header")
         #endif
         HStack(spacing: layout.headerSpacing) {
-            Spacer().frame(width: Look.trafficLights)
+            if !fullScreen { Spacer().frame(width: Look.trafficLights) }
             if !layout.usesOverflow { toggle }
             Spacer(minLength: 0)
             ActiveNavButtons(spacing: layout.navigationSpacing, showsSidebarToggle: layout.usesOverflow)
@@ -1346,6 +1350,30 @@ private struct TopRowContent: View {
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: layout.usesOverflow)
+        .onAppear { syncFullScreen() }
+        // A parked profile has no window and misses its window's transitions, so re-read on
+        // every return to view and on any window's transition, failed ones included.
+        .onReceive(store.$profileVisible) { _ in syncFullScreen() }
+        .onReceive(Self.fullScreenChanges) { syncFullScreen($0) }
+    }
+
+    private static let fullScreenChanges = NotificationCenter.default
+        .publisher(for: NSWindow.willEnterFullScreenNotification)
+        .merge(with: NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification),
+               NotificationCenter.default.publisher(for: VaneWindow.fullScreenFailed))
+
+    private func syncFullScreen(_ note: Notification? = nil) {
+        // The welcome preview draws sample lights of its own beside the toggle.
+        // A parked profile follows the window it is parked in, so a swipe pre-renders it right.
+        guard layoutWidth == nil, let window = store.window ?? store.parkedIn else { return }
+        let now: Bool
+        // On `will…` the transition is what is about to show, whatever the mask says yet.
+        switch (note?.object as? NSWindow === window) ? note?.name : nil {
+        case NSWindow.willEnterFullScreenNotification?: now = true
+        case NSWindow.willExitFullScreenNotification?: now = false
+        default: now = window.styleMask.contains(.fullScreen)
+        }
+        if fullScreen != now { fullScreen = now }
     }
 
     private var toggle: some View {

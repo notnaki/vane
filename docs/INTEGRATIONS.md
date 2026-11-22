@@ -383,9 +383,9 @@ Settings → Max lets you save multiple named connections, including several at 
 provider. Choose **Add Connection** for ChatGPT, Groq, OpenAI, OpenRouter, or an
 OpenAI-compatible HTTPS API. Apple (on-device) is always available without an account.
 Choose a connection separately for **Tab titles**, **Tab grouping**, **Download names**,
-and **Page summaries**. Adding a connection does not change those routes. Existing
-single-provider settings and saved keys migrate for naming/grouping; summaries stay
-on-device until you explicitly choose a cloud connection for them.
+**Page summaries** and **Ask on Page**. Adding a connection does not change those routes.
+Existing single-provider settings and saved keys migrate for naming/grouping; summaries
+and Ask on Page stay on-device until you explicitly choose a cloud connection for them.
 
 Page summaries appear inside webpage link-hover cards. Enable **Settings → General →
 Previews → Preview links on hover**, then pause over a link to another page. The card
@@ -394,6 +394,26 @@ and the selected summary connection is available, a two-sentence summary follows
 Moving away, scrolling, clicking or pressing Escape dismisses the card. Cards stay
 within their source pane and do not intercept page clicks. Battery Saver pauses
 link previews. A failed or unavailable summary leaves the ordinary preview visible.
+
+### Ask on Page
+
+Ask a free-form question about the page you are reading. Press ⌘F and choose the
+sparkles button (**Ask on Page**) in the find bar, or type **Ask on Page** in the command
+bar. Whatever is already typed in the find field is asked right away. Press Return to
+ask; ask follow-ups about the same page in the same field. The magnifying glass returns to
+find, as do ⌘F and ⌘G, and Escape or × closes the bar and clears the conversation.
+Switching tabs or loading a new page ends the conversation; a page changing its own
+address (a `#` link or a history update) does not. Answers come only from the
+page's extracted title and text, the same extraction link-preview summaries use, cut to the on-device model's
+8,000-character input budget; follow-ups carry the last two exchanges. Apple's on-device
+model shows its answer as it is generated; a cloud connection shows the whole answer when
+it arrives. Page text and earlier answers are fenced as untrusted data with your question
+placed after them, so instructions written into a page are treated as page content.
+Answers are plain text and can still be wrong or influenced by the page. If AI is off or
+the selected connection is unavailable, the panel says why and offers **Open Max
+Settings**. In private windows Ask on Page works only with Apple (On Device); a cloud
+route is never used there. iCloud sync from a Mac running an older Vane, which has no
+Ask on Page route, moves an API-key Ask on Page route back to Apple (On Device).
 
 API-key connections take a model ID and your own key: choose **Save Key**, then
 **Test Connection**. Groq defaults to `openai/gpt-oss-20b`. Custom providers need an HTTPS
@@ -418,7 +438,8 @@ a warning identifies when remote revocation could not be confirmed.
 
 Cloud naming/grouping sends titles, hostnames, and download naming metadata (source URL
 path included, query strings/fragments excluded). Cloud summaries additionally send
-bounded extracted page text when a link preview summarizes a page. These may contain
+bounded extracted page text when a link preview summarizes a page, and Ask on Page sends
+your question, the earlier exchanges and bounded extracted page text. These may contain
 personal information. Private windows never use any of these cloud AI features;
 assistant websites are separate and receive questions you send them even in private
 windows. See the [privacy policy](../PRIVACY.md#ai-features). Requests are bounded and

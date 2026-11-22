@@ -419,6 +419,10 @@ struct TitleReveal: Equatable, Sendable {
     let draftProtection = DraftProtection()
     var dialogPolicy = PageDialogPolicy()
     var readingDocumentGeneration = UUID()
+    /// Runs when a new main-frame document commits. Fragment links and pushState don't
+    /// commit, so a page that rewrites its own address keeps its Ask on Page conversation.
+    /// Keyed by owner, since two windows can show the same shared tab.
+    var documentCommitHooks: [ObjectIdentifier: @MainActor () -> Void] = [:]
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
     /// maintenance and session persistence use `existingWeb` to avoid creating one.
@@ -2058,6 +2062,7 @@ struct TitleReveal: Equatable, Sendable {
         updatePageTitle(from: w)
         if w === existingWeb {
             Reader.navigationCommitted(self)
+            for hook in Array(documentCommitHooks.values) { hook() }
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()
@@ -2973,7 +2978,11 @@ struct Stash {
         willSet { selectionPublications += 1 }
         didSet {
             selectionPublications -= 1
-            if oldValue != current { cancelFolderUnlock() }
+            if oldValue != current {
+                cancelFolderUnlock()
+                // Ask on Page answers about the tab that asked; the bar follows the new one.
+                if findOpen { findSession.ask.reset() }
+            }
             // All selection paths enforce the same boundary, before resume or auto PiP.
             if let id = current, isTabLocked(id) {
                 return
@@ -3094,7 +3103,10 @@ struct Stash {
     @Published var findOpen = false {
         didSet {
             if oldValue && !findOpen {
-                Find.session(for: self).clearHighlight(in: tabs.first { $0.id == current })
+                let session = Find.session(for: self)
+                session.clearHighlight(in: tabs.first { $0.id == current })
+                session.asking = false
+                session.ask.reset()
             }
         }
     }
