@@ -608,6 +608,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 /// ⇧⌘C. Arc's, and the one browser shortcut everybody misses when it is missing.
 @MainActor private func copyPageURL() {
     guard let store = Windows.current, let u = store.active?.currentURL else { return }
+    if store.isLittle { store.barReveal += 1 }
     CleanLink.copy(u)
     store.feedback.copied(u)
     axAnnounce("Link copied.")
@@ -857,6 +858,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         validated(item(.readingQueue) { Library.open(.readingQueue, in: Windows.current) }) { Windows.current.map { !$0.isPrivate } ?? false },
         item(.pictureInPicture) { PictureInPicture.toggle(Windows.current?.active) },
         item(.muteTab) { Windows.current?.active.map(TabAudio.toggleMute) },
+        item(.pauseAllMedia) { PauseAllMedia.run() },
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
         item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),

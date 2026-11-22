@@ -1,4 +1,5 @@
 import AppKit
+import JavaScriptCore
 import SwiftUI
 import WebKit
 
@@ -42,6 +43,31 @@ enum MediaTray {
             // Ties broken on the id so two tabs activated in the same millisecond still
             // pick the same one every time this is evaluated.
             .max { ($0.lastActive, $0.id.uuidString) < ($1.lastActive, $1.id.uuidString) }?.id
+    }
+
+    /// ponytail: a notification is told from media by length alone, and only when nobody
+    /// asked for it. In the page that is an `<audio>` that does not loop, with a `duration`
+    /// already known to be under this, no click or key just before `play` and no tray
+    /// button (see `counts` in the script; a `<video>` is never one); for
+    /// sound the page never reports — a detached `new Audio()`, Web Audio — it is the tab
+    /// having been audible for less than this (`outlastsNotification`). Limits: a sound
+    /// whose duration is not known when it starts counts as media until its metadata lands;
+    /// one that fires within the few seconds a click stays "active" counts as asked for;
+    /// unreported media gets its card this long after it starts if you leave straight away;
+    /// and a longer ringtone is media. Ceiling: WebKit saying what kind of sound it is.
+    static let notificationLength: TimeInterval = 5
+
+    /// Whether sound only `TabAudio` knows about has gone on too long to be a notification.
+    /// An unknown start is not provably short, so it counts.
+    static func outlastsNotification(since: Date?, now: Date) -> Bool {
+        since.map { now.timeIntervalSince($0) >= notificationLength } ?? true
+    }
+
+    /// Whether a report says its player is over — it ran to the end, or its document left —
+    /// rather than paused. Never inferred from silence: a pause, a seek, a stall and a quiet
+    /// passage all report neither.
+    static func finished(_ d: [String: Any]) -> Bool {
+        d["ended"] as? Bool == true || d["gone"] as? Bool == true
     }
 
     // MARK: - What the page says
@@ -104,7 +130,7 @@ enum MediaTray {
             if let text = native[key] as? NSString, text.length > limit { return nil }
         }
         var payload: [String: Any] = [:]
-        for key in ["source", "title", "artist", "playing", "hasMedia", "gone", "next", "prev", "video"] {
+        for key in ["source", "title", "artist", "playing", "hasMedia", "ended", "gone", "next", "prev", "video"] {
             if let value = native[key] { payload[key] = value }
         }
         return payload
@@ -128,7 +154,7 @@ enum MediaTray {
     /// The three things the tray can ask the page to do. An enum, so the only strings that
     /// ever reach `evaluateJavaScript` are these three literals — nothing from the page and
     /// nothing from a title is ever evaluated.
-    enum Command: String { case playpause, next, prev, pause }
+    enum Command: String { case playpause, next, prev, pause, pauseAll }
 
     /// How fast one frame is allowed to talk. A gate on the interval was wrong: a page
     /// legitimately reports three or four times in the same millisecond as it loads — one
@@ -177,7 +203,7 @@ enum MediaTray {
     (function () {
       if (window.__vaneMedia) { return; }
       var alive = true, queued = false, pending = null;
-      var handlers = {}, last = null, lastMedia = null, pipMedia = null;
+      var handlers = {}, last = null, lastMedia = null, prevMedia = null, pipMedia = null;
       var source = Array.from(crypto.getRandomValues(new Uint8Array(16)), function (b) {
         return b.toString(16).padStart(2, '0');
       }).join('');
@@ -186,6 +212,17 @@ enum MediaTray {
       // a document-wide selector on every Media Session setter and player event.
       var videos = document.getElementsByTagName('video');
       var audios = document.getElementsByTagName('audio');
+      // A short sound nobody asked for is a notification, not a player: it is never the
+      // element the tray is for, so it cannot start a card or make a paused one look
+      // resumed. See `notificationLength`. No activation API, no rule.
+      var prompted = new WeakSet();
+      function counts(el) {
+        return el.tagName !== 'AUDIO' || el.loop || el.duration >= \(Int(notificationLength)) || prompted.has(el);
+      }
+      document.addEventListener('play', function (ev) {
+        var ua = navigator.userActivation;
+        if (!ua || ua.isActive) { prompted.add(ev.target); }
+      }, true);
       function post(msg) {
         pending = msg;
         if (queued) { return; }
@@ -213,10 +250,19 @@ enum MediaTray {
         for (var list of [videos, audios]) {
           for (var i = 0; i < list.length; i++) {
             first = earlier(first, list[i]);
-            if (!list[i].paused && !list[i].ended) { running = earlier(running, list[i]); }
+            if (!list[i].paused && !list[i].ended && counts(list[i])) { running = earlier(running, list[i]); }
           }
         }
-        if (running) { lastMedia = running; return running; }
+        if (running) {
+          if (running !== lastMedia) { prevMedia = lastMedia; lastMedia = running; }
+          return running;
+        }
+        // When the latest player ended over one that is only paused (a ringtone over a
+        // paused song), the paused one is still the player; otherwise the ended one is
+        // reported as ended. Elements that never played never take over.
+        if (lastMedia && (lastMedia.ended || !lastMedia.isConnected) && prevMedia && prevMedia.isConnected && !prevMedia.ended) {
+          return prevMedia;
+        }
         if (lastMedia && lastMedia.isConnected) { return lastMedia; }
         return first;
       }
@@ -227,11 +273,11 @@ enum MediaTray {
           e.setAttribute('data-vane-media-source', source);
         }
         post({
-          source: source, hasMedia: !!e,
+          source: source, hasMedia: !!e, ended: !!(e && e.ended),
           video: !!(e && e.tagName === 'VIDEO' && e.videoWidth),
           title: m && m.title ? String(m.title) : '',
           artist: m && m.artist ? String(m.artist) : '',
-          playing: e ? !e.paused && !e.ended : !!(ms && ms.playbackState === 'playing'),
+          playing: e ? !e.paused && !e.ended && counts(e) : !!(ms && ms.playbackState === 'playing'),
           next: !!handlers.nexttrack,
           prev: !!handlers.previoustrack
         });
@@ -271,6 +317,20 @@ enum MediaTray {
           report();
           return 'released';
         }
+        if (cmd === 'pauseAll') {
+          // Pause only: every running element, then the page's own pause. Never play, and
+          // never a live call's MediaStream.
+          var did = false;
+          for (var list of [videos, audios]) {
+            for (var i = 0; i < list.length; i++) {
+              var el = list[i];
+              if (!el.paused && !(window.MediaStream && el.srcObject instanceof MediaStream)) { el.pause(); did = true; }
+            }
+          }
+          if (handlers.pause) { try { await handlers.pause({ action: 'pause' }); } catch (_) {} did = true; }
+          report();
+          return did ? 'element' : 'none';
+        }
         var e = media();
         if (cmd === 'playpause' || cmd === 'pause') {
           var action = cmd === 'pause' ? 'pause' :
@@ -281,7 +341,7 @@ enum MediaTray {
             return 'session';
           }
           if (e) {
-            if (action === 'play') { await e.play(); } else { e.pause(); }
+            if (action === 'play') { prompted.add(e); await e.play(); } else { e.pause(); }
             report();
             return 'element';
           }
@@ -345,11 +405,25 @@ enum MediaTray {
     private var preferred: [UUID: Source] = [:]
     private var pipSources: [UUID: String] = [:]
     private var buckets: [UUID: [Origin: MediaTray.Bucket]] = [:]
+    /// When each tab last started making sound. See `MediaTray.notificationLength`.
+    private var audibleSince: [UUID: Date] = [:]
 
     private init() {
         // The tray draws a tab it is not observing, so a `@ObservedObject` on the row would
         // never hear this one start or stop. See `TabAudio.observe`.
-        TabAudio.observe { [weak self] _ in self?.objectWillChange.send() }
+        TabAudio.observe { [weak self] id in
+            guard let self else { return }
+            if !TabAudio.playingIDs.contains(id) {
+                self.audibleSince[id] = nil
+            } else if self.audibleSince[id] == nil {
+                self.audibleSince[id] = .now
+                // Ask again once it has outlasted a notification. A stale wake only redraws.
+                DispatchQueue.main.asyncAfter(deadline: .now() + MediaTray.notificationLength + 0.05) { [weak self] in
+                    self?.objectWillChange.send()
+                }
+            }
+            self.objectWillChange.send()
+        }
     }
 
     private func source(for id: UUID) -> Source? {
@@ -377,6 +451,14 @@ enum MediaTray {
 
     func isPlaying(_ tab: Tab) -> Bool {
         info(for: tab.id)?.playing == true || TabAudio.isPlaying(tab)
+    }
+
+    /// What the tray asks instead of `isPlaying`: the same, less a notification sound.
+    /// `isPlaying` still answers for everything else — the speaker, and keeping a page that
+    /// has only just started in the window.
+    func onTray(_ tab: Tab) -> Bool {
+        info(for: tab.id)?.playing == true
+            || (TabAudio.isPlaying(tab) && MediaTray.outlastsNotification(since: audibleSince[tab.id], now: .now))
     }
 
     func isDismissed(_ id: UUID) -> Bool { dismissed.contains(id) }
@@ -407,6 +489,10 @@ enum MediaTray {
         let allowed = bucket.take(now)
         buckets[tab.id, default: [:]][origin] = bucket
         guard allowed, let i = MediaTray.info(from: d) else { return }
+        // A finished player is not a paused one: stop holding its card. Only for the source
+        // the card is for, and not under a minimized video, whose card is its way back.
+        if MediaTray.finished(d), held.contains(tab.id), !minimized.contains(tab.id),
+           self.source(for: tab.id).map({ $0 == source }) ?? true { held.remove(tab.id) }
         var rows = reports[tab.id] ?? [:]
         if d["gone"] as? Bool == true {
             rows[source] = nil
@@ -435,6 +521,7 @@ enum MediaTray {
         // Each published write notifies every observer, even when nothing was removed.
         if reports[id] != nil { reports[id] = nil }
         buckets[id] = nil
+        audibleSince[id] = nil
         preferred[id] = nil
         pipSources[id] = nil
         if held.contains(id) { held.remove(id) }
@@ -524,16 +611,22 @@ enum MediaTray {
             else { ok = false }
             if !ok {
                 // A removed frame must never send a later click to a main-frame decoy.
-                if let source {
-                    self.reports[tab.id]?[source] = nil
-                    self.preferred[tab.id] = nil
-                }
+                if let source { self.drop(source, of: tab.id) }
                 Toasts.show("Couldn’t control playback. Open the playing tab to try again.")
             }
             then?(ok)
         }
     }
 
+    private func drop(_ source: Source, of id: UUID) {
+        reports[id]?[source] = nil
+        preferred[id] = nil
+    }
+
+    /// `send`'s failure cleanup, for a caller that holds the frame rather than the source.
+    func drop(_ frame: WKFrameInfo, of id: UUID) {
+        if let source = reports[id]?.first(where: { $0.value.frame === frame })?.key { drop(source, of: id) }
+    }
 }
 
 // MARK: - Pages kept running off screen
@@ -615,11 +708,11 @@ struct MediaTrayView: View {
         let all = stores.flatMap(\.everyTab).filter {
             // `MediaTray.showing` only ever picks a playing or held tab. Ask that first: it
             // is answered from sets already in memory, and it rejects nearly every tab.
-            (held.contains($0.id) || media.isPlaying($0))
+            (held.contains($0.id) || media.onTray($0))
                 && !$0.pictureInPicture && (media.info(for: $0.id)?.video != true || media.minimized.contains($0.id))
         }
         let rows = all.filter { !media.isDismissed($0.id) }.map {
-            MediaTray.Playing(id: $0.id, playing: media.isPlaying($0), lastActive: $0.lastActive)
+            MediaTray.Playing(id: $0.id, playing: media.onTray($0), lastActive: $0.lastActive)
         }
         guard let id = MediaTray.showing(rows, current: store.current, held: held, minimized: media.minimized)
         else { return nil }
@@ -654,7 +747,7 @@ struct MediaTrayView: View {
     }
 
     private func player(_ tab: Tab) -> some View {
-        let info = media.info(for: tab.id) ?? MediaTray.Info(playing: media.isPlaying(tab))
+        let info = media.info(for: tab.id) ?? MediaTray.Info(playing: media.onTray(tab))
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
         let expanded = hovered || focused
         return VStack(spacing: 0) {
@@ -930,8 +1023,86 @@ extension MediaTray {
                script.contains("await skip({ action: action })"))
         assert("the bridge is exposed under one name, and cannot be overwritten",
                script.contains("Object.defineProperty(window, '__vaneMedia', { value: drive })"))
+
+        // MARK: finished, paused and notification sounds
+        assert("a pause is not finished, so its held card stays resumable",
+               !finished(["playing": false, "hasMedia": true, "ended": false]))
+        assert("silence alone is never finished", !finished(["playing": false]))
+        assert("a player that ran to the end is finished",
+               payload(from: ["playing": false, "ended": true] as NSDictionary).map(finished) == true)
+        assert("a document that left is finished", finished(["playing": false, "gone": true]))
+        assert("unreported sound shorter than a notification takes no tray",
+               !outlastsNotification(since: t0, now: t0.addingTimeInterval(notificationLength - 1)))
+        assert("unreported sound that goes on does",
+               outlastsNotification(since: t0, now: t0.addingTimeInterval(notificationLength))
+                   && outlastsNotification(since: nil, now: t0))
+        // The real script against a stand-in document: JavaScriptCore, still no WKWebView.
+        let js = JSContext()!
+        js.evaluateScript("""
+        var window = this, sent = [], listeners = {}, active = false, audios = [];
+        var crypto = { getRandomValues: function (a) { return a; } };
+        var navigator = { userActivation: { get isActive() { return active; } } };
+        var Node = { DOCUMENT_POSITION_FOLLOWING: 4 };
+        var queueMicrotask = function (f) { f(); };
+        var webkit = { messageHandlers: { vanemedia: { postMessage: function (m) { sent.push(m); } } } };
+        var document = {
+          getElementsByTagName: function (n) { return n === 'audio' ? audios : []; },
+          addEventListener: function (e, f) { (listeners[e] = listeners[e] || []).push(f); }
+        };
+        window.addEventListener = function () {};
+        function el(duration) {
+          var e = { tagName: 'AUDIO', paused: true, ended: false, duration: duration, isConnected: true,
+            getAttribute: function () { return null; }, setAttribute: function () {},
+            play: function () { e.paused = false; },
+            compareDocumentPosition: function (o) { return audios.indexOf(o) > audios.indexOf(e) ? 4 : 2; } };
+          audios.push(e);
+          return e;
+        }
+        function fire(name, e) { (listeners[name] || []).forEach(function (f) { f({ target: e }); }); }
+        function start(e) { e.paused = false; e.ended = false; fire('play', e); return sent[sent.length - 1]; }
+        """)
+        js.evaluateScript(script)
+        func page(_ source: String) -> Bool { js.evaluateScript(source)?.toBool() == true }
+        assert("a short sound nobody asked for is not a player",
+               page("var ding = el(1); start(ding).playing === false"))
+        assert("the same length played by a click is",
+               page("active = true; var voice = el(1); var r = start(voice); active = false; voice.paused = true; fire('pause', voice); r.playing === true"))
+        assert("nor is a short sound that loops, or a short video",
+               page("var hum = el(1); hum.loop = true; var h = start(hum); hum.paused = true; fire('pause', hum); var clip = el(1); clip.tagName = 'VIDEO'; var c = start(clip); clip.paused = true; fire('pause', clip); h.playing && c.playing"))
+        assert("a pause reports paused, not ended", page("""
+            var song = el(200), r = start(song); song.paused = true; fire('pause', song);
+            var p = sent[sent.length - 1]; r.playing === true && p.playing === false && p.ended === false
+            """))
+        assert("a notification does not make the paused player look resumed",
+               page("var n = sent.length; start(ding); ding.paused = true; fire('pause', ding); sent.length === n"))
+        // Resolves on JavaScriptCore's microtask drain, when this evaluation returns.
+        js.evaluateScript("window.__vaneMedia('playpause');")
+        assert("and the tray's play button still resumes that player, not the notification",
+               page("!song.paused && ding.paused && sent[sent.length - 1].playing === true"))
+        assert("running to the end reports ended",
+               page("voice.ended = hum.ended = clip.ended = true; song.ended = true; fire('ended', song); var e = sent[sent.length - 1]; e.ended === true && e.playing === false"))
+        assert("a longer ringtone ending does not report a paused player as ended", page("""
+            var tune = el(200); start(tune); tune.paused = true; fire('pause', tune);
+            var ring = el(30); start(ring); ring.paused = true; ring.ended = true; fire('ended', ring);
+            var r = sent[sent.length - 1]; r.ended === false && r.playing === false
+            """))
+        assert("a finished player is reported ended even beside one that never played", page("""
+            var idle = el(100); var last1 = el(300); start(last1); last1.paused = true; last1.ended = true;
+            fire('ended', last1); sent[sent.length - 1].ended === true
+            """))
+        assert("a sound whose length is not known yet is not a player",
+               page("start(el(NaN)); sent[sent.length - 1].playing === false"))
         return out
     }
 }
 
 extension MediaTray.Command: CaseIterable {}
+
+extension MediaState {
+    /// Every frame whose latest report says it is playing, in every tab that has a live web
+    /// view — all windows, Spaces, profiles, Little Vane and private ones alike. A sleeping
+    /// tab has no web view and so no report, which is why reading this never wakes one.
+    var playingFrames: [(tab: UUID, frame: WKFrameInfo)] {
+        reports.flatMap { id, rows in rows.values.filter { $0.info.playing }.map { (id, $0.frame) } }
+    }
+}

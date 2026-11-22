@@ -1589,6 +1589,8 @@ private struct PillBody: View {
             ("Site Controls", { if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true } }),
             ("Actual Size", { if let tab, zoom != nil { Zoom.reset(tab) } })
         ], focusChanged: { pillFocused = $0 }, action: open)
+        // An auto-hidden Little Vane bar stays up while its field is in use.
+        .preference(key: CompactBarEngaged.self, value: pillFocused || showingSiteControls)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText, .url],
@@ -5119,6 +5121,9 @@ struct TabMenu: View {
         case .favourite:
             Button("Unfavourite Tab") { store.toggleFavourite(tab.id) }
         case .pinned:
+            if !tab.atHome, TabAddress.restorable(tab.currentURL) {
+                Button("Replace Pinned URL with Current") { store.replacePinnedURL(tab.id) }
+            }
             Button("Unpin Tab") { store.togglePinned(tab.id) }
         case .today:
             Button("Favourite Tab") { store.move(tab.id, to: .favourite) }

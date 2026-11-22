@@ -19,9 +19,11 @@ import WebKit
         web.evaluateJavaScript("globalThis.__vaneResizeScroll?.end()", in: nil, in: PageResizeStyle.world) { _ in }
     }
 
-    // ponytail: main frame, light DOM, and a 4ms walk for already-scrolled elements;
-    // scrollers in subframes or shadow trees, or past that budget on a huge page,
-    // keep WebKit's clamped position. Track them from an injected script if needed.
+    // ponytail: main frame, light DOM, and a walk for already-scrolled elements
+    // that stops after 4ms once past the first 4096, so a stalled process cannot
+    // cost an ordinary page its scrollers; those in subframes or shadow trees, or
+    // past that budget on a huge page, keep WebKit's clamped position. Track them
+    // from an injected script if needed.
     private static let beginSource = """
     (() => {
       try {
@@ -38,7 +40,7 @@ import WebKit
         if (document.scrollingElement) note(document.scrollingElement);
         const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
         const deadline = performance.now() + 4;
-        for (let el, n = 0; (el = walker.nextNode()) && (++n % 256 || performance.now() < deadline);) note(el);
+        for (let el, n = 0; (el = walker.nextNode()) && (++n % 256 || n < 4096 || performance.now() < deadline);) note(el);
         // Layout clamps a position to the end of its range, so a clamp is exactly
         // a move backward that sits at the end: it still wants to go back. Every
         // other move backward is a real scroll (a carousel realigning to the new
@@ -48,9 +50,14 @@ import WebKit
         // short of the visible one.
         // A scroll's event runs after the resize event of the same frame, by
         // which time the range it was made in is gone. So a resize settles what
-        // moved first, and there forward from the end to the end of that earlier
-        // range was following it. Forward to anywhere else was made in this one,
-        // by a resize handler (a reader keeping its paragraph in place).
+        // moved first, ahead of the page's own handlers, and there forward from
+        // the end to the end of that earlier range was following it. One already
+        // following stays so: content added since has moved that end. Forward to
+        // anywhere but the end after those handlers was made in this range, by
+        // one of them (a reader keeping its paragraph in place), and is where it
+        // wants to be even if it was following until then.
+        // ponytail: a handler the page added in the capture phase runs ahead of
+        // that first look, and its scroll reads as made before the resize.
         // ponytail: a scroller the page itself empties below its position mid-drag
         // reads as clamped and returns if the content does, until tracking stops.
         const settle = (el, resizing) => {
@@ -60,7 +67,7 @@ import WebKit
             const state = record[i], at = el[axis[0]];
             if (at === state.at) return;
             const forward = Math.abs(at) > Math.abs(state.at), end = atEnd(el, axis);
-            const followed = resizing && state.end && Math.abs(el[axis[1]] - state.client - Math.abs(at)) <= 1;
+            const followed = resizing && state.end && (!isFinite(state.want) || Math.abs(el[axis[1]] - state.client - Math.abs(at)) <= 1);
             if (forward && (end ? state.end || Math.abs(at) >= Math.abs(state.want) : followed)) state.want = Math.sign(at) * Infinity;
             else if (!end) state.want = at;
             state.at = at;
@@ -73,10 +80,10 @@ import WebKit
           if (el && el.nodeType === 1) settle(el, false);
         };
         // Only ever forward, toward what a clamp took: never back over a scroll.
-        const restore = () => {
+        const restore = resizing => {
           for (const [el, record] of wants) {
             if (!el.isConnected) { wants.delete(el); continue; }
-            settle(el, true);
+            settle(el, resizing);
             const [left, top] = axes.map((axis, i) => {
               const want = isFinite(record[i].want) ? record[i].want : Math.sign(record[i].want) * el[axis[1]];
               return Math.abs(el[axis[0]]) < Math.abs(want) ? want : el[axis[0]];
@@ -86,22 +93,26 @@ import WebKit
           }
         };
         // Once with the new viewport laid out, and again after the page's own
-        // resize handlers have sized what they size.
-        const resized = () => { if (wants.size) { restore(); requestAnimationFrame(restore); } };
+        // resize handlers have sized what they size. Capturing listeners on the
+        // window run before the page's ordinary ones.
+        const resizing = () => { for (const el of wants.keys()) settle(el, true); };
+        const resized = () => { if (wants.size) { restore(false); requestAnimationFrame(() => restore(true)); } };
         // A page hidden mid-drag (into the back/forward cache) never hears its end.
         const stop = () => {
           clearTimeout(state.timer);
           document.removeEventListener('scroll', scrolled, true);
+          removeEventListener('resize', resizing, true);
           removeEventListener('resize', resized);
           removeEventListener('pagehide', stop);
           delete globalThis.__vaneResizeScroll;
         };
         state = globalThis.__vaneResizeScroll = { timer: 0, end() {
-          restore();
+          restore(true);
           clearTimeout(state.timer);
           state.timer = setTimeout(stop, 500);
         } };
         document.addEventListener('scroll', scrolled, { capture: true, passive: true });
+        addEventListener('resize', resizing, true);
         addEventListener('resize', resized);
         addEventListener('pagehide', stop);
       } catch (_) { }

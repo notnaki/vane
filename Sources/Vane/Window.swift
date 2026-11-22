@@ -264,6 +264,19 @@ final class VaneWindow: NSWindow {
         super.toggleFullScreen(sender)
     }
 
+    /// In full screen AppKit lifts the titlebar out into a window of its own, laid over the
+    /// top of this one. A toolbar keeps that window on screen for good, and there the
+    /// titlebar is no longer transparent: an opaque strip as tall as the toolbar that covers
+    /// the sidebar's top row and the top of the page, and takes every click meant for them.
+    /// Vane's toolbar is empty and only there for the lights' sake (see `Windows.open`), so
+    /// it hides with the menu bar and comes back with it, lights and all.
+    /// Pure, so `selfcheck --pure` can prove it without a window server.
+    nonisolated static func fullScreenPresentation(
+        _ proposed: NSApplication.PresentationOptions
+    ) -> NSApplication.PresentationOptions {
+        proposed.union(.autoHideToolbar)
+    }
+
     /// Where a light's frame origin has to sit for its centre to land `Look.lightsCentre`
     /// below the window's top edge. `top` is that top edge in the button's superview's own
     /// (unflipped, y-up) coordinates, so this is the same arithmetic whatever titlebar view
@@ -331,6 +344,16 @@ final class VaneWindow: NSWindow {
     /// The lights' resting face, laid over AppKit's own three. See `TrafficLightRest`.
     private var lightsAtRest: TrafficLightRest?
 
+    /// An auto-hidden Little Vane bar has taken the lights with it. Kept here rather than
+    /// set once on the buttons: AppKit replaces them on full-screen and style-mask changes.
+    var lightsHiddenByBar = false {
+        didSet {
+            guard lightsHiddenByBar != oldValue else { return }
+            for kind in Self.lightKinds { standardWindowButton(kind)?.isHidden = lightsHiddenByBar }
+            centreTrafficLights()
+        }
+    }
+
     /// The three buttons, in AppKit's own left-to-right order — which is the order
     /// `Look.lightColours` is written in.
     static let lightKinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
@@ -339,9 +362,12 @@ final class VaneWindow: NSWindow {
         let peeking = peekingSidebar
         for kind in Self.lightKinds {
             guard let button = standardWindowButton(kind), let host = button.superview else { continue }
+            if lightsHiddenByBar, !button.isHidden { button.isHidden = true }
             // The window's top edge in base coordinates is its own height; convert that into
-            // whatever space the buttons are laid out in.
-            let top = host.convert(NSPoint(x: 0, y: frame.height), from: nil).y
+            // whatever space the buttons are laid out in. The buttons' window, not always
+            // this one: in full screen the titlebar lives in AppKit's own strip of a window,
+            // and this window's height put the lights a screen above it.
+            let top = host.convert(NSPoint(x: 0, y: (host.window ?? self).frame.height), from: nil).y
             let wantY = trafficLightOffset.map {
                 top - Look.lightsCentre - $0.y - button.frame.height / 2
             } ?? Self.lightOriginY(windowTop: top, buttonHeight: button.frame.height, peeking: peeking)
@@ -661,6 +687,14 @@ extension VaneWindow {
              + "is needed", Look.littleTopInset + Look.pillHeight > Look.lightsCentre),
             ("…and so does the sidebar's own top strip",
              Look.topInset + Look.topRow > Look.lightsCentre),
+
+            // Full screen. Left on screen, the titlebar is an opaque strip over the top of
+            // the window that takes its clicks.
+            ("in full screen the titlebar hides with the menu bar",
+             fullScreenPresentation([.fullScreen, .autoHideMenuBar, .autoHideDock]).contains(.autoHideToolbar)),
+            ("…and nothing AppKit proposed is dropped",
+             fullScreenPresentation([.fullScreen, .autoHideMenuBar, .autoHideDock])
+                .isSuperset(of: [.fullScreen, .autoHideMenuBar, .autoHideDock])),
         ]
     }
 }
@@ -1088,6 +1122,9 @@ extension VaneWindow {
         func windowDidResignKey(_ n: Notification) {
             recentre()
             MainActor.assumeIsolated { store.extensions.sync() }
+        }
+        func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposed: NSApplication.PresentationOptions = []) -> NSApplication.PresentationOptions {
+            VaneWindow.fullScreenPresentation(proposed)
         }
         func windowDidEnterFullScreen(_ n: Notification) { recentre() }
         func windowDidExitFullScreen(_ n: Notification) { recentre() }

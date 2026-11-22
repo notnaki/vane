@@ -4,6 +4,66 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Password-manager unlock and autofill — 2026-11-21
+
+The unmodified official Bitwarden **2026.11.0** Firefox (Manifest V2) package signs in to a vault, unlocks it again after a restart, and fills a login form in Vane. The same runs repeat the ad-blocker and page-changer checks with current packages. This is the first authenticated password-manager result; the earlier sections keep their original verdicts.
+
+**Build.** macOS **27.0.1 (26A434)**. Vane `main` at `149dadc3` plus the harness commit `06ce3fac`, version **0.2.4-nightly.20261120.1 (740)**, debug configuration, assembled by `./make-app.sh debug`. The test copy was re-signed ad hoc with Vane's sandbox entitlements under its own bundle identifier and run with an isolated `VANE_DATA_DIR`; executable SHA-256 `2d9b6f77a82fc06f4f3c4a19f047945cbc0ef85fac90ac55e0e100af79705083`. The released v0.2.3 binary was not exercised separately.
+
+**Packages.** Each archive's SHA-256 matched GitHub's release-asset digest, and every extracted file was compared byte for byte with its archive entry (no mismatches, no extra files).
+
+| Fixture | Version | Manifest | Exact asset | Archive SHA-256 |
+| --- | --- | --- | --- | --- |
+| `bitwarden-firefox` | 2026.11.0 | MV2 | [bit-dist-firefox-2026.11.0.zip](https://github.com/bitwarden/clients/releases/download/browser-v2026.11.0/bit-dist-firefox-2026.11.0.zip) (tag commit `28b247ac34877882aaef4faea082a9f3bb201114`) | `f4bbf83709fa314abfadd47bfa0c6b2a3b1debe76a273574e65642ec70e83094` |
+| `darkreader-mv3` | 4.9.135 | MV3 | [darkreader-chrome-mv3.zip](https://github.com/darkreader/darkreader/releases/download/v4.9.135/darkreader-chrome-mv3.zip) | `6c59ba11f9733f6f1ba42e79113e2bf764c41f9d50103b527af736f55fbccf47` |
+| `ubolite-safari` | 2026.1116.1650 | MV3 | [uBOLite_2026.1116.1650.safari.zip](https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.1116.1650/uBOLite_2026.1116.1650.safari.zip) | `eed328928569264b321d9fc162c19a68167db54e36c1be51328d5739439907b4` |
+
+**Account.** No Bitwarden cloud account and no real credentials. A disposable [Vaultwarden](https://github.com/dani-garcia/vaultwarden) **1.37.5** container listened on loopback only. `scripts/seed-extensioncheck-vault.mjs` registered a random throwaway account, stored one login item for `http://127.0.0.1`, and wrote `fixtures/bitwarden-account.json`. Bitwarden's release builds refuse any server URL that is not HTTPS, so the container served TLS with the publicly downloadable `*.local-ip.sh` certificate, whose name `127-0-0-1.local-ip.sh` resolves to `127.0.0.1`. That certificate's private key is public: use it only for a disposable loopback server.
+
+**Results.** Two fresh data directories, two processes each; all four runs exited 0 with no failed finding.
+
+| Workflow | Observed |
+| --- | --- |
+| Install | Production review, staging and activation of the unmodified package. |
+| Desktop-request handling | **Review Error-Only Mode…** accepted for Bitwarden before use. Without it the popup never becomes usable (see below). |
+| Sign-in | In Bitwarden's own popup: self-hosted server set, email and master password entered, **Log in** pressed. The server logged the token grant and vault sync, and the popup showed the vault with the seeded item under “Autofill suggestions”. |
+| Unlock after restart | A new Vane process restored the accepted installation with its vault locked. Entering the master password on Bitwarden's lock screen opened the vault. |
+| Autofill | With the login form open in a new tab, **Fill** in the popup set the form's username and password fields to the seeded values. The harness compares both fields exactly. Passed in the install process and in the restarted process. |
+| Dark Reader 4.9.135 | Styled the known-white page (9 injected stylesheets, changed computed background); popup and options rendered; brightness option set to 110 and read back in the next process with the same extension identity. |
+| uBO Lite 2026.1116.1650 | Popup and dashboard rendered; `easylist`, `easyprivacy` and `ublock-filters` enabled; a temporary rule added through its context blocked the controlled script (zero requests reached the server) while the control script ran. This checks request blocking through WebKit, not filter-list coverage on real sites. |
+
+The harness drives Bitwarden's visible fields and buttons from script; it does not use the pointer or change the package. Before pressing **Fill** it waits until Bitwarden's form reader answers in the page, using the extension's own `collectPageDetailsImmediately` message as the readiness signal.
+
+To reproduce:
+
+```sh
+# 1. A disposable server on loopback with a certificate macOS already trusts.
+docker run -d --name vane-extcheck-vault -p 127.0.0.1:18643:80 -v "$TLS:/ssl:ro" \
+  -e 'ROCKET_TLS={certs="/ssl/server.pem",key="/ssl/server.key"}' \
+  -e DOMAIN=https://127-0-0-1.local-ip.sh:18643 -e SIGNUPS_ALLOWED=true \
+  -e I_REALLY_WANT_VOLATILE_STORAGE=true vaultwarden/server:1.37.5
+# 2. A new folder under Downloads holding only fixtures/, with the three packages
+#    above unpacked as fixtures/bitwarden-firefox, darkreader-mv3 and ubolite-safari.
+node scripts/seed-extensioncheck-vault.mjs https://127-0-0-1.local-ip.sh:18643 \
+  "$DIR/fixtures/bitwarden-account.json"
+# 3. Run twice: the second process checks restoration and unlock.
+VANE_DATA_DIR="$DIR" Vane.app/Contents/MacOS/vane extensioncheck
+```
+
+Without `fixtures/bitwarden-account.json` the harness keeps its earlier signed-out Bitwarden check.
+
+### What does not work, and what was not tested
+
+- **Error-only mode is required.** On WebKit Bitwarden runs its Safari code, which asks a desktop app to `sleep` between vault-timeout checks. Vane hides the native-messaging functions by default, so the call throws, Bitwarden retries at once, and its background page never yields: the popup did not reply and the earlier harness ran into its 240-second deadline. With **Review Error-Only Mode…** accepted in the extension manager, those requests receive paced errors and the popup works. The mode stays off after installation until it is turned on in Manage Extensions → Compatibility.
+- **The Chrome (MV3) package still fails.** `bit-dist-chrome-2026.11.0.zip` (SHA-256 `07cf19b8f79e649005fdeee67c85d3cf31c735449a01a37a5b9f0287732605a5`) installs, shows its popup in error-only mode, and completes the server sign-in. The popup then stops answering. A sample of the extension's web process shows its main thread parked in `WebCore::WorkerThreadableWebSocketChannel`'s constructor, called from the service worker's `new WebSocket` on the worker's main-thread run loop, in every sample of that capture. Bitwarden opens a notifications socket after sign-in. The capture comes from one run; the popup also stopped answering after sign-in or restart in two other processes. No synthetic extension was used to confirm it, so this is an observation about this package on this WebKit, not an established general rule.
+- **A tab that was open before the install can miss the extension's messages.** In several exploratory runs in the same session as the install, Bitwarden's `tabs.sendMessage` got no answer from its form reader in the tab that predated the install, and **Fill** reported “Unable to autofill the selected item on this page”. In two instrumented runs reloading that tab did not help while a new tab answered at once; two later runs did not reproduce it. It was not seen in three runs after a restart. A synthetic extension installed without a later reload answered in the old tab. The cause is not established, so the verified path opens the form in a new tab.
+- **The fill shortcut is taken.** Bitwarden's ⇧⌘L “autofill login” command collides with Vane's Show Library shortcut, which takes precedence. Filling from the popup is the verified path.
+- **Desktop integration is unavailable**: biometric unlock and anything else that needs the Bitwarden desktop app, because Vane has no native-messaging hosts.
+- **Not tested**: Bitwarden cloud accounts, two-step login, the inline autofill menu, save and update prompts, passkeys, cards and identities, and sync notifications. Bitwarden's background reported an unhandled `chrome.scripting.ExecutionWorld` error from its passkey script registration; `scripting` is not available to this MV2 package.
+- A first install opens Bitwarden's own welcome page at `bitwarden.com` in a new tab.
+
+Run logs, result files, the renderer sample and the instrumented traces are kept locally under `~/.cache/vane-task-evidence/byearc-extensions-2026-11-21/`. Instrumented copies of the package were used only to diagnose failures; every verified result above used the unmodified archive contents.
+
 ## MV3 navigator repair — 2026-10-31
 
 The selected worker navigator identity now comes from a synchronous resource bootstrap on system WebKit. Controlled native fixtures set the actual background WebView's native UA to a deliberately wrong value and verify the first vendor classic instruction and first module dependency see the selected value. Lifecycle coverage includes generated workers, worker recreation, setting changes and host restoration with storage, grants and profile ownership intact. A signed MV3 fixture rejects altered resource Data against the original seal. The unmodified official Bitwarden Chrome **2026.10.0** package passed the local SDK startup check with the bootstrap and unchanged source bytes; no authentication/vault/popup acceptance is inferred.
@@ -168,13 +228,13 @@ The assembled checks used Vane **0.0.29 (429)**, a separately named and signed s
 | Dark Reader **4.9.133 MV3** | Unmodified release reviewed and installed. Controlled known-white loopback page acquired Dark Reader styles and changed computed background. Real anchored action popup and native options page exposed rendered UI. Existing UI message API changed brightness to 110; a subsequent process restored the same setting and WebKit identity. MV2 is parser-only; its default commands were not manually exercised. |
 | uBO Lite **2026.1006.1931 Safari MV3** | Unmodified release reviewed and installed. Real popup and dashboard rendered. WebKit reported enabled `easylist`, `easyprivacy`, and `ublock-filters`. A temporary harness dynamic rule through uBOL’s context blocked a controlled script request while an allowed control executed; the server observed zero blocked-endpoint requests. Removed only that rule. This verifies DNR integration, not upstream real-site or cosmetic filter coverage. Chromium is parser-only. |
 | Bitwarden **2026.9.3 Firefox MV2** | Review attempted; activation failed during background initialization (`this.device.toString` on null). No installation was activated. Root-cause investigation is below. Chromium is parser-only. |
-| Bitwarden vault/autofill/sync/passkeys/biometrics/native desktop integration | **Unverified/unavailable**; no real account or credential data used. |
+| Bitwarden vault/autofill/sync/passkeys/biometrics/native desktop integration | **Unverified/unavailable** in this 2026-10-12 run; no real account or credential data used. Vault unlock and autofill were verified later, in the 2026-11-21 section above. |
 | Synthetic **Vane Runtime Smoke 1.0.0 MV3** | Installed through manager review. Native Command-Shift-Y through the normal app event monitor changed the example.com page title to “Extension command verified”. Native webpage right-click included “Verify Vane Extension Page Menu”; activating it changed the title to “Extension menu verified”. Pinned toolbar action opened its rendered popup. No real extension compatibility is inferred from this synthetic fixture. |
 | Synthetic assembled harness fixture **1.0 MV3** | Real anchored popup and native options page worked. Routed NSEvent command dispatch succeeded on the first run; later runs timed out obtaining browser key focus, so those later command attempts are unavailable. The normal-app keyboard check above independently verified the main monitor path. |
 | Cross-profile/private/lifecycle | Automated content-script, controller/origin/storage, private restriction, command routing, moved/selected/closed tab, window closure, and stale-options checks passed. In a real private window, installation was disabled and the manager showed the Private profile with an explicit extension restriction. Manual multiple-regular-profile UI checks remain unverified. |
 | Test app ownership | Every launch recorded exact bundle/executable, PID, and start time. All three harness and three UI processes exited; each UI process used its own “Quit” confirmation. The final tracked PID 55048 exited normally, and the regular `/Applications/Vane.app` instance remained running with its original start time. |
 
-The opt-in `extensioncheck` CLI runs only from a signed sandboxed `.app` with an isolated Downloads data directory. First use requires that directory contain only `fixtures` (and optionally `.DS_Store`), with `darkreader-mv3`, `ubolite-safari`, and `bitwarden-firefox` unpacked from the exact assets above. It mints a directory-bound marker; reruns require that marker. It explicitly accepts these known fixtures, denies extra runtime prompts, serves only bounded loopback fixtures, records outcomes, and retains accepted installs/settings for a fresh-process check. It never uses a normal profile or real credentials. Run it twice with the same isolated directory to verify Dark Reader’s saved option and identity. The first restart exposed an incorrect white-baseline harness assumption because restored Dark Reader had already styled the page; the harness now explicitly checks for restored styles. That was corrected in the harness, not hidden as an extension failure.
+The opt-in `extensioncheck` CLI runs only from a signed sandboxed `.app` with an isolated Downloads data directory. First use requires that directory contain only `fixtures` (and optionally `.DS_Store`), with `darkreader-mv3`, `ubolite-safari`, and `bitwarden-firefox` unpacked from the exact assets above. An optional `fixtures/bitwarden-account.json` for a disposable self-hosted server on loopback (other hosts are refused) adds the vault unlock and autofill checks described in the 2026-11-21 section. It mints a directory-bound marker; reruns require that marker. It explicitly accepts these known fixtures, denies extra runtime prompts, serves only bounded loopback fixtures, records outcomes, and retains accepted installs/settings for a fresh-process check. It never uses a normal profile or real credentials. Run it twice with the same isolated directory to verify Dark Reader’s saved option and identity. The first restart exposed an incorrect white-baseline harness assumption because restored Dark Reader had already styled the page; the harness now explicitly checks for restored styles. That was corrected in the harness, not hidden as an extension failure.
 
 Prefer the uBO Lite Safari package for WebKit testing: its declared APIs are recognized in this parser check. The Chromium variant requests `offscreen` and `userScripts`. The Bitwarden Firefox package avoids Chromium `offscreen`/`sidePanel` requirements, but still declares APIs omitted by WebKit. A popup opening is not proof of blocking or password autofill. Verify actual content/style changes or a known filter match before recording those as passed.
 
