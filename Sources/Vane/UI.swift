@@ -1364,9 +1364,10 @@ private struct TopRowContent: View {
 
     private func syncFullScreen(_ note: Notification? = nil) {
         // The welcome preview draws sample lights of its own beside the toggle.
-        guard layoutWidth == nil, let window = store.window else { return }
+        // A parked profile follows the window it is parked in, so a swipe pre-renders it right.
+        guard layoutWidth == nil, let window = store.window ?? store.parkedIn else { return }
         let now: Bool
-        // `will…` fires before the style mask flips; the transition is what is about to show.
+        // On `will…` the transition is what is about to show, whatever the mask says yet.
         switch (note?.object as? NSWindow === window) ? note?.name : nil {
         case NSWindow.willEnterFullScreenNotification?: now = true
         case NSWindow.willExitFullScreenNotification?: now = false
