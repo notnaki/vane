@@ -7,7 +7,10 @@ import XCTest
 @MainActor final class PasswordFillGateTests: XCTestCase {
     private final class Prompt {
         var reasons: [String] = []
-        var answer = true
+        /// Nil holds the reply, the way a system prompt waits for a finger.
+        var answer: Bool? = true
+        var held: [@MainActor (Bool) -> Void] = []
+        var dismissed = 0
     }
 
     private func gate(_ prompt: Prompt, workspace: NotificationCenter = NotificationCenter(),
@@ -16,7 +19,11 @@ import XCTest
         UserDefaults.vane.removeObject(forKey: PasswordFillGate.requiredKey)
         addTeardownBlock { UserDefaults.vane.removeObject(forKey: PasswordFillGate.requiredKey) }
         let gate = PasswordFillGate(workspace: workspace, distributed: distributed)
-        gate.authenticate = { reason, done in prompt.reasons.append(reason); done(prompt.answer) }
+        gate.authenticate = { reason, done in
+            prompt.reasons.append(reason)
+            if let answer = prompt.answer { done(answer) } else { prompt.held.append(done) }
+            return { prompt.dismissed += 1 }
+        }
         return gate
     }
 
@@ -85,5 +92,43 @@ import XCTest
         gate.setRequired(true)
         XCTAssertEqual(prompt.reasons.count, 2, "Turning it back on needs no prompt")
         XCTAssertTrue(gate.needsPrompt)
+    }
+
+    func testFillsArrivingDuringAPromptShareIt() async throws {
+        let prompt = Prompt(), gate = gate(prompt)
+        prompt.answer = nil
+        let fills = (0..<3).map { index in Task { await gate.authorize("fill \(index)") } }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(prompt.reasons.count, 1, "Fills waiting on a prompt must not raise their own")
+        // Every prompt raised, so a regression fails above instead of waiting here forever.
+        for answer in prompt.held { answer(true) }
+        for fill in fills {
+            let allowed = await fill.value
+            XCTAssertTrue(allowed, "One answer serves every fill that waited for it")
+        }
+        XCTAssertFalse(gate.needsPrompt)
+        XCTAssertEqual(prompt.dismissed, 0)
+    }
+
+    func testPromptNobodyWaitsForIsDismissed() async throws {
+        let prompt = Prompt(), gate = gate(prompt)
+        prompt.answer = nil
+        let first = Task { await gate.authorize("first") }, second = Task { await gate.authorize("second") }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(prompt.reasons.count, 1)
+        first.cancel()
+        let abandoned = await first.value
+        XCTAssertFalse(abandoned, "A cancelled fill is not authorized")
+        XCTAssertEqual(prompt.dismissed, 0, "The prompt stays while another fill waits on it")
+        second.cancel()
+        _ = await second.value
+        XCTAssertEqual(prompt.dismissed, 1, "The prompt nobody is waiting for must leave the screen")
+        // Even if the system still delivered an approval for it, it opens nothing.
+        prompt.held.removeFirst()(true)
+        XCTAssertTrue(gate.needsPrompt, "A stale prompt must not open the window")
+        prompt.answer = true
+        let fresh = await gate.authorize("third")
+        XCTAssertTrue(fresh)
+        XCTAssertEqual(prompt.reasons, ["first", "third"])
     }
 }

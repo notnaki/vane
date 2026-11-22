@@ -1038,6 +1038,13 @@ extension PasswordChooser {
               let tab = WebsitePopupWindow.tab(in: event.window)
                 ?? TabStore.all.first(where: { $0.window === event.window })?.active,
               tab.passwordChoice != nil else { return false }
+        // This monitor sees every key in the app. A list that a focus in the page opened
+        // answers only keys typed into that page: Return in Find or the command bar is not
+        // a choice of account, and the page may have focused its login to wait for one.
+        if tab.chooserFollowsFocus, !tab.pageHoldsKeyboard {
+            tab.closeChooser(.input)
+            return false
+        }
         if event.modifierFlags.contains(.shift), [126, 125, 36, 76].contains(event.keyCode) { return false }
         switch event.keyCode {
         case 126: tab.moveChoice(-1)

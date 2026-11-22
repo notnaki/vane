@@ -761,6 +761,8 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             window.isReleasedWhenClosed = false
             defer { tab.tearDown(); window.close() }
             window.contentView = tab.web
+            // The account list opens only for a page that holds the keyboard.
+            window.makeFirstResponder(tab.web)
             let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first, "A native account-selection fixture needs a display")
             let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
             let size = CGSize(width: min(window.frame.width, available.width),
@@ -2387,6 +2389,14 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         /// Nil holds the reply, the way a system prompt waits for a finger.
         var answer: Bool? = true
         var held: [@MainActor (Bool) -> Void] = []
+        /// Prompts taken off screen because nobody was waiting for them any more.
+        var dismissed = 0
+    }
+
+    /// Says it is key without taking key from whatever the person running this is typing in.
+    private final class KeyFixtureWindow: NSWindow {
+        var reportsKey = true
+        override var isKeyWindow: Bool { reportsKey }
     }
 
     private final class SecretReads: @unchecked Sendable {
@@ -2398,8 +2408,10 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
 
     private static let gatedLogin = "<form><input id=user autocomplete=username><input id=password type=password></form><button id=elsewhere>Elsewhere</button>"
 
-    /// A real tab in an unordered window. The Keychain and the system prompt are both
-    /// stubs, so no case here can raise a dialog or need a disposable Keychain item.
+    /// A real tab, active in a store whose window is never ordered in but reports key, with
+    /// the page first responder and a native text field beside it. The Keychain and the
+    /// system prompt are both stubs, so no case here can raise a dialog or need a
+    /// disposable Keychain item.
     private func withGatedTab(_ html: String = gatedLogin, accounts: [String] = ["ada"],
                               _ body: (Tab, PasswordFillGate, FillPrompt, SecretReads) async throws -> Void) async throws {
         TestEnvironment.prepare()
@@ -2412,20 +2424,50 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         gate.authenticate = { reason, done in
             prompt.reasons.append(reason)
             if let answer = prompt.answer { done(answer) } else { prompt.held.append(done) }
+            return { prompt.dismissed += 1 }
         }
         var reader = Passwords.Reader()
         reader.matches = { origin, _ in accounts.map { .init(origin: origin, account: $0) } }
         reader.password = { _, account, _ in reads.record(); return account + "-secret" }
-        let tab = Tab(profileID: profile)
+        let store = TabStore(isPrivate: false, urls: [], profileID: profile, session: [])
+        let tab = store.newBlankTab()
         tab.passwordReader = reader
         tab.passwordFillGate = gate
-        let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
-                              styleMask: [.titled], backing: .buffered, defer: false)
+        let window = KeyFixtureWindow(contentRect: CGRect(x: -4000, y: -4000, width: 800, height: 600),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = tab.web
-        defer { tab.tearDown(); window.close() }
+        let content = NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        tab.web.frame = CGRect(x: 0, y: 0, width: 800, height: 560)
+        content.addSubview(tab.web)
+        content.addSubview(NSTextField(frame: CGRect(x: 0, y: 568, width: 300, height: 24)))
+        window.contentView = content
+        store.window = window
+        defer {
+            store.everyTab.forEach { $0.tearDown() }
+            store.window = nil
+            TabStore.all.removeAll { $0 === store }
+            window.close()
+        }
+        XCTAssertTrue(window.makeFirstResponder(tab.web))
+        XCTAssertTrue(tab.pageHoldsKeyboard, "The fixture page must start with the keyboard")
         try await loadGatedPage(tab, html)
         try await body(tab, gate, prompt, reads)
+    }
+
+    /// Stands in for Find or the command bar: a native field in the page's own window.
+    private func typeInNativeField(of tab: Tab) throws {
+        let window = try XCTUnwrap(tab.web.window)
+        let field = try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? NSTextField }.first)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertFalse(tab.pageHoldsKeyboard)
+    }
+
+    /// A key through the app-wide monitor's handler, the way the real one arrives.
+    private func press(_ keyCode: UInt16, in tab: Tab) throws -> Bool {
+        let window = try XCTUnwrap(tab.web.window)
+        return PasswordChooser.handleKey(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: keyCode)))
     }
 
     private func loadGatedPage(_ tab: Tab, _ html: String) async throws {
@@ -2512,14 +2554,27 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             // The same address again: only the document changed underneath the prompt.
             try await loadGatedPage(tab, Self.gatedLogin)
             XCTAssertNotEqual(tab.readingDocumentGeneration, before)
+            try await wait(for: "the abandoned prompt to leave the screen") { prompt.dismissed == 1 }
+            // Whatever the system still reports for it opens nothing and fills nothing.
             prompt.held.removeFirst()(true)
             try await Task.sleep(for: .milliseconds(250))
             expectEqual(try await gatedValues(tab), "|")
             expectEqual(reads.count, 0, "A fill whose document left must not read its secret")
-            // The answered prompt was still a real authentication; the next fill rides on it.
+            // A page that only rewrites its address keeps its prompt, and the fill is
+            // checked again once that is answered.
             tab.fillChosen(host: "gate.example.test", account: "ada")
-            try await wait(for: "a fill in the new document") { try await gatedValues(tab) == "ada|ada-secret" }
-            expectEqual(prompt.reasons.count, 1)
+            try await wait(for: "a second prompt") { prompt.held.count == 1 }
+            _ = try await js(tab.web, "history.pushState({}, '', '/elsewhere')")
+            try await wait(for: "the rewritten address") { tab.web.url?.path == "/elsewhere" }
+            prompt.held.removeFirst()(true)
+            try await Task.sleep(for: .milliseconds(250))
+            expectEqual(try await gatedValues(tab), "|")
+            expectEqual(reads.count, 0, "A fill whose address changed must not read its secret")
+            expectEqual(prompt.dismissed, 1)
+            // That answered prompt was still a real authentication; the next fill rides on it.
+            tab.fillChosen(host: "gate.example.test", account: "ada")
+            try await wait(for: "a fill at the new address") { try await gatedValues(tab) == "ada|ada-secret" }
+            expectEqual(prompt.reasons.count, 2)
         }
     }
 
@@ -2545,18 +2600,111 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
     func testReturnDoesNotFillAfterThePageMovedFocusBehindTheList() async throws {
         try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, _, _ in
             _ = try await js(tab.web, "password.focus()")
-            try await wait(for: "the list from a real focus") { tab.passwordChoice != nil }
+            try await wait(for: "the list from a focus in the page") { tab.passwordChoice != nil }
             // Capture on window runs before these listeners: the blur never reaches them.
             _ = try await js(tab.web, "window.addEventListener('focusout', e => e.stopImmediatePropagation(), true); elsewhere.focus()")
             try await Task.sleep(for: .milliseconds(100))
             XCTAssertNotNil(tab.passwordChoice, "The fixture page must have kept the list up")
-            tab.fillSelected()
+            // The keyboard is still in the page, so the key is the list's; the fill is not.
+            expectTrue(try press(36, in: tab))
             try await Task.sleep(for: .milliseconds(250))
             expectEqual(try await gatedValues(tab), "|", "Return must not fill a login nobody is in")
             _ = try await js(tab.web, "password.focus()")
             try await wait(for: "the list again") { tab.passwordChoice != nil }
-            tab.fillSelected()
+            expectTrue(try press(36, in: tab))
             try await wait(for: "Return in the focused field") { try await gatedValues(tab) == "ada|ada-secret" }
+        }
+    }
+
+    func testPageFocusWhileTypingInNativeUIDoesNotArmTheChooser() async throws {
+        try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, prompt, reads in
+            try typeInNativeField(of: tab)
+            // WebKit calls this focus trusted although the keyboard is in the native field.
+            _ = try await js(tab.web, """
+                window.spins = 0;
+                window.spin = setInterval(() => { elsewhere.focus(); password.focus(); window.spins++ }, 30)
+                """)
+            try await wait(for: "the page to focus its login repeatedly") {
+                try await js(tab.web, "window.spins > 8 && document.activeElement === password") as? Bool == true
+            }
+            XCTAssertFalse(tab.pageHoldsKeyboard, "A script's focus() must not take the keyboard from a native field")
+            XCTAssertNil(tab.passwordChoice, "A script's focus() must not open the list while the keyboard is elsewhere")
+            expectFalse(try press(36, in: tab), "Return typed in native UI must reach it")
+            try await Task.sleep(for: .milliseconds(250))
+            expectEqual(try await gatedValues(tab), "|")
+            expectEqual(prompt.reasons.count, 0)
+            expectEqual(reads.count, 0)
+            // A window that is not key holds nobody's keyboard either.
+            let window = try XCTUnwrap(tab.web.window as? KeyFixtureWindow)
+            XCTAssertTrue(window.makeFirstResponder(tab.web))
+            window.reportsKey = false
+            try await Task.sleep(for: .milliseconds(250))
+            XCTAssertNil(tab.passwordChoice, "Nor in a window that is not key")
+            // The same script opens the list once the page really has the keyboard.
+            window.reportsKey = true
+            _ = try await js(tab.web, "clearInterval(window.spin); elsewhere.focus(); password.focus()")
+            try await wait(for: "the list for a page that holds the keyboard") { tab.passwordChoice != nil }
+        }
+    }
+
+    func testKeysTypedInNativeUIDoNotReachAListThePageKeptUp() async throws {
+        try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, prompt, reads in
+            let window = try XCTUnwrap(tab.web.window)
+            _ = try await js(tab.web, "window.addEventListener('focusout', e => e.stopImmediatePropagation(), true)")
+            // Down, Up, Return, Enter.
+            for key: UInt16 in [125, 126, 36, 76] {
+                XCTAssertTrue(window.makeFirstResponder(tab.web))
+                _ = try await js(tab.web, "elsewhere.focus(); password.focus()")
+                try await wait(for: "the list from a focus in the page") { tab.passwordChoice != nil }
+                try typeInNativeField(of: tab)
+                try await Task.sleep(for: .milliseconds(100))
+                XCTAssertNotNil(tab.passwordChoice, "The fixture page must have kept the list up")
+                expectFalse(try press(key, in: tab), "Key \(key) typed in native UI must reach it")
+                XCTAssertNil(tab.passwordChoice, "Key \(key) typed elsewhere closes the list")
+                try await Task.sleep(for: .milliseconds(250))
+                expectEqual(try await gatedValues(tab), "|", "Key \(key) must fill nothing")
+            }
+            expectEqual(prompt.reasons.count, 0)
+            expectEqual(reads.count, 0)
+        }
+    }
+
+    func testListAnswersKeysTypedIntoThePage() async throws {
+        try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, _, _ in
+            _ = try await js(tab.web, "password.focus()")
+            try await wait(for: "the list from a focus in the page") { tab.passwordChoice != nil }
+            expectTrue(try press(125, in: tab))
+            expectEqual(tab.passwordChoice?.selected, 1)
+            expectTrue(try press(126, in: tab))
+            expectEqual(tab.passwordChoice?.selected, 0)
+            expectTrue(try press(125, in: tab))
+            expectTrue(try press(36, in: tab))
+            try await wait(for: "the chosen account") { try await gatedValues(tab) == "bob|bob-secret" }
+        }
+    }
+
+    func testMenuOpenedListStillAnswersKeysWithoutPageFocus() async throws {
+        try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, _, _ in
+            try typeInNativeField(of: tab)
+            // Fill Password's list hangs under a field nobody has to be in; no page opened it.
+            tab.passwordChoice = PasswordChoice(host: "gate.example.test", accounts: ["ada", "bob"],
+                                               anchor: CGRect(x: 20, y: 20, width: 250, height: 40))
+            expectTrue(try press(125, in: tab))
+            expectEqual(tab.passwordChoice?.selected, 1)
+        }
+    }
+
+    func testSecondFillDuringThePromptLeavesOnePromptOnScreen() async throws {
+        try await withGatedTab(accounts: ["ada", "bob"]) { tab, _, prompt, _ in
+            prompt.answer = nil
+            tab.fillChosen(host: "gate.example.test", account: "ada")
+            try await wait(for: "the prompt") { prompt.held.count == 1 }
+            tab.fillChosen(host: "gate.example.test", account: "bob")
+            try await Task.sleep(for: .milliseconds(250))
+            expectEqual(prompt.reasons.count - prompt.dismissed, 1, "A superseded fill must not leave its prompt behind")
+            // Whatever is answered late, only the prompt still on screen counts.
+            for answer in prompt.held { answer(true) }
+            try await wait(for: "the second choice") { try await gatedValues(tab) == "bob|bob-secret" }
         }
     }
 

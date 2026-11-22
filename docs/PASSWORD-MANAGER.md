@@ -17,20 +17,36 @@ same-origin password page for up to two minutes. A hidden or read-only account i
 must match that choice. An explicit account choice can fill an `off` form. Filling never
 submits.
 
-Only the browser's own focus and click events open the chooser; events a page dispatches
-from script do not. A list opened by focusing a field fills only while the focus is still
-in that login: the fill asks the document for its active element (through open shadow
-roots and same-origin frames) before the username and again before the password, so a
-page that hides the blur and moves focus elsewhere gets nothing from Return. The **Fill
-Password** menu command and a continued sign-in do not depend on focus.
+Events a page dispatches from script (`dispatchEvent`, `click()`) do not open the chooser.
+A focus opens it only while the page holds the keyboard, meaning its web view is first
+responder in the key window: WebKit reports a script's `element.focus()` as a trusted
+focus wherever the keyboard is, so a focus alone proves nothing. WebKit would also make
+the web view first responder for that script focus; while another control holds the
+keyboard Vane refuses that, so a page cannot pull typing out of Find or the command bar.
+Up/Down and Return reach a focus-opened list only while the page holds the keyboard.
+Typed in Find, the command bar or any other native field, they close the list and go
+where they were typed. Clicking a row is unaffected. A list opened by focusing a field
+also fills only while the focus is still in that login: the fill asks the document for its active element (through open shadow roots
+and same-origin frames) before the username and again before the password, so a page that
+hides the blur and moves focus elsewhere gets nothing from Return. The **Fill Password**
+menu command and a continued sign-in do not depend on focus.
+
+One case remains open. A page whose own text field already has the keyboard, or one that
+focuses a field while no control holds the keyboard, can call `focus()` on its login field
+just before a Return it expects, such as the end of a search.
+That Return chooses the first account. The list is drawn before the key can reach it, and
+the password fill asks for Touch ID unless a prompt was answered in the last five minutes;
+nothing else stands in the way.
 
 Filling a password asks macOS for device-owner authentication first — Touch ID, an Apple
 Watch, or the login password. One successful prompt covers every tab for five minutes;
-locking the screen, sleep or fast user switching ends that window at once. A username-only
+locking the screen, sleep or fast user switching ends that window at once. Only one prompt
+is on screen at a time: fills that arrive while it is up wait for its answer, and a prompt
+whose last fill was cancelled is dismissed. A username-only
 step asks nobody and reads no secret from the Keychain. If the prompt is cancelled or
-fails, nothing fills and the chooser stays closed. The page, document and origin are
-rechecked after the prompt: a navigation while it is up ends the fill before the secret
-is read. **Settings → Passwords → Require Touch ID to fill passwords** is on by default
+fails, nothing fills and the chooser stays closed. A navigation while
+the prompt is up cancels the fill and dismisses the prompt. The page, address, document
+and origin are rechecked after any prompt, before the secret is read. **Settings → Passwords → Require Touch ID to fill passwords** is on by default
 and applies to the whole app; turning it off asks for the same authentication.
 
 Detection prefers `autocomplete=username`, `current-password`, and `new-password`, then
@@ -159,10 +175,12 @@ and the path that could enable this are in
 flows, signup/change fields, account choice, rejected attempts, form abandonment,
 navigation/field races, frame/origin/action boundaries, profiles/private mode, generator
 options, Keychain errors/collisions, manager sorting, clipboard ownership, popup rendering,
-keyboard scrolling, script-dispatched focus/click, fill-time focus, and the autofill
-authentication gate (prompt, refusal, five-minute window, lock/sleep, navigation during the
-prompt). Those gate cases stub the authenticator and the Keychain reader; no test raises a
-system prompt, and under XCTest the unstubbed gate refuses instead of prompting. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
+keyboard scrolling, script-dispatched focus/click, page `focus()` and list keys while a
+native field holds the keyboard, fill-time focus, and the autofill authentication gate
+(prompt, refusal, five-minute window, lock/sleep, navigation during the prompt, fills
+sharing one prompt, dismissal of a prompt nobody waits for). Those gate cases stub the
+authenticator and the Keychain reader, in a never-shown window that reports itself key; no
+test raises a system prompt, and under XCTest the unstubbed gate refuses instead of prompting. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
 Keychain-dependent tests skip explicitly if the host cannot store disposable items.
 `VANE_PASSWORD_SNAPSHOTS=/tmp/vane-password-ui` writes native fixture PNGs.
 

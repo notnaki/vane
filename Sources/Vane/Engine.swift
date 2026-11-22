@@ -32,6 +32,26 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Keep every caller (including history menus and site controls) behind the same guard.
     weak var navigationOwner: Tab?
 
+    /// WebKit makes its view first responder whenever page script focuses an element, so
+    /// a page could pull the keyboard out of Find or the command bar and wait there for a
+    /// Return. While another view holds the keyboard, only the user and Vane hand it to a
+    /// page. When nobody holds it, a page that focuses its own field still may take it.
+    private var keyboardWatch: NSKeyValueObservation?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        keyboardWatch = window?.observe(\.firstResponder, options: [.initial]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.keyboardHolderChanged() }
+        }
+    }
+
+    private func keyboardHolderChanged() {
+        guard let window else { return }
+        let holder = window.firstResponder as? NSView
+        let elsewhere = holder.map { $0.window === window && !$0.isDescendant(of: self) } ?? false
+        VaneSetBooleanPreference(self, NSSelectorFromString("_setShouldSuppressFirstResponderChanges:"), elsewhere)
+    }
+
     private func requested(_ navigation: WKNavigation?) -> WKNavigation? {
         navigationOwner?.expectNavigation(navigation)
         // A same-document command can finish synchronously inside super, before expect
@@ -559,9 +579,23 @@ struct TitleReveal: Equatable, Sendable {
     /// from this window and hands it back; the page reports both as a blur and a fresh
     /// focus, and neither is the user changing their mind.
     private var passwordAuthenticatingFill: UUID?
+    /// Whether that prompt has taken key from this window yet. A focus the page reports
+    /// before it has is the page's own — a field it focused while being filled — and not
+    /// the prompt handing key back.
+    private var passwordPromptTookKey = false
     /// The target whose list a real focus opened. Filling it needs that focus to still
     /// hold; the menu command's list hangs under a field nobody has to be in.
     private var passwordFocusTarget: String?
+    /// Whether the list on screen is one a focus in the page opened.
+    var chooserFollowsFocus: Bool { passwordChoice?.target != nil && passwordChoice?.target == passwordFocusTarget }
+    /// Whether keys typed now go to this page: its view is first responder in the key
+    /// window. WebKit reports a script's `focus()` as trusted wherever the keyboard is, so
+    /// a page can focus its login while the user types in Find or the command bar.
+    var pageHoldsKeyboard: Bool {
+        guard let web = existingWeb, let window = web.window, window.isKeyWindow,
+              let responder = window.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: web)
+    }
     private var passwordSaveReadTask: Task<Void, Never>?
     private var passwordCommitOffer: UUID?
     private var passwordSaveReadRequest = UUID()
@@ -1677,6 +1711,7 @@ struct TitleReveal: Equatable, Sendable {
         passwordReadRequest = request
         passwordExplicitFillRequest = automatic ? nil : request
         passwordAuthenticatingFill = needsSecret && gate.needsPrompt ? request : nil
+        passwordPromptTookKey = false
         // Everything a fill was authorized against. Rechecked after each suspension, and the
         // system prompt is the long one: a navigation behind it must end the fill.
         let current: @MainActor () -> Bool = { [weak self, weak page] in
@@ -1797,6 +1832,7 @@ struct TitleReveal: Equatable, Sendable {
     func closeChooser(_ event: ChooserEvent) {
         let choosingBlur = event == .blur && passwordExplicitFillRequest == passwordReadRequest
         let authenticating = (event == .blur || event == .resign) && passwordAuthenticatingFill == passwordReadRequest
+        if authenticating { passwordPromptTookKey = true }
         if event != .filled && !choosingBlur && !authenticating && !PasswordChooser.opens(event,
                 sinceFill: Date.now.timeIntervalSince(lastFilledAt), pointerInside: chooserHovered) {
             passwordReadTask?.cancel()
@@ -1839,7 +1875,7 @@ struct TitleReveal: Equatable, Sendable {
     /// after that, which is why every scroll, blur and click closes the list instead.
     private func openChooser(host: String, accounts: [String], at r: [String: Double],
                              target: String? = nil, accountHint: String? = nil, focused: Bool = false) {
-        guard !isPrivate else { return }
+        guard !isPrivate, !focused || pageHoldsKeyboard else { return }
         guard PasswordChooser.opens(.focus, sinceFill: Date.now.timeIntervalSince(lastFilledAt)),
               let x = r["x"], let y = r["y"], let w = r["w"] else { return }
         let z = web.pageZoom
@@ -2549,9 +2585,10 @@ struct TitleReveal: Equatable, Sendable {
         if body["focus"] as? Bool == true {
             // The prompt handing key back is this fill's own echo, not a new request, and
             // reading names for it would cancel the fill it belongs to.
-            // Without a target there is no field to hold the fill to.
-            guard passwordAuthenticatingFill != passwordReadRequest, let origin = secureOrigin,
-                  let target = body["target"] as? String else { return }
+            // Without a target there is no field to hold the fill to. A focus reported
+            // while the keyboard is somewhere else is the page's doing, not the user's.
+            guard !(passwordPromptTookKey && passwordAuthenticatingFill == passwordReadRequest), pageHoldsKeyboard,
+                  let origin = secureOrigin, let target = body["target"] as? String else { return }
             let host = origin.host
             let anchor = body.compactMapValues { $0 as? Double }
             let hint = body["accountHint"] as? String
