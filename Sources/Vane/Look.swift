@@ -9,6 +9,11 @@ enum Look {
     /// The hazard tape round a Developer Mode page, and its "DEV" tag.
     static let developerYellow = Color(red: 1.0, green: 0.82, blue: 0.0)
     static let sidebarWidth: CGFloat = 228
+    /// Interface style: Default, or Streamlined — a denser sidebar and command bar, set as one
+    /// style rather than separate presets. Read once at launch: the sidebar's native row caches
+    /// are laid out on these numbers, so a change applies the next time Vane opens.
+    static let interfaceStyleKey = "interfaceStyle"
+    static let streamlined = UserDefaults.vane.string(forKey: interfaceStyleKey) == "streamlined"
     /// Settings cards, the find bar, and compact popovers. Arc's card corner is tight —
     /// 5–6pt fitted to the 2x corner profile — while their rows are round; they are not one
     /// family.
@@ -35,11 +40,11 @@ enum Look {
     static let pillRadius: CGFloat = 12
     /// The sidebar's three heights, one family: a row, the address pill above it, and a
     /// favourites tile — Arc's, measured off the reference at 2x (36 on a 41 pitch, 36, 46).
-    static let rowHeight: CGFloat = 36
+    static let rowHeight: CGFloat = streamlined ? 30 : 36
     /// Between rows, so a selected fill never touches its neighbour's. `rowHeight + rowGap`
     /// is the 41pt pitch the whole sidebar is laid out on (Vesta 474 → NoNote 556 → … every
     /// row 82px apart in ref 1).
-    static let rowGap: CGFloat = 5
+    static let rowGap: CGFloat = streamlined ? 2 : 5
     static let pillHeight: CGFloat = 36
     static let tileHeight: CGFloat = 46
     /// The sidebar's side padding, and the gap between a pill's edge and the card.
@@ -48,7 +53,7 @@ enum Look {
     static let cardGap: CGFloat = 11
     /// Inside a row: from its fill to the favicon, and from the favicon to the title.
     static let rowInset: CGFloat = 10
-    static let rowSpacing: CGFloat = 11
+    static let rowSpacing: CGFloat = streamlined ? 9 : 11
     /// A wandered pin's Return tile draws around the ordinary favicon slot.
     static let returnTileSize: CGFloat = rowHeight
     static let returnMarkerGap: CGFloat = 3
@@ -89,7 +94,7 @@ enum Look {
     /// smallest indeterminate spinner is 16pt across and this row is 13pt tall, so it is
     /// scaled to sit inside the line rather than pushing the list down by three points.
     static let tidySpinnerScale: CGFloat = 0.7
-    static let sectionGap: CGFloat = 18
+    static let sectionGap: CGFloat = streamlined ? 12 : 18
 
     // The command bar. The one surface allowed rows taller than `rowHeight`: it is a
     // centred sheet the user is typing into, not a dense list they are scanning. The
@@ -100,8 +105,8 @@ enum Look {
     static let barRadius: CGFloat = 12
     /// Rows are `barRowHeight` tall on a `barRowHeight + barRowGap` pitch, so a selection
     /// fill has a sliver of ground on every side instead of touching its neighbours.
-    static let barRowHeight: CGFloat = 46
-    static let barRowGap: CGFloat = 4
+    static let barRowHeight: CGFloat = streamlined ? 38 : 46
+    static let barRowGap: CGFloat = streamlined ? 2 : 4
     /// How many rows the bar draws before the rest are a scroll away.
     static let barVisibleRows = 8
     /// Search Settings can show more or fewer rows; never fewer than the bar at rest needs.
@@ -128,7 +133,7 @@ enum Look {
     /// read against the row count above, which is the only reason either number is a number.
     static let barEmptyTabs = 5
     /// The text field's row, which is deliberately taller than any result row.
-    static let barFieldHeight: CGFloat = 62
+    static let barFieldHeight: CGFloat = streamlined ? 52 : 62
     /// From the bar's edge to a row's fill, and to the ends of the field's divider.
     static let barInset: CGFloat = 9
     /// From a row fill's edge to its icon. `barInset + barRowInset + rowIcon / 2` is the
@@ -264,7 +269,7 @@ enum Look {
     /// How far a folder's contents step in from the rows around them. Enough to read as
     /// nesting at a glance, and small enough that three levels still leave a title room in
     /// a 250pt sidebar — which is the same reason `Pins.maxDepth` stops where it does.
-    static let folderIndent: CGFloat = 14
+    static let folderIndent: CGFloat = streamlined ? 10 : 14
 
     /// Arc's 340pt square pad, with a 24pt preset row below it.
     static let themeWidth: CGFloat = 356
@@ -351,8 +356,8 @@ enum Look {
         }
 
         static let body = Style(size: 13, weight: .regular)
-        static let sidebar = Style(size: 14, weight: .regular)
-        static let sidebarHeading = Style(size: 14, weight: .semibold)
+        static let sidebar = Style(size: Look.streamlined ? 13 : 14, weight: .regular)
+        static let sidebarHeading = Style(size: Look.streamlined ? 13 : 14, weight: .semibold)
         static let caption = Style(size: 11, weight: .regular)
         static let section = Style(size: 11, weight: .semibold)
         static let secondary = Style(size: 12, weight: .regular)
