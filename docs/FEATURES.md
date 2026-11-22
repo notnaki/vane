@@ -42,8 +42,9 @@ restores its text. Translation in private windows works the same way and saves n
 
 When a page finishes loading in a language other than yours, and macOS can translate it,
 a small **Translate this page?** card appears under the address bar: **Translate**,
-**Not now** (×), or **Never Translate This Site**. It is offered once per page load and
-never in private windows. The never list is per profile and covers subdomains
+**Not now** (×), or **Never Translate This Site**. After Not now it is not offered again
+while the tab stays on that site; after Translate, later pages on that site in the tab
+translate themselves. Never in private windows, nor on pages marked not to translate. The never list is per profile and covers subdomains
 (`google.com` covers `mail.google.com`). To offer again on a site, turn **Offer to
 Translate** back on in Site Controls; turning it off there adds the site.
 
