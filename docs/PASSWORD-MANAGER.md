@@ -122,15 +122,17 @@ capability approval and provisioning; Vane does not simulate passkey support.
 
 Vane cannot fill or save passwords held in Apple Passwords (iCloud Keychain). To use
 them, export a CSV from the Passwords app’s File menu, then choose
-**Import Passwords…** in Settings → Passwords and delete the CSV. The copy is local and
+**Vane → Passwords → Import Passwords…** (or **Import passwords…** in Settings →
+Passwords), then delete the CSV. The copy is local and
 does not follow later changes on your other devices.
 
 Apple’s **iCloud Passwords** extension does not work in Vane. It only relays messages to
 Apple’s helper (`PasswordManagerBrowserExtensionHelper`, native-messaging host
 `com.apple.passwordmanager`), and macOS refuses to start that helper for any parent
 process outside Apple’s list. Vane does not run native-messaging hosts for any
-extension. No public API reads Passwords items for arbitrary websites, and the system
-**Edit → AutoFill → Passwords…** command stays disabled for web page fields. Evidence
+extension. No public API for reading Passwords items for arbitrary websites was found, and
+in a probe on macOS 27.0.1 the system **Edit → AutoFill → Passwords…** command stayed
+disabled for web page fields. Evidence
 and the path that could enable this are in
 [Extension validation](EXTENSION-VALIDATION.md#icloud-passwords-investigation--2026-11-22).
 
