@@ -23,6 +23,11 @@ import WebKit
     @Published private(set) var focusRequest = 0
 
     func requestFocus() { focusRequest &+= 1 }
+    /// The bar shows Ask on Page instead of find. Reset whenever the bar closes.
+    @Published var asking = false
+    /// The question Ask mode opens with: the find query, when the bar's Ask button was used.
+    var askDraft = ""
+    let ask = AskOnPage()
     /// Total matches on the page, 0 when there are none (or nothing typed).
     @Published private(set) var count = 0
     /// Which match is showing, 1-based. 0 means "none" — nothing typed, or no match.
@@ -234,6 +239,8 @@ import WebKit
     static func advance(forward: Bool) {
         guard let store = Windows.current, let tab = store.active else { return }
         let session = session(for: store)
+        // Like ⌘F, ⌘G goes back to find: stepping matches behind the Ask panel shows nothing.
+        session.asking = false
         guard !session.query.isEmpty else {
             store.openFind()
             return
@@ -308,7 +315,19 @@ struct FindBar: View {
     /// The session belongs to the window, not to this view: it has to outlive the bar so
     /// that ⌘F reopens on the same query and ⌘G works while the bar is closed. Resolving it
     /// here and observing it below is what redraws the count as matches are stepped through.
-    var body: some View { FindBarBody(session: Find.session(for: store), tab: tab) }
+    var body: some View { FindBarMode(session: Find.session(for: store), tab: tab) }
+}
+
+private struct FindBarMode: View {
+    @ObservedObject var session: Find
+    @ObservedObject var tab: Tab
+    var body: some View {
+        Group {
+            if session.asking { AskPanel(session: session, ask: session.ask, tab: tab).transition(.opacity) }
+            else { FindBarBody(session: session, tab: tab).transition(.opacity) }
+        }
+        .animation(Motion.reduced ? nil : Look.quick, value: session.asking)
+    }
 }
 
 private struct FindBarBody: View {
@@ -353,6 +372,9 @@ private struct FindBarBody: View {
                 .help("Next Match (\(Keybindings.binding(for: .findNext).display))")
                 .accessibilityLabel("Next Match")
                 .disabled(session.count == 0)
+            // Arc's ⌘F → Ask: the query typed so far becomes the question.
+            Button { session.askDraft = text; session.asking = true } label: { Image(systemName: "sparkles") }
+                .help("Ask on Page").accessibilityLabel("Ask on Page")
             Button { close() } label: { Image(systemName: "xmark") }
                 .help("Close Find Bar").accessibilityLabel("Close Find Bar")
         }
@@ -433,7 +455,9 @@ extension TabStore {
         }
         guard active?.easelID == nil else { return }
         findOpen = true
-        Find.session(for: self).requestFocus()
+        let session = Find.session(for: self)
+        session.asking = false
+        session.requestFocus()
     }
 
     /// Whether the first responder is the page rather than the chrome around it. Asked of

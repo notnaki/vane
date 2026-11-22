@@ -43,7 +43,7 @@ Network recipients may keep their own logs. Vane cannot delete information alrea
 
 ## AI features
 
-**AI features are off by default.** Enable them during onboarding or in Settings → Max; existing explicit choices are preserved. Apple's on-device model is the default provider. Settings → Max lets you save multiple AI connections and choose one separately for tab titles, tab grouping, download names, and page summaries. Cloud connections use your own Groq, OpenAI, OpenRouter, or custom HTTPS API key, or **Continue with ChatGPT** to authorize eligible ChatGPT plan usage. Page summaries remain on-device until you explicitly select a cloud connection for them. Requests go directly to the selected provider, without a Vane server in between.
+**AI features are off by default.** Enable them during onboarding or in Settings → Max; existing explicit choices are preserved. Apple's on-device model is the default provider. Settings → Max lets you save multiple AI connections and choose one separately for tab titles, tab grouping, download names, page summaries, and Ask on Page. Cloud connections use your own Groq, OpenAI, OpenRouter, or custom HTTPS API key, or **Continue with ChatGPT** to authorize eligible ChatGPT plan usage. Page summaries and Ask on Page remain on-device until you explicitly select a cloud connection for them. Requests go directly to the selected provider, without a Vane server in between.
 
 Cloud requests include the selected connection’s API key or ChatGPT OAuth access token, configured model, task instructions, and the data needed for the task:
 
@@ -51,6 +51,7 @@ Cloud requests include the selected connection’s API key or ChatGPT OAuth acce
 - Tab grouping sends tab titles and hostnames when you use Tidy Tabs.
 - Download naming sends the suggested filename, page title, and source hostname and path. Tidy Downloads is off by default; enabling it can trigger requests as downloads complete. These naming requests do not upload downloaded file contents.
 - Page summaries send a bounded extract of the page title and article text when a link preview requests a summary, only if you explicitly route summaries to a cloud connection. This text may contain private page content.
+- Ask on Page sends your question, your earlier questions and answers about the same page, and a bounded extract of the page title and text, only if you explicitly route Ask on Page to a cloud connection. This text may contain private page content.
 
 Source URL query strings and fragments are omitted from this metadata, but titles, filenames, and paths may still contain personal or confidential information. **Test Connection** also sends a request to the configured provider. Private windows do not use these cloud API features. Route each feature to Apple, disable AI features, or remove the relevant connection to stop its cloud AI use; this cannot retract earlier requests.
 
@@ -68,7 +69,7 @@ These services receive requests directly and apply their own privacy policies an
 
 ## Private browsing
 
-Private windows use temporary browsing identities and nonpersistent website stores. Vane does not restore their history, tabs, or download records after quitting, or use your saved profile passwords and extensions there. They disable search suggestions, Instant Links, and cloud AI naming, grouping, and summaries.
+Private windows use temporary browsing identities and nonpersistent website stores. Vane does not restore their history, tabs, or download records after quitting, or use your saved profile passwords and extensions there. They disable search suggestions, Instant Links, and cloud AI naming, grouping, summaries, and Ask on Page.
 
 Private browsing does not hide your IP address or activity from websites, services you contact, or your network. Assistant websites, website icons, link previews, and app-wide updates or filter fetches can still make requests as described above. Downloaded files and captures you explicitly save remain on disk.
 

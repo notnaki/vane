@@ -63,6 +63,8 @@ extension UserDefaults {
     static func summarizeStream(_ text: String, sentences: Int) -> AsyncStream<String> { AsyncStream { $0.yield("Local summary"); $0.finish() } }
     static func payload(_ text: String) -> String? { text }
     static func plausibleSummary(_ s: String, sentences: Int, of: String) -> Bool { true }
+    static func askPrompt(page: String, question: String, history: [(question: String, answer: String)]) -> String { page + question }
+    static func askStream(page: String, question: String, history: [(question: String, answer: String)]) -> AsyncStream<String> { AsyncStream { $0.yield("Local"); $0.yield("Local answer"); $0.finish() } }
 }
 
 @main struct BrowserAIRoutingHarness {
@@ -191,6 +193,22 @@ extension UserDefaults {
         grouping.release()
         let staleGroups = await groups.value
         checks.append(("master off/on discards old Apple groups", groupingEntered && BrowserAI.enabled && staleGroups == nil))
+        func asked(isPrivate: Bool) async -> [String] {
+            var values: [String] = []
+            for await value in BrowserAI.askStream(page: "Page text", question: "What?", history: [], isPrivate: isPrivate) { values.append(value) }
+            return values
+        }
+        _ = setup(.askOnPage, cloud: true)
+        let privateAsk = await asked(isPrivate: true)
+        checks.append(("ask on page never sends a private page to a cloud connection", privateAsk.isEmpty && Boundary.requests == 0))
+        let cloudAsk = await asked(isPrivate: false)
+        checks.append(("ask on page uses its own cloud route and yields one answer", cloudAsk == ["Returned title"] && Boundary.requests == 1))
+        _ = setup(.summaries, cloud: true)
+        let localAsk = await asked(isPrivate: true)
+        checks.append(("ask on page stays on device unless routed, even when summaries are cloud", localAsk == ["Local", "Local answer"] && Boundary.requests == 0))
+        UserDefaults.vane.set(false, forKey: "appleAI")
+        let offAsk = await asked(isPrivate: false)
+        checks.append(("ask on page stays off with the master switch off", offAsk.isEmpty && Boundary.requests == 0))
         for (name, passed) in checks { print("\(passed ? "ok" : "FAIL") \(name)") }
         exit(checks.allSatisfy(\.1) ? 0 : 1)
     }
