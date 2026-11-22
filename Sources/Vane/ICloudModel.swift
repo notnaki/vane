@@ -84,6 +84,18 @@ struct ICloudItem: Codable, Equatable, Sendable {
     }
 }
 
+extension ICloudItem {
+    /// The one Spaces record no profile owns: `ProfileManager.spaceOrder`, as `ids`.
+    ///
+    /// A version from before it existed skips the live record, because it has no profile,
+    /// and never deletes it, because it never captured it. That version does reject the
+    /// record's *tombstone* as corrupt, so nothing may ever delete it: a Mac that no
+    /// longer holds an order (an older build rewrote profiles.json, or a backup from
+    /// before was restored) just stops capturing it, and takes it back on the next apply.
+    static let spaceOrderID = "order"
+    var isSpaceOrder: Bool { category == .spaces && profileID == nil && id == Self.spaceOrderID }
+}
+
 enum ICloudLimits {
     static let inlineBytes = 256 * 1024
     static let assetBytes = 32 * 1024 * 1024

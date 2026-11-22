@@ -475,8 +475,8 @@ enum Spaces {
 
     // MARK: - The strip runs across profiles
 
-    /// Every Space of every profile, in one list: the profiles in their own order, each
-    /// profile's Spaces in theirs.
+    /// Every Space of every profile, in one list. Until the user reorders it: the profiles
+    /// in their own order, each profile's Spaces in theirs.
     ///
     /// Arc's sidebar is *one* strip for the whole app — profile A's Spaces, then B's, then
     /// C's, side by side — so the swipe, ⌥⌘←/→, ⌃1…9, the footer dots and the Spaces menu all
@@ -486,18 +486,35 @@ enum Spaces {
     /// Generic over the profile and pure, so `selfcheck --pure` can prove the order with no
     /// profiles on disk and no `spaces.json` to read.
     ///
-    /// `order` is the user's global order from the footer dots, which may put Spaces of
-    /// different profiles side by side. A Space it does not name keeps its place in the
-    /// profile-by-profile walk, so Spaces made after the last reorder need no entry.
+    /// `order` is the user's global order (`ProfileManager.spaceOrder`), which may put
+    /// Spaces of different profiles side by side. It decides only which *profile* each
+    /// place along the strip belongs to; a profile's places are then filled from its own
+    /// list. So the per-profile order in `spaces.json` (what older versions, sync and every
+    /// per-profile reader use) can never disagree with the strip, whichever was written
+    /// last. Ids the order names twice or that no profile owns are skipped. A Space it
+    /// does not name gets a place straight after its own profile's last one, or after the
+    /// profiles before its own when its profile has none, which with no order at all is
+    /// the plain profile-by-profile walk.
     static func strip<P>(profiles: [P], spacesOf: (P) -> [Space], order: [UUID] = []) -> [Space] {
-        let all = profiles.flatMap(spacesOf)
-        guard !order.isEmpty else { return all }
-        var rank: [UUID: Int] = [:]
-        for (index, id) in order.enumerated() where rank[id] == nil { rank[id] = index }
-        return all.enumerated().sorted { l, r in
-            let a = rank[l.element.id] ?? Int.max, b = rank[r.element.id] ?? Int.max
-            return a != b ? a < b : l.offset < r.offset
-        }.map(\.element)
+        let lists = profiles.map(spacesOf)
+        guard !order.isEmpty else { return lists.flatMap { $0 } }
+        var owner: [UUID: Int] = [:]
+        for (profile, list) in lists.enumerated() {
+            for space in list where owner[space.id] == nil { owner[space.id] = profile }
+        }
+        var seen = Set<UUID>()
+        var places = order.compactMap { seen.insert($0).inserted ? owner[$0] : nil }
+        for (profile, list) in lists.enumerated() {
+            let unnamed = list.count - places.count { $0 == profile }
+            guard unnamed > 0 else { continue }
+            let last = places.lastIndex(of: profile) ?? places.lastIndex { $0 < profile }
+            places.insert(contentsOf: repeatElement(profile, count: unnamed), at: last.map { $0 + 1 } ?? 0)
+        }
+        var next = [Int](repeating: 0, count: lists.count)
+        return places.map { profile in
+            defer { next[profile] += 1 }
+            return lists[profile][next[profile]]
+        }
     }
 
     /// Which way the strip slides going from one Space to another: +1 when the destination is
@@ -746,6 +763,10 @@ enum Spaces {
                    == ["Personal", "Reading", "School"])
         assert("and no profiles at all is an empty strip, not a crash",
                Spaces.strip(profiles: [UUID]()) { owned[$0] ?? [] }.isEmpty)
+        assert("a saved order interleaves profiles, and a Space it does not name stays beside its own",
+               Spaces.strip(profiles: [one, two, three], spacesOf: { owned[$0] ?? [] },
+                            order: [whole[2].id, whole[0].id, whole[3].id]).map(\.name)
+                   == ["School", "Personal", "Reading", "Dev"])
         let order = whole.map(\.id)
         assert("the next space along is a step forwards, whichever profile owns it",
                Spaces.direction(from: order[1], to: order[2], in: order) == 1)

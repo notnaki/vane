@@ -4369,9 +4369,7 @@ struct Stash {
     /// `switchTo(space:)` and `Windows.hop`.
     var strip: [Space] {
         guard !isPrivate else { return [] }
-        return fold(preview: Spaces.strip(profiles: ProfileManager.shared.profiles, spacesOf: {
-            ProfileManager.shared.spaces(for: $0.id)
-        }, order: ProfileManager.shared.stripOrder))
+        return fold(preview: ProfileManager.shared.allSpaces)
     }
 
     /// A list off the disk with the theme editor's unsaved frame put back over it, so a drag
@@ -4541,15 +4539,11 @@ struct Stash {
         Spaces.direction(from: currentSpaceID, to: space.id, in: strip.map(\.id))
     }
 
-    /// Drag the footer dots or a Manage Spaces card: the global strip is rewritten, so a
-    /// Space can move past one from another profile. Only the order changes. Which profile
-    /// a Space belongs to is never touched here; that is still "Set Profile".
+    /// Drag the footer dots or a Manage Spaces card: one Space moves along the global strip,
+    /// so it can pass one from another profile. Only the order changes. Which profile a
+    /// Space belongs to is never touched here; that is still "Set Profile".
     func reorderSpaces(from: Int, to: Int) {
-        let manager = ProfileManager.shared
-        let current = Spaces.strip(profiles: manager.profiles, spacesOf: {
-            manager.spaces(for: $0.id)
-        }, order: manager.stripOrder)
-        manager.saveStripOrder(Spaces.reordered(current, from: from, to: to).map(\.id))
+        ProfileManager.shared.reorderSpace(from: from, to: to)
         spacesChanged()
     }
 

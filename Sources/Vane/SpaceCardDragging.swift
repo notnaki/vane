@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 /// Card reorders have their own payload, so a page-row/text drop cannot reuse
 /// stale drag state. Every accepted drop resolves both identities against disk.
 @MainActor enum SpaceCardDragging {
+    /// Declared in the app's Info.plist by make-app.sh. Without that declaration SwiftUI
+    /// hands the card's `onDrop` a provider with no types, and the drop does nothing.
     static let type = UTType(exportedAs: "app.vane.space-card", conformingTo: .data)
     private struct Payload: Codable, Equatable {
         let space: UUID
@@ -33,10 +35,8 @@ import UniformTypeIdentifiers
         active = nil
         guard !store.isPrivate, !store.isLittle, !store.isParked,
               payload.space != target.id else { return false }
-        let manager = ProfileManager.shared
-        let list = Spaces.strip(profiles: manager.profiles, spacesOf: {
-            manager.spaces(for: $0.id)
-        }, order: manager.stripOrder)
+        // The global strip, so a card can land beside one from another profile.
+        let list = ProfileManager.shared.allSpaces
         guard let from = list.firstIndex(where: { $0.id == payload.space }),
               let to = list.firstIndex(where: { $0.id == target.id }) else { return false }
         Motion.animate(Look.quick) {

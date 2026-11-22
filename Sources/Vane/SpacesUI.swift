@@ -332,10 +332,7 @@ struct SpaceDrop: DropDelegate {
         SpaceDragging.shared.id = nil
         // The order is one global strip, so a dot can move past a dot from any profile. It
         // changes only the order: which profile a Space belongs to is still "Set Profile".
-        let manager = ProfileManager.shared
-        let list = Spaces.strip(profiles: manager.profiles, spacesOf: {
-            manager.spaces(for: $0.id)
-        }, order: manager.stripOrder)
+        let list = ProfileManager.shared.allSpaces
         guard let from = list.firstIndex(where: { $0.id == dragged }),
               let to = list.firstIndex(where: { $0.id == space.id }) else { return false }
         // A dot dropped on a dot means "put it where that one is", so a rightward drag has to

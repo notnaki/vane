@@ -137,7 +137,8 @@ actor ICloudJournal {
             next.observedAbsences?.remove(item.key)
         }
         for (key, old) in next.baseline where enabled.contains(old.category) && captured[key] == nil {
-            guard var record = next.records[key], record.deletion == nil else { continue }
+            // Absence never deletes the global Space order. See `ICloudItem.isSpaceOrder`.
+            guard !old.isSpaceOrder, var record = next.records[key], record.deletion == nil else { continue }
             try advance(&next)
             var vector = record.vector; vector[next.deviceID] = next.counter
             record.deletion = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
@@ -198,7 +199,8 @@ actor ICloudJournal {
             next.observedAbsences?.remove(item.key)
         }
         let readback = Dictionary(items.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        for (key, original) in observedBeforeApply where enabled.contains(original.category) && readback[key] == nil {
+        for (key, original) in observedBeforeApply where enabled.contains(original.category) && readback[key] == nil
+            && !original.isSpaceOrder {
             // Absence is a deletion only when this Mac actually observed the entity
             // immediately before apply. Unknown incoming/placeholder omissions are
             // never evidence of a local deletion.
