@@ -22,6 +22,18 @@ final class ExtensionWorkerResourceTests: XCTestCase {
         }
     }
 
+    /// Large rulesets are file-backed; the snapshot still holds exactly the accepted bytes.
+    func testSnapshotMapsLargeResourcesWithTheirExactBytes() throws {
+        try fixture { store, root in
+            let source = root.appendingPathComponent("source")
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+            let large = Data((0..<(3 * 1024 * 1024 + 7)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+            try large.write(to: source.appendingPathComponent("rules.json"))
+            let resources = try store.resources(in: source)
+            XCTAssertEqual(resources["rules.json"], large)
+        }
+    }
+
     func testSnapshotRejectsInternalLinksAndSpecialFiles() throws {
         try fixture { store, root in
             let source = root.appendingPathComponent("source")
