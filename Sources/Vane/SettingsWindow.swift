@@ -581,6 +581,7 @@ private struct GeneralPane: View {
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
     @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
     @AppStorage(TabStrip.prefKey) private var tabStrip = false
+    @AppStorage(TabStrip.focusKey) private var tabStripFocus = false
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -609,6 +610,11 @@ private struct GeneralPane: View {
                 SettingsRow("Tabs across the top", icon: "rectangle.topthird.inset.filled", tint: .blue) {
                     Toggle("Tabs across the top", isOn: $tabStrip).labelsHidden()
                         .help("A compact tab bar replaces the sidebar. \u{2318}S still shows the sidebar; \u{2325}\u{2318}S switches.")
+                }
+                SettingsRow("Hide tabs until hover", icon: "rectangle.dashed", tint: .blue) {
+                    Toggle("Hide tabs until hover", isOn: $tabStripFocus).labelsHidden()
+                        .disabled(!tabStrip)
+                        .help("Focus mode: the page fills the window and the tab bar slides down when the pointer reaches the top edge.")
                 }
             }
 

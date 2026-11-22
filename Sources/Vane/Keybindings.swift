@@ -151,7 +151,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case printPage, settings
     case openFile, savePageAs, sharePage, capturePage, captureFullPage
     // View
-    case reload, hardReload, openLocation, find, toggleSidebar, toggleTabStrip
+    case reload, hardReload, openLocation, find, toggleSidebar, toggleTabStrip, toggleTabStripFocus
     case nextFocusArea
     case findNext, findPrevious
     case actualSize, zoomIn, zoomOut, fullScreen
@@ -228,6 +228,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findPrevious: "Find Previous"
         case .toggleSidebar: "Toggle Sidebar"
         case .toggleTabStrip: "Tabs Across the Top"
+        case .toggleTabStripFocus: "Hide Tabs Until Hover"
         case .nextFocusArea: "Next Focus Area"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
@@ -318,7 +319,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
              .sharePage, .capturePage, .captureFullPage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
-             .toggleSidebar, .toggleTabStrip, .actualSize,
+             .toggleSidebar, .toggleTabStrip, .toggleTabStripFocus, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
              .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .copyPageURL, .showLibrary: .view
         case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
@@ -371,6 +372,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findPrevious:     Keybinding("g", [.command, .shift])
         case .toggleSidebar:    Keybinding("s", .command)
         case .toggleTabStrip:   Keybinding("s", [.command, .option])
+        case .toggleTabStripFocus: Keybinding("s", [.command, .option, .shift])
         case .nextFocusArea:    Keybinding("\u{F709}") // F6, like other browsers
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)

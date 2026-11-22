@@ -43,6 +43,8 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
+    /// The page's leading margin with the sidebar away; the tab strip's is tighter.
+    var hiddenLeading: CGFloat = Look.cardGap
 
     private var progress: CGFloat { gesture.progress ?? (libraryOpen ? 1 : 0) }
 
@@ -50,7 +52,7 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
         PaintedLibraryNavigation(gesture: gesture, targetProgress: progress,
             libraryOpen: libraryOpen, sidebarShown: sidebarShown, floating: floating,
             sidebarWidth: sidebarWidth, panelWidth: panelWidth, palettePresented: palettePresented,
-            monitor: monitor, page: page, sidebar: sidebar, panel: panel)
+            monitor: monitor, page: page, sidebar: sidebar, panel: panel, hiddenLeading: hiddenLeading)
     }
 }
 
@@ -69,6 +71,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     let page: Page
     let sidebar: Sidebar
     let panel: Panel
+    let hiddenLeading: CGFloat
     @Environment(\.displayScale) private var displayScale
     @StateObject private var paint: LibraryNavigationPaint
 
@@ -79,7 +82,9 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
 
     init(gesture: LibraryGesture, targetProgress: CGFloat, libraryOpen: Bool, sidebarShown: Bool,
          floating: Bool, sidebarWidth: CGFloat, panelWidth: CGFloat, palettePresented: Bool,
-         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel) {
+         monitor: LibrarySwipeMonitor, page: Page, sidebar: Sidebar, panel: Panel,
+         hiddenLeading: CGFloat) {
+        self.hiddenLeading = hiddenLeading
         self.gesture = gesture; self.targetProgress = targetProgress
         self.libraryOpen = libraryOpen; self.sidebarShown = sidebarShown; self.floating = floating
         self.sidebarWidth = sidebarWidth; self.panelWidth = panelWidth; self.palettePresented = palettePresented
@@ -88,7 +93,7 @@ private struct PaintedLibraryNavigation<Page: View, Sidebar: View, Panel: View>:
     }
 
     private func pageLeading(at progress: CGFloat) -> CGFloat {
-        let leading = (sidebarShown ? sidebarWidth : Look.cardGap) * (1 - progress)
+        let leading = (sidebarShown ? sidebarWidth : hiddenLeading) * (1 - progress)
             + panelWidth * progress
         return (leading * displayScale).rounded() / displayScale
     }
@@ -530,7 +535,8 @@ private struct LibrarySwipe: ViewModifier {
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
                 settlement = UUID()
                 if store.libraryGesture.pageLeadingInset == nil {
-                    store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap
+                    store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0
+                        : TabStrip.enabled && !store.isLittle ? TabStrip.gap : Look.cardGap
                 }
             }
             Motion.instant {

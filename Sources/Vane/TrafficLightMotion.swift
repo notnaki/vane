@@ -12,10 +12,16 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     let peeking: Bool
     /// Tabs across the top: the lights stay, risen to the bar's centre line.
     var strip = false
+    /// How far the lights have risen toward the bar's centre line. Animated with the
+    /// sidebar, so the lights glide up as the bar arrives rather than jumping.
+    var lift: CGFloat = 0
 
-    nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
-        get { AnimatablePair(AnimatablePair(slide, inset), visibility) }
-        set { slide = newValue.first.first; inset = newValue.first.second; visibility = newValue.second }
+    nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(slide, inset), AnimatablePair(visibility, lift)) }
+        set {
+            slide = newValue.first.first; inset = newValue.first.second
+            visibility = newValue.second.first; lift = newValue.second.second
+        }
     }
 
     func body(content: Content) -> some View {
@@ -29,8 +35,7 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
             .background {
                 TrafficLightPlacement(store: store,
                     offset: libraryOpen ? .zero
-                        : strip && !peeking ? CGPoint(x: 0, y: -TabStrip.lightsLift)
-                        : CGPoint(x: slide + inset, y: inset),
+                        : CGPoint(x: strip && !peeking ? 0 : slide + inset, y: inset - lift),
                     visibility: libraryOpen || strip ? 1 : visibility, peeking: peeking)
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false).accessibilityHidden(true)

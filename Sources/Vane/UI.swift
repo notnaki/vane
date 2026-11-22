@@ -544,6 +544,13 @@ private struct BrowserWindowContent: View {
     @ProfileChromeObserved var profiles = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(TabStrip.prefKey, store: .vane) private var tabStripOn = false
+    @AppStorage(TabStrip.focusKey, store: .vane) private var stripFocus = false
+    /// Focus mode's bar is down: hovered, held or in use. See `CompactBarStack`.
+    @State private var stripBarShown = true
+    /// Focus mode takes the lights with the bar, except where the sidebar or Library has them.
+    private var stripLightsHidden: Bool {
+        stripShown && stripFocus && !stripBarShown && !peeking && !store.libraryOpen
+    }
     /// Tabs across the top stand in for a hidden sidebar. See `TabStrip`.
     private var stripShown: Bool { tabStripOn && !store.sidebarShown && !store.isLittle }
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
@@ -590,13 +597,24 @@ private struct BrowserWindowContent: View {
                 floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
-                page: VStack(spacing: 0) {
+                page: CompactBarStack(hides: stripShown && stripFocus,
+                                      shownChanged: { stripBarShown = $0 }) {
                     if stripShown {
                         TabStripBar(store: store)
-                            .padding(.leading, store.libraryOpen ? Look.cardGap : TabStrip.lightsClearance)
-                            .transition(.opacity)
+                            .padding(.leading, store.libraryOpen ? TabStrip.gap : TabStrip.lightsClearance)
+                            // Over the page it needs a ground of its own; above it, the window's shows.
+                            .background { if stripFocus { ZStack { WindowGlass(); SpaceGround() } } }
+                            // Drops in a beat behind the sidebar's exit, so the two read as one
+                            // hand-off rather than a swap; leaves at once when the sidebar returns.
+                            .transition(Motion.reduced ? .opacity : .asymmetric(
+                                insertion: .offset(y: -TabStrip.height / 2).combined(with: .opacity)
+                                    .animation(Look.sidebarAnimation.delay(0.05)),
+                                removal: .opacity.animation(Look.quick)))
                     }
-                    WebCard(topGap: stripShown ? 0 : Look.cardGap)
+                } page: {
+                    WebCard(topGap: !stripShown ? Look.cardGap : stripFocus ? TabStrip.gap : 0,
+                            gap: stripShown ? TabStrip.gap : Look.cardGap,
+                            cornerRadius: stripShown ? TabStrip.pageRadius : Look.pageRadius)
                 }
                 .modifier(DownloadFeedbackAnchor(target: .page))
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
@@ -605,7 +623,8 @@ private struct BrowserWindowContent: View {
                             enabled: store.libraryGesture.progress == nil && !store.spaceGesture.swiping,
                             libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
-                sidebar: sidebarSurface, panel: LibraryPanel())
+                sidebar: sidebarSurface, panel: LibraryPanel(),
+                hiddenLeading: stripShown ? TabStrip.gap : Look.cardGap)
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
@@ -670,9 +689,15 @@ private struct BrowserWindowContent: View {
                    : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .onChange(of: store.sidebarShown) { peekTask?.cancel() }
-        // A new Space is named in the sidebar's inline editor, which the bar has no room for.
+        // A new Space and a renamed tab are named in the sidebar, which the bar has no room for.
         .onChange(of: store.editingSpace) { _, id in
             if id != nil && stripShown { store.sidebarShown = true }
+        }
+        .onChange(of: store.renamingTab) { _, id in
+            if id != nil && stripShown { store.sidebarShown = true }
+        }
+        .onChange(of: stripLightsHidden, initial: true) { _, hidden in
+            (store.window as? VaneWindow)?.lightsHiddenByBar = hidden
         }
         // Turning the bar on folds the sidebar away; turning it off brings it back.
         .onChange(of: tabStripOn) { _, on in
@@ -787,7 +812,7 @@ private struct SidebarSurfaceLayout: ViewModifier {
                 slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
                 inset: floating ? Look.floatingSidebarGap : 0,
                 visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
-                strip: strip))
+                strip: strip, lift: strip && !peeking ? TabStrip.lightsLift : 0))
     }
 }
 
@@ -936,9 +961,13 @@ struct WebCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Clearance between the chrome and the page; Little Vane uses no gap.
     var topGap: CGFloat = Look.cardGap
+    /// The other three sides. The tab strip keeps them tight.
+    var gap: CGFloat = Look.cardGap
     /// Little Vane's document meets the native window edges beneath its toolbar.
     var edgeToEdge = false
-    private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
+    /// The card's corner. The tab strip's tight margin wants one concentric with the window's.
+    var cornerRadius: CGFloat = Look.pageRadius
+    private var radius: CGFloat { edgeToEdge ? 0 : cornerRadius }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -1033,9 +1062,9 @@ struct WebCard: View {
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
-        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
+        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : gap))
         .padding(.top, topGap)
-        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+        .padding([.trailing, .bottom], edgeToEdge ? 0 : gap)
     }
 
     /// The native viewport and the card share one width. Freezing only the

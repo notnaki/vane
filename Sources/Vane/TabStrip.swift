@@ -9,17 +9,30 @@ enum TabStrip {
     /// The whole bar. The lights centre on it, so it is twice their centre line.
     static let height: CGFloat = 34
     static let chipHeight: CGFloat = 24
-    static let chipWidth: CGFloat = 150
+    /// Titled chips grow into the bar's spare room up to this.
+    static let chipWidth: CGFloat = 240
     /// Titled chips shrink to this before the row starts scrolling.
     static let minChipWidth: CGFloat = 44
     static let swipeDistance: CGFloat = 40
-    /// Clears the three lights at AppKit's own x.
-    static let lightsClearance: CGFloat = 78
+    /// Clears the three lights at AppKit's own x, measured from the page's `gap`.
+    static let lightsClearance: CGFloat = 76
+    /// The page's margin under the bar: tighter than the sidebar's `Look.cardGap`.
+    static let gap: CGFloat = 4
+    /// Concentric with the window's own corner (about 17pt, measured) at `gap` inside it.
+    static let pageRadius: CGFloat = 13
+    /// Focus mode: the bar hides until the pointer reaches the window's top edge.
+    static let focusKey = "tabStripFocus"
     /// How far the lights rise from the sidebar's row to the bar's centre line.
     static let lightsLift: CGFloat = Look.lightsCentre - height / 2
 
     static var enabled: Bool { UserDefaults.vane.bool(forKey: prefKey) }
     static func toggle() { UserDefaults.vane.set(!enabled, forKey: prefKey) }
+    /// Turning focus on also turns the bar on: hiding a bar that isn't there does nothing.
+    static func toggleFocus() {
+        let on = !UserDefaults.vane.bool(forKey: focusKey)
+        UserDefaults.vane.set(on, forKey: focusKey)
+        if on && !enabled { toggle() }
+    }
 }
 
 struct TabStripBar: View {
@@ -27,6 +40,8 @@ struct TabStripBar: View {
     @Environment(\.spaceChromeTheme) private var theme
     @Namespace private var pill
     @State private var width: CGFloat = 0
+    /// False for the bar's first frame, so its items can cascade in. See `StripCascade`.
+    @State private var arrived = false
 
     var body: some View {
         // ponytail: flat order — favourites, pins (folders flattened), then today. No drag
@@ -41,10 +56,15 @@ struct TabStripBar: View {
         let fits = width == 0 || narrowest <= width
         HStack(spacing: 4) {
             StripSpaceButton(store: store)
+                .modifier(StripCascade(index: 0, arrived: arrived))
             ZStack {
                 WindowDragArea()
                 if fits {
                     row(icons, today, flexible: true)
+                        // A Space change pushes the old row out the way the switch went.
+                        .id(store.currentSpaceID)
+                        .transition(Motion.reduced ? .opacity
+                            : .push(from: store.spaceDirection >= 0 ? .trailing : .leading))
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -57,9 +77,11 @@ struct TabStripBar: View {
                     }
                 }
             }
+            .clipped()
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         }
         .frame(height: TabStrip.height)
+        .animation(Motion.reduced ? nil : Look.appear, value: store.currentSpaceID)
         // Not while the sidebar peeks over the bar: its own swipe has those events.
         .background(StripSwipe(enabled: fits && !store.sidebarPeeking) { [store] step in
             // No wrap: past the ends is the Library's swipe, or nothing.
@@ -68,18 +90,25 @@ struct TabStripBar: View {
                   list.indices.contains(i + step) else { return }
             store.selectSpace(list[i + step])
         })
+        .onAppear { DispatchQueue.main.async { arrived = true } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tabs")
     }
 
     private func row(_ icons: [Tab], _ today: [Tab], flexible: Bool) -> some View {
         HStack(spacing: 2) {
-            ForEach(icons) { chip($0, titled: false, flexible: false) }
+            ForEach(Array(icons.enumerated()), id: \.element.id) { i, tab in
+                chip(tab, titled: false, flexible: false).transition(Self.arrival)
+                    .modifier(StripCascade(index: i + 1, arrived: arrived))
+            }
             if !icons.isEmpty && !today.isEmpty {
                 Rectangle().fill(Look.hairline).frame(width: 1, height: 14)
                     .padding(.horizontal, 4)
             }
-            ForEach(today) { chip($0, titled: true, flexible: flexible) }
+            ForEach(Array(today.enumerated()), id: \.element.id) { i, tab in
+                chip(tab, titled: true, flexible: flexible).transition(Self.arrival)
+                    .modifier(StripCascade(index: icons.count + i + 1, arrived: arrived))
+            }
             Button { store.newTab(nil) } label: {
                 Image(systemName: "plus").font(.system(size: 12, weight: .medium))
                     .frame(width: TabStrip.chipHeight, height: TabStrip.chipHeight)
@@ -91,14 +120,39 @@ struct TabStripBar: View {
             .accessibilityLabel("New Tab")
             if flexible { Spacer(minLength: 0) }
         }
-        .padding(.trailing, Look.cardGap)
+        .padding(.trailing, TabStrip.gap)
         .animation(Motion.reduced ? nil : Look.quick, value: store.current)
+        .animation(Motion.reduced ? nil : Look.quick, value: (icons + today).map(\.id))
+    }
+
+    /// Tabs grow in from their own centre and shrink away there; neighbours slide over.
+    private static var arrival: AnyTransition {
+        Motion.reduced ? .opacity : .scale(scale: 0.6).combined(with: .opacity)
     }
 
     private func chip(_ tab: Tab, titled: Bool, flexible: Bool) -> some View {
         StripChip(store: store, tab: tab, titled: titled, flexible: flexible,
-                  selected: store.current == tab.id, pill: pill, theme: theme)
+                  selected: store.current == tab.id, pill: pill,
+                  pillID: store.currentSpaceID?.uuidString ?? "", theme: theme)
             .id(tab.id)
+    }
+}
+
+/// The bar's items settle in left to right when it appears: a short drop and fade, each a
+/// beat after the one before. Capped, so a long row is not still arriving a second later.
+private struct StripCascade: ViewModifier {
+    let index: Int
+    let arrived: Bool
+    func body(content: Content) -> some View {
+        if Motion.reduced {
+            content
+        } else {
+            content
+                .opacity(arrived ? 1 : 0)
+                .offset(y: arrived ? 0 : -5)
+                .animation(.spring(duration: 0.32, bounce: 0.18)
+                    .delay(0.06 + Double(min(index, 10)) * 0.018), value: arrived)
+        }
     }
 }
 
@@ -106,6 +160,8 @@ struct TabStripBar: View {
 /// Spaces menu is, so a profile hop is one pick away too.
 private struct StripSpaceButton: View {
     let store: TabStore
+    @Environment(\.spaceChromeTheme) private var theme
+    @State private var hovering = false
 
     var body: some View {
         let spaces = store.strip
@@ -129,16 +185,38 @@ private struct StripSpaceButton: View {
             Divider()
             Button("New Space") { _ = store.newSpace() }
         } label: {
-            SpaceIcon(current?.icon ?? "square.on.square")
-                .font(.system(size: 13))
-                .frame(width: TabStrip.chipHeight + 4, height: TabStrip.chipHeight)
-                .contentShape(.rect)
+            // A pill of its own, not another tab: the Space's icon and name, with the
+            // profile's colour when there is more than one profile to tell apart.
+            HStack(spacing: 5) {
+                if profiles.count > 1, let profile = profiles.first(where: { $0.id == store.profileID }) {
+                    Circle().fill(Color(hex: profile.colorHex) ?? .secondary)
+                        .frame(width: 6, height: 6)
+                        .help(profile.name)
+                }
+                SpaceIcon(current?.icon ?? "square.on.square")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(current?.name ?? "Spaces")
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .frame(maxWidth: 96, alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                    .opacity(hovering ? 1 : 0.5)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: TabStrip.chipHeight - 2)
+            .background(Capsule().fill(hovering ? theme.barHovered : theme.controlFill))
+            .overlay(Capsule().strokeBorder(Look.hairline, lineWidth: 0.5))
+            .contentShape(Capsule())
+            .contentTransition(Motion.reduced ? .identity : .interpolate)
+            .animation(Motion.reduced ? nil : Look.quick, value: current?.id)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .foregroundStyle(Look.inkSecondary)
+        .onHover { hovering = $0 }
+        .foregroundStyle(.primary)
         .disabled(store.isPrivate)
         .help(current?.name ?? "Spaces")
         .accessibilityLabel("Space: \(current?.name ?? "none")")
@@ -210,6 +288,8 @@ private struct StripChip: View {
     let flexible: Bool
     let selected: Bool
     let pill: Namespace.ID
+    /// Per Space, so the outgoing row's pill and the incoming one's never claim one id.
+    let pillID: String
     let theme: SpaceChromeTheme
     @State private var hovering = false
 
@@ -243,7 +323,7 @@ private struct StripChip: View {
             // The grey slides to the tab you pick.
             if selected {
                 RoundedRectangle(cornerRadius: 7, style: .continuous).fill(theme.selected)
-                    .matchedGeometryEffect(id: "selected", in: pill)
+                    .matchedGeometryEffect(id: "selected" + pillID, in: pill)
             } else if hovering {
                 RoundedRectangle(cornerRadius: 7, style: .continuous).fill(theme.hovered)
             }
@@ -254,6 +334,7 @@ private struct StripChip: View {
             store.current = tab.id
         }
         .onHover { hovering = $0 }
+        .animation(Motion.reduced ? nil : Look.quick, value: hovering)
         .contextMenu { SidebarTabContextMenu(store: store, tab: tab) }
         .help(title)
         .accessibilityElement(children: .ignore)
