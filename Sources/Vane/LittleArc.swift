@@ -620,6 +620,7 @@ struct LittleArcView: View {
         .onChange(of: profiles.spacesRevision) { LittleArc.refreshDestination(for: store) }
         .onChange(of: profiles.profiles) { LittleArc.refreshDestination(for: store) }
         .vaneMotionPolicy()
+        .modifier(PageTranslationHost(store: store))
         .environmentObject(store.spaceGesture)
         .background { WindowTitleSync() }
     }

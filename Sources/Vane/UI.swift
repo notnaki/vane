@@ -984,6 +984,8 @@ struct WebCard: View {
                 if let tab = store.active {
                     PasswordOffer(tab: tab)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                    TranslateOffer(tab: tab, store: store)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
             .padding(.horizontal, 14)

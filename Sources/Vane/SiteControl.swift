@@ -64,6 +64,8 @@ struct SiteControlModel: Equatable, Sendable {
     var reader = false
     var readerAvailable = false
     var translated = false
+    /// nil in a private window, which offers nothing and so has nothing to switch.
+    var offersTranslation: Bool?
     var extensions: [Ext] = []
     /// The apps this site is allowed to open without asking. See ExternalApps.swift.
     var apps: [App] = []
@@ -75,7 +77,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, capture, boost, clearData, developer
+        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, translateOffers, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -204,6 +206,11 @@ extension SiteControlModel {
             Row(id: .translate, title: "Translate Page", glyph: "translate",
                 control: .toggle(translated)),
         ]
+        if let offersTranslation {
+            out.append(Row(id: .translateOffers, title: "Offer to Translate", glyph: "character.bubble",
+                           control: .toggle(offersTranslation),
+                           note: offersTranslation ? nil : "Never translate this site is on."))
+        }
         for (i, ext) in extensions.enumerated() {
             out.append(Row(id: .ext(i), title: ext.name,
                            // The fallback only: the view draws the action's own icon when
@@ -281,6 +288,8 @@ extension SiteControlModel {
         reader = Reader.isOn(tab)
         readerAvailable = tab.readerAvailable
         translated = PageTranslation.isOn(tab)
+        offersTranslation = tab.isPrivate ? nil
+            : !PageTranslation.neverListed(h, in: PageTranslation.neverTranslated(profileID: tab.profileID))
         let host = tab.extensions
         extensions = host.visible(in: tab).map { context in
             let action = host.action(context, for: tab)
@@ -349,6 +358,9 @@ extension SiteControlModel {
         case .blockerSettings: SettingsWindow.show(tab: "privacy", profileID: tab.profileID)
         case .reader: Reader.toggle(tab)
         case .translate: PageTranslation.toggle(tab)
+        case .translateOffers:
+            let never = PageTranslation.neverListed(host, in: PageTranslation.neverTranslated(profileID: tab.profileID))
+            PageTranslation.setOffers(never, host: host, tab: tab)
         case .capture: PageCapture.start(tab)
         case .boost: SiteBoostEditor.open(tab: tab)
         case .ext(let i): toggleExtension(i, on: tab)

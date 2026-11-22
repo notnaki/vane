@@ -34,14 +34,23 @@ before downloading it. A page already in your language shows a notice instead.
 
 Vane rewrites only visible text. Form fields, code, hidden text, and anything the page
 marks `translate="no"` or `notranslate` stay unchanged, so layout and typing are not
-affected. **Show Original**, in the same places, restores the original text; navigating
-away also ends the translation. Translation in private windows works the same way and
-saves nothing.
+affected. **Show Original**, in the same places, restores the original text. Opening
+another page in the tab ends the translation, and going back shows the page's original
+text; a link that starts a download leaves the translated page as it is. Translating a
+second tab in the same window while the first is still filling in stops the first and
+restores its text. Translation in private windows works the same way and saves nothing.
+
+When a page finishes loading in a language other than yours, and macOS can translate it,
+a small **Translate this page?** card appears under the address bar: **Translate**,
+**Not now** (×), or **Never Translate This Site**. It is offered once per page load and
+never in private windows. The never list is per profile and covers subdomains
+(`google.com` covers `mail.google.com`). To offer again on a site, turn **Offer to
+Translate** back on in Site Controls; turning it off there adds the site.
 
 Limits: text is translated one text node at a time, so a sentence split by a link or bold
-text loses some context. Text the page adds after translating, such as more items in a
-feed, is not translated; choose Show Original and translate again. Vane does not offer
-translation automatically, so there is no list of sites to never translate.
+text loses some context. At most 5,000 text nodes are translated per page. Text inside
+iframes and shadow DOM is not translated. Text the page adds after translating, such as
+more items in a feed, is not translated; choose Show Original and translate again.
 
 ## Offline reading queue
 

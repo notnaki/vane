@@ -2059,6 +2059,9 @@ struct TitleReveal: Equatable, Sendable {
         updatePageTitle(from: w)
         if w === existingWeb {
             Reader.navigationCommitted(self)
+            // At commit, not provisional start: a link that turns out to be a download
+            // leaves the translated page on screen, and its state with it.
+            PageTranslation.forget(tab: self)
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()
@@ -2094,6 +2097,7 @@ struct TitleReveal: Equatable, Sendable {
         Trace.note("favicon")
         favicons.load(for: self)
         guard let url = w.url else { return }
+        if !displayingNavigationError { PageTranslation.offer(self) }
         bookmarked = history.isBookmarked(url)
         let document = readingDocumentGeneration
         Task { [weak self, weak w] in

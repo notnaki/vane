@@ -9,33 +9,45 @@ import WebKit
 ///
 /// Only `Text.data` is ever written — no element is added, removed or restyled, and form
 /// fields, code and anything marked `translate="no"` are skipped — so layout and inputs
-/// are the page's own. Nothing is persisted, which is also what a private window needs.
-/// ponytail: no "offer to translate" bar and so no "Never translate this site" list; add
-/// both together the day the offer exists. Text the page adds after the walk stays as it
-/// came (a long feed keeps its new items in the original language) — upgrade path is a
-/// MutationObserver feeding the same batches.
+/// are the page's own. The only thing persisted is the per-profile "Never translate this
+/// site" list, and a private window neither offers nor writes it.
+/// ponytail: text the page adds after the walk stays as it came (a long feed keeps its new
+/// items in the original language) — upgrade path is a MutationObserver feeding the same
+/// batches.
 @MainActor final class PageTranslation: ObservableObject {
     static let shared = PageTranslation()
-    /// Tabs showing a translation. Cleared on navigation by `forget`.
-    @Published private(set) var tabs: Set<UUID> = []
+    /// Tabs showing a translation, each with the job filling it in. Cleared when a new
+    /// document commits (`forget`), so a link that turns into a download leaves it alone.
+    @Published private(set) var tabs: [UUID: UUID] = [:]
+    /// "Translate this page?", per tab, until answered or the tab commits another document.
+    @Published fileprivate(set) var offers: [UUID: Offer] = [:]
     /// The window whose `.translationTask` should run, and what it runs with. A
     /// configuration per window, so the one being asked is the one that shows the download
     /// sheet when a language is not installed yet.
     @Published fileprivate var configs: [ObjectIdentifier: TranslationSession.Configuration] = [:]
-    fileprivate var pending: [ObjectIdentifier: (tab: Tab, generation: UUID, texts: [String])] = [:]
+    fileprivate var pending: [ObjectIdentifier: Job] = [:]
+
+    struct Job: Sendable { let tab: Tab; let id = UUID(); let texts: [String] }
+    struct Offer: Equatable { let id = UUID(); let host: String; let language: String }
 
     /// Page scripts can replace builtins in their own world; the walk lives in another.
     static let world = WKContentWorld.world(name: "vane-translate")
     nonisolated static let batchSize = 50
 
-    static func isOn(_ tab: Tab?) -> Bool { tab.map { shared.tabs.contains($0.id) } ?? false }
+    static func isOn(_ tab: Tab?) -> Bool { tab.map { shared.tabs[$0.id] != nil } ?? false }
     static func title(for tab: Tab?) -> String { isOn(tab) ? "Show Original" : "Translate Page" }
-    static func forget(tab: Tab) { shared.tabs.remove(tab.id) }
+    /// On main-frame commit and on release: the new document is untranslated and unoffered.
+    static func forget(tab: Tab) {
+        shared.tabs[tab.id] = nil
+        shared.offers[tab.id] = nil
+        shared.pending = shared.pending.filter { $0.value.tab !== tab }
+    }
 
     static func toggle(_ tab: Tab?, in store: TabStore? = Windows.current) {
         guard let tab, tab.easelID == nil, let web = tab.existingWeb else { return }
+        shared.offers[tab.id] = nil
         if isOn(tab) {
-            shared.tabs.remove(tab.id)
+            shared.tabs[tab.id] = nil
             web.evaluateJavaScript(restoreJS, in: nil, in: world) { _ in }
             SiteChanges.shared.bump()
             return
@@ -56,8 +68,12 @@ import WebKit
             if let source, await LanguageAvailability().status(from: source, to: target) == .unsupported {
                 Toasts.show("Translation from \(name(of: source)) isn't available", in: store); return
             }
+            // The awaits above can outlast a navigation; a job for the old text must not land.
+            guard tab.readingDocumentGeneration == generation else { return }
             let window = ObjectIdentifier(store)
-            shared.pending[window] = (tab, generation, texts)
+            // A job still running in this window is cancelled by the new configuration
+            // below; `stopped` puts its page back and says so.
+            shared.pending[window] = Job(tab: tab, texts: texts)
             let config = TranslationSession.Configuration(source: source, target: target)
             // An equal configuration would not restart the task; invalidating it does.
             if shared.configs[window] == config { shared.configs[window]?.invalidate() }
@@ -70,9 +86,11 @@ import WebKit
     /// session never leaves this function: it is not `Sendable`, so only plain strings
     /// cross to the main actor.
     fileprivate nonisolated static func run(_ session: TranslationSession, window: ObjectIdentifier) async {
-        guard let (tab, generation, texts) = await begin(window) else { return }
+        guard let job = await begin(window) else { return }
+        let texts = job.texts
         do {
             for start in stride(from: 0, to: texts.count, by: batchSize) {
+                try Task.checkCancellation()
                 let requests = texts[start..<min(start + batchSize, texts.count)].enumerated().map {
                     TranslationSession.Request(sourceText: $1, clientIdentifier: String(start + $0))
                 }
@@ -80,34 +98,121 @@ import WebKit
                 for r in try await session.translations(from: requests) {
                     if let id = r.clientIdentifier { out[id] = r.targetText }
                 }
-                guard await apply(out, to: tab, generation: generation) else { return }
+                guard await apply(out, job) else { return }
             }
         } catch {
-            if !Task.isCancelled { await failed(tab) }
+            await stopped(job, cancelled: Task.isCancelled)
         }
     }
 
-    private static func begin(_ window: ObjectIdentifier) -> (Tab, UUID, [String])? {
-        guard let job = shared.pending.removeValue(forKey: window), job.tab.existingWeb != nil,
-              job.tab.readingDocumentGeneration == job.generation else { return nil }
-        shared.tabs.insert(job.tab.id)
+    /// `forget` drops a job whose document was replaced before it began.
+    private static func begin(_ window: ObjectIdentifier) -> Job? {
+        guard let job = shared.pending.removeValue(forKey: window), job.tab.existingWeb != nil else { return nil }
+        shared.tabs[job.tab.id] = job.id
         SiteChanges.shared.bump()
-        return (job.tab, job.generation, job.texts)
+        return job
     }
 
-    /// False once the tab navigated or Show Original was pressed while a batch was out.
-    private static func apply(_ batch: [String: String], to tab: Tab, generation: UUID) async -> Bool {
-        guard tab.readingDocumentGeneration == generation, isOn(tab), let web = tab.existingWeb else { return false }
+    /// False once a new document committed, Show Original was pressed, or a newer job took
+    /// the tab while a batch was out. A provisional load alone (a download, a 204) is not.
+    private static func apply(_ batch: [String: String], _ job: Job) async -> Bool {
+        guard shared.tabs[job.tab.id] == job.id, let web = job.tab.existingWeb else { return false }
         _ = try? await web.callAsyncJavaScript(applyJS, arguments: ["batch": batch], contentWorld: world)
         return true
     }
 
-    private static func failed(_ tab: Tab) {
-        guard isOn(tab) else { return }
-        shared.tabs.remove(tab.id)
-        tab.existingWeb?.evaluateJavaScript(restoreJS, in: nil, in: world) { _ in }
+    /// A failed job, or one cancelled because another tab in the window asked for the
+    /// window's one session: either way the page goes back to its own text, not half done.
+    private static func stopped(_ job: Job, cancelled: Bool) {
+        guard shared.tabs[job.tab.id] == job.id else { return }
+        shared.tabs[job.tab.id] = nil
+        job.tab.existingWeb?.evaluateJavaScript(restoreJS, in: nil, in: world) { _ in }
         SiteChanges.shared.bump()
-        Toasts.show("Couldn't translate this page")
+        Toasts.show(cancelled ? "Stopped translating \u{201C}\(job.tab.title)\u{201D}" : "Couldn't translate this page")
+    }
+
+    // MARK: - The offer
+
+    /// After a page finishes loading: offer once per load when its text is in a language
+    /// other than the user's, the pair is supported, and the site is not on the never list.
+    /// Never in private windows, on internal or blank pages, or on an Easel.
+    static func offer(_ tab: Tab) {
+        guard !tab.isPrivate, tab.easelID == nil, !isOn(tab), shared.offers[tab.id] == nil,
+              let web = tab.existingWeb, let url = web.url,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host(), !host.isEmpty,
+              !neverListed(host, in: neverTranslated(profileID: tab.profileID)) else { return }
+        let generation = tab.readingDocumentGeneration
+        Task {
+            guard let result = try? await web.callAsyncJavaScript(sampleJS, contentWorld: world) as? [String: Any],
+                  let sample = result["text"] as? String,
+                  let source = offerLanguage(lang: result["lang"] as? String, sample: sample,
+                                             target: preferredLanguage()),
+                  await LanguageAvailability().status(from: source, to: preferredLanguage()) != .unsupported,
+                  tab.readingDocumentGeneration == generation, tab.existingWeb === web, !isOn(tab)
+            else { return }
+            shared.offers[tab.id] = Offer(host: host, language: name(of: source))
+        }
+    }
+
+    /// The language worth offering a translation from, or nil: too little text to judge,
+    /// or already the user's language. Pure.
+    nonisolated static func offerLanguage(lang: String?, sample: String, target: Locale.Language) -> Locale.Language? {
+        guard sample.unicodeScalars.filter(CharacterSet.letters.contains).count >= 40,
+              let source = sourceLanguage(lang: lang, sample: [sample]),
+              !sameLanguage(source, target) else { return nil }
+        return source
+    }
+
+    enum Answer { case translate, notNow, never }
+
+    static func answer(_ offer: Offer, _ answer: Answer, tab: Tab, in store: TabStore?) {
+        guard shared.offers[tab.id] == offer else { return }
+        shared.offers[tab.id] = nil
+        switch answer {
+        case .translate: toggle(tab, in: store)
+        case .notNow: break
+        case .never:
+            setOffers(false, host: offer.host, tab: tab)
+            axAnnounce("Vane will not offer to translate \(site(offer.host)).")
+        }
+    }
+
+    // MARK: - Never translate this site
+
+    private static func neverKey(_ profileID: UUID) -> String {
+        ProfileManager.defaultsKey("translateNever", profileID)
+    }
+
+    /// Sites, without `www.`; one entry covers its subdomains, as `google.com` in Arc's did.
+    static func neverTranslated(profileID: UUID) -> [String] {
+        UserDefaults.vane.stringArray(forKey: neverKey(profileID)) ?? []
+    }
+
+    nonisolated static func site(_ host: String) -> String {
+        let h = host.lowercased()
+        return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+    }
+
+    nonisolated static func neverListed(_ host: String, in list: [String]) -> Bool {
+        let h = site(host)
+        return list.contains { h == $0 || h.hasSuffix("." + $0) }
+    }
+
+    /// Off from the offer's Never; back on from Site Controls' "Offer to Translate", which
+    /// also clears any parent entry covering the host. Never writes for a private tab.
+    static func setOffers(_ on: Bool, host: String, tab: Tab) {
+        guard !tab.isPrivate else { return }
+        setOffers(on, host: host, profileID: tab.profileID)
+    }
+
+    private static func setOffers(_ on: Bool, host: String, profileID: UUID) {
+        var list = neverTranslated(profileID: profileID)
+        if on { list.removeAll { neverListed(host, in: [$0]) } }
+        else if !neverListed(host, in: list) { list.append(site(host)) }
+        if list.isEmpty { UserDefaults.vane.removeObject(forKey: neverKey(profileID)) }
+        else { UserDefaults.vane.set(list.sorted(), forKey: neverKey(profileID)) }
+        SiteChanges.shared.bump()
     }
 
     // MARK: - Languages
@@ -144,7 +249,24 @@ import WebKit
 
     /// Collects every rendered text node worth translating and remembers it in this world,
     /// with its original text and surrounding whitespace, for `applyJS` and `restoreJS`.
+    /// The first ~1,000 characters of the page's visible text, for the offer's detector.
+    static let sampleJS = """
+    const root = document.body || document.documentElement;
+    return { lang: document.documentElement.lang || '', text: (root.innerText || '').slice(0, 1000) };
+    """
+
+    /// Also puts the page's text back as it is hidden, so a back-forward-cache return (which
+    /// commits, and so is untranslated as far as Vane knows) shows the page as it came.
     static let collectJS = """
+    if (!globalThis.__vaneTranslationHide) {
+      globalThis.__vaneTranslationHide = true;
+      addEventListener('pagehide', () => {
+        const t = globalThis.__vaneTranslation;
+        if (!t) return;
+        t.nodes.forEach((n, i) => { if (n.data === t.done[i]) n.data = t.originals[i]; });
+        delete globalThis.__vaneTranslation;
+      });
+    }
     const prior = globalThis.__vaneTranslation;
     if (prior) prior.nodes.forEach((n, i) => { if (n.data === prior.done[i]) n.data = prior.originals[i]; });
     const skip = 'script,style,noscript,textarea,input,select,option,code,pre,kbd,samp,var,svg,math,template,' +
@@ -201,7 +323,53 @@ import WebKit
             ("Simplified and Traditional Chinese differ",
              !sameLanguage(Locale.Language(identifier: "zh-Hans"), Locale.Language(identifier: "zh-Hant"))),
             ("menu title follows state", title(for: nil) == "Translate Page"),
+            ("an offer for a page in another language",
+             offerLanguage(lang: "en", sample: String(repeating: "Die Katze sitzt auf der Matte. ", count: 3),
+                           target: en)?.languageCode == "de"),
+            ("no offer for a page already in the user's language",
+             offerLanguage(lang: "de", sample: String(repeating: "The cat sits on the mat all day. ", count: 3),
+                           target: en) == nil),
+            ("no offer on too little text to judge", offerLanguage(lang: "fr", sample: "Bonjour", target: en) == nil),
+            ("a never-listed site covers its subdomains", neverListed("WWW.Google.com", in: ["google.com"])
+             && neverListed("mail.google.com", in: ["google.com"]) && !neverListed("notgoogle.com", in: ["google.com"])),
+            ("the never list round-trips", neverRoundTrip()),
         ]
+    }
+
+    /// Writes under a throwaway profile id and removes the key again.
+    private static func neverRoundTrip() -> Bool {
+        let profile = UUID()
+        defer { UserDefaults.vane.removeObject(forKey: neverKey(profile)) }
+        setOffers(false, host: "www.youtube.com", profileID: profile)
+        setOffers(false, host: "m.youtube.com", profileID: profile)
+        let stored = neverTranslated(profileID: profile)
+        setOffers(true, host: "music.youtube.com", profileID: profile)
+        return stored == ["youtube.com"] && neverTranslated(profileID: profile).isEmpty
+            && UserDefaults.vane.object(forKey: neverKey(profile)) == nil
+    }
+
+    /// Not pure: a real tab, real commits. Translated state survives nothing but its own
+    /// document, and the page puts its own text back as it is hidden (`pagehide`).
+    static func liveCheck(tab: Tab, load: (String) -> Bool) -> [(String, Bool)] {
+        final class Box { var done = false; var value: Any? }
+        func js(_ source: String, _ world: WKContentWorld, _ args: [String: Any] = [:]) -> Any? {
+            let box = Box()
+            tab.web.callAsyncJavaScript(source, arguments: args, in: nil, in: world) { box.value = try? $0.get(); box.done = true }
+            let deadline = Date().addingTimeInterval(5)
+            while !box.done, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            return box.value
+        }
+        guard load("<p>Bonjour tout le monde</p>") else { return [("a page loads", false)] }
+        _ = js(applyJS, world, ["batch": ["0": "Hello everyone"]])
+        let text = { js("return document.body.innerText", .page) as? String }
+        var out = [("a batch rewrites the text node", text() == "Hello everyone")]
+        _ = js("dispatchEvent(new PageTransitionEvent('pagehide', {persisted: true}))", .page)
+        out.append(("pagehide puts the original text back", text() == "Bonjour tout le monde"))
+        shared.tabs[tab.id] = UUID()
+        shared.offers[tab.id] = Offer(host: "example.com", language: "French")
+        out.append(("a committed navigation forgets the translation and the offer",
+                    load("<p>Another page</p>") && !isOn(tab) && shared.offers[tab.id] == nil))
+        return out
     }
 }
 
@@ -220,5 +388,63 @@ struct PageTranslationHost: ViewModifier {
     /// Built outside the view's main-actor body, so the session stays off the main actor.
     private nonisolated static func action(_ window: ObjectIdentifier) -> (TranslationSession) async -> Void {
         { session in await PageTranslation.run(session, window: window) }
+    }
+}
+
+/// "Translate this page?" under the address pill, where the password offer goes, and
+/// mounted beside it whether or not there is an offer — the card decides for itself.
+struct TranslateOffer: View {
+    let tab: Tab
+    let store: TabStore
+    @ObservedObject private var translation = PageTranslation.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        let offer = translation.offers[tab.id]
+        Group {
+            if let offer { card(offer).id(offer.id).transition(reduced ? .identity
+                : .opacity.combined(with: .scale(scale: Look.appearScale, anchor: .topTrailing))) }
+        }
+        .animation(reduced ? nil : Look.appear, value: offer?.id)
+    }
+
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
+
+    private func card(_ offer: PageTranslation.Offer) -> some View {
+        let answer = { (a: PageTranslation.Answer) in PageTranslation.answer(offer, a, tab: tab, in: store) }
+        let title = "Translate this page?"
+        return VStack(alignment: .leading, spacing: Look.cardInset) {
+            HStack(spacing: Look.inset) {
+                Image(systemName: "translate").font(Look.glyph).foregroundStyle(Look.inkSecondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(Look.heading).foregroundStyle(Look.inkPrimary)
+                    Text("From \(offer.language), on this Mac").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                }
+                Spacer(minLength: 0)
+                Button { answer(.notNow) } label: {
+                    Image(systemName: "xmark").font(Look.glyph)
+                        .frame(width: Look.control, height: Look.control).contentShape(.rect)
+                }
+                .buttonStyle(.plain).foregroundStyle(Look.inkTertiary)
+                .help("Not now").accessibilityLabel("Not now")
+            }
+            HStack(spacing: Look.inset) {
+                Spacer(minLength: 0)
+                Button("Never Translate This Site") { answer(.never) }.buttonStyle(.bordered)
+                    .accessibilityLabel("Never translate \(PageTranslation.site(offer.host))")
+                Button("Translate") { answer(.translate) }.buttonStyle(.borderedProminent)
+            }
+            .controlSize(.large)
+        }
+        .padding(Look.cardInset)
+        .frame(maxWidth: Look.offerWidth, alignment: .leading)
+        .background(Look.panelFill, in: .rect(cornerRadius: Look.pillRadius))
+        .hairline(radius: Look.pillRadius)
+        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+        .onAppear { axAnnounce(title) }
     }
 }
