@@ -482,7 +482,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// A future move is a *new* step, never an edit to an old one: bump this and add a
     /// matching `from < N` block to `migrate`, leaving the blocks already there as they are —
     /// they belong to the tables that were saved before them.
-    nonisolated static let migration = 2
+    nonisolated static let migration = 3
 
     /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite. `from` is the
     /// version the table was saved at: each step runs only for a table old enough to need it,
@@ -505,6 +505,17 @@ enum Command: String, CaseIterable, Codable, Sendable {
         if from < 2 {
             for (id, binding) in out where reserved(binding) != nil {
                 out[id] = nil
+            }
+        }
+        // Show Toolbar arrived on ⇧⌘D, which was free. Somebody who had already put another
+        // command there chose it; the new default must not take it, and `command(for:)` would
+        // hand it to whichever comes first. Show Toolbar steps aside, unbound. Runs after
+        // step 1, so Pin Tab's old ⇧⌘D default — dropped there — is no claim.
+        if from < 3 {
+            let toolbar = Command.toggleToolbar.rawValue
+            let keys = Keybinding("d", [.command, .shift])
+            if out[toolbar] == nil, out.contains(where: { $0.key != toolbar && $0.value == keys }) {
+                out[toolbar] = .unassigned
             }
         }
         return out
@@ -1160,14 +1171,33 @@ extension Keybindings {
              from1[Command.favouriteTab.rawValue] == Keybinding("d", .command)
                 && from1[Command.searchTabs.rawValue] == nil),
             ("a table at the current version is handed back untouched",
-             migrate(both, moved: movedDefaults, from: 2) == both),
-            ("whatever ran, the table is stamped at 2 and has nothing left to run",
-             migration == 2 && migrate(both, moved: movedDefaults, from: migration) == both),
+             migrate(both, moved: movedDefaults, from: migration) == both),
+            ("whatever ran, the table is stamped at 3 and has nothing left to run",
+             migration == 3 && migrate(both, moved: movedDefaults, from: migration) == both),
+        ]
+        // Step 3: ⇧⌘D became Show Toolbar's default; a binding already there keeps it.
+        let shiftD = Keybinding("d", [.command, .shift])
+        let toolbar = Command.toggleToolbar.rawValue
+        let claimed = migrate([Command.newTab.rawValue: shiftD], moved: movedDefaults, from: 2)
+        let pinOld = migrate([Command.pinTab.rawValue: shiftD], moved: movedDefaults, from: 0)
+        let ownToolbar = migrate([toolbar: Keybinding("t", [.command, .option]),
+                                  Command.newTab.rawValue: shiftD], moved: movedDefaults, from: 2)
+        out += [
+            ("a saved ⇧⌘D keeps its command and Show Toolbar is left unbound",
+             claimed[Command.newTab.rawValue] == shiftD && claimed[toolbar] == .unassigned),
+            ("Pin Tab's old ⇧⌘D default is no claim, so Show Toolbar keeps ⇧⌘D",
+             pinOld[Command.pinTab.rawValue] == nil && pinOld[toolbar] == nil),
+            ("a Show Toolbar binding the user chose is not touched",
+             ownToolbar[toolbar] == Keybinding("t", [.command, .option])),
+            ("a table with ⇧⌘D free keeps Show Toolbar on it",
+             migrate([:], moved: movedDefaults, from: 2)[toolbar] == nil),
+            ("a table already at 3 is not migrated again",
+             migrate([Command.newTab.rawValue: shiftD], moved: movedDefaults, from: 3)[toolbar] == nil),
         ]
         // And the same thing through the store, which is where it bites: a table written
         // before this migration existed, read back once.
         let old = Saved(bindings: [Command.searchTabs.rawValue: Keybinding("c", .command)],
-                        priorities: [:], migrated: migration - 1)
+                        priorities: [:], migrated: 1)
         if let blob = try? JSONEncoder().encode(old) {
             defaults.set(blob, forKey: storeKey)
             cached = nil
@@ -1177,6 +1207,21 @@ extension Keybindings {
         } else {
             out.append(("a table saved before the migration comes back with ⌘C gone", false))
         }
+        // The iCloud path: an adopted table stamped 2 that holds ⇧⌘D, picked up the way
+        // `reloadICloudPreferences` does it — the cache dropped, the getter migrating.
+        let synced = Saved(bindings: [Command.newTab.rawValue: shiftD], priorities: [:], migrated: 2)
+        if let blob = try? JSONEncoder().encode(synced) {
+            defaults.set(blob, forKey: storeKey)
+            reloadICloudPreferences()
+            out.append(("an adopted iCloud table holding ⇧⌘D keeps it, with Show Toolbar unbound",
+                        command(for: shiftD) == .newTab
+                            && binding(for: .toggleToolbar) == .unassigned
+                            && conflicts(shiftD) == [.newTab]))
+        } else {
+            out.append(("an adopted iCloud table holding ⇧⌘D keeps it, with Show Toolbar unbound", false))
+        }
+        reset(.newTab)
+        reset(.toggleToolbar)
 
         // Reset.
         reset(.newWindow)

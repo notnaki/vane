@@ -922,6 +922,8 @@ struct WebCard: View {
             if toolbar {
                 MainToolbarBar()
                     .padding(.bottom, Look.cardGap)
+                    // The strip above the row drags the window too, up to its top edge.
+                    .background(WindowDragArea().padding(.top, -MainToolbar.top))
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
             card
@@ -931,7 +933,7 @@ struct WebCard: View {
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        .padding(.top, topGap)
+        .padding(.top, toolbar ? MainToolbar.top : topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 
@@ -1116,6 +1118,8 @@ private struct Sidebar: View {
     @ChromeObserved var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isolatesSpaceContent = NativeSidebarBoundaryExperiment.enabled
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
+    private var toolbar: Bool { showsToolbar && !store.isLittle }
     @StateObject private var dropMarker = SidebarDropMarker()
     @StateObject private var downloadsHover = DownloadsHover()
     @State private var feedbackScope = FeedbackOcclusionScope()
@@ -1152,8 +1156,11 @@ private struct Sidebar: View {
         let _ = ResizeTimingDiagnostics.record("sidebar.body.sidebar")
         #endif
         SidebarChrome {
-            TopRow()
-            ActiveAddressPill()
+            TopRow(showsNavigation: !toolbar)
+            // View › Show Toolbar takes the pill and buttons up to its own row, as Arc does.
+            if !toolbar {
+                ActiveAddressPill().transition(.opacity)
+            }
             ZStack {
             if store.creatingSpace {
                 // Arc's Create a Space takes the whole strip, favourites included: the form
@@ -1196,6 +1203,8 @@ private struct Sidebar: View {
             BottomRow(downloadsHover: downloadsHover, hasPreviewItems: !previewItems.isEmpty,
                       preparePreview: preparePreview)
         }
+        // The same motion as the toolbar arriving over the page.
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
         .environment(\.sidebarDropMarker, dropMarker)
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
@@ -1334,14 +1343,19 @@ private struct ActiveNavButtons: View {
 struct TopRow: View {
     @EnvironmentObject var store: TabStore
     var layoutWidth: CGFloat? = nil
+    /// Off while View › Show Toolbar has the page's buttons; the lights and toggle stay.
+    var showsNavigation = true
 
-    var body: some View { TopRowContent(store: store, layoutWidth: layoutWidth) }
+    var body: some View {
+        TopRowContent(store: store, layoutWidth: layoutWidth, showsNavigation: showsNavigation)
+    }
 }
 
 private struct TopRowContent: View {
     @ChromeObserved var store: TabStore
     @WindowSidebarWidth private var sidebarWidth
     var layoutWidth: CGFloat? = nil
+    var showsNavigation = true
     private var layout: SidebarChromeLayout { SidebarChromeLayout(width: layoutWidth ?? sidebarWidth) }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1352,9 +1366,13 @@ private struct TopRowContent: View {
         #endif
         HStack(spacing: layout.headerSpacing) {
             Spacer().frame(width: Look.trafficLights)
-            if !layout.usesOverflow { toggle }
+            // Narrow, the toggle rides with the buttons; with them gone it stands alone.
+            if !layout.usesOverflow || !showsNavigation { toggle }
             Spacer(minLength: 0)
-            ActiveNavButtons(spacing: layout.navigationSpacing, showsSidebarToggle: layout.usesOverflow)
+            if showsNavigation {
+                ActiveNavButtons(spacing: layout.navigationSpacing, showsSidebarToggle: layout.usesOverflow)
+                    .transition(.opacity)
+            }
         }
         .frame(height: Look.topRow)
         .buttonStyle(TactileButtonStyle())
@@ -1506,6 +1524,11 @@ private struct NavigationTarget: ViewModifier {
 /// outlives the window, like the sidebar's width. Little Vane and Peek keep their own bar.
 @MainActor enum MainToolbar {
     static let prefKey = "mainWindowShowsToolbar"
+    /// The row is centred on the traffic lights and the sidebar's top row, as in Arc.
+    static let top = Look.topInset + (Look.topRow - Look.pillHeight) / 2
+    /// Arc's pill stops short of the window's width; what is left either side is empty
+    /// title bar to drag.
+    static let pillMaxWidth: CGFloat = 640
     static var shown: Bool { UserDefaults.vane.bool(forKey: prefKey) }
     static func toggle() {
         UserDefaults.vane.set(!shown, forKey: prefKey)
@@ -1513,7 +1536,8 @@ private struct NavigationTarget: ViewModifier {
     }
 }
 
-/// The toolbar's row. The same pill and buttons as the sidebar's top, for whichever tab —
+/// The toolbar's row. The sidebar's pill and buttons, moved here: while it is up the
+/// sidebar keeps only its lights and toggle. For whichever tab —
 /// or split pane — is active. Dragging its empty space moves the window, which matters
 /// with the sidebar hidden: then this row is the window's only title bar.
 private struct MainToolbarBar: View {
@@ -1522,8 +1546,12 @@ private struct MainToolbarBar: View {
     var body: some View {
         HStack(spacing: Look.inset) {
             NavButtons(tab: store.active)
+            Spacer(minLength: 0)
             // Sized as the full-width sidebar's pill, never its compact face.
             AddressPill(tab: store.active, layoutWidth: Look.sidebarWidth)
+                .frame(maxWidth: MainToolbar.pillMaxWidth)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
         }
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
