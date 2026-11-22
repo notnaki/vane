@@ -107,15 +107,18 @@ import WebKit
         runtimeManifest["background"] = runtimeBackground
         // Content scripts read `chrome.runtime` constants WebKit lacks at their top level.
         // Vane's stand-in runs first in each declared group; vendor scripts stay unchanged.
-        if var groups = manifest["content_scripts"] as? [[String: Any]],
-           groups.contains(where: { !(($0["js"] as? [String])?.isEmpty ?? true) }) {
+        // MAIN-world groups run in the page's own world, where `chrome` is the page's.
+        func isolated(_ group: [String: Any]) -> Bool {
+            (group["world"] as? String)?.uppercased() != "MAIN" && !((group["js"] as? [String])?.isEmpty ?? true)
+        }
+        if var groups = manifest["content_scripts"] as? [[String: Any]], groups.contains(where: isolated) {
             let gapsPath = "__vane_content_gaps_" + token + ".js"
             guard resources[gapsPath] == nil else {
                 throw ExtensionHost.Failure("The extension conflicts with its worker identity resources.")
             }
             resources[gapsPath] = Data(ExtensionChromiumGaps.contentScript.utf8)
             for index in groups.indices {
-                if let js = groups[index]["js"] as? [String], !js.isEmpty { groups[index]["js"] = [gapsPath] + js }
+                if isolated(groups[index]), let js = groups[index]["js"] as? [String] { groups[index]["js"] = [gapsPath] + js }
             }
             runtimeManifest["content_scripts"] = groups
         }

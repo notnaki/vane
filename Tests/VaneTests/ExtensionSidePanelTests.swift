@@ -371,13 +371,14 @@ import XCTest
 
     func testWorkerSetBehaviourShortcutAndContentScriptConstants() async throws {
         // What real extensions do at their worker's top level, and at their content scripts'.
-        try Data(#"{"manifest_version":3,"name":"Side Panel Fixture","version":"1.0","permissions":["sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"},"commands":{"_execute_action":{"suggested_key":{"mac":"Command+Shift+Y"}}},"content_scripts":[{"matches":["https://example.test/*"],"js":["content.js"]},{"matches":["https://example.test/*"],"css":["content.css"]}]}"#.utf8)
+        try Data(#"{"manifest_version":3,"name":"Side Panel Fixture","version":"1.0","permissions":["sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"},"commands":{"_execute_action":{"suggested_key":{"mac":"Command+Shift+Y"}}},"content_scripts":[{"matches":["https://example.test/*"],"js":["content.js"]},{"matches":["https://elsewhere.test/*"],"js":["main.js"],"world":"MAIN"},{"matches":["https://example.test/*"],"css":["content.css"]}]}"#.utf8)
             .write(to: folder.appendingPathComponent("manifest.json"))
         try Data("chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true});".utf8)
             .write(to: folder.appendingPathComponent("worker.js"))
         try Data("document.documentElement.dataset.reason = chrome.runtime.OnInstalledReason.INSTALL + '|' + chrome.runtime.ContextType.TAB + '|' + typeof chrome.notifications;".utf8)
             .write(to: folder.appendingPathComponent("content.js"))
         try Data().write(to: folder.appendingPathComponent("content.css"))
+        try Data().write(to: folder.appendingPathComponent("main.js"))
 
         try await withNativeWindowLoop {
             let store = TabStore(profileID: profile, session: [])
@@ -393,6 +394,7 @@ import XCTest
             XCTAssertEqual(scripts.count, 2)
             XCTAssertTrue(scripts[0].hasPrefix("__vane_content_gaps_"), "\(scripts)")
             XCTAssertEqual(scripts[1], "content.js")
+            XCTAssertEqual(groups[1]["js"] as? [String], ["main.js"], "MAIN-world groups run in the page's world")
             XCTAssertNil(groups.last?["js"])
             tab.web.loadHTMLString("<title>Content fixture</title>", baseURL: URL(string: "https://example.test/page"))
             try await wait("content script") { !tab.web.isLoading && tab.web.title == "Content fixture" }
