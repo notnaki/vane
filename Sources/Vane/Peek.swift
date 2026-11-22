@@ -524,6 +524,9 @@ private struct PeekView: View {
         .ignoresSafeArea()
         // …and so does one out of a Peek.
         .externalAppPrompt(store)
+        // A Peek window can be key, so Translate Page from the menu or Site Controls asks
+        // this store's session.
+        .modifier(PageTranslationHost(store: store))
         .onAppear { store.applySpaceAppearance() }
     }
 

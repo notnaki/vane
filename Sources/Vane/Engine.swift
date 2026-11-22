@@ -1256,7 +1256,7 @@ struct TitleReveal: Equatable, Sendable {
         readingDocumentGeneration = UUID()
         passwordContinuationFill = nil
         Reader.forget(tab: self)
-        PageTranslation.forget(tab: self)
+        PageTranslation.forget(tab: self, released: true)
         passwordStep = nil
         chosenAccount = nil
         passwordGeneration = nil
