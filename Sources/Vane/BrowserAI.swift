@@ -242,4 +242,34 @@ import SwiftUI
         continuation.onTermination = { _ in work.cancel() }
         return stream
     }
+
+    /// Ask on Page, routed like summaries: Apple's model may answer in a private window, a
+    /// cloud connection never does. Apple streams cumulative snapshots; a cloud connection
+    /// yields one complete answer. An empty stream means no answer.
+    static func askStream(page: String, question: String, history: [(question: String, answer: String)],
+                          isPrivate: Bool = false) -> AsyncStream<String> {
+        let revision = revision
+        let local = state.connection(for: .askOnPage) == nil
+        guard enabled, ready(for: .askOnPage), local || !isPrivate else { return AsyncStream { $0.finish() } }
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        let work = Task {
+            defer { continuation.finish() }
+            guard !Task.isCancelled, enabled, revision == self.revision else { return }
+            if local {
+                for await element in AppleAI.askStream(page: page, question: question, history: history) {
+                    guard !Task.isCancelled, enabled, revision == self.revision else { return }
+                    continuation.yield(element)
+                }
+            } else {
+                struct Answer: Decodable { let text: String }
+                let prompt = AppleAI.askPrompt(page: page, question: question, history: history)
+                    + #" Return JSON {"text":"answer"}."#
+                guard let answer = await reply(Answer.self, feature: .askOnPage, isPrivate: isPrivate, prompt: prompt, tokens: 1024)?.text,
+                      revision == self.revision, !Task.isCancelled else { return }
+                continuation.yield(answer)
+            }
+        }
+        continuation.onTermination = { _ in work.cancel() }
+        return stream
+    }
 }

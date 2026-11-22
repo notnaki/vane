@@ -3094,7 +3094,10 @@ struct Stash {
     @Published var findOpen = false {
         didSet {
             if oldValue && !findOpen {
-                Find.session(for: self).clearHighlight(in: tabs.first { $0.id == current })
+                let session = Find.session(for: self)
+                session.clearHighlight(in: tabs.first { $0.id == current })
+                session.asking = false
+                session.ask.reset()
             }
         }
     }
