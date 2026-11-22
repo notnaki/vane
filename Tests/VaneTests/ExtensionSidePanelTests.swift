@@ -3,6 +3,12 @@ import WebKit
 import XCTest
 @testable import vane
 
+/// Key or not on the test's word: an accessory test host cannot count on real focus.
+@MainActor private final class SidePanelFixtureWindow: NSWindow {
+    var key = true
+    override var isKeyWindow: Bool { key }
+}
+
 /// `chrome.sidePanel` is Vane's own: a script in the extension's worker and pages, a
 /// request the host intercepts, and a panel docked beside the page.
 @MainActor final class ExtensionSidePanelTests: XCTestCase {
@@ -27,12 +33,14 @@ import XCTest
             chrome.notifications.onClicked.addListener(() => {});
             chrome.debugger.onEvent.addListener(() => {});
             chrome.runtime.onUpdateAvailable.addListener(() => {});
+            let handled = 0;
             chrome.action.onClicked.addListener(tab => {
                 chrome.sidePanel.setOptions({tabId: tab.id, path: 'panel.html?tabId=' + tab.id, enabled: true});
-                chrome.sidePanel.open({tabId: tab.id});
+                chrome.sidePanel.open({tabId: tab.id}).finally(() => handled++);
             });
             // A worker has no gesture of its own: this open succeeds only after the button.
             chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                if (message.handled) { respond(String(handled)); return; }
                 chrome.sidePanel.open({windowId: message.windowId}).then(() => respond('opened'), error => respond(String(error.message)));
                 return true;
             });
@@ -107,8 +115,8 @@ import XCTest
 
     private func open(_ store: TabStore) -> Tab {
         let tab = store.newBlankTab()
-        let window = NSWindow(contentRect: NSRect(x: 120, y: 150, width: 900, height: 500),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = SidePanelFixtureWindow(contentRect: NSRect(x: 120, y: 150, width: 900, height: 500),
+                                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
         stores.append(store)
@@ -138,14 +146,42 @@ import XCTest
             XCTAssertEqual(sidePanelNotes.count, 1, "\(sidePanelNotes)")
             XCTAssertFalse(sidePanelNotes.contains(where: ExtensionDiagnostics.isUnsupported), "Provided, not missing")
             host.sync()
+            // Somebody may be using this machine: the test answers for the mouse.
+            host.secondsSinceClick = { 60 }
 
             // No gesture, no panel: a worker cannot open one on its own.
             let page = try await page(context)
             defer { page.stopLoading() }
-            let ask = "return String(await chrome.runtime.sendMessage({windowId: (await chrome.windows.getCurrent()).id}))"
+            let ask = "return String(await chrome.runtime.sendMessage({windowId: (await chrome.tabs.query({}))[0].windowId}))"
             let refused = try await run(ask, in: page)
             XCTAssertTrue(refused?.contains("user gesture") == true, "\(refused ?? "nil")")
             XCTAssertTrue(host.sidePanels.isEmpty)
+
+            // Chrome's documented pattern: a click in the page, a message, and the worker
+            // opens. The click is the window's, so it counts only while that window is key.
+            host.secondsSinceClick = { 1 }
+            (store.window as? SidePanelFixtureWindow)?.key = false
+            let background = try await run(ask, in: page)
+            XCTAssertTrue(background?.contains("user gesture") == true, "\(background ?? "nil")")
+            (store.window as? SidePanelFixtureWindow)?.key = true
+            let clicked = try await run(ask, in: page)
+            XCTAssertEqual(clicked, "opened")
+            host.secondsSinceClick = { 60 }
+            // The header's ✕ is the user's own way out, whatever the extension does.
+            host.closeSidePanel(try XCTUnwrap(host.sidePanel(in: store)))
+            XCTAssertTrue(host.sidePanels.isEmpty)
+
+            // A click in an extension page is that page's own gesture to report. No test
+            // can click, so the page says so itself — which is all the gate ever hears.
+            let reported = try await run("""
+                const windowId = (await chrome.tabs.query({}))[0].windowId;
+                const open = () => chrome.sidePanel.open({windowId}).then(() => 'opened', () => 'refused');
+                const idle = await open();
+                Object.defineProperty(navigator, 'userActivation', {configurable: true, value: {isActive: true}});
+                return idle + '|' + await open();
+                """, in: page)
+            XCTAssertEqual(reported, "refused|opened")
+            host.closeSidePanel(try XCTUnwrap(host.sidePanel(in: store)))
 
             // The worker's own calls: `chrome.sidePanel` exists there and reaches the host.
             host.run(context, for: tab, from: nil)
@@ -183,8 +219,17 @@ import XCTest
 
             // Without openPanelOnActionClick the button is the extension's: its click
             // reaches `onClicked` again, which leaves the open panel open.
+            let count = "return await chrome.runtime.sendMessage({handled: true})"
+            let before = try await run(count, in: page)
             host.run(context, for: tab, from: nil)
-            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertTrue(host.sidePanel(in: store) === panel)
+            // Its `open()` is still on its way: let it land before the panel closes, or it
+            // would open the panel again.
+            let deadline = ContinuousClock.now + .seconds(10)
+            while try await run(count, in: page) == before {
+                guard ContinuousClock.now < deadline else { throw ExtensionHost.Failure("Timed out: second click handled") }
+                try await Task.sleep(for: .milliseconds(20))
+            }
             XCTAssertTrue(host.sidePanel(in: store) === panel)
             // An extension dismisses its own panel with window.close().
             _ = try? await panel.web.evaluateJavaScript("window.close()")
@@ -304,10 +349,78 @@ import XCTest
             XCTAssertNil(host.sidePanel(in: hidden))
             XCTAssertEqual(host.sidePanels.count, 1)
 
+            // Hopping to another profile's Space parks the store behind its window
+            // (`Windows.hop`): the window's panel waits there, and is back on return.
+            let shared = try XCTUnwrap(host.sidePanel(in: second))
+            let window = try XCTUnwrap(second.window)
+            second.parkedIn = window
+            second.window = nil
+            host.sync()
+            XCTAssertTrue(host.sidePanels.contains { $0 === shared }, "A parked store is not a closed window")
+            second.window = window
+            second.parkedIn = nil
+            host.sync()
+            XCTAssertTrue(host.sidePanel(in: second) === shared)
+
             second.window?.close()
             second.window = nil
             host.sync()
             XCTAssertTrue(host.sidePanels.isEmpty)
+        }
+    }
+
+    func testWorkerSetBehaviourShortcutAndContentScriptConstants() async throws {
+        // What real extensions do at their worker's top level, and at their content scripts'.
+        try Data(#"{"manifest_version":3,"name":"Side Panel Fixture","version":"1.0","permissions":["sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"},"commands":{"_execute_action":{"suggested_key":{"mac":"Command+Shift+Y"}}},"content_scripts":[{"matches":["https://example.test/*"],"js":["content.js"]},{"matches":["https://example.test/*"],"css":["content.css"]}]}"#.utf8)
+            .write(to: folder.appendingPathComponent("manifest.json"))
+        try Data("chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true});".utf8)
+            .write(to: folder.appendingPathComponent("worker.js"))
+        try Data("document.documentElement.dataset.reason = chrome.runtime.OnInstalledReason.INSTALL + '|' + chrome.runtime.ContextType.TAB + '|' + typeof chrome.notifications;".utf8)
+            .write(to: folder.appendingPathComponent("content.js"))
+        try Data().write(to: folder.appendingPathComponent("content.css"))
+
+        try await withNativeWindowLoop {
+            let store = TabStore(profileID: profile, session: [])
+            let tab = open(store)
+            let host = ExtensionHost.host(for: profile)
+            _ = try await host.load(folder, installing: true) { _ in true }
+            let context = try XCTUnwrap(host.installed.first)
+            host.sync()
+
+            // The stand-in runs ahead of each group's scripts; a group without any is left alone.
+            let groups = try XCTUnwrap(context.webExtension.manifest["content_scripts"] as? [[String: Any]])
+            let scripts = try XCTUnwrap(groups.first?["js"] as? [String])
+            XCTAssertEqual(scripts.count, 2)
+            XCTAssertTrue(scripts[0].hasPrefix("__vane_content_gaps_"), "\(scripts)")
+            XCTAssertEqual(scripts[1], "content.js")
+            XCTAssertNil(groups.last?["js"])
+            tab.web.loadHTMLString("<title>Content fixture</title>", baseURL: URL(string: "https://example.test/page"))
+            try await wait("content script") { !tab.web.isLoading && tab.web.title == "Content fixture" }
+            var reason: String?
+            let deadline = ContinuousClock.now + .seconds(10)
+            while reason == nil, ContinuousClock.now < deadline {
+                reason = try await tab.web.evaluateJavaScript("document.documentElement.dataset.reason ?? null") as? String
+                if reason == nil { try await Task.sleep(for: .milliseconds(20)) }
+            }
+            XCTAssertEqual(reason, "install|TAB|undefined")
+
+            // The worker's own top-level call arrives some time after it starts; until
+            // then a press reaches `onClicked`, which this worker does not listen to.
+            try await wait("worker-set openPanelOnActionClick") {
+                host.run(context, for: tab, from: nil)
+                return !host.sidePanels.isEmpty
+            }
+            XCTAssertNil(try XCTUnwrap(host.sidePanel(in: store)).tabID)
+
+            // The action's shortcut is a press of its button: it closes, then opens.
+            let window = try XCTUnwrap(store.window)
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [.command, .shift], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: "Y", charactersIgnoringModifiers: "Y", isARepeat: false, keyCode: 16))
+            XCTAssertTrue(ExtensionCommands.handle(event))
+            XCTAssertTrue(host.sidePanels.isEmpty)
+            XCTAssertTrue(ExtensionCommands.handle(event))
+            XCTAssertNotNil(host.sidePanel(in: store))
         }
     }
 }

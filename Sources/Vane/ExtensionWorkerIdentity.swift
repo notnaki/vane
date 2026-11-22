@@ -87,6 +87,7 @@ import WebKit
         }
         include(Data("Vane MV3 navigator resources 4 memory cache".utf8))
         include(Data(directory.utf8)); include(Data(template.utf8)); include(Data(templateEntry.utf8))
+        include(Data(ExtensionChromiumGaps.contentScript.utf8))
         for name in originalResources.keys.sorted() { include(Data(name.utf8)); include(originalResources[name]!) }
         let token = digest.finalize().map { String(format: "%02x", $0) }.joined()
         let modulePath = "__vane_worker_identity_" + token + ".mjs"
@@ -104,6 +105,20 @@ import WebKit
         runtimeBackground["service_worker"] = entryURL.percentEncodedPath
         if generated { runtimeBackground["preferred_environment"] = ["service_worker"] }
         runtimeManifest["background"] = runtimeBackground
+        // Content scripts read `chrome.runtime` constants WebKit lacks at their top level.
+        // Vane's stand-in runs first in each declared group; vendor scripts stay unchanged.
+        if var groups = manifest["content_scripts"] as? [[String: Any]],
+           groups.contains(where: { !(($0["js"] as? [String])?.isEmpty ?? true) }) {
+            let gapsPath = "__vane_content_gaps_" + token + ".js"
+            guard resources[gapsPath] == nil else {
+                throw ExtensionHost.Failure("The extension conflicts with its worker identity resources.")
+            }
+            resources[gapsPath] = Data(ExtensionChromiumGaps.contentScript.utf8)
+            for index in groups.indices {
+                if let js = groups[index]["js"] as? [String], !js.isEmpty { groups[index]["js"] = [gapsPath] + js }
+            }
+            runtimeManifest["content_scripts"] = groups
+        }
         resources["manifest.json"] = try JSONSerialization.data(withJSONObject: runtimeManifest, options: [.sortedKeys])
         var error: NSError?
         guard let ext = VaneCreateResourceExtension(resources, &error) else {

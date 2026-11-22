@@ -9,6 +9,32 @@ import WebKit
     /// Permission names whose namespace WebKit omits entirely.
     nonisolated static let namespaces = ["debugger", "downloads", "identity", "notifications", "offscreen", "tabGroups"]
 
+    private nonisolated static let runtimeConstants = """
+        {OnInstalledReason: {INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update'}, \
+        ContextType: {TAB: 'TAB', POPUP: 'POPUP', BACKGROUND: 'BACKGROUND', OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT', SIDE_PANEL: 'SIDE_PANEL', DEVELOPER_TOOLS: 'DEVELOPER_TOOLS'}}
+        """
+
+    /// What a content script sees of the above: `chrome.runtime`'s constants, which
+    /// Chrome exposes there too and scripts read at their top level. Run ahead of the
+    /// extension's own content scripts by `ExtensionWorkerIdentity.prepare`.
+    // ponytail: manifest content scripts of MV3 worker extensions only. Scripts registered
+    // through `scripting.registerContentScripts` or `executeScript` go without; wrap those
+    // calls if an extension needs the constants there.
+    nonisolated static let contentScript = #"""
+        ;(() => {
+          for (const api of new Set([globalThis.chrome, globalThis.browser])) {
+            try {
+              const runtime = api?.runtime;
+              if (!runtime) continue;
+              // WebKit weakly caches nested API wrappers; keep this one and its additions.
+              Object.defineProperty(api, Symbol('Vane Chromium API owners'), {value: runtime});
+              for (const [key, value] of Object.entries(\#(runtimeConstants)))
+                if (runtime[key] === undefined) Object.defineProperty(runtime, key, {configurable: true, value: Object.freeze(value)});
+            } catch (error) { console.error(error); }
+          }
+        })();
+        """#
+
     nonisolated static let script = #"""
         ;(() => {
           const event = () => Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false});
@@ -36,8 +62,7 @@ import WebKit
               });
               // Vane replaces accepted code at once; no update ever waits for a reload.
               define(api.runtime, 'onUpdateAvailable', event());
-              define(api.runtime, 'OnInstalledReason', Object.freeze({INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update'}));
-              define(api.runtime, 'ContextType', Object.freeze({TAB: 'TAB', POPUP: 'POPUP', BACKGROUND: 'BACKGROUND', OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT', SIDE_PANEL: 'SIDE_PANEL', DEVELOPER_TOOLS: 'DEVELOPER_TOOLS'}));
+              for (const [key, value] of Object.entries(\#(runtimeConstants))) define(api.runtime, key, Object.freeze(value));
               // No administrator policy exists in Vane: managed storage is truthfully empty.
               if (declared.has('storage')) define(api.storage, 'managed', Object.freeze({
                 get(keys, callback) {

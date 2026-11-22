@@ -1593,6 +1593,9 @@ import WebKit
         // Only an extension that asked for `openPanelOnActionClick` has its button toggle
         // its panel. Any other click reaches the popup or `onClicked`, as in Chrome.
         if sidePanelsOnAction.contains(ObjectIdentifier(context)), let tab, let store = store(holding: tab) {
+            // In a window too narrow for both, the dock hides the panel and leaves it open.
+            // The press still closes it, and the next opens it hidden: nothing shows until
+            // the window widens, exactly as for a panel the extension opened itself.
             if let panel = sidePanel(in: store), panel.context === context { closeSidePanel(panel); return }
             if (try? openSidePanel(context, tab: tab, in: store)) != nil { return }
         }
@@ -2225,18 +2228,34 @@ import WebKit
         return shared
     }
 
+    /// How long ago the user last pressed the mouse anywhere. A variable so a test can
+    /// answer for a machine somebody is using.
+    var secondsSinceClick: () -> CFTimeInterval = {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown)
+    }
+
     /// The user just pressed this extension's button or shortcut.
     func noteSidePanelGesture(_ context: WKWebExtensionContext) {
         sidePanelGestures[ObjectIdentifier(context)] = .now
     }
 
     /// `sidePanel.open()` answers a user gesture, as in Chrome: the extension's button or
-    /// shortcut a moment ago, WebKit's own record for the tab, or a click in its page.
-    // ponytail: a page's click is that page's own word (`navigator.userActivation`). An
-    // extension could forge it; a second bridge the page cannot write to is the upgrade.
-    private func hasSidePanelGesture(_ context: WKWebExtensionContext, tab: Tab?, reported: Bool) -> Bool {
+    /// shortcut a moment ago, a click in the calling extension page, WebKit's own record
+    /// for the tab, or a real click in the target's key window a moment ago. The last is
+    /// Chrome's documented pattern: a button in the page messages the worker, which opens
+    /// the panel for `sender.tab.id`.
+    // ponytail: advisory, not a security boundary. Any context of the extension can forge
+    // the reported click (it is the caller's own `navigator.userActivation`, sent over the
+    // bridge), any click in the window counts for every extension, and WebKit's
+    // `hasActiveUserGesture(in:)` stays true until the tab navigates. The gate only keeps
+    // a panel from opening out of nowhere; the worst a forgery does is show the
+    // extension's own page in a panel the header closes. A host-observed gesture token
+    // per call is the upgrade if that ever matters.
+    private func hasSidePanelGesture(_ context: WKWebExtensionContext, tab: Tab?, in store: TabStore,
+                                     reported: Bool) -> Bool {
         if reported { return true }
         if let last = sidePanelGestures[ObjectIdentifier(context)], .now - last < .seconds(5) { return true }
+        if store.window?.isKeyWindow == true, secondsSinceClick() < 5 { return true }
         return shim(tab).map { context.hasActiveUserGesture(in: $0) } ?? false
     }
 
@@ -2249,7 +2268,11 @@ import WebKit
             if let id = panel.tabID {
                 if let tab = panel.tab, let store = store(holding: tab) { move(panel, to: store) }
                 else if !held.contains(id) { closeSidePanel(panel) }
-            } else if !myStores.contains(where: { $0 === panel.store }) { closeSidePanel(panel) }
+            } else if let store = panel.store, TabStore.all.contains(where: { $0 === store }),
+                      store.window != nil || store.isParked {
+                // A window's panel lasts as long as its store has a window, on screen or
+                // parked behind another profile's (`Windows.hop`), where it stays hidden.
+            } else { closeSidePanel(panel) }
         }
         if sidePanelOptions.keys.contains(where: { $0.tab.map { !held.contains($0) } ?? false }) {
             sidePanelOptions = sidePanelOptions.filter { $0.key.tab.map(held.contains) ?? true }
@@ -2302,7 +2325,7 @@ import WebKit
         case .open:
             guard let target else { throw Failure("sidePanel.open() needs the tabId or windowId of an open window.") }
             guard hasSidePanelGesture(context, tab: tab ?? target.tabs.first { $0.id == target.current },
-                                      reported: request.gesture) else {
+                                      in: target, reported: request.gesture) else {
                 throw Failure("sidePanel.open() may only be called in response to a user gesture.")
             }
             try openSidePanel(context, tab: tab, in: target)

@@ -215,12 +215,20 @@ still open, in a window too narrow for both. It honours `side_panel.default_path
 `open`, `close`, `getOptions`, `getLayout` and `setPanelBehavior({openPanelOnActionClick})`.
 A panel opened for one tab shows only while that tab is selected. It stays with its tab:
 switching to another Space hides it and coming back shows it again, it follows the tab to
-another window, and it closes when the tab or window closes. With
-`openPanelOnActionClick` the extension's button opens and closes its panel; without it
-the click reaches the popup or `action.onClicked` as usual. The page's own
-`window.close()` closes the panel too. `open` needs a user gesture: the extension's
-button or shortcut within the last five seconds, or a click in the extension page that
-calls it. Limits: options and behaviour are forgotten when the extension reloads or Vane
+another window, and it closes when the tab or window closes. A window's panel also
+survives a hop to another profile's Space and back. Every panel has a header with the
+extension's icon and name and a ✕ that closes it, whatever the extension does. With
+`openPanelOnActionClick` the extension's button and its `_execute_action` shortcut open
+and close its panel; without it they reach the popup or `action.onClicked` as usual. The
+page's own `window.close()` closes the panel too. `open` expects a user gesture: the
+extension's button or shortcut within the last five seconds, a click in the extension
+page that calls it, or a mouse click within the last five seconds while the target
+window is key (a button in a web page that messages the worker, which then opens the
+panel for `sender.tab.id`). This gate is advisory, not a security boundary: any context
+of the extension can forge the page-reported click, a click anywhere in the window counts
+for every extension, and WebKit's own record of a gesture on a tab lasts until that tab
+navigates. It keeps panels from opening unprompted; a forged call can only show the
+extension's own page, which the ✕ closes. Limits: options and behaviour are forgotten when the extension reloads or Vane
 restarts, `getOptions` answers from the calling context's own writes, and
 `sidePanel.onOpened`/`onClosed` and `runtime.getContexts` are not available.
 
@@ -234,6 +242,11 @@ fall back; calling one anyway throws as it would in any browser without it. Name
 only in `optional_permissions` get nothing. This lets the rest of the extension start;
 the features behind these namespaces do not work. The manager still lists each one as
 unrecognized. `storage.managed` reads as empty, because Vane has no administrator policy.
+The namespaces exist in the worker and extension pages only. Content scripts declared in
+the manifest of an MV3 worker extension get the `chrome.runtime` constants alone
+(`OnInstalledReason`, `ContextType`), from a generated script that runs ahead of the
+extension's own; scripts injected with `scripting.registerContentScripts` or
+`executeScript` do not.
 
 Vane does not provide native messaging hosts, replacement browser pages,
 developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native

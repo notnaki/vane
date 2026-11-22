@@ -37,8 +37,14 @@ import WebKit
         // Sorting by the persistent installation path keeps duplicate shortcuts stable
         // across restart. Details disclose the collision for both extensions.
         for (_, context) in host.loaded.sorted(by: { $0.path < $1.path }) where context.isLoaded {
-            guard context.command(for: event) != nil else { continue }
+            guard let command = context.command(for: event) else { continue }
             host.sync()
+            // The action's shortcut is a press of its button: the popup, `onClicked`, or
+            // the side panel of an extension that set `openPanelOnActionClick`.
+            if ["_execute_action", "_execute_browser_action", "_execute_page_action"].contains(command.id) {
+                host.run(context, for: tab, from: nil)
+                return true
+            }
             host.noteSidePanelGesture(context)
             return context.performCommand(for: event)
         }

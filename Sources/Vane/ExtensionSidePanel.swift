@@ -182,11 +182,17 @@ struct ExtensionSidePanelDock: ViewModifier {
                 // frame, and the panel's fade. Nothing in the page's own content joins in.
                 ZStack(alignment: .leading) {
                     if let panel, let width {
-                        ExtensionSidePanelPage(web: panel.web)
+                        VStack(spacing: 0) {
+                            ExtensionSidePanelHeader(host: host, panel: panel)
+                            Color(nsColor: .separatorColor).frame(height: Look.splitDivider)
+                            ExtensionSidePanelPage(web: panel.web)
+                                .accessibilityLabel("\(panel.context.webExtension.displayName ?? "Extension") side panel")
+                        }
+                            // Behind the hairline, or the window's tint shows through it.
+                            .background(Look.panelFill)
                             .id(ObjectIdentifier(panel))
                             .frame(width: width)
                             .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-                            .accessibilityLabel("\(panel.context.webExtension.displayName ?? "Extension") side panel")
                             .padding(.leading, gap)
                             .background(alignment: .leading) {
                                 if edgeToEdge { Look.pageRim.frame(width: gap) }
@@ -199,6 +205,33 @@ struct ExtensionSidePanelDock: ViewModifier {
                            value: width == nil ? nil : panel.map(ObjectIdentifier.init))
             }
         }
+    }
+}
+
+/// Whose panel this is, and the one way out that never depends on the extension: Claude's
+/// button cannot close its panel, and a window's panel would otherwise last as long as
+/// the window.
+private struct ExtensionSidePanelHeader: View {
+    let host: ExtensionHost
+    let panel: ExtensionSidePanel
+
+    var body: some View {
+        HStack(spacing: Look.pillGlyphGap) {
+            if let icon = host.icon(panel.context, for: nil) {
+                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                    .frame(width: Look.rowIcon, height: Look.rowIcon)
+                    .accessibilityHidden(true)
+            }
+            Text(panel.context.webExtension.displayName ?? "Extension")
+                .font(Look.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 0)
+            // The dock's own animation fades the card out and returns the page its width.
+            Button { host.closeSidePanel(panel) } label: { Image(systemName: "xmark") }
+                .buttonStyle(CompactControlStyle()).font(Look.caption)
+                .help("Close side panel").accessibilityLabel("Close side panel")
+        }
+        .padding(.leading, Look.rowInset).padding(.trailing, Look.tabRowTrailingInset)
+        .frame(height: Look.rowHeight)
     }
 }
 
