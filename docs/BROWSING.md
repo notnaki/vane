@@ -63,7 +63,7 @@ and Today tabs belong to a Space. Library lists Spaces across all profiles.
 
 ### Tabs across the top
 
-Turn on **Settings → General → Tabs across the top**, choose **View → Tabs Across the
+Set **Settings → Advanced → Interface → Tabs** to **Across the top**, choose **View → Tabs Across the
 Top**, or press `⌥⌘S` to show tabs in a compact bar beside the window buttons instead of
 in the sidebar. The setting applies to every window; Little Vane keeps its own toolbar.
 The page keeps a narrower margin around it than it does beside the sidebar.
@@ -82,8 +82,8 @@ The page keeps a narrower margin around it than it does beside the sidebar.
 - `⌘S` still shows the sidebar; the bar steps aside while the sidebar is open. Hovering
   the window's leading edge peeks the sidebar, and Library opens as usual.
 
-**Focus mode.** Turn on **Hide tabs until hover** (Settings → General, View → Hide Tabs
-Until Hover, or `⇧⌥⌘S`) to let the page fill the window. Move the pointer to the top
+**Focus mode.** Choose **Top, hidden until hover** (Settings → Advanced → Interface → Tabs), **View → Hide
+Tabs Until Hover**, or `⇧⌥⌘S` to let the page fill the window. Move the pointer to the top
 edge to slide the bar down over the page, with the window buttons; it hides again
 shortly after the pointer leaves, and stays while one of its menus is open or the
 search bar is up. Turning focus mode on also turns on the bar.

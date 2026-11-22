@@ -580,8 +580,6 @@ private struct GeneralPane: View {
     @AppStorage(UpdateChannel.preferenceKey) private var updateChannel = UpdateChannel.stable.rawValue
     @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
     @AppStorage(SpaceFooterPreferences.showIconsKey) private var showSpaceIcons = true
-    @AppStorage(TabStrip.prefKey) private var tabStrip = false
-    @AppStorage(TabStrip.focusKey) private var tabStripFocus = false
     @AppStorage(Look.interfaceStyleKey) private var interfaceStyle = "default"
     @State private var isDefault = URLHandling.isDefaultBrowser
 
@@ -607,15 +605,6 @@ private struct GeneralPane: View {
                 SettingsRow("Space icons in the footer", icon: "square.grid.2x2.fill", tint: .purple) {
                     Toggle("Show Space icons in the footer", isOn: $showSpaceIcons).labelsHidden()
                         .help("Show every Space’s icon. Turn off to use dots for inactive Spaces.")
-                }
-                SettingsRow("Tabs across the top", icon: "rectangle.topthird.inset.filled", tint: .blue) {
-                    Toggle("Tabs across the top", isOn: $tabStrip).labelsHidden()
-                        .help("A compact tab bar replaces the sidebar. \u{2318}S still shows the sidebar; \u{2325}\u{2318}S switches.")
-                }
-                SettingsRow("Hide tabs until hover", icon: "rectangle.dashed", tint: .blue) {
-                    Toggle("Hide tabs until hover", isOn: $tabStripFocus).labelsHidden()
-                        .disabled(!tabStrip)
-                        .help("Focus mode: the page fills the window and the tab bar slides down when the pointer reaches the top edge.")
                 }
                 SettingsRow("Interface style", icon: "rectangle.compress.vertical", tint: .gray) {
                     Picker("Interface style", selection: $interfaceStyle) {
@@ -1579,12 +1568,26 @@ private struct AdvancedPane: View {
     @State private var afterCrash = Prefs.afterCrash
     @State private var toastSeconds = Prefs.toastSeconds
     @State private var stackSplits = Prefs.stackSplits
+    @AppStorage(TabStrip.prefKey) private var tabStrip = false
+    @AppStorage(TabStrip.focusKey) private var tabStripFocus = false
 
     var body: some View {
         Pane(spacing: Look.inset / 2) {
-            SettingsDisclosure("Interface", summary: "Animation speeds",
+            SettingsDisclosure("Interface", summary: "Tab layout, animation speeds",
                                icon: "waveform.path", tint: .blue) {
                 SettingsCard {
+                    // Here rather than General: that pane has to fit the minimum window.
+                    SettingsRow("Tabs", icon: "rectangle.topthird.inset.filled", tint: .blue) {
+                        Picker("Tabs", selection: Binding(
+                            get: { !tabStrip ? 0 : tabStripFocus ? 2 : 1 },
+                            set: { tabStrip = $0 > 0; tabStripFocus = $0 == 2 })) {
+                            Text("Sidebar").tag(0)
+                            Text("Across the top").tag(1)
+                            Text("Top, hidden until hover").tag(2)
+                        }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
+                            .help("Across the top: a compact tab bar replaces the sidebar (\u{2325}\u{2318}S). "
+                                  + "Hidden until hover: the bar slides down when the pointer reaches the top edge (\u{21E7}\u{2325}\u{2318}S).")
+                    }
                     SettingsRow("UI Animations", icon: "waveform.path", tint: .blue) {
                         Button("Animation Settings…") { selection.id = "animations" }
                     }
