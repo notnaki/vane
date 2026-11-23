@@ -228,7 +228,7 @@ import WebKit
     private var workerIdentityUpdate: Task<Void, Never>?
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
-    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
+    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus", ExtensionDebuggerAPI.permission]
     private var metadataIcons: [String: NSImage] = [:]
     private struct LegacyMetadata {
         var version: String
@@ -1407,6 +1407,16 @@ import WebKit
                         enable: enabling, operationToken: token, review: ask)
                     return
                 }
+            }
+            // A record from before Vane provided `debugger` does not list it: WebKit never
+            // reported it. The accepted manifest does, so it is reviewed here as new support
+            // rather than refused later as code that changed.
+            var record = record
+            let code = codeStore.code(for: record)
+            if let manifest = try? Self.validate(record.safari == nil ? code : code.appendingPathComponent("extension.appex/Contents/Resources")),
+               ExtensionDebuggerAPI.declared(manifest) {
+                record.required = ExtensionAccess(permissions: record.required.permissions.union([ExtensionDebuggerAPI.permission]),
+                                                  sites: record.required.sites)
             }
             let previous = ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID)
             let review = ExtensionConsent.Review(name: record.name, requested: record.required, previous: previous, installing: false, limitations: record.compatibility,

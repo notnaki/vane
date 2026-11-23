@@ -238,8 +238,9 @@ are not listed, and `tabId` and `windowId` are always `-1`.
 that lists `debugger` in `permissions`, Vane supplies `attach`, `detach`, `sendCommand`,
 `getTargets`, `onDetach` and `onEvent`, and answers part of the Chrome DevTools Protocol
 with public WebKit calls. The install review names the capability (“Control pages you
-allow it on: read them, click, type and take screenshots”); an extension accepted before
-this existed must be updated from its source to be reviewed again. Only the extension's
+allow it on: read them, click, type and take screenshots”). An extension accepted before
+this existed is not loaded until the user approves a “Review new support for…” prompt
+that names the capability. Only the extension's
 own worker and pages can reach it. A page, a content script, and an extension without
 the permission cannot. Every command is checked against the document actually loaded:
 it must be `http` or `https`, on a host the extension has access to, and in a private
@@ -247,16 +248,18 @@ window only with private access. This is stricter than Chrome, where `debugger` 
 reaches every site. One debugger per tab.
 
 While a tab is attached, a pill at the foot of its page says “*Extension* is controlling
-this tab” with **Stop**. Stop detaches and tells the extension (`canceled_by_user`);
+this tab” with **Stop**; in Split View each attached pane has its own. The tab's sidebar
+row carries a small pointer glyph, whether or not the tab is on screen (a split's row
+shows it when any of its panes is attached). Stop detaches and tells the extension (`canceled_by_user`);
 closing the tab does too (`target_closed`). As in Chrome, the extension may attach again.
 
 | Command | In Vane |
 | --- | --- |
-| `Runtime.evaluate` | Runs in the page's own world, without `eval`, so a page's Content Security Policy does not block it. Top-level `await` works and the last expression's value is returned (`replMode`). `returnByValue`, `awaitPromise`, `timeout` and `exceptionDetails` are honoured. No object handles: without `returnByValue` only the description comes back. |
-| `Page.captureScreenshot` | `png` or `jpeg` with `quality`; `clip` with `scale`. No `webp`, nothing beyond the viewport. |
+| `Runtime.evaluate` | Runs in the page's own world, without `eval`, so a page's Content Security Policy does not block it. The code must compile as one whole function body, checked by Vane before any page sees it, so it cannot close the wrapper it runs in; otherwise the answer is a `SyntaxError`. The document's origin is checked again inside the page before any of the code runs. Top-level `await` works and the last expression's value is returned (`replMode`). `returnByValue`, `awaitPromise`, `timeout` and `exceptionDetails` are honoured. No object handles: without `returnByValue` only the description comes back. |
+| `Page.captureScreenshot` | `png` or `jpeg` with `quality`; `clip` with `scale`. No `webp`, nothing beyond the viewport. The image is discarded, and the command fails, if the document or its address changed while it was taken. |
 | `Input.dispatchMouseEvent` | Move, press, release and drag with the left or right button, and the wheel. The page sees trusted events. The pointer on screen does not move. |
-| `Input.dispatchKeyEvent`, `Input.insertText` | Keys by DOM `code`, with modifiers; text goes to the focused field. With ⌘, the editing `commands` Chrome's caller names (`selectAll`, `copy`, `paste`, `move…`, `delete…`) are performed; no other selector is. |
-| `Page.navigate`, `Page.reload`, `Page.getFrameTree`, `Page.bringToFront` | `http` and `https` only; the main frame only. |
+| `Input.dispatchKeyEvent`, `Input.insertText` | Keys by DOM `code`, with modifiers; text goes to the focused field. With ⌘, the editing `commands` Chrome's caller names (`selectAll`, `copy`, `paste`, `move…`, `delete…`) are performed, once each; no other selector is. A key the page leaves alone goes no further: it never reaches Vane's shortcuts, another extension's commands or the main menu. |
+| `Page.navigate`, `Page.reload`, `Page.getFrameTree`, `Page.bringToFront` | `http` and `https` only; the main frame only. `Page.navigate` also requires host access to the destination (stricter than Chrome). |
 | `Page.enable`, `Runtime.enable`, `Network.enable`/`disable`, `Network.setBypassServiceWorker`, `Emulation.setFocusEmulationEnabled`, `Page.startScreencast`/`stopScreencast`, `Input.cancelDragging` | Accepted and ignored, so an attach sequence completes. Their events are never sent. |
 | Anything else | Fails at once with a protocol error such as `{"code":-32601,"message":"'DOM.getDocument' wasn't found"}`. |
 
@@ -264,11 +267,14 @@ Limits: input reaches only a tab that is on screen in its window; a background t
 input commands fail. Console, network, navigation and JavaScript-dialog events are not
 sent, so an extension's console and network readers stay empty and it cannot answer an
 `alert`. The middle mouse button, `webp`, object handles, frames other than the main
-one, and `var`/function declarations that outlive one evaluation are not provided. A
-drag on a draggable element may start a real drag session. In callback style
+one, and `var`/function declarations that outlive one evaluation are not provided.
+Once an extension has pressed the mouse in a page, drags of links and images in that
+document's main frame are cancelled until the session ends, so no real drag session
+follows the pointer; HTML drag and drop cannot be driven, and a draggable element
+inside a cross-origin frame can still start one. In callback style
 `runtime.lastError.message` carries WebKit's prefix (`Invalid call to tabs.create(). …`).
 The last-expression rewrite is a tokenizer, not a parser: code it misreads still runs,
-and returns no value.
+and returns no value; so does code over 512 KB or nested more than 32 blocks deep.
 
 **Chromium-only namespaces.** When an MV3 extension requests `downloads`,
 `identity`, `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves

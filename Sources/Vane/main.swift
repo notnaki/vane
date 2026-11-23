@@ -134,7 +134,11 @@ if args.first == "import" {
     // otherwise answer for them. See LittleArc.handleKey. A Peek is ahead of both, for the same
     // reason: Escape and ⌘O both mean something else in a window with a sidebar, and only
     // Peek knows whether one is up. See Peek.handleKey.
+    // Ahead of them all: a key an extension's debugger typed into a page, which WebKit
+    // sends back through the application when the page leaves it alone. It is nobody's
+    // shortcut and reaches no menu. See ExtensionDebuggerAPI.isSynthesized.
     NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+        if ExtensionDebuggerAPI.isSynthesized($0) { return nil }
         if FirstLaunch.isPresenting { return $0 }
         return PasswordChooser.handleKey($0) || Peek.handleKey($0) || LittleArc.handleKey($0)
             || ExtensionManagement.handleKey($0)

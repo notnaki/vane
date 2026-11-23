@@ -242,16 +242,17 @@ import WebKit
             return list;
           };
           const fixed = /^(?:var|let|const|function|class|if|for|while|do|switch|try|return|throw|import|export|with)$/;
-          const rewrite = (from, to) => {
+          const rewrite = (from, to, depth = 0) => {
+            if (depth > 32) return null;
             const list = split(from, to);
             for (let k = list.length - 1; k >= 0; k--) {
               const {from, to, first} = list[k];
               if (first.kind === 'w' && /^(?:break|continue|debugger)$/.test(first.text)) continue;
-              if (first.kind === 'p' && first.text === '{') return first.to === to ? rewrite(from + 1, to - 1) : null;
+              if (first.kind === 'p' && first.text === '{') return first.to === to ? rewrite(from + 1, to - 1, depth + 1) : null;
               if (first.kind === 'w') {
                 if (fixed.test(first.text) || /^async\s+function\b/.test(source.slice(from, from + 64))) return null;
                 const label = /^[\w$]+\s*:\s*/.exec(source.slice(from, to));
-                if (label) return rewrite(from + label[0].length, to);
+                if (label) return rewrite(from + label[0].length, to, depth + 1);
               }
               return source.slice(0, from) + 'return new ' + box + '((\n' + source.slice(from, to) + '\n))' + source.slice(to);
             }
@@ -261,25 +262,59 @@ import WebKit
         }
         """#
 
-    private static let rewrite: JSValue? = JSContext().evaluateScript("(" + rewriter + ")")
+    // A context of Vane's own, never a page's: nothing from it runs in a page, and its
+    // answers are text. JavaScriptCore locks it, so any thread may call in.
+    private nonisolated(unsafe) static let tools: JSValue? = JSContext().evaluateScript("""
+        ({rewrite: \(rewriter),
+          // The Function constructor takes a body only if it is one function's body, whole:
+          // text that closes the function early and carries on is a SyntaxError here.
+          compiles: source => { try { new (async function () {}).constructor(source); return null; } catch (error) { return String(error); } }})
+        """)
+
+    /// Above this the tokenizer is skipped and the code runs unchanged, for no value.
+    nonisolated static let rewriteLimit = 512 * 1024
 
     /// `source` with its last expression statement returned through `new <box>(…)`, or
     /// `nil` when it ends in something else (a declaration, a loop, an explicit `return`).
-    static func returningLast(_ source: String, box: String) -> String? {
-        guard let result = rewrite?.call(withArguments: [source, box]), result.isString else { return nil }
+    nonisolated static func returningLast(_ source: String, box: String) -> String? {
+        guard source.utf16.count <= rewriteLimit,
+              let result = tools?.invokeMethod("rewrite", withArguments: [source, box]), result.isString else { return nil }
         return result.toString()
     }
 
-    /// The function body WebKit runs for one evaluation. Only names carrying `token` are
-    /// in scope of the caller's code, so none can shadow a page global it meant to read.
+    /// Why `body` is not the whole body of one async function, or `nil` when it is. Only
+    /// such a body may be placed in `evaluation`: it cannot end the function it is put in.
+    nonisolated static func syntaxError(in body: String) -> String? {
+        guard let result = tools?.invokeMethod("compiles", withArguments: [body]) else { return "SyntaxError" }
+        return result.isNull ? nil : result.toString()
+    }
+
+    /// The body to run for `source`: its REPL form when that compiles, else as written.
+    /// Decided here, off the main thread, so a page never compiles a body Vane has not.
+    nonisolated static func body(for source: String, box: String) async -> Body {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                if let last = returningLast(source, box: box), syntaxError(in: last) == nil { continuation.resume(returning: .run(last)) }
+                else if let error = syntaxError(in: source) { continuation.resume(returning: .syntax(error)) }
+                else { continuation.resume(returning: .run(source)) }
+            }
+        }
+    }
+
+    enum Body: Equatable, Sendable { case run(String), syntax(String) }
+
+    /// The function body WebKit runs for one evaluation; `body` has passed `syntaxError`.
+    /// The origin is checked before anything of the caller's runs. Only names carrying
+    /// `token` are in scope of the caller's code, so none can shadow a page global it
+    /// meant to read; `location` is the window's own, which a page cannot replace.
     nonisolated static func evaluation(_ body: String, token: String) -> String {
         """
+        if (location.origin !== \(token)_options.origin) return JSON.stringify({moved: true});
         class \(token) { constructor(value) { this.value = value; } }
         const \(token)_run = (async function () {
         \(body)
         }).call(globalThis).then(value => [false, value], error => [true, error]);
         return (async (run, box, options) => {
-          if (location.origin !== options.origin) return JSON.stringify({moved: true});
           const describe = (v, byValue) => {
             const t = typeof v;
             if (v === undefined) return {type: 'undefined'};
@@ -357,6 +392,23 @@ import WebKit
             || (["move", "delete", "scroll", "page"].contains { name.hasPrefix($0) } && name.allSatisfy { $0.isASCII && $0.isLetter })
     }
 
+    /// Key events Vane made for an extension. WebKit hands a key the page left alone back
+    /// to the application, where Vane's shortcuts and the main menu would take it as the
+    /// user's; the key monitor drops these instead. Held weakly, by identity.
+    private static let synthesized = NSHashTable<NSEvent>(options: [.weakMemory, .objectPointerPersonality])
+    static func isSynthesized(_ event: NSEvent) -> Bool { synthesized.contains(event) }
+    fileprivate static func markSynthesized(_ event: NSEvent) { synthesized.add(event) }
+
+    /// Run in the page's isolated world when an extension presses the mouse: a drag the
+    /// page would start from there becomes an AppKit drag session, which follows the real
+    /// pointer. Switched off again when the session ends.
+    // ponytail: the main frame only; a draggable link inside a cross-origin frame still
+    // starts a session. A user script in every frame is the upgrade.
+    nonisolated static func dragGuard(_ on: Bool) -> String {
+        "globalThis.__vaneDragGuard ? (__vaneDragGuard.on = \(on)) : \(on) && (globalThis.__vaneDragGuard = {on: true}, "
+            + "addEventListener('dragstart', event => { if (__vaneDragGuard.on) event.preventDefault(); }, true)); 0"
+    }
+
     /// CDP's modifier bits: Alt 1, Ctrl 2, Meta 4, Shift 8.
     nonisolated static func flags(_ modifiers: Int) -> NSEvent.ModifierFlags {
         var flags: NSEvent.ModifierFlags = []
@@ -374,7 +426,9 @@ import WebKit
 @MainActor final class ExtensionBridgeReply: NSObject, WKWebExtensionTab {
     private let location: URL
     fileprivate var json = "null"
-    fileprivate var busy = false
+    /// Until WebKit has read the answer, or this passes: a call whose caller went away is
+    /// never read, and must not hold the object for as long as the extension is loaded.
+    fileprivate var busyUntil = Date.distantPast
 
     fileprivate init(base: URL) { location = base.appendingPathComponent(String(ExtensionDebuggerAPI.bridgePath.dropFirst())) }
 
@@ -383,7 +437,7 @@ import WebKit
     /// WebKit reads this once, as the call resolves; the object then serves another call,
     /// so WebKit's table of tabs it has seen does not grow by one per command.
     func title(for context: WKWebExtensionContext) -> String? {
-        DispatchQueue.main.async { [self] in busy = false }
+        DispatchQueue.main.async { [self] in busyUntil = .distantPast }
         return json
     }
 }
@@ -414,6 +468,9 @@ import WebKit
     private var eventNumber = 0
     /// How long one WebKit call may take before the command fails instead of hanging.
     var patience: TimeInterval = 30
+    var crowdedPollDelay: TimeInterval = 1
+    /// How long an answer WebKit has not read keeps its reply object to itself.
+    var replyPatience: TimeInterval = 30
 
     init(profileID: UUID) { self.profileID = profileID }
 
@@ -441,7 +498,11 @@ import WebKit
             guard let after = request.values["after"].flatMap(Int.init) else {
                 return reply(["cursor": next, "events": [Any](), "idle": !sessions.contains { $0.context === context }], for: context)
             }
-            if after >= next, sessions.contains(where: { $0.context === context }), (waiters[key]?.count ?? 0) < 8 { await wait(key) }
+            if after >= next, sessions.contains(where: { $0.context === context }) {
+                // Eight calls are held open per extension. One more is answered empty, but
+                // not at once: its caller asks again as soon as it hears.
+                if (waiters[key]?.count ?? 0) < 8 { await wait(key) } else { try? await Task.sleep(for: .seconds(crowdedPollDelay)) }
+            }
             let log = logs[key]
             return reply(["cursor": log?.next ?? 0, "events": (log?.items ?? []).filter { $0.sequence >= after }.map(\.item),
                           "idle": !sessions.contains { $0.context === context }], for: context)
@@ -458,6 +519,7 @@ import WebKit
                 throw ExtensionHost.Failure("Debugger is not attached to the tab with id: \(label).")
             }
             sessions.removeAll { $0 === session }
+            release(session)
             return reply([String: Any](), for: context)
         case "sendCommand":
             guard let session = attached() else {
@@ -476,14 +538,15 @@ import WebKit
 
     private func reply(_ result: Any, for context: WKWebExtensionContext) -> ExtensionBridgeReply {
         let key = ObjectIdentifier(context)
-        let reply = replies[key]?.first { !$0.busy } ?? {
+        let now = Date()
+        let reply = replies[key]?.first { $0.busyUntil <= now } ?? {
             let reply = ExtensionBridgeReply(base: context.baseURL)
             replies[key, default: []].append(reply)
             return reply
         }()
         let data = try? JSONSerialization.data(withJSONObject: ["result": result], options: [.fragmentsAllowed, .sortedKeys])
         reply.json = data.map { String(decoding: $0, as: UTF8.self) } ?? #"{"result":null}"#
-        reply.busy = true
+        reply.busyUntil = now.addingTimeInterval(replyPatience)
         return reply
     }
 
@@ -531,7 +594,13 @@ import WebKit
     private func end(_ session: Session, reason: String) {
         guard let index = sessions.firstIndex(where: { $0 === session }) else { return }
         sessions.remove(at: index)
+        release(session)
         emit(["tabId": session.label, "reason": reason], to: session.context)
+    }
+
+    /// The page gets its own drags back; see `ExtensionDebuggerAPI.dragGuard`.
+    private func release(_ session: Session) {
+        session.tab?.existingWeb?.evaluateJavaScript(ExtensionDebuggerAPI.dragGuard(false), in: nil, in: .defaultClient)
     }
 
     /// The banner's Stop: the user takes the tab back.
@@ -546,6 +615,7 @@ import WebKit
 
     func forget(_ context: WKWebExtensionContext) {
         let key = ObjectIdentifier(context)
+        for session in sessions where session.context === context { release(session) }
         sessions.removeAll { $0.context === context }
         logs[key] = nil
         replies[key] = nil
@@ -586,27 +656,37 @@ import WebKit
     /// a website it has host access to. Checked against the document that is actually
     /// loaded, which is not always the address the tab reports while it navigates.
     // ponytail: checked once per command, before it runs. `Runtime.evaluate` checks the
-    // origin again inside the page; input and screenshots do not, so a navigation in the
-    // few milliseconds between check and delivery lands on the new page.
-    private func page(_ shim: ExtTab?, label: Int, for context: WKWebExtensionContext) async throws -> Page {
-        guard let shim, let tab = shim.tab, let web = shim.webView(for: context),
-              !tab.isPrivate || context.hasAccessToPrivateData else {
-            throw ExtensionHost.Failure("No tab with given id \(label).")
-        }
-        let probe: [Any] = try await bounded { finish in
+    // origin again inside the page and a screenshot is checked again once taken; input is
+    // not, so a navigation in the few milliseconds between check and delivery lands on
+    // the new page.
+    private func probe(_ web: WKWebView) async throws -> [Any] {
+        try await bounded { finish in
             web.evaluateJavaScript("[location.href, scrollX, scrollY, performance.timeOrigin]", in: nil, in: .defaultClient) { result in
                 finish(result.flatMap { value in
                     (value as? [Any]).map(Result.success) ?? .failure(ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed"))
                 })
             }
         }
+    }
+
+    private func allows(_ url: URL, _ shim: ExtTab, _ context: WKWebExtensionContext) -> Bool {
+        switch context.permissionStatus(for: url, in: shim) {
+        case .grantedExplicitly, .grantedImplicitly: true
+        default: false
+        }
+    }
+
+    private func page(_ shim: ExtTab?, label: Int, for context: WKWebExtensionContext) async throws -> Page {
+        guard let shim, let tab = shim.tab, let web = shim.webView(for: context),
+              !tab.isPrivate || context.hasAccessToPrivateData else {
+            throw ExtensionHost.Failure("No tab with given id \(label).")
+        }
+        let probe = try await probe(web)
         guard probe.count == 4, let url = (probe[0] as? String).flatMap(URL.init(string:)),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
             throw ExtensionHost.Failure("Cannot attach to this target.")
         }
-        switch context.permissionStatus(for: url, in: shim) {
-        case .grantedExplicitly, .grantedImplicitly: break
-        default:
+        guard allows(url, shim, context) else {
             throw ExtensionHost.Failure("Cannot access contents of the page. Extension manifest must request permission to access the respective host.")
         }
         return Page(tab: tab, web: web, url: url,
@@ -632,6 +712,10 @@ import WebKit
             guard let url = (parameters["url"] as? String).flatMap(URL.init(string:)),
                   ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
                 throw ExtensionDebuggerAPI.failure(-32000, "Cannot navigate to invalid URL")
+            }
+            // Stricter than Chrome: the debugger takes a tab no further than its extension may read.
+            guard let shim, allows(url, shim, context) else {
+                throw ExtensionDebuggerAPI.failure(-32000, "Cannot navigate to a page this extension has no access to")
             }
             page.tab.navigate(to: url)
             return ["frameId": frameID(session), "loaderId": loaderID(page)]
@@ -677,36 +761,38 @@ import WebKit
             "returnByValue": parameters["returnByValue"] as? Bool ?? false,
             "timeout": parameters["timeout"] as? Double ?? 0
         ]
-        var syntax: String?
-        for body in [ExtensionDebuggerAPI.returningLast(expression, box: token), expression].compactMap({ $0 }) {
-            let outcome: Result<Any, any Error> = try await bounded { finish in
-                page.web.callAsyncJavaScript(ExtensionDebuggerAPI.evaluation(body, token: token),
-                                             arguments: [token + "_options": options], in: nil, in: .page) { finish(.success($0)) }
-            }
-            switch outcome {
-            case .success(let value):
-                guard let text = value as? String,
-                      let answer = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else {
-                    throw ExtensionDebuggerAPI.failure(-32000, "The page returned no result.")
-                }
-                if answer["moved"] != nil { throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed") }
-                if let failed = answer["failed"] as? String { throw ExtensionDebuggerAPI.failure(-32000, failed) }
-                return answer
-            case .failure(let error):
-                // A body that does not compile ran nothing, so the next form may be tried.
-                let error = error as NSError
-                let message = error.userInfo["WKJavaScriptExceptionMessage"] as? String ?? ""
-                guard error.domain == WKErrorDomain, error.code == WKError.javaScriptExceptionOccurred.rawValue,
-                      message.hasPrefix("SyntaxError") else {
-                    throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed")
-                }
-                syntax = syntax ?? message
-            }
+        let exception: (String) -> [String: Any] = { description in
+            let exception: [String: Any] = ["type": "object", "subtype": "error", "className": "SyntaxError", "description": description]
+            return ["result": exception, "exceptionDetails": ["exceptionId": 1, "text": "Uncaught", "lineNumber": 0, "columnNumber": 0,
+                                                               "scriptId": "0", "exception": exception] as [String: Any]]
         }
-        let exception: [String: Any] = ["type": "object", "subtype": "error", "className": "SyntaxError",
-                                        "description": syntax ?? "SyntaxError"]
-        return ["result": exception, "exceptionDetails": ["exceptionId": 1, "text": "Uncaught", "lineNumber": 0, "columnNumber": 0,
-                                                           "scriptId": "0", "exception": exception] as [String: Any]]
+        let body: String
+        switch await ExtensionDebuggerAPI.body(for: expression, box: token) {
+        case .run(let compiled): body = compiled
+        case .syntax(let error): return exception(error)
+        }
+        let outcome: Result<Any, any Error> = try await bounded { finish in
+            page.web.callAsyncJavaScript(ExtensionDebuggerAPI.evaluation(body, token: token),
+                                         arguments: [token + "_options": options], in: nil, in: .page) { finish(.success($0)) }
+        }
+        switch outcome {
+        case .success(let value):
+            guard let text = value as? String,
+                  let answer = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else {
+                throw ExtensionDebuggerAPI.failure(-32000, "The page returned no result.")
+            }
+            if answer["moved"] != nil { throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed") }
+            if let failed = answer["failed"] as? String { throw ExtensionDebuggerAPI.failure(-32000, failed) }
+            return answer
+        case .failure(let error):
+            let error = error as NSError
+            let message = error.userInfo["WKJavaScriptExceptionMessage"] as? String ?? ""
+            guard error.domain == WKErrorDomain, error.code == WKError.javaScriptExceptionOccurred.rawValue,
+                  message.hasPrefix("SyntaxError") else {
+                throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed")
+            }
+            return exception(message)
+        }
     }
 
     private func screenshot(_ parameters: [String: Any], _ page: Page) async throws -> Any {
@@ -730,6 +816,11 @@ import WebKit
             page.web.takeSnapshot(with: configuration) { image, error in
                 finish(image.map(Result.success) ?? .failure(error ?? ExtensionDebuggerAPI.failure(-32000, "Unable to capture screenshot")))
             }
+        }
+        // The picture is of whatever was on screen when it was taken: only this document's.
+        let after = try await probe(page.web)
+        guard after.count == 4, after[0] as? String == page.url.absoluteString, after[3] as? Double == page.began else {
+            throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed")
         }
         guard let bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil).map(NSBitmapImageRep.init(cgImage:)),
               let data = format == "png" ? bitmap.representation(using: .png, properties: [:])
@@ -805,6 +896,7 @@ import WebKit
         case .leftMouseDown:
             // A click focuses the page, as the user's would.
             if window.firstResponder !== web { window.makeFirstResponder(web) }
+            web.evaluateJavaScript(ExtensionDebuggerAPI.dragGuard(true), in: nil, in: .defaultClient)
             web.mouseDown(with: event)
         case .leftMouseUp: web.mouseUp(with: event)
         case .rightMouseDown: web.rightMouseDown(with: event)
@@ -848,9 +940,12 @@ import WebKit
             throw ExtensionDebuggerAPI.failure(-32000, "Unable to create the key event")
         }
         if type == "keyUp" { web.keyUp(with: event); return }
+        // A key the page leaves alone comes back through the application; the key monitor
+        // knows this one and drops it there, short of Vane's shortcuts and the main menu.
+        ExtensionDebuggerAPI.markSynthesized(event)
         web.keyDown(with: event)
         // AppKit turns ⌘ shortcuts into commands in its menus, which this event never
-        // visits; the commands Chrome's caller names stand in for them.
+        // reaches; the commands Chrome's caller names stand in for them, once each.
         guard modifiers & 4 != 0 else { return }
         for command in parameters["commands"] as? [String] ?? [] where ExtensionDebuggerAPI.isEditingCommand(command) {
             let selector = NSSelectorFromString(command + ":")
@@ -859,18 +954,17 @@ import WebKit
     }
 }
 
-/// Chrome's "is debugging this browser" bar, as a pill over the page: who is driving the
-/// tab on screen, and the user's way to take it back.
+/// Chrome's "is debugging this browser" bar, as a pill over each page being driven: who
+/// is driving it, and the user's way to take it back. One per pane in a split.
 struct ExtensionDebuggerBanner: View {
     @ObservedObject var debugger: ExtensionDebugger
     let host: ExtensionHost
-    /// Read by the caller so a tab switch re-evaluates which session this window shows.
-    let onScreen: [Tab.ID]
+    let tab: Tab.ID
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let session = debugger.sessions.first { onScreen.contains($0.tabID) }
+        let session = debugger.session(on: tab)
         ZStack {
             if let session {
                 let name = session.context.webExtension.displayName ?? "An extension"
@@ -880,21 +974,49 @@ struct ExtensionDebuggerBanner: View {
                             .frame(width: Look.rowIcon, height: Look.rowIcon)
                             .accessibilityHidden(true)
                     }
-                    Text("\(name) is controlling this tab").font(Look.caption).lineLimit(1)
+                    Text("\(name) is controlling this tab").font(Look.caption).lineLimit(1).truncationMode(.middle)
                     Button("Stop") { debugger.stop(session) }
                         .buttonStyle(.plain).font(Look.caption.weight(.semibold))
                         .padding(.horizontal, Look.pillGlyphGap).padding(.vertical, 3)
                         .background(Color.primary.opacity(0.1), in: .capsule)
                         .contentShape(.capsule)
+                        .fixedSize()
                         .help("Stop \(name) controlling this tab")
                 }
                 .padding(.leading, Look.rowInset).padding(.trailing, 5).padding(.vertical, 5)
                 .background(Look.panelFill, in: .capsule)
                 .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor)) }
-                .padding(.bottom, Look.inset)
+                // A narrow pane shortens the name; Stop keeps its size.
+                .padding(.bottom, Look.inset).padding(.horizontal, Look.inset)
                 .accessibilityElement(children: .contain)
                 .id(ObjectIdentifier(session))
                 .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: session.map(ObjectIdentifier.init))
+    }
+}
+
+/// The sidebar's word for the same thing: a glyph on the row of a tab an extension is
+/// driving, on screen or not, beside the speaker and in its style.
+struct ExtensionDebuggerRowGlyph: View {
+    @ObservedObject var debugger: ExtensionDebugger
+    /// A split's row speaks for every pane in it.
+    let tabs: [Tab.ID]
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let session = debugger.sessions.first { tabs.contains($0.tabID) }
+        ZStack {
+            if let session {
+                let name = session.context.webExtension.displayName ?? "An extension"
+                Image(systemName: "cursorarrow.rays")
+                    .font(Look.rowGlyph)
+                    .frame(width: Look.rowTarget, height: Look.rowTarget)
+                    .vaneTooltip("\(name) is controlling this tab")
+                    .accessibilityLabel("Controlled by \(name)")
+                    .transition(.opacity)
             }
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: session.map(ObjectIdentifier.init))
