@@ -516,15 +516,18 @@ extension EnvironmentValues {
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
         if let deadline { deadline(interval, timeout) }
         else {
-            // Count only time this process was running. A stalled host (a paused VM,
-            // a blocked main thread) passes wall-clock time without letting WebKit's
-            // paint reply arrive; expiring on resume would reveal the width unpainted.
-            // ponytail: a stall counts as at most two ticks; a WebContent process that
-            // alone is starved still times out after `interval` of responsive ticks.
+            // Count only time this process was running. A stalled or contended host
+            // (a paused VM, a starved runner, a blocked main thread) passes wall-clock
+            // time without letting WebKit's paint reply arrive; expiring then would
+            // reveal the width unpainted. Each tick counts at most one tick, so the
+            // budget stretches with the host's slowness, not with real time.
+            // ponytail: a WebContent process that alone is starved still times out
+            // after `interval` of responsive ticks.
             deadlineRemaining = interval
             deadlineLast = CACurrentMediaTime()
-            let timer = Timer(timeInterval: Self.deadlineTick, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.deadlineTicked(token, timeout) }
+            let timer = Timer(timeInterval: Self.deadlineTick, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                MainActor.assumeIsolated { self.deadlineTicked(token, timeout) }
             }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
@@ -538,7 +541,7 @@ extension EnvironmentValues {
     private func deadlineTicked(_ token: UUID, _ timeout: @MainActor () -> Void) {
         guard deadlineToken == token else { return }
         let now = CACurrentMediaTime()
-        deadlineRemaining -= min(now - deadlineLast, 2 * Self.deadlineTick)
+        deadlineRemaining -= min(now - deadlineLast, Self.deadlineTick)
         deadlineLast = now
         guard deadlineRemaining <= 0 else { return }
         timer?.invalidate()
