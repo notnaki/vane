@@ -1958,6 +1958,11 @@ struct TitleReveal: Equatable, Sendable {
         release()
     }
 
+    private func cancelPasswordRead() {
+        passwordReadTask?.cancel()
+        passwordReadRequest = UUID()
+    }
+
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         #if DEBUG
         recordNavigationStage("provisional-received", navigation: navigation,
@@ -1971,6 +1976,9 @@ struct TitleReveal: Equatable, Sendable {
         #endif
         provisional = true
         retitleTask?.cancel()
+        // A fill waiting on Touch ID belongs to the page that asked; cancelling it takes the
+        // prompt down, so approving it afterwards cannot open the window for nothing.
+        cancelPasswordRead()
         if w === existingWeb {
             readingDocumentGeneration = UUID()
             passwordContinuationFill = nil
@@ -2115,6 +2123,7 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        cancelPasswordRead()
         if navigationState.simulated !== navigation { httpsOnlyContinuation = nil }
         DiagnosticLog.shared.record(.navigationCommitted, isPrivate: isPrivate)
         // A canceled provisional load/download leaves the old call document alive.
