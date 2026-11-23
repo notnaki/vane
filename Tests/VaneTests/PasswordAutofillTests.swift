@@ -709,8 +709,9 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             }, launchReadiness: {
                 // A declined one-shot activation would otherwise hold readiness
                 // false for the whole budget. Every caller is a pre-action wait.
-                reassertForeground(window)
-                return self.nativeContinuationReady(window, document: document) && launchReadiness()
+                let ready = self.nativeContinuationReady(window, document: document)
+                if !ready { reassertForeground(window) }
+                return ready && launchReadiness()
             })
     }
 
