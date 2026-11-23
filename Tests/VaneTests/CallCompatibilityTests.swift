@@ -27,9 +27,15 @@ import XCTest
 
         _ = try await tab.web.evaluateJavaScript("sender.replaceTrack(null).then(()=>interrupted=true).catch(e=>failure=String(e)); true")
         try await compatibilityWait { try await tab.web.evaluateJavaScript("interrupted") as? Bool == true }
-        // Drain frames already in flight, then prove the interruption stopped delivery.
-        try await Task.sleep(for: .milliseconds(500))
-        let stopped = try await decoded(tab)
+        // Drain frames already in flight (slow CI runners keep decoding well past 500ms),
+        // then prove the interruption stopped delivery. A sender that never stops times out here.
+        var stopped = try await decoded(tab)
+        try await compatibilityWait {
+            try await Task.sleep(for: .milliseconds(400))
+            let now = try await self.decoded(tab)
+            defer { stopped = now }
+            return now == stopped
+        }
         try await Task.sleep(for: .milliseconds(400))
         let duringInterruption = try await decoded(tab)
         XCTAssertEqual(duringInterruption, stopped)
