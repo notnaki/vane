@@ -426,4 +426,66 @@ import XCTest
             XCTAssertNotNil(host.sidePanel(in: store))
         }
     }
+
+    func testWorkerReadsChromiumOnlyMembersAdBlockUsesAtItsTopLevel() async throws {
+        // AdBlock's worker reads all of these at its top level; any one missing stops it.
+        try Data(#"{"manifest_version":3,"name":"__MSG_name__","description":"Gaps","version":"2.5","permissions":["idle","webRequest","webNavigation","scripting","tabs","declarativeNetRequest"],"optional_permissions":["management"],"host_permissions":["<all_urls>"],"default_locale":"en","background":{"service_worker":"worker.js"},"action":{}}"#.utf8)
+            .write(to: folder.appendingPathComponent("manifest.json"))
+        let locale = folder.appendingPathComponent("_locales/en")
+        try FileManager.default.createDirectory(at: locale, withIntermediateDirectories: true)
+        try Data(#"{"name":{"message":"Gaps Fixture"}}"#.utf8).write(to: locale.appendingPathComponent("messages.json"))
+        try Data("""
+            const types = Object.values(chrome.webRequest.ResourceType);
+            // WebKit refuses a filter with a type it does not know.
+            chrome.webRequest.onBeforeRequest.addListener(() => {}, {types, urls: ['<all_urls>']});
+            // Nor a ws:// pattern, which Chrome accepts.
+            chrome.webRequest.onCompleted.addListener(() => {}, {urls: ['http://*/*', 'ws://*/*', 'wss://*/*']});
+            chrome.webNavigation.onHistoryStateUpdated.addListener(() => {});
+            const targets = [];
+            chrome.webNavigation.onCreatedNavigationTarget.addListener(details => targets.push(details));
+            const top = [types.length, types.includes('webtransport'), Object.values(chrome.scripting.ExecutionWorld).includes('MAIN'),
+                         chrome.idle.IdleState.LOCKED].join('|');
+            chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                (async () => {
+                    const self = await chrome.management.getSelf();
+                    const viaCallback = await new Promise(resolve => chrome.idle.queryState(30, resolve));
+                    respond([top, await chrome.idle.queryState(30), viaCallback, self.name, self.id === chrome.runtime.id,
+                             self.version, self.installType, await chrome.declarativeNetRequest.getAvailableStaticRuleCount(),
+                             JSON.stringify(targets.map(target => [target.sourceTabId, target.tabId]))].join('|'));
+                })();
+                return true;
+            });
+            """.utf8).write(to: folder.appendingPathComponent("worker.js"))
+
+        try await withNativeWindowLoop {
+            let store = TabStore(profileID: profile, session: [])
+            let tab = open(store)
+            let host = ExtensionHost.host(for: profile)
+            _ = try await host.load(folder, installing: true) { _ in true }
+            let context = try XCTUnwrap(host.installed.first)
+            XCTAssertTrue(context.errors.isEmpty, "\(context.errors)")
+            let notes = host.entries.first?.compatibility ?? []
+            XCTAssertTrue(notes.contains("idle: Vane always reports the user as active; state changes never fire."), "\(notes)")
+            XCTAssertFalse(notes.contains(where: { $0.hasPrefix("idle") && ExtensionDiagnostics.isUnsupported($0) }), "\(notes)")
+            host.sync()
+            let page = try await page(context)
+            defer { page.stopLoading() }
+            let ask = "return String(await chrome.runtime.sendMessage({}))"
+            _ = try await run(ask, in: page)
+
+            // A tab another tab opened is a navigation target of its opener.
+            _ = store.newBlankTab(parent: tab)
+            host.sync()
+            let listed = try await run("const tabs = await chrome.tabs.query({}); return JSON.stringify(tabs.map(t => t.id))", in: page)
+            let tabIDs = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(XCTUnwrap(listed).utf8)) as? [Int])
+            XCTAssertEqual(tabIDs.count, 2)
+            var answer = try await run(ask, in: page)
+            let deadline = ContinuousClock.now + .seconds(10)
+            while answer?.hasSuffix("]]") != true, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+                answer = try await run(ask, in: page)
+            }
+            XCTAssertEqual(answer, "13|false|true|locked|active|active|Gaps Fixture|true|2.5|normal|30000|[[\(tabIDs[0]),\(tabIDs[1])]]")
+        }
+    }
 }
