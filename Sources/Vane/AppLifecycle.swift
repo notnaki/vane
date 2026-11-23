@@ -339,6 +339,8 @@ enum QuitAsk {
         guard beginPersistenceExit() else { return .terminateCancel }
         terminating = true
         Crash.stopAutosave()
+        // Read before the Task: a delete can fail on the main actor before the Task starts.
+        let passwordDeleteFailures = PasswordPendingDeletion.shared.failures
         Task { [self] in
             var succeeded = true
             await ICloudController.suspendIfRunning()
@@ -349,7 +351,9 @@ enum QuitAsk {
             do { try await EaselStore.drainAllPendingWrites(directory: Store.directory) } catch { succeeded = false }
             do { try await Store.flushAllPendingWrites() } catch { succeeded = false }
             do { try await EaselStore.flushAll(directory: Store.directory) } catch { succeeded = false }
-            do { try await Passwords.flushPendingOperations() } catch { succeeded = false }
+            // An undoable delete still on its toast is accepted intent: run it now, and
+            // treat a failure like any other unsaved change rather than quitting silently.
+            if !(await PasswordPendingDeletion.shared.finishForQuit(failuresAtStart: passwordDeleteFailures)) { succeeded = false }
             if !(await AppIcon.flushPersistence()) { succeeded = false }
             if !(await ICloudController.finishIfRunning()) { succeeded = false }
             await Updater.markHealthyLaunchAsync()

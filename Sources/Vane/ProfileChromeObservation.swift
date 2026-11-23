@@ -11,6 +11,8 @@ import SwiftUI
         subscription = Publishers.MergeMany([
             manager.$profiles.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             manager.$spacesRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            // A move past another profile's Spaces saves no Space, so no revision either.
+            manager.$spaceOrder.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             manager.$saveFailures.dropFirst().map { _ in () }.eraseToAnyPublisher()
         ]).sink { [weak self] _ in self?.objectWillChange.send() }
     }

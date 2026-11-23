@@ -820,22 +820,54 @@ enum Passwords {
 
     // MARK: Revealing
 
+    #if DEBUG
+    /// Tests replace the system prompt; nil in the app. A fixture must never put a real
+    /// Touch ID sheet in front of whoever is using the Mac. Debug builds only (tests build
+    /// debug; `make-app.sh` and releases build release), so shipping code cannot skip it.
+    @MainActor static var authenticator: (@MainActor (String, @escaping @MainActor (Bool) -> Void) -> Void)?
+    #endif
+
     /// Turning a row of bullets into a password asks the Mac who you are first — Touch ID,
     /// an Apple Watch, or the login password. `.deviceOwnerAuthentication` rather than the
     /// biometrics-only policy so a Mac without Touch ID gets the password sheet instead of a
     /// refusal, and so a laptop with the lid shut still has a way through.
     ///
     /// The callback runs on the main actor, because everything that acts on it is a view.
+    /// Returns the context so a caller can invalidate a prompt it no longer wants.
+    @discardableResult
     @MainActor static func authenticate(_ reason: String,
-                                        _ done: @escaping @MainActor (Bool) -> Void) {
+                                        _ done: @escaping @MainActor (Bool) -> Void) -> LAContext? {
+        #if DEBUG
+        if let authenticator { authenticator(reason, done); return nil }
+        #endif
         let ctx = LAContext()
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
             done(false)
-            return
+            return nil
         }
         ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in
             Task { @MainActor in done(ok) }
         }
+        return ctx
+    }
+
+    /// The locked Settings → Passwords pane's inline scan: biometrics only, evaluated on the
+    /// context its embedded Touch ID view is attached to, so no sheet appears. The pane's
+    /// "Use Password…" goes through `authenticate` for the login-password fallback.
+    @discardableResult
+    @MainActor static func authenticateInline(_ context: LAContext, _ reason: String,
+                                              _ done: @escaping @MainActor (Bool) -> Void) -> LAContext? {
+        #if DEBUG
+        if let authenticator { authenticator(reason, done); return nil }
+        #endif
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) else {
+            done(false)
+            return nil
+        }
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { ok, _ in
+            Task { @MainActor in done(ok) }
+        }
+        return context
     }
 
     /// Erasing one instance must leave every other data directory's credentials alone.

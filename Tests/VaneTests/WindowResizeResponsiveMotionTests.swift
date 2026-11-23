@@ -130,7 +130,7 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
         }
         defer { retireStore() }
-        web.setFrameSize(NSSize(width: 661, height: 600))
+        web.setFrameSize(NSSize(width: 900 - 228 - Look.cardGap, height: 600))
         web.load(URLRequest(url: URL(string: library ? "https://github.com/notnaki/vane"
             : "https://github.com/notnaki/vane/pulls")!))
         let loadedBy = ContinuousClock.now + .seconds(45)
@@ -321,9 +321,9 @@ import XCTest
                             if let bridge = view as? LibraryPaintView { return !bridge.isSettled }
                             return view.subviews.contains(where: pending)
                         }
-                        return !pending(host) && abs(web.bounds.width - 661) < 1
+                        return !pending(host) && abs(web.bounds.width - (900 - 228 - Look.cardGap)) < 1
                     }
-                    if sidebar { return !window.isPreparingPageResize && abs(web.bounds.width - 661) < 1 }
+                    if sidebar { return !window.isPreparingPageResize && abs(web.bounds.width - (900 - 228 - Look.cardGap)) < 1 }
                     return !window.isPreparingPageResize && abs(window.frame.width - 900) < 1
                 }
                 let ended = CACurrentMediaTime()

@@ -40,7 +40,7 @@ Downloads go directly to Google's HTTPS delivery services without browser cookie
 Before unpacking, Vane verifies the CRX3 developer signature against the requested
 extension ID and the production Chrome Web Store publisher signature. The bounded
 extractor rejects unsafe paths, links, special files, conflicting entries and corrupt
-archives. Downloads are capped at 128 MiB; expanded code has the same 256 MiB total,
+archives. Downloads are capped at 128 MiB; expanded code has the same 512 MiB total,
 64 MiB per-file and 20,000-entry limits as folder imports. Vane then reviews access
 before activation and saves a private, profile-scoped managed copy.
 
@@ -75,7 +75,7 @@ Info.plist team. Its runtime ID is the genuine Safari `<extension bundle ID> (<T
 so sites can address an allowlisted Safari extension through external messaging.
 
 For unpacked folders, Vane copies regular files into profile-owned staging, rejects internal symbolic links
-and special files, and limits imports to 20,000 files/folders, 64 MB per file, 256 MB total,
+and special files, and limits imports to 20,000 files/folders, 64 MB per file, 512 MB total,
 and 64 nested folder levels. It validates the manifest and referenced scripts, popups,
 options pages, and rulesets before presenting installation consent. Review capabilities,
 website access, and compatibility limitations before installing. Cancel leaves the
@@ -206,8 +206,50 @@ Popup/options behavior still depends on the extension and WebKit.
 Tab selection returns a clear error for rows hidden by folded folders, a collapsed
 Pinned section, or a non-leading Split View pane. Activating those tabs remains supported.
 
-Vane does not provide native messaging hosts, replacement browser pages, extension side
-panels, developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
+**Side panels.** WebKit has no `chrome.sidePanel`, so Vane supplies it for extensions
+that request the `sidePanel` permission. The panel is docked on the right of the page as
+a second card, 360 points wide, and shows the extension's own page in its extension
+context. It narrows to as little as 280 points so the page keeps 420, and is hidden,
+still open, in a window too narrow for both. It honours `side_panel.default_path`,
+`setOptions` (per tab or for the whole extension, including a per-tab `enabled: false`),
+`open`, `close`, `getOptions`, `getLayout` and `setPanelBehavior({openPanelOnActionClick})`.
+A panel opened for one tab shows only while that tab is selected. It stays with its tab:
+switching to another Space hides it and coming back shows it again, it follows the tab to
+another window, and it closes when the tab or window closes. A window's panel also
+survives a hop to another profile's Space and back. Every panel has a header with the
+extension's icon and name and a ✕ that closes it, whatever the extension does. With
+`openPanelOnActionClick` the extension's button and its `_execute_action` shortcut open
+and close its panel; without it they reach the popup or `action.onClicked` as usual. The
+page's own `window.close()` closes the panel too. `open` expects a user gesture: the
+extension's button or shortcut within the last five seconds, a click in the extension
+page that calls it, or a mouse click within the last five seconds while the target
+window is key (a button in a web page that messages the worker, which then opens the
+panel for `sender.tab.id`). This gate is advisory, not a security boundary: any context
+of the extension can forge the page-reported click, a click anywhere in the window counts
+for every extension, and WebKit's own record of a gesture on a tab lasts until that tab
+navigates. It keeps panels from opening unprompted; a forged call can only show the
+extension's own page, which the ✕ closes. Limits: options and behaviour are forgotten when the extension reloads or Vane
+restarts, `getOptions` answers from the calling context's own writes, and
+`sidePanel.onOpened`/`onClosed` and `runtime.getContexts` are not available.
+
+**Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
+`identity`, `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
+the namespace out and the extension's background would stop at its first
+`chrome.notifications.onClicked.addListener(…)`. Vane defines each one with its events,
+which never fire, and its constants. Methods stay undefined, so a check such as
+`chrome.downloads?.download` still reports the feature as missing and the extension can
+fall back; calling one anyway throws as it would in any browser without it. Names listed
+only in `optional_permissions` get nothing. This lets the rest of the extension start;
+the features behind these namespaces do not work. The manager still lists each one as
+unrecognized. `storage.managed` reads as empty, because Vane has no administrator policy.
+The namespaces exist in the worker and extension pages only. Content scripts declared in
+the manifest of an MV3 worker extension get the `chrome.runtime` constants alone
+(`OnInstalledReason`, `ContextType`), from a generated script that runs ahead of the
+extension's own; scripts injected with `scripting.registerContentScripts` or
+`executeScript` do not.
+
+Vane does not provide native messaging hosts, replacement browser pages,
+developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
 messaging has public WebKit hooks, but Vane has no approved host-execution mechanism.
 ZIP/native-host feasibility, exact upstream package provenance, regression scope, and
 assembled-app results are in [Extension validation](EXTENSION-VALIDATION.md). No Vane

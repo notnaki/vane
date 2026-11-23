@@ -16,15 +16,24 @@ import SwiftUI
 /// The pure parts (grouping, search, what a keystroke means, what VoiceOver is allowed to
 /// hear) are static functions with a `check()`, so they can be proved headless.
 @MainActor struct PasswordsPane: View {
-    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     var settingsProfileID: UUID? = nil
     @ObservedObject private var manager = ProfileManager.shared
+    /// The whole list sits behind this when "Require Touch ID to view passwords" is on.
+    @ObservedObject private var lock: PasswordPaneLock
+    /// Deletes wait on an Undo toast before they reach the Keychain.
+    @ObservedObject private var deletion: PasswordPendingDeletion
+    @AppStorage(PasswordPaneLock.requiredKey, store: UserDefaults.vane) private var requiresUnlock = true
+    /// Only observed, so a change in Privacy and Security redraws the locked control.
+    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var unlockMethod = FolderUnlockMethod.touchID
     @State private var query = ""
     @State private var sort = PasswordSort.website
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
     /// reloads after every write it makes.
-    @StateObject private var metadata = Feel06PasswordMetadata()
-    private var logins: [Passwords.Login] { metadata.logins }
+    @StateObject private var metadata: Feel06PasswordMetadata
+    /// What the list draws: everything but the logins waiting on (or finishing) a delete.
+    private var logins: [Passwords.Login] {
+        metadata.logins.filter { !deletion.hides($0, profileID: profileID) }
+    }
     @State private var used: [String: Date] = [:]
     @State private var presentation = Feel06PasswordPresentation()
     @FocusState private var searchFocused: Bool
@@ -37,14 +46,29 @@ import SwiftUI
     @State private var draftSite = ""
     @State private var addProblem: String?
     @State private var feedback: String?
+    @State private var showsAbout = false
     /// A refused write must be visible, so a failed save never looks like success.
     @State private var problem: String?
     @State private var mutationInFlight = false
     @State private var mutationTask: Task<Void, Never>?
     /// Plaintext lives only while the manager is visible, including its add/edit drafts.
-    @StateObject private var secrets = PasswordManagerSecrets()
+    @StateObject private var secrets: PasswordManagerSecrets
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
+
+    /// The parameters after the profile are fixture seams: a stubbed lock and delete, a
+    /// names-only fetch that never touches the Keychain, and a site already open.
+    init(settingsProfileID: UUID? = nil, lock: PasswordPaneLock? = nil,
+         deletion: PasswordPendingDeletion? = nil, fetch: Feel06PasswordMetadata.Fetch? = nil,
+         secrets: PasswordManagerSecrets? = nil, openHost: String? = nil) {
+        self.settingsProfileID = settingsProfileID
+        _lock = ObservedObject(wrappedValue: lock ?? .shared)
+        _deletion = ObservedObject(wrappedValue: deletion ?? .shared)
+        _metadata = StateObject(wrappedValue: fetch.map { Feel06PasswordMetadata(fetch: $0) } ?? Feel06PasswordMetadata())
+        _secrets = StateObject(wrappedValue: secrets ?? PasswordManagerSecrets())
+        _selected = State(initialValue: openHost)
+        _selectedHost = State(initialValue: openHost)
+    }
 
     /// What a hidden password looks like. Eight bullets whatever the real length — the
     /// length of a password is itself worth not leaking.
@@ -58,6 +82,8 @@ import SwiftUI
     private var profileID: UUID {
         manager.profiles.first { $0.id == settingsProfileID }?.id ?? manager.active.id
     }
+    private var unlocked: Bool { !requiresUnlock || lock.unlockedProfile == profileID }
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
     private var groups: [(host: String, logins: [Passwords.Login])] {
         presentation.groups(logins, query: query, sort: sort, used: used)
     }
@@ -67,8 +93,10 @@ import SwiftUI
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 2) {
-            Feel06ActivityLine(busy: metadata.busy, text: "Loading passwords…")
-            if let host = selectedHost {
+            Feel06ActivityLine(busy: unlocked && metadata.busy, text: "Loading passwords…")
+            if !unlocked {
+                lockedView
+            } else if let host = selectedHost {
                 Button { navigate(to: nil) } label: {
                     Label("All passwords", systemImage: "chevron.left")
                 }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
@@ -85,42 +113,32 @@ import SwiftUI
                     }
                 }
             } else {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Password Manager").font(Look.heading)
-                        Text("Saved logins in this Mac’s Keychain")
-                            .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                header
+                SettingsCard {
+                    PasswordSavingPreference(profileID: profileID)
+                    VStack(alignment: .leading, spacing: Look.captionGap) {
+                        SettingsRow("Require Touch ID to view passwords") {
+                            Toggle("Require Touch ID to view passwords", isOn: Binding(
+                                get: { requiresUnlock },
+                                set: { on in
+                                    // Already looking at the list: turning the lock on must
+                                    // not snap it shut on the person who just turned it on.
+                                    if on { lock.keepOpen(profileID) }
+                                    requiresUnlock = on
+                                })).labelsHidden()
+                        }
+                        Footnote("Applies to every profile.")
                     }
-                    Spacer()
-                    Button { beginAdding() } label: { Label("Add password", systemImage: "plus") }
-                        .buttonStyle(.borderedProminent)
                 }
-                PasswordSavingPreference(profileID: profileID)
-                Footnote("Optional password sync is managed in Settings → iCloud. Local saved logins remain available when sync is off.")
-                Footnote("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
-                DisclosureGroup("Folder unlock method") {
-                    SettingsRow("Unlock folders using") {
-                        Picker("Folder unlock method", selection: $folderUnlockMethod) {
-                            Text("Touch ID").tag(FolderUnlockMethod.touchID)
-                            Text("System").tag(FolderUnlockMethod.system)
-                        }.labelsHidden()
+                HStack(spacing: Look.inset) {
+                    search
+                    Picker("Sort passwords", selection: $sort) {
+                        Text("Website").tag(PasswordSort.website)
+                        Text("Username").tag(PasswordSort.username)
+                        Text("Recently used").tag(PasswordSort.recent)
                     }
-                    Footnote("Macs without Touch ID use system authentication automatically.")
-                }.font(Look.caption)
-                search
-                Picker("Sort passwords", selection: $sort) {
-                    Text("Website").tag(PasswordSort.website)
-                    Text("Username").tag(PasswordSort.username)
-                    Text("Recently used").tag(PasswordSort.recent)
-                }.pickerStyle(.segmented)
-                HStack {
-                    Text(searching
-                         ? "\(resultCount) matching \(resultCount == 1 ? "password" : "passwords")"
-                         : "\(logins.count) \(logins.count == 1 ? "password" : "passwords") · \(groups.count) \(groups.count == 1 ? "site" : "sites")")
-                        .font(Look.caption)
-                        .foregroundStyle(Look.inkSecondary)
-                    Spacer()
-                    Button("Import passwords…") { PasswordImport.chooseAndImport(profileID: profileID); reload() }
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
+                    .help("Sort passwords")
                 }
                 if metadata.busy && logins.isEmpty {
                     // This pane is also the hosting view's intrinsic content. An
@@ -143,42 +161,158 @@ import SwiftUI
                     else { ScrollView { neverCard } }
                 }
             }
-            if let problem = problem ?? metadata.error {
+            if unlocked, let problem = problem ?? deletion.failure ?? metadata.error {
                 Text(problem).font(Look.text).foregroundStyle(Look.warning)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Refresh passwords") { reload() }
+                Button("Refresh passwords") { deletion.failure = nil; reload() }
             }
-            if let feedback {
+            if unlocked, let feedback {
                 Text(feedback).font(Look.caption).foregroundStyle(Look.inkSecondary)
             }
         }
         .padding(.top, Look.inset * 2)
+        .overlay(alignment: .bottom) {
+            if unlocked, let pending = deletion.pending, pending.profileID == profileID {
+                PasswordUndoToast(text: Self.deletedText(pending.login), hold: { deletion.hold($0) }) {
+                    deletion.undo()
+                    axAnnounce("Restored the saved login for \(pending.login.host).")
+                }
+                .id(pending.id)
+                .padding(.bottom, Look.inset)
+                .transition(reduced ? .identity : .move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .sheet(isPresented: $secrets.adding, onDismiss: { forgetSecrets() }) { addSheet }
-        .onAppear { reload(); secrets.watchSettingsClose() }
-        .onDisappear { secrets.stopWatching(); metadata.stopWatching() }
+        .onAppear {
+            reload(); secrets.watchSettingsClose()
+            lock.watchSettings(); deletion.watchSettingsClose()
+            // Another pane instance may have unlocked a different profile.
+            if let open = lock.unlockedProfile, open != profileID { lock.lock() }
+            lock.rearm()
+        }
+        .onDisappear {
+            deletion.commit(); secrets.stopWatching(); metadata.stopWatching()
+            lock.cancel(); lock.rearm()
+        }
         .onReceive(NotificationCenter.default.publisher(for: SettingsWindow.presentationRequest)) { note in
             // Retained hosting views also skip onAppear when reopening. Only an
             // explicit presentation of this pane should restart its metadata read.
-            if note.object as? String == "passwords" { reload() }
+            guard note.object as? String == "passwords" else { return }
+            reload()
+            lock.rearm(); lock.beginAutomaticUnlock(profileID)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            // Shown while Vane was in the background: start once Settings comes forward.
+            if SettingsWindow.holds(note.object as? NSWindow) { lock.beginAutomaticUnlock(profileID) }
         }
         .onChange(of: logins) {
             // Reloads finish asynchronously; reconcile the detail destination only
             // once the refreshed metadata arrives, including the last-login deletion.
             if let selectedHost, !logins.contains(where: { $0.host == selectedHost }) {
-                navigate(to: nil)
+                // Not into search: after deleting a site's last login, ⌘Z must reach the undo toast.
+                navigate(to: nil, focusSearch: false)
             }
             if let selected, !logins.contains(where: { $0.id == selected || $0.host == selected }) { self.selected = nil }
         }
+        .onChange(of: metadata.fetchedAt) {
+            if let fetched = metadata.fetchedAt { deletion.prune(metadata.logins, profileID: profileID, fetchedAt: fetched) }
+        }
+        .onChange(of: deletion.gone) { old, new in if new.count > old.count { reload() } }
+        .onChange(of: lock.unlockedProfile) { if !unlocked { deletion.commit(); forgetSecrets() } }
         .onChange(of: selectedHost) { forgetSecrets(); problem = nil; feedback = nil }
-        .onChange(of: profileID) { selectedHost = nil; secrets.adding = false; forgetSecrets(); reload() }
+        .onChange(of: profileID) {
+            lock.lock(); deletion.commit()
+            selectedHost = nil; secrets.adding = false; forgetSecrets(); reload()
+        }
         .onChange(of: query) { selected = nil }
         .onChange(of: sort) { used = Passwords.lastUsed(profileID: profileID) }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: UserDefaults.vane)) { _ in
             let latest = Passwords.lastUsed(profileID: profileID)
             if latest != used { used = latest }
         }
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedHost)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: sort)
+        .animation(reduced ? nil : Look.quick, value: selectedHost)
+        .animation(reduced ? nil : Look.quick, value: sort)
+        .animation(reduced ? nil : Look.quick, value: unlocked)
+        .animation(reduced ? nil : Look.quick, value: deletion.pending?.id)
+    }
+
+    private var lockedView: some View {
+        VStack(spacing: Look.inset * 1.5) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 34, weight: .light)).foregroundStyle(Look.inkSecondary)
+                .accessibilityHidden(true)
+            Text("Passwords are locked").font(Look.heading).foregroundStyle(Look.inkPrimary)
+            quiet("Unlock with Touch ID or your Mac login password to see saved passwords.")
+            // Like a locked folder: the Touch ID control itself, already listening.
+            // Tapping it retries after a cancel or failure.
+            let inline = lock.usesInline
+            InlineUnlockButton(
+                context: lock.inlineContext, inline: inline, authenticating: lock.authenticating,
+                title: lock.authenticating ? (lock.usingPassword ? "Unlocking…" : "Touch the Touch ID sensor")
+                    : (inline ? "Unlock with Touch ID" : "Unlock passwords…"),
+                attached: { lock.beginAutomaticUnlock(profileID) }
+            ) { lock.unlock(profileID) }
+                .keyboardShortcut(.defaultAction)
+                .padding(.top, Look.inset * 0.5)
+            if inline {
+                Button("Use Password…") { lock.unlock(profileID, password: true) }
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Look.inkSecondary)
+                    .help("Opens macOS authentication, where you can use your Mac login password.")
+                    .disabled(lock.authenticating && lock.usingPassword)
+            }
+            if let problem = lock.problem {
+                Text(problem).font(Look.caption).foregroundStyle(Look.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity).padding(.vertical, 56)
+    }
+
+    private var header: some View {
+        HStack(spacing: Look.inset) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("Password Manager").font(Look.heading)
+                    Button { showsAbout.toggle() } label: {
+                        Image(systemName: "info.circle").frame(width: 20, height: 20).contentShape(.rect)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
+                    .help("About password sync and passkeys")
+                    .accessibilityLabel("About password sync and passkeys")
+                    .popover(isPresented: $showsAbout, arrowEdge: .bottom) { about }
+                }
+                Text(summary).font(Look.caption).foregroundStyle(Look.inkSecondary)
+            }
+            Spacer()
+            Button { beginAdding() } label: { Label("Add password", systemImage: "plus") }
+                .buttonStyle(.borderedProminent)
+            Menu {
+                Button("Import passwords…") {
+                    // A delete still on its toast must not race the imported items.
+                    deletion.commit()
+                    PasswordImport.chooseAndImport(profileID: profileID); reload()
+                }
+            } label: { Image(systemName: "ellipsis").frame(height: 16) }
+                .menuStyle(.button).buttonStyle(.bordered).menuIndicator(.hidden).fixedSize()
+                .help("More password actions").accessibilityLabel("More password actions")
+        }
+    }
+
+    private var summary: String {
+        searching
+            ? "\(resultCount) matching \(resultCount == 1 ? "password" : "passwords")"
+            : "\(logins.count) \(logins.count == 1 ? "password" : "passwords") · \(groups.count) \(groups.count == 1 ? "site" : "sites") in this Mac’s Keychain"
+    }
+
+    private var about: some View {
+        VStack(alignment: .leading, spacing: Look.inset) {
+            Text("Optional password sync is managed in Settings → iCloud. Local saved logins remain available when sync is off.")
+            Text("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
+        }
+        .font(Look.caption).foregroundStyle(Look.inkSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(Look.cardInset).frame(width: 280)
     }
 
     private func quiet(_ text: String) -> some View {
@@ -234,93 +368,76 @@ import SwiftUI
         .accessibilityElement(children: .combine)
     }
 
+    /// Label-left rows, the way macOS Passwords lays out an account.
     private func detail(_ login: Passwords.Login) -> some View {
         let isEditing = secrets.editing == login.id
         let shown = secrets.revealed[login.id]
         return SettingsCard {
-            VStack(alignment: .leading, spacing: Look.cardInset) {
-                VStack(alignment: .leading, spacing: Look.inset) {
-                    Text("Website").font(Look.caption).foregroundStyle(Look.inkSecondary)
-                    if isEditing {
-                        TextField("Website", text: $draftSite).textFieldStyle(.roundedBorder)
-                    } else {
-                        Text(login.origin.url.absoluteString).textSelection(.enabled)
-                    }
+            SettingsRow("Website") {
+                if isEditing {
+                    TextField("Website", text: $draftSite).textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 320).accessibilityLabel("Website")
+                } else {
+                    value(login.origin.url.absoluteString)
                 }
-                VStack(alignment: .leading, spacing: Look.inset) {
-                    Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
-                    HStack {
-                        if isEditing {
-                            TextField("Username", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
-                        } else {
-                            Text(login.account.isEmpty ? "No username" : login.account)
-                                .textSelection(.enabled)
-                            Spacer()
-                            glyph("doc.on.doc", "Copy username") { copy(login.account, secret: false) }
-                                .disabled(login.account.isEmpty)
-                        }
-                    }
+            }
+            SettingsRow("Username") {
+                if isEditing {
+                    TextField("Username", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 320).accessibilityLabel("Username")
+                } else {
+                    value(login.account.isEmpty ? "No username" : login.account)
+                    glyph("doc.on.doc", "Copy username") { copy(login.account, secret: false) }
+                        .disabled(login.account.isEmpty)
                 }
-                VStack(alignment: .leading, spacing: Look.inset) {
-                    if isEditing {
-                        PasswordDraftField(text: $secrets.draftPassword).id(login.id)
-                    } else {
-                        Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
-                        HStack {
-                            PasswordValue(value: shown)
-                            Spacer()
-                            PasswordEyeButton(revealed: shown != nil) {
-                                toggleReveal(login)
-                            }
-                            glyph("doc.on.doc", "Copy password") { copyPassword(login) }
-                        }
-                    }
+            }
+            SettingsRow("Password") {
+                if isEditing {
+                    PasswordDraftField(text: $secrets.draftPassword, labeled: false)
+                        .frame(maxWidth: 320).id(login.id)
+                } else {
+                    PasswordValue(value: shown)
+                    PasswordEyeButton(revealed: shown != nil) { toggleReveal(login) }
+                    glyph("doc.on.doc", "Copy password") { copyPassword(login) }
                 }
-                if logins.filter({ $0.host == login.host && $0.account == login.account }).count > 1 {
-                    Text("This username is saved for multiple website origins. Check the website and port above.")
-                        .font(Look.caption).foregroundStyle(Look.inkSecondary)
-                }
-                HStack(spacing: Look.inset * 1.5) {
-                    if isEditing {
-                        Button("Save") { commit(login) }.keyboardShortcut(.defaultAction)
-                            .disabled(secrets.draftPassword.isEmpty)
-                        Button("Cancel") { cancelEditing() }.keyboardShortcut(.cancelAction)
-                    } else {
-                        Button("Edit password") { startEditing(login) }
-                        Spacer()
-                        Button("Delete…", role: .destructive) { remove(login) }
+            }
+            if metadata.logins.filter({ $0.host == login.host && $0.account == login.account }).count > 1 {
+                Footnote("This username is saved for multiple website origins. Check the website and port above.")
+            }
+            HStack(spacing: Look.inset * 1.5) {
+                if isEditing {
+                    Spacer()
+                    Button("Cancel") { cancelEditing() }.keyboardShortcut(.cancelAction)
+                    Button("Save") { commit(login) }.keyboardShortcut(.defaultAction)
+                        .disabled(secrets.draftPassword.isEmpty)
+                } else {
+                    Button("Edit…") { startEditing(login) }
+                    Spacer()
+                    Button(role: .destructive) { remove(login) } label: {
+                        Text("Delete").foregroundStyle(.red)
                     }
                 }
             }
-            .font(Look.text).padding(Look.cardInset)
+            .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset + 2)
         }
     }
 
+    private func value(_ text: String) -> some View {
+        Text(text).font(Look.text).foregroundStyle(Look.inkSecondary)
+            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+    }
+
     private var addSheet: some View {
-        VStack(alignment: .leading, spacing: Look.inset * 2) {
-            Label("Add password", systemImage: "key.fill").font(Look.heading)
-            Text("Save a login for this profile on your Mac.")
-                .font(Look.caption).foregroundStyle(Look.inkSecondary)
-            Text("Website").font(Look.caption).foregroundStyle(Look.inkSecondary)
-            TextField("example.com", text: $draftSite).textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Website")
-            Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
-            TextField("Username (optional)", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Username")
-            PasswordDraftField(text: $secrets.draftPassword)
-            if let addProblem { Text(addProblem).font(Look.caption).foregroundStyle(Look.warning) }
-            HStack {
-                Spacer()
-                Button("Cancel") { secrets.adding = false; forgetSecrets() }.keyboardShortcut(.cancelAction)
-                Button("Save") { addPassword() }.keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(Self.siteOrigin(draftSite) == nil || secrets.draftPassword.isEmpty)
-            }
-        }.padding(24).frame(width: 400)
+        PasswordAddForm(site: $draftSite, account: $secrets.draftAccount,
+                        password: $secrets.draftPassword, problem: addProblem,
+                        cancel: { secrets.adding = false; forgetSecrets() },
+                        save: { addPassword() })
     }
 
     private func beginAdding(host: String = "") {
         forgetSecrets()
+        // A delete still on its toast would otherwise race the new item into the Keychain.
+        deletion.commit()
         draftSite = host; secrets.draftAccount = ""; addProblem = nil
         secrets.adding = true
     }
@@ -369,11 +486,11 @@ import SwiftUI
         never = Passwords.neverSaved(profileID: profileID)
     }
 
-    private func navigate(to host: String?) {
+    private func navigate(to host: String?, focusSearch: Bool = true) {
         forgetSecrets()
         selected = host
         selectedHost = host
-        if host == nil { searchFocused = true }
+        if host == nil && focusSearch { searchFocused = true }
     }
 
     private func forgetSecrets() { mutationTask?.cancel(); secrets.forget() }
@@ -502,28 +619,16 @@ import SwiftUI
         }
     }
 
+    /// No confirmation dialog: the row goes at once and the toast offers Undo. The
+    /// Keychain is only written when the toast expires (see `PasswordPendingDeletion`).
     private func remove(_ login: Passwords.Login) {
-        guard !mutationInFlight, confirm("Delete the saved login for \(login.host)?", "Delete",
-                      PasswordsPane.deleteDetail(login)),
-              let operation = Passwords.beginUIOperation() else { return }
-        let scope = profileID, context = secrets.secretContext
-        mutationInFlight = true
-        mutationTask = Task {
-            defer { mutationInFlight = false; operation.finish() }
-            do { try await Passwords.deleteAsync(login, profileID: scope) }
-            catch {
-                guard profileID == scope, secrets.secretContext == context else { return }
-                problem = error.localizedDescription; axAnnounce(problem ?? ""); return
-            }
-            guard profileID == scope, secrets.secretContext == context else { return }
-            problem = nil
-            secrets.secretContext = UUID()
-            secrets.forgetting.removeValue(forKey: login.id)?.cancel()
-            secrets.revealed[login.id] = nil
-            if secrets.editing == login.id { cancelEditing() }
-            reload()
-            axAnnounce("Saved login for \(login.host) deleted.")
-        }
+        guard !mutationInFlight else { return }
+        secrets.forgetting.removeValue(forKey: login.id)?.cancel()
+        secrets.revealed[login.id] = nil
+        if secrets.editing == login.id { cancelEditing() }
+        problem = nil; feedback = nil
+        guard deletion.schedule(login, profileID: profileID) else { return }
+        axAnnounce(Self.deletedText(login) + ". Press Command-Z to undo.")
     }
 
     // MARK: Keyboard
@@ -545,6 +650,119 @@ import SwiftUI
             axAnnounce("Password copied.")
         }
         return .handled
+    }
+}
+
+/// Settings has no toast host of its own, so the Undo pill is drawn in the pane with the
+/// same surface as Vane's sidebar toasts.
+struct PasswordUndoToast: View {
+    private enum Part: Hashable { case text, button }
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    let text: String
+    /// True while the toast has VoiceOver or keyboard focus, so it does not expire under them.
+    var hold: (Bool) -> Void = { _ in }
+    let undo: () -> Void
+    @FocusState private var keyFocused: Bool
+    @AccessibilityFocusState private var spoken: Part?
+    @State private var monitor: Any?
+
+    /// ⌘Z is the toast's only while no text field is being edited: there it is text undo.
+    static func takesUndo(_ event: NSEvent) -> Bool {
+        event.type == .keyDown && event.charactersIgnoringModifiers?.lowercased() == "z"
+            && event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command
+            && SettingsWindow.holds(event.window) && !(event.window?.firstResponder is NSText)
+    }
+
+    var body: some View {
+        HStack(spacing: Look.inset) {
+            Text(text).font(Look.Typography.secondary.font)
+                .foregroundStyle(Look.barSelectedText)
+                .lineLimit(1).truncationMode(.middle)
+                .accessibilityFocused($spoken, equals: .text)
+            Button("Undo", action: undo)
+                .buttonStyle(TactileButtonStyle(scales: false))
+                .font(Look.Typography.shortcut.font)
+                .foregroundStyle(Look.barText)
+                .padding(.horizontal, Look.inset)
+                .frame(minHeight: Look.control)
+                .background(chromeTheme.barSelected, in: .capsule)
+                .focused($keyFocused)
+                .accessibilityFocused($spoken, equals: .button)
+                .accessibilityHint("Or press Command-Z.")
+        }
+        .padding(.leading, Look.pillInset)
+        .padding(.trailing, Look.inset / 2)
+        .padding(.vertical, Look.inset / 2)
+        .frame(minHeight: Look.toastHeight)
+        // ponytail: .circular — the default continuous capsule draws edge ticks in offscreen snapshots.
+        .background(chromeTheme.barFill, in: Capsule(style: .circular))
+        .background(Look.barMaterial, in: Capsule(style: .circular))
+        .overlay { Capsule(style: .circular).strokeBorder(Look.barStroke, lineWidth: 1).allowsHitTesting(false) }
+        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(text)
+        .onChange(of: keyFocused || spoken != nil) { _, held in hold(held) }
+        .onAppear {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard Self.takesUndo(event) else { return event }
+                undo()
+                return nil
+            }
+        }
+        .onDisappear {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            hold(false)
+        }
+    }
+}
+
+/// The add sheet, built from the same card and rows as the rest of Settings.
+struct PasswordAddForm: View {
+    @Binding var site: String
+    @Binding var account: String
+    @Binding var password: String
+    let problem: String?
+    let cancel: () -> Void
+    let save: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.inset * 2) {
+            HStack(spacing: Look.inset * 1.5) {
+                SettingsIcon(symbol: "key.fill", tint: .green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add password").font(Look.heading).foregroundStyle(Look.inkPrimary)
+                    Text("Saved in this Mac’s Keychain for this profile.")
+                        .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                }
+            }
+            SettingsCard {
+                SettingsRow("Website") {
+                    TextField("example.com", text: $site).textFieldStyle(.roundedBorder)
+                        .frame(width: 260).accessibilityLabel("Website")
+                }
+                SettingsRow("Username") {
+                    TextField("Optional", text: $account).textFieldStyle(.roundedBorder)
+                        .frame(width: 260).accessibilityLabel("Username")
+                }
+                SettingsRow("Password") {
+                    PasswordDraftField(text: $password, labeled: false).frame(width: 260)
+                }
+            }
+            if let problem {
+                Text(problem).font(Look.caption).foregroundStyle(Look.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                Button("Save", action: save).keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(PasswordsPane.siteOrigin(site) == nil || password.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 440, idealWidth: 460, maxWidth: 560)
     }
 }
 
@@ -730,11 +948,10 @@ extension PasswordsPane {
     /// screen, which means only after the user authenticated to put it there.
     static func spoken(_ revealed: String?) -> String { revealed ?? "Password hidden" }
 
-    /// The confirmation's second line. Named so it can be asserted: "and 1 others" and a
-    /// dangling account name are exactly the wording bugs a delete dialog must not have.
-    static func deleteDetail(_ login: Passwords.Login) -> String {
-        let who = login.account.isEmpty ? "This login" : "\u{201C}\(login.account)\u{201D}"
-        return "\(who) is removed from your keychain. This cannot be undone."
+    /// The Undo toast's words. Named so it can be asserted: a dangling account name is
+    /// exactly the wording bug a delete notice must not have.
+    static func deletedText(_ login: Passwords.Login) -> String {
+        "Deleted \(login.account.isEmpty ? "login" : login.account) · \(login.host)"
     }
 
     static func check() -> [(String, Bool)] {
@@ -798,10 +1015,9 @@ extension PasswordsPane {
 
             ("a hidden password is never spoken", spoken(nil) == "Password hidden"),
             ("a revealed one is", spoken("hunter2") == "hunter2"),
-            ("the delete dialog names the account",
-             deleteDetail(all[0]).contains("\u{201C}ada\u{201D}")),
+            ("the delete toast names the account and site", deletedText(all[0]) == "Deleted ada · bank.example"),
             ("…and copes with a login that has none",
-             deleteDetail(.init(host: "x.example", account: "")).hasPrefix("This login")),
+             deletedText(.init(host: "x.example", account: "")) == "Deleted login · x.example"),
         ]
     }
 }
@@ -1425,6 +1641,8 @@ struct PasswordEyeButton: View {
 
 struct PasswordDraftField: View {
     @Binding var text: String
+    /// Off inside a labelled `SettingsRow`, which already says "Password".
+    var labeled = true
     @State private var revealed = false
     @State private var options = PasswordGenerator.Options()
     @State private var configuring = false
@@ -1433,7 +1651,7 @@ struct PasswordDraftField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
-            Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
+            if labeled { Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary) }
             HStack(spacing: Look.inset) {
                 Group {
                     if revealed { TextField("Password", text: $text) }
@@ -1475,18 +1693,40 @@ struct PasswordDraftField: View {
     }
 }
 
-/// Fixed-length masking is shared by the manager and both page popups.
+/// Fixed-length masking is shared by the manager and both page popups. Revealed, it is
+/// monospaced with digits and symbols tinted apart from letters, the way Safari shows a
+/// password, so l/1/I and O/0 can be told apart. VoiceOver hears the plain value.
 struct PasswordValue: View {
     let value: String?
+    enum Kind: Equatable { case letter, digit, symbol }
 
     var body: some View {
-        Text(value ?? PasswordsPane.dots)
-            .font(.system(size: 14, weight: .medium, design: .monospaced))
-            .tracking(value == nil ? 1.5 : 0)
-            .foregroundStyle(Look.inkPrimary)
-            .lineLimit(1).truncationMode(.tail)
-            .accessibilityLabel("Password")
-            .accessibilityValue(PasswordsPane.spoken(value))
+        Group {
+            if let value { Text(Self.styled(value)) }
+            else { Text(PasswordsPane.dots).tracking(1.5).foregroundStyle(Look.inkPrimary) }
+        }
+        .font(.system(size: 14, weight: .medium, design: .monospaced))
+        .lineLimit(1).truncationMode(.tail)
+        .accessibilityLabel("Password")
+        .accessibilityValue(PasswordsPane.spoken(value))
+    }
+
+    static func kind(_ character: Character) -> Kind {
+        character.isLetter ? .letter : character.isNumber ? .digit : .symbol
+    }
+
+    static func styled(_ value: String) -> AttributedString {
+        var out = AttributedString()
+        for character in value {
+            var run = AttributedString(String(character))
+            switch kind(character) {
+            case .letter: run.foregroundColor = Look.inkPrimary
+            case .digit: run.foregroundColor = Color(nsColor: .systemBlue)
+            case .symbol: run.foregroundColor = Color(nsColor: .systemPink)
+            }
+            out += run
+        }
+        return out
     }
 }
 

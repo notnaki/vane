@@ -21,12 +21,19 @@ import WebKit
         let declared = Set(((manifest["permissions"] as? [String] ?? [])
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
-        var issues = declared.subtracting(recognized).sorted().map {
+        // Vane supplies `sidePanel` itself; see ExtensionSidePanel.swift.
+        var issues = declared.subtracting(recognized).subtracting([ExtensionSidePanelAPI.permission]).sorted().map {
             "\($0): \(unrecognized)"
+        }
+        if declared.contains(ExtensionSidePanelAPI.permission) {
+            issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events and runtime.getContexts are unavailable.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
                 ? "connections to native messaging hosts." : "extension items in page menus."))
+        }
+        if ext.errors.contains(where: isPartialExternallyConnectable) {
+            issues.append("externally_connectable: WebKit skips website patterns it does not support; pages matching only those, or every website when none remain, cannot message this extension.")
         }
         if declared.contains("webRequestBlocking") {
             issues.append("webRequestBlocking: system WebKit cannot cancel or redirect requests or change headers through webRequest. MV2 background pages, actions and content scripts can run. uBlock Origin can use Vane’s partial static-filter compatibility; dynamic request decisions remain unavailable.")
@@ -37,7 +44,6 @@ import WebKit
         }
         for (key, detail) in [
             ("chrome_url_overrides", "replacement browser pages"),
-            ("side_panel", "extension side panels"),
             ("devtools_page", "extension developer-tools panels"),
             ("omnibox", "extension search keywords"),
             ("oauth2", "Chrome identity integration")
@@ -50,7 +56,16 @@ import WebKit
     /// Successful background completion is required separately. A running page's
     /// script diagnostics stay visible without turning activation into a race.
     static func blockingErrors(_ errors: [any Error], manifest: [String: Any]) -> [any Error] {
-        displayErrors(errors, manifest: manifest).filter { !isRuntimeDiagnostic($0) }
+        displayErrors(errors, manifest: manifest).filter { !isRuntimeDiagnostic($0) && !isPartialExternallyConnectable($0) }
+    }
+
+    /// WebKit skips each unsupported `externally_connectable` pattern (such as a wildcard on
+    /// a public suffix like `*.vercel.app`) and keeps the rest; Chrome ignores them too.
+    /// Only those websites lose messaging, so this is a limitation, not an install failure.
+    static func isPartialExternallyConnectable(_ error: any Error) -> Bool {
+        let value = error as NSError
+        return value.domain == WKWebExtension.errorDomain && value.code == WKWebExtension.Error.invalidManifestEntry.rawValue
+            && value.localizedDescription.contains("`externally_connectable`")
     }
 
     static func runtimeErrors(_ errors: [any Error], manifest: [String: Any]) -> [any Error] {

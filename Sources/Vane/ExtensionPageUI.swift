@@ -105,8 +105,13 @@ import WebKit
             original.webView?(webView, decidePolicyFor: action, preferences: preferences, decisionHandler: decisionHandler)
         } else if let original = originalNavigationDelegate,
                   original.responds(to: NSSelectorFromString("webView:decidePolicyForNavigationAction:decisionHandler:")) {
+            let preferences = action.targetFrame?.isMainFrame == false ? WKWebpagePreferences() : preferences
             original.webView?(webView, decidePolicyFor: action) { decisionHandler($0, preferences) }
-        } else { decisionHandler(.allow, preferences) }
+        } else {
+            // The extension pages' default preferences carry Vane's user agent, and WebKit
+            // raises when a subframe's decision hands a custom one back.
+            decisionHandler(.allow, action.targetFrame?.isMainFrame == false ? WKWebpagePreferences() : preferences)
+        }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

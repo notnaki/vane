@@ -59,6 +59,9 @@ struct Feel06ActivityLine: View {
     @Published private(set) var logins: [Passwords.Login] = []
     @Published private(set) var busy = false
     @Published private(set) var error: String?
+    /// When the fetch behind `logins` started. Changes on every successful load, even
+    /// when the list itself is the same.
+    @Published private(set) var fetchedAt: ContinuousClock.Instant?
     private var profileID: UUID?
     private var request: UUID?
     private var task: Task<Void, Never>?
@@ -76,7 +79,7 @@ struct Feel06ActivityLine: View {
         cancel()
         if self.profileID != profileID { logins = [] }
         self.profileID = profileID
-        let request = UUID(), fetch = fetch
+        let request = UUID(), fetch = fetch, started = ContinuousClock.now
         self.request = request
         busy = true
         error = nil
@@ -87,7 +90,7 @@ struct Feel06ActivityLine: View {
             }.value
             guard !Task.isCancelled, let self, self.request == request else { return }
             switch result {
-            case .success(let logins): self.logins = logins
+            case .success(let logins): self.logins = logins; self.fetchedAt = started
             case .failure(let error): self.error = error.localizedDescription
             }
             self.busy = false

@@ -687,7 +687,7 @@ import XCTest
                 XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
             } else {
                 XCTAssertEqual(SidebarWidth.shared.width, 228)
-                XCTAssertEqual(web.frame.width, 661, accuracy: 1)
+                XCTAssertEqual(web.frame.width, 900 - 228 - Look.cardGap, accuracy: 1)
             }
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
             XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,

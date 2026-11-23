@@ -104,9 +104,12 @@ actor ICloudJournal {
         var next = state
         for item in items {
             let old = next.baseline[item.key]
-            guard old != item else { continue }
             let recreating = next.records[item.key]?.deletion != nil
-            if recreating {
+            // Only a version from before the global Space order deletes it, and only by
+            // not knowing it. A Mac that holds one writes it again, even unchanged.
+            let reviving = recreating && item.isSpaceOrder
+            guard old != item || reviving else { continue }
+            if recreating, !reviving {
                 // A received tombstone alone is not permission to revive stale
                 // native state. Require successful, durable observed absence and
                 // subsequent new presence. Ancestor identities stay permanent.
@@ -127,7 +130,8 @@ actor ICloudJournal {
                 record.parentID = item.parentID; record.parentVersion = version
             }
             for key in Set(item.fields.keys).union(old?.fields.keys ?? Dictionary<String, Data>().keys) {
-                if old?.fields[key] != item.fields[key] {
+                // A new incarnation starts with no fields, so it takes every one it has.
+                if recreating || old?.fields[key] != item.fields[key] {
                     record.fields[key] = ICloudField(value: item.fields[key], version: version)
                 }
             }
@@ -137,7 +141,8 @@ actor ICloudJournal {
             next.observedAbsences?.remove(item.key)
         }
         for (key, old) in next.baseline where enabled.contains(old.category) && captured[key] == nil {
-            guard var record = next.records[key], record.deletion == nil else { continue }
+            // Absence never deletes the global Space order. See `ICloudItem.isSpaceOrder`.
+            guard !old.isSpaceOrder, var record = next.records[key], record.deletion == nil else { continue }
             try advance(&next)
             var vector = record.vector; vector[next.deviceID] = next.counter
             record.deletion = ICloudVersion(vector: vector, writer: next.deviceID, counter: next.counter)
@@ -198,7 +203,8 @@ actor ICloudJournal {
             next.observedAbsences?.remove(item.key)
         }
         let readback = Dictionary(items.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        for (key, original) in observedBeforeApply where enabled.contains(original.category) && readback[key] == nil {
+        for (key, original) in observedBeforeApply where enabled.contains(original.category) && readback[key] == nil
+            && !original.isSpaceOrder {
             // Absence is a deletion only when this Mac actually observed the entity
             // immediately before apply. Unknown incoming/placeholder omissions are
             // never evidence of a local deletion.

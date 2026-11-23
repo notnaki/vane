@@ -943,6 +943,8 @@ struct WebCard: View {
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
+        .modifier(ExtensionSidePanelDock(host: store.extensions, store: store, current: store.current,
+                                         radius: radius, edgeToEdge: edgeToEdge))
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
@@ -3317,7 +3319,9 @@ private struct SpaceMenu: View {
     return TabStore.all.first { $0.window === window && $0.currentSpaceID == space.id }
 }
 
-@MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
+/// Asks before deleting. Shared by the sidebar's Space menu and the Manage Spaces card, so
+/// both routes show the same warning and the same archive behaviour.
+@MainActor func deleteSpace(_ space: Space, in store: TabStore) {
     let a = NSAlert()
     a.messageText = "Delete the space “\(space.name)”?"
     a.informativeText = "Its tabs and pinned tabs go to the Archive, where the Library can "

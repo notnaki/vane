@@ -4,6 +4,88 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Arc extensions from the Chrome Web Store — 2026-11-23
+
+Five Chrome Web Store extensions one user relied on in Arc, checked through Vane's own store installer: download from Google's update endpoint, CRX signature check, review, and activation. No account was used anywhere. Nothing was signed in to.
+
+**Build.** macOS **27.0.1 (26A434)**. Vane `main` at `fe03b5f4` plus this change, debug configuration, assembled by `./make-app.sh debug`, re-signed ad hoc with Vane's sandbox entitlements under its own bundle identifier. Each extension ran in its own new `VANE_DATA_DIR` under Downloads. A second build of PR [#775](https://github.com/notnaki/vane/pull/775) at `3dca144d` plus this change measured what #775 adds.
+
+**Harness.** `extensioncheck --store <ID>[,URL[,CSS selector]]` installs a store package (or a folder under `fixtures/`) instead of the bundled fixtures. It records the context errors, opens the real action popup and reports its text, then loads the URL (a path starting with `/` is the loopback server) and reports WebKit's injected-content answer, page references to the extension's origin, and how many elements match the selector. `/ad-check` loads `/88/tag.min.js`, a generic path rule in AdBlock's enabled EasyList ruleset. Content scripts run in an isolated world, so the selector (the extension's own element IDs or classes) is the evidence that their UI appeared. The Google Docs page was the public, view-only [Chromium design doc template](https://docs.google.com/document/d/14YBYKgk-uSfjfwpKFlp_omgUq5hwMVazy_M965s_1KA/edit).
+
+| Extension | Store ID | Version | CRX SHA-256 |
+| --- | --- | --- | --- |
+| GPTZero: AI Detection & Writing Replay | `kgobeoibakoahbfnlficpmibdbkdchap` | 2026.11.6 | `3aad788684fb14d49a8c61783d93cc70b6e780d84cac2a9644a1169bdcf028f2` |
+| Revision History: Writing Process Visibility for Google Docs & Slides | `dlepebghjlnddgihakmnpoiifjjpmomh` | 1.14.1 | `9759915508ad2466bc40578dbd28002792ef88d2b6ec8cfbf8b90f4e57ce605e` |
+| AI Content Detector - Copyleaks | `gplcmncpklkdjiccbknjjkoidpgkcakd` | 5.1.0 | `34e9fbd34fd8447a5d40694b7f1b567c64973422e9f4028658f4868ebec19668` |
+| AdBlock — block ads across the web | `gighmmpiobklfepjocnamgkkbiglidom` | 6.54.0 | `01a03a8d78c16c2fabf7640fae8b06fe22789b41e0d901cf9bbe326673ef109a` |
+| Humanizer Helper | not found | — | — |
+
+**Fixed in Vane.**
+
+- **Partly unsupported `externally_connectable` no longer blocks installation.** Revision History was refused with “Empty or invalid `externally_connectable` manifest entry”. WebKit [skips each pattern it does not support and keeps the rest](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/WebExtension.cpp) (here `https://*.vercel.app/*` or `https://localhost:3000/*`), then reports this error; Chrome ignores such patterns too. Vane now treats it as a limitation shown in the review: only pages matching the skipped patterns cannot message the extension.
+- **Large extensions fit.** AdBlock unpacks to 330 MB, over the old 256 MB limit, and failed with an unreadable `vane.UpdateArchive.Failure error 1`. The limit is now 512 MB, which matches the 128 MB CRX limit at typical ruleset compression. Resources of 1 MB or more are memory-mapped from the accepted copy instead of read into memory, because MV3 workers keep the whole snapshot for the extension's lifetime. Archive failures now say what went wrong.
+
+**Results.**
+
+| Extension | Verdict | Observed |
+| --- | --- | --- |
+| Revision History 1.14.1 | **Works partly** | Installs (with this change). The popup shows its Log in / Sign up page. On the view-only Doc its content script added `div#revision-history-root.revision-history-component`, visible. The background and content pages reported no script errors. Sign-in and the writing replay need an account and were not tested. Its manifest's `oauth2` (Chrome identity) is unavailable; whether its “Sign up with Google” relies on it was not established. |
+| GPTZero 2026.11.6 | **Doesn't work on `main`**; works partly with #775 | On `main` its background fails to load (`WKWebExtensionContextErrorDomain:6`). Its shared chunk reads `runtime.OnInstalledReason.INSTALL` at module top level, and system WebKit has no `runtime.OnInstalledReason` (a probe extension read `undefined` in an extension page). With #775, which adds that enum to workers and extension pages, it installs, its background loads and its popup shows “Log in to start scanning”. Its content scripts still fail: every one throws `undefined is not an object (evaluating '….runtime.OnInstalledReason.INSTALL')`. WebKit exposes this enum only in the main world ([`MainWorldOnly`](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIRuntime.idl)) and #775 does not reach content scripts, so no GPTZero element appeared in the Doc. WebKit's `cookies.onChanged` also passes no change details, so GPTZero's sign-in cookie listener throws on `e.cookie`. |
+| Copyleaks 5.1.0 | **Doesn't work** | The background fails to load on `main` and with #775. Its worker calls `chrome.identity.getRedirectURL()` and `chrome.sidePanel.setPanelBehavior()` at top level. WebKit has neither namespace. With #775 a diagnostic copy (worker wrapped in `importScripts` to catch the exception) still threw `chrome.identity.getRedirectURL is not a function`, so #775's `identity` stand-in does not cover this call. Chrome's `getRedirectURL` is synchronous and returns `https://<id>.chromiumapp.org/`. Sign-in uses `identity.launchWebAuthFlow`, which Vane does not provide, so scans would stay unavailable even after the background loads. The content script loads on example.com (it attached one shadow root). |
+| AdBlock 6.54.0 | **Doesn't work** | Installs with this change; the background then fails to load on `main` and with #775. Diagnostic copies found a chain of Chromium-only members that its worker uses at top level: `webRequest.ResourceType` (only the DNR enum is in #775; WebKit refuses `webtransport` and `webbundle` in listener filters, so the values must match WebKit), `scripting.ExecutionWorld`, the `idle` and `management` namespaces (declared; WebKit does not recognize them), and `webNavigation.onCreatedNavigationTarget`. With stand-ins for all but the last its worker ran to the end, but the rule path on `/ad-check` was still requested and executed, so blocking is unverified. [uBO Lite](#password-manager-unlock-and-autofill--2026-11-21) blocks requests in Vane and is the working alternative. |
+| Humanizer Helper | **Not identified** | No Chrome Web Store listing has this name (store search and web search, 2026-11-23). The closest match is “Humanize Helper”, a GitHub project loaded unpacked beside a Windows desktop helper. Its store ID is needed to check it. |
+
+The diagnostic copies changed only the worker entry and popup; every verdict above comes from the unmodified store package.
+
+### Belongs in PR #775, not duplicated here
+
+- `chrome.identity.getRedirectURL()` as a synchronous function (Copyleaks).
+- `webRequest.ResourceType` with WebKit's accepted values, `scripting.ExecutionWorld`, and `idle`/`management` stand-ins (AdBlock).
+
+### Not fixable in Vane today
+
+- **Runtime enums in content scripts** (GPTZero). WebKit defines `runtime.OnInstalledReason` only in the main world. Vane injects compatibility scripts into workers and extension pages, but not into the isolated content-script world. That world is WebKit's named `WebExtension-<uniqueIdentifier>` world ([WebExtensionContextCocoa.mm](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm)), so a document-start user script in that world might work. Whether it would run before the extension's own content scripts was not tested.
+- **`cookies.onChanged` details.** WebKit fires the event without the changed cookie.
+- **`identity.launchWebAuthFlow` and `oauth2`.** There is no Chrome identity integration in Vane; it would need its own web-authentication window.
+
+Run logs and the result files are kept locally under `~/.cache/vane-task-evidence/arc-extensions-2026-11-23/`.
+
+## Side panels and Claude in Chrome — 2026-11-22
+
+Vane now supplies `chrome.sidePanel`, and stand-ins for Chromium-only namespaces that carry their events and constants and no methods. The unmodified official **Claude** extension (“Claude in Chrome”, Web Store ID `fcoeoabgfenejglbffodgkkbkcdhcgfn`, version **1.0.107**, MV3) installs, and its button opens its side panel docked beside the page, showing Claude's signed-out **Log in** screen. Nothing past that screen was tested, and Claude's page actions cannot work on WebKit.
+
+**Build and package.** macOS 27.0, debug test host built from this change on `main` at `fe03b5f4`, with an isolated temporary `VANE_DATA_DIR` and a fresh profile. The CRX came from Google's public update endpoint (SHA-256 `be64eb4dd905ed7ff50a421d9fd423293e4ce8b56c0fdee24fa4eaf17987a434`) and was unpacked without changes. No Claude account was used.
+
+**How it works.** A script defines `chrome.sidePanel` in the extension's worker (through the existing worker bootstrap) and in its pages. Calls reach the host as a `tabs.create` for a reserved URL inside the extension's own origin, which the host consumes before any tab exists. WebKit resolves `tabId` and `windowId`. The same bootstrap defines the missing namespaces listed in [Extensions and integrations](INTEGRATIONS.md#compatibility-and-validation).
+
+| Step | Before this change | With this change |
+| --- | --- | --- |
+| Install and background start | Failed: “The background content failed to load due to an error” (`WKWebExtensionContextErrorDomain:6`). The worker's top level calls `chrome.notifications.onClicked.addListener` and other absent namespaces. | Installed and started; no context errors reported in the run. |
+| Button | Not reachable. | `action.onClicked` ran Claude's own `sidePanel.setOptions({tabId, path})` and `sidePanel.open({tabId})`. No tab was created. |
+| Panel | None. | `sidepanel.html?tabId=…` loaded in the extension context, 360 points wide beside a 590-point page in a 1200-point window. Text: “Log in — Claude in Chrome is available to all paid plan subscribers”. |
+| Second press | None. | The panel stays open, as in Chrome: Claude does not set `openPanelOnActionClick`, so the press reaches its `onClicked`, which opens the panel that is already open. |
+| Narrow window | None. | At 960 points the panel narrows so the page keeps 420; at 700 it is hidden, still open, and returns when the window widens. |
+
+One crash was found and fixed on the way: an extension page hosted by Vane (options window or side panel) that navigated a subframe raised `WKWebpagePreferences._customUserAgent must be nil for subframe navigations`. Claude's panel does this.
+
+**API availability measured in WebKit** with Claude's exact permission list, in both the worker and a page (134 `chrome.*` paths that Claude's code references were probed):
+
+| Claude needs | WebKit | Consequence |
+| --- | --- | --- |
+| `sidePanel` | Absent; supplied by Vane | Panel opens. |
+| `debugger` (`attach`, `sendCommand`, `onEvent`) | Absent; events only in Vane, methods undefined | **Page actions do not work.** Claude clicks, types and takes screenshots through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`, `Network.*`). WebKit offers extensions no equivalent. |
+| `tabGroups`, `tabs.group`/`ungroup` | Absent; constants and events only | Claude's tab group is not created. |
+| `identity.launchWebAuthFlow` | Absent; undefined | Claude's silent OAuth refresh path fails. Whether interactive sign-in completes was not tested. |
+| `notifications`, `offscreen`, `downloads` | Absent; events only, methods undefined | No notifications, no offscreen audio/GIF document, no downloads from the extension. |
+| `runtime.connectNative` | Hidden by Vane | Claude reports the desktop app and Claude Code connection as absent. |
+| `runtime.getContexts` | Absent | Claude's ⌘E command cannot tell that its panel is open, so it does not toggle. |
+| `action.getUserSettings`, `action.setBadgeTextColor`, `favicon` | Absent | Cosmetic. |
+| `scripting`, `tabs`, `storage` (local and session), `alarms`, `webNavigation`, `declarativeNetRequest`, `permissions`, `commands`, `windows`, `runtime.onMessageExternal`, `tabs.captureVisibleTab` | Present | Not exercised beyond start-up. |
+
+**Not tested:** signing in, chatting, reading a page, any tool call, the options page, the `claude.ai` content scripts, shortcuts, and an assembled signed app. Presence of an API in the table is not evidence that Claude's use of it works.
+
+Automated coverage: `ExtensionSidePanelTests` loads a synthetic MV3 worker that registers listeners on absent namespaces at its top level and opens a per-tab panel from `action.onClicked`. It checks the panel page, tab scoping, `window.close()`, `openPanelOnActionClick` and its toggle, the shared panel, a per-tab `enabled: false`, `open()` refused without a user gesture, that the stand-ins expose events and constants and leave methods undefined, and the panel's width limits. A second test covers a tab kept in a swiped-away Space, a tab moved to another window, tab close, window close, a private window, a store parked behind another profile's, and an extension without the permission. A third covers `setPanelBehavior` at a worker's top level, the `_execute_action` shortcut toggling the panel, and the `chrome.runtime` constants in a manifest content script. The first test also covers the close button's path, an open after a click in the key window, and a page-reported gesture (simulated: tests cannot click). The Claude runs were local probes and are not in the suite; their logs and snapshots are under `~/.cache/vane-task-evidence/claude-side-panel-2026-11-22/` (first run) and `~/.cache/vane-task-evidence/claude-side-panel-2026-11-23-review-fixes/` (repeated after the stand-ins lost their methods).
+
 ## Password-manager unlock and autofill — 2026-11-21
 
 The unmodified official Bitwarden **2026.11.0** Firefox (Manifest V2) package signs in to a vault, unlocks it again after a restart, and fills a login form in Vane. The same runs repeat the ad-blocker and page-changer checks with current packages. This is the first authenticated password-manager result; the earlier sections keep their original verdicts.
