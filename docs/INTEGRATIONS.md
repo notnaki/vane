@@ -232,8 +232,18 @@ extension's own page, which the ✕ closes. Limits: options and behaviour are fo
 restarts, `getOptions` answers from the calling context's own writes, and
 `sidePanel.onOpened`/`onClosed` and `runtime.getContexts` are not available.
 
+**Web sign-in (`chrome.identity`).** For extensions that request `identity`, Vane
+supplies `getRedirectURL()` (`https://<Chrome ID>.chromiumapp.org/`, using the Web Store
+ID or the manifest `key`'s ID) and `launchWebAuthFlow()`. An interactive flow opens the
+sign-in page in a Vane window titled with the extension's name and the page's host, on
+the profile's own cookies. It ends when the page navigates to the redirect URL, which
+never loads, or rejects when the window is closed. Non-interactive flows have no window
+and need the page to redirect without loading. `getAuthToken` and the manifest's
+`oauth2` (Google account sign-in) are not available. Callbacks cannot receive
+`runtime.lastError`.
+
 **Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
-`identity`, `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
+`notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
 the namespace out and the extension's background would stop at its first
 `chrome.notifications.onClicked.addListener(…)`. Vane defines each one with its events,
 which never fire, and its constants. Methods stay undefined, so a check such as
@@ -249,7 +259,7 @@ extension's own; scripts injected with `scripting.registerContentScripts` or
 `executeScript` do not.
 
 Vane does not provide native messaging hosts, replacement browser pages,
-developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
+developer-tools panels, omnibox keywords, or Chrome's Google-account OAuth (`oauth2`). Native
 messaging has public WebKit hooks, but Vane has no approved host-execution mechanism.
 ZIP/native-host feasibility, exact upstream package provenance, regression scope, and
 assembled-app results are in [Extension validation](EXTENSION-VALIDATION.md). No Vane

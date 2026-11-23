@@ -4,6 +4,28 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Chrome identity web sign-in and Copyleaks — 2026-11-23
+
+Vane now supplies `chrome.identity.getRedirectURL()` and `identity.launchWebAuthFlow()` for extensions that request the `identity` permission. The unmodified **AI Content Detector - Copyleaks** 5.1.0 (`gplcmncpklkdjiccbknjjkoidpgkcakd`) now installs and its background starts. Signing in was not tested: no Copyleaks, Google or other account was used.
+
+**Build and package.** macOS 27.0.1, debug app assembled from this change (stacked on PR #775 at `e59bbd69`), run as `extensioncheck --store gplcmncpklkdjiccbknjjkoidpgkcakd,https://example.com/` with a fresh isolated `VANE_DATA_DIR`. The store package was downloaded and verified by Vane and not modified.
+
+| Step | Before (PR #775) | With this change |
+| --- | --- | --- |
+| Background | Failed (`WKWebExtensionContextErrorDomain:6`): the worker's top level throws `chrome.identity.getRedirectURL is not a function`. | Activated; “No context errors after startup”. |
+| Content script on example.com | Injected. | Injected; no errors after the page. |
+| Popup | — | Not applicable: the store build has no popup. Its button opens its side panel (`setPanelBehavior`), which extensioncheck does not press. |
+
+**How it works.** `getRedirectURL(path)` is synchronous and returns `https://<id>.chromiumapp.org/<path>`. The ID is Chrome's for that extension, so the redirect URL is the one its OAuth provider has registered: the Web Store ID for store installs, else the ID derived from the manifest's `key`, else WebKit's runtime ID. `launchWebAuthFlow({url, interactive})` reaches the host as a `tabs.create` for a reserved URL, like `sidePanel`. With `interactive: true` the page opens in a Vane window (480 × 640 points) whose title names the extension and the page's current host. Its web view uses the profile's own website data store, so cookies are the profile's. The first navigation to the redirect URL, including a server redirect, is cancelled and its URL is the result. Closing the window rejects with “The user did not approve access.” Without `interactive` there is no window; a page that loads without redirecting rejects with “User interaction required.” (Chrome's default, `abortOnLoadForNonInteractive`). A page that cannot load rejects with “Authorization page could not be loaded.” Each extension has one flow at a time.
+
+**Not provided.** `getAuthToken`, `getProfileUserInfo`, `getAccounts`, `removeCachedAuthToken` and the manifest's `oauth2` stay undefined: they are Chrome's Google-account sign-in, and Vane has no Google account. Callback-style calls get the result, but a failure cannot set `runtime.lastError` (WebKit owns it); the callback receives no argument and the error is logged. `timeoutMsForNonInteractive` and `abortOnLoadForNonInteractive: false` are ignored. A sign-in page's `window.open` loads in the same window, without `window.opener`. `onSignInChanged` never fires.
+
+**`cookies.onChanged` (GPTZero) is unchanged.** WebKit fires the event without the change details. Rebuilding them would mean diffing whole cookie jars on each event, which races with concurrent changes and needs host access to every domain, so it was not done.
+
+**Automated coverage.** `ExtensionIdentityTests` checks the Chrome ID (store ID, manifest key), the bridge URL's owner and that only `http`/`https` pages load. Its native test loads a synthetic MV3 worker that calls `getRedirectURL()` at its top level and runs flows against a loopback server: a non-interactive server redirect resolves, a non-interactive page that stays rejects, an interactive page's own navigation to the redirect URL resolves and closes the window, and closing the window rejects. It also checks the window's host subtitle and the profile data store.
+
+Evidence: `~/.cache/vane-task-evidence/chrome-identity-2026-11-23/` (Copyleaks run log and result file, native test logs, light and dark screenshots of the sign-in window on the loopback fixture page).
+
 ## Arc extensions from the Chrome Web Store — 2026-11-23
 
 Five Chrome Web Store extensions one user relied on in Arc, checked through Vane's own store installer: download from Google's update endpoint, CRX signature check, review, and activation. No account was used anywhere. Nothing was signed in to.

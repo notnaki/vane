@@ -7,7 +7,7 @@ import WebKit
 /// still tells the extension the feature is missing. Vendor resources remain unchanged.
 @MainActor enum ExtensionChromiumGaps {
     /// Permission names whose namespace WebKit omits entirely.
-    nonisolated static let namespaces = ["debugger", "downloads", "identity", "notifications", "offscreen", "tabGroups"]
+    nonisolated static let namespaces = ["debugger", "downloads", "notifications", "offscreen", "tabGroups"]
 
     private nonisolated static let runtimeConstants = """
         {OnInstalledReason: {INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update'}, \

@@ -46,7 +46,7 @@ import WebKit
     }
 
     static func prepare(_ original: WKWebExtension, resources originalResources: [String: Data],
-                        manifest: [String: Any], userAgent: String) throws -> WKWebExtension {
+                        manifest: [String: Any], userAgent: String, chromeID: String? = nil) throws -> WKWebExtension {
         guard usesWorker(original) else { return original }
         guard let manifestBytes = originalResources["manifest.json"],
               let snapshotManifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any],
@@ -88,6 +88,8 @@ import WebKit
         include(Data("Vane MV3 navigator resources 4 memory cache".utf8))
         include(Data(directory.utf8)); include(Data(template.utf8)); include(Data(templateEntry.utf8))
         include(Data(ExtensionChromiumGaps.contentScript.utf8))
+        let chromeID = ExtensionIdentityAPI.chromeID(storeID: chromeID, manifest: manifest)
+        include(Data((chromeID ?? "").utf8))
         for name in originalResources.keys.sorted() { include(Data(name.utf8)); include(originalResources[name]!) }
         let token = digest.finalize().map { String(format: "%02x", $0) }.joined()
         let modulePath = "__vane_worker_identity_" + token + ".mjs"
@@ -105,6 +107,8 @@ import WebKit
         runtimeBackground["service_worker"] = entryURL.percentEncodedPath
         if generated { runtimeBackground["preferred_environment"] = ["service_worker"] }
         runtimeManifest["background"] = runtimeBackground
+        // `identity.getRedirectURL()` reads it synchronously, in workers and pages alike.
+        if let chromeID { runtimeManifest[ExtensionIdentityAPI.chromeIDKey] = chromeID }
         // Content scripts read `chrome.runtime` constants WebKit lacks at their top level.
         // Vane's stand-in runs first in each declared group; vendor scripts stay unchanged.
         // MAIN-world groups run in the page's own world, where `chrome` is the page's.
@@ -162,7 +166,7 @@ import WebKit
           }
           if (navigator.userAgent !== config.ua) throw new Error('Vane worker identity bootstrap failed');
         })();
-        """ + "\n" + ExtensionChromiumGaps.script + "\n" + ExtensionSidePanelAPI.script
+        """ + "\n" + ExtensionIdentityAPI.script + "\n" + ExtensionChromiumGaps.script + "\n" + ExtensionSidePanelAPI.script
     }
 
 }

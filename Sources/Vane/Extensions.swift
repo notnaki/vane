@@ -311,6 +311,7 @@ import WebKit
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
         WebKitStartup.configureExtensionPages(webConfiguration)
         ExtensionMV2Compatibility.configure(webConfiguration)
+        ExtensionIdentityAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
@@ -852,7 +853,7 @@ import WebKit
             let manifestData = try Self.readManifest(frozen.url)
             let manifest = try Self.validate(frozen.url, data: manifestData)
             try ExtensionDiagnostics.validateResources(manifest, in: frozen.url)
-            let ext = try await runtimeExtension(in: frozen.url, manifest: manifest)
+            let ext = try await runtimeExtension(in: frozen.url, manifest: manifest, storeID: storeSource?.id)
             try checkLifetime()
             let parseErrors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
             guard parseErrors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(parseErrors) + "\nFix the extension folder and retry.") }
@@ -1290,7 +1291,7 @@ import WebKit
     }
 
     private func runtimeExtension(in folder: URL, manifest: [String: Any], appBundle: Bundle? = nil,
-                                  signatureHash: String? = nil) async throws -> WKWebExtension {
+                                  signatureHash: String? = nil, storeID: String? = nil) async throws -> WKWebExtension {
         let original: WKWebExtension
         if let appBundle { original = try await WKWebExtension(appExtensionBundle: appBundle) }
         else { original = try await WKWebExtension(resourceBaseURL: folder) }
@@ -1308,7 +1309,8 @@ import WebKit
             }
             return resources
         }.value
-        return try ExtensionWorkerIdentity.prepare(original, resources: resources, manifest: manifest, userAgent: userAgent.effective)
+        return try ExtensionWorkerIdentity.prepare(original, resources: resources, manifest: manifest,
+                                                 userAgent: userAgent.effective, chromeID: storeID)
     }
 
     private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil,
@@ -1362,7 +1364,7 @@ import WebKit
         let manifest = try Self.validate(folder)
         try ExtensionDiagnostics.validateResources(manifest, in: folder)
         let ext = try await runtimeExtension(in: folder, manifest: manifest, appBundle: appBundle,
-                                             signatureHash: record.safari?.signatureHash)
+                                             signatureHash: record.safari?.signatureHash, storeID: record.store?.id)
         let errors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
         guard errors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(errors)) }
         // Record access is checked against the actual code before anything can execute.
@@ -2063,6 +2065,9 @@ import WebKit
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         try requireActive(context)
+        if let request = try ExtensionIdentityAPI.Request(configuration.url, base: context.baseURL) {
+            throw Failure(ExtensionIdentityAPI.marker + (await authenticate(request, for: context)))
+        }
         if let request = ExtensionSidePanelAPI.Request(configuration.url, base: context.baseURL) {
             try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
                         store: (configuration.window as? ExtWindow)?.store, for: context)
@@ -2203,6 +2208,31 @@ import WebKit
             hold(presentation?.window.isKeyWindow == true)
         }
         presentation.show()
+    }
+
+    // MARK: Web sign-in
+
+    private var authFlows: [ObjectIdentifier: ExtensionAuthFlow] = [:]
+
+    /// `identity.launchWebAuthFlow`'s answer: `resolve <url>` or `reject <Chrome's message>`.
+    private func authenticate(_ request: ExtensionIdentityAPI.Request, for context: WKWebExtensionContext) async -> String {
+        guard ExtensionIdentityAPI.declared(context.webExtension.manifest) else {
+            return "reject This extension has not requested the identity permission."
+        }
+        let key = ObjectIdentifier(context)
+        guard authFlows[key] == nil else { return "reject Another sign-in for this extension is already open." }
+        let cfg = WKWebViewConfiguration()
+        if let store = controller.configuration.defaultWebsiteDataStore { cfg.websiteDataStore = store }
+        let name = context.webExtension.displayName ?? "Extension"
+        let flow = ExtensionAuthFlow(request: request, redirectHost: ExtensionIdentityAPI.redirectHost(
+            manifest: context.webExtension.manifest, runtimeID: context.uniqueIdentifier), configuration: cfg,
+            title: "Sign in for “\(name)”")
+        userAgent.track(flow.web)
+        authFlows[key] = flow
+        defer { authFlows[key] = nil }
+        // WebKit ends the message with a period unless it has one; this one is the URL's end.
+        do { return "resolve " + (try await flow.run(over: frontmostStore?.window)) + "." }
+        catch { return "reject " + error.localizedDescription }
     }
 
     // MARK: Side panels
@@ -2499,6 +2529,7 @@ import WebKit
         }
         for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
         for panel in sidePanels where panel.context === context { closeSidePanel(panel) }
+        authFlows[ObjectIdentifier(context)]?.cancel()
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
