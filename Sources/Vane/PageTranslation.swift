@@ -413,7 +413,7 @@ import WebKit
     let total = 0;
     for (let n; (n = walker.nextNode()) && nodes.length < 5000;) {
       const d = n.data, start = d.trimStart(), core = start.trimEnd();
-      if (core.length > 2000) continue;
+      if (core.length > 20000) continue; // ponytail: long paragraphs still translate; only giant blobs are skipped
       if ((total += core.length) > 100000) break;
       nodes.push(n); originals.push(d); lead.push(d.slice(0, d.length - start.length));
       trail.push(start.slice(core.length)); texts.push(core);
