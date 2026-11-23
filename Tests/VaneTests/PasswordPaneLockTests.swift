@@ -79,6 +79,22 @@ final class SpyContext: LAContext {
         XCTAssertTrue(lock.isUnlocked(profile))
     }
 
+    func testARelockWaitsForATapEvenAfterThePaneWasShownAgain() {
+        let sheet = StubAuthenticator(), scan = StubAuthenticator()
+        let (lock, _) = inlineLock(sheet, scan)
+        let profile = UUID()
+        lock.beginAutomaticUnlock(profile)
+        scan.pending.removeFirst()(true)
+        XCTAssertTrue(lock.isUnlocked(profile))
+        lock.rearm() // switched to another Settings pane and back while unlocked
+        lock.lock()  // then idle, screen lock or sleep with Settings still in front
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertTrue(scan.reasons.count == 1 && sheet.reasons.isEmpty,
+                      "Nobody may be at the Mac after a relock; nothing starts on its own")
+        lock.unlock(profile)
+        XCTAssertEqual(scan.reasons.count, 2, "A tap still unlocks")
+    }
+
     func testTheScanWaitsForSettingsToBeInFront() {
         let sheet = StubAuthenticator(), scan = StubAuthenticator()
         let (lock, _) = inlineLock(sheet, scan)

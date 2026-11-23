@@ -227,6 +227,9 @@ import LocalAuthentication
     func lock() {
         cancel()
         expiry?.cancel(); expiry = nil
+        // A relock uses up the automatic attempt: nobody may be at the Mac, so it waits
+        // for a tap. Another profile still starts on its own (the guard compares profiles).
+        if let open = unlockedProfile { automaticProfile = open }
         if unlockedProfile != nil { unlockedProfile = nil }
     }
 
