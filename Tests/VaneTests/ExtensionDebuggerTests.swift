@@ -113,11 +113,12 @@ import XCTest
         XCTAssertTrue(ExtensionDebuggerAPI.declared(["permissions": ["debugger"]]))
         XCTAssertFalse(ExtensionDebuggerAPI.declared(["optional_permissions": ["debugger"]]), "Accepted at install, or not at all")
         for command in ["selectAll", "paste", "moveToBeginningOfLine", "deleteBackward"] {
-            XCTAssertTrue(ExtensionDebuggerAPI.isEditingCommand(command), command)
+            XCTAssertEqual(ExtensionDebuggerAPI.editingCommand(command), command)
         }
+        XCTAssertEqual(ExtensionDebuggerAPI.editingCommand("SelectAll"), "selectAll", "Chrome ignores case")
         for command in ["terminate", "print", "release", "move:", "performClose", "", "scrollWheel", "scrollPoint",
                         "moveNowhere", "deleteEverything", "pageDown"] {
-            XCTAssertFalse(ExtensionDebuggerAPI.isEditingCommand(command), command)
+            XCTAssertNil(ExtensionDebuggerAPI.editingCommand(command), command)
         }
         // `URL.host` drops an IPv6 literal's brackets; `location.origin` keeps them.
         XCTAssertEqual(ExtensionDebuggerAPI.origin(of: URL(string: "http://[::1]:8080/a?b")!), "http://[::1]:8080")
@@ -166,8 +167,8 @@ import XCTest
         XCTAssertEqual(last, .run("return new B((\n1 + 1\n))"))
         let written = await ExtensionDebuggerAPI.body(for: "return 5", box: "B")
         XCTAssertEqual(written, .run("return 5"))
-        XCTAssertTrue(ExtensionDebuggerAPI.evaluation("x", token: "T").hasPrefix("if (location.href !== T_options.url) return"),
-                      "The address check is the first statement")
+        XCTAssertTrue(ExtensionDebuggerAPI.evaluation("x", token: "T").hasPrefix("if (location.origin !== T_options.origin) return"),
+                      "The origin check is the first statement")
     }
 
     func testAnExtensionDrivesAPageThroughTheDebugger() async throws {
@@ -287,11 +288,11 @@ import XCTest
             return out.exceptionDetails.exception.className + '|' + await evaluate('typeof escaped');
             """, in: page)
         XCTAssertEqual(escaped, #"SyntaxError|{"result":{"type":"string","value":"undefined"}}"#)
-        // Nor at another address of the same origin: host access can turn on the path.
-        for moved in ["http://elsewhere.example/page", try server.url("/other").absoluteString] {
+        // Nor on another origin. A same-origin address change (a single-page app) still runs.
+        for moved in ["http://elsewhere.example", "http://127.0.0.1:1"] {
             let elsewhere = try await tab.web.callAsyncJavaScript(
                 ExtensionDebuggerAPI.evaluation("window.ranElsewhere = true", token: "T"),
-                arguments: ["T_options": ["url": moved]], in: nil, contentWorld: .page) as? String
+                arguments: ["T_options": ["origin": moved]], in: nil, contentWorld: .page) as? String
             XCTAssertEqual(elsewhere, #"{"moved":true}"#, moved)
         }
         let ran = try await tab.web.evaluateJavaScript("typeof ranElsewhere") as? String

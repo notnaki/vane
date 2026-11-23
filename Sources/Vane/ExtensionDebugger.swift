@@ -304,13 +304,14 @@ import WebKit
     enum Body: Equatable, Sendable { case run(String), syntax(String) }
 
     /// The function body WebKit runs for one evaluation; `body` has passed `syntaxError`.
-    /// The address is checked before anything of the caller's runs: the whole of it, since
-    /// host access can turn on a path and not only an origin. Only names carrying
+    /// The origin is checked before anything of the caller's runs (the page probe already
+    /// checked host access for the full address; a path inside one origin is no boundary,
+    /// and single-page apps change theirs constantly). Only names carrying
     /// `token` are in scope of the caller's code, so none can shadow a page global it
     /// meant to read; `location` is the window's own, which a page cannot replace.
     nonisolated static func evaluation(_ body: String, token: String) -> String {
         """
-        if (location.href !== \(token)_options.url) return JSON.stringify({moved: true});
+        if (location.origin !== \(token)_options.origin) return JSON.stringify({moved: true});
         class \(token) { constructor(value) { this.value = value; } }
         const \(token)_run = (async function () {
         \(body)
@@ -394,7 +395,10 @@ import WebKit
         "deleteToBeginningOfLine", "deleteToEndOfLine"
     ] + ["Left", "Right", "Up", "Down", "WordLeft", "WordRight", "ToBeginningOfLine", "ToEndOfLine", "ToLeftEndOfLine",
          "ToRightEndOfLine", "ToBeginningOfDocument", "ToEndOfDocument"].flatMap { ["move" + $0, "move" + $0 + "AndModifySelection"] })
-    nonisolated static func isEditingCommand(_ name: String) -> Bool { editingCommands.contains(name) }
+    /// Chrome matches these regardless of case (Puppeteer sends `SelectAll`).
+    nonisolated static func editingCommand(_ name: String) -> String? {
+        editingCommands.first { $0.caseInsensitiveCompare(name) == .orderedSame }
+    }
 
     /// Key events Vane made for an extension. WebKit hands a key the page left alone back
     /// to the application (`NSApp.sendEvent`), where every key monitor, Vane's shortcuts
@@ -429,7 +433,7 @@ import WebKit
     nonisolated static let dragGuard = """
         globalThis.__vaneDragGuard = {on: 0};
         addEventListener('dragstart', event => { if (__vaneDragGuard.on > 0) event.preventDefault(); }, true);
-        addEventListener('mouseup', event => { if (event.button === 0 && __vaneDragGuard.on > 0) __vaneDragGuard.on--; }, true);
+        addEventListener('mouseup', event => { if (event.isTrusted && event.button === 0 && __vaneDragGuard.on > 0) __vaneDragGuard.on--; }, true);
         """
     nonisolated static func armDragGuard(_ on: Bool) -> String {
         "globalThis.__vaneDragGuard && (__vaneDragGuard.on \(on ? "+= 1" : "= 0")); 0"
@@ -810,7 +814,7 @@ extension NSApplication {
         }
         let token = "__vane" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let options: [String: Any] = [
-            "url": page.href,
+            "origin": ExtensionDebuggerAPI.origin(of: page.url),
             "awaitPromise": parameters["awaitPromise"] as? Bool ?? false,
             "returnByValue": parameters["returnByValue"] as? Bool ?? false,
             "timeout": parameters["timeout"] as? Double ?? 0
@@ -825,6 +829,8 @@ extension NSApplication {
         case .run(let compiled): body = compiled
         case .syntax(let error): return exception(error)
         }
+        // The compile awaited: the user may have switched tabs since the page was checked.
+        guard ExtensionDebuggerAPI.isShowing(page.web) else { throw ExtensionHost.Failure(Self.offScreen) }
         let outcome: Result<Any, any Error> = try await bounded { finish in
             page.web.callAsyncJavaScript(ExtensionDebuggerAPI.evaluation(body, token: token),
                                          arguments: [token + "_options": options], in: nil, in: .page) { finish(.success($0)) }
@@ -866,6 +872,7 @@ extension NSApplication {
                                         width: width * zoom, height: height * zoom)
             configuration.snapshotWidth = NSNumber(value: width * (clip["scale"] as? Double ?? 1))
         }
+        guard ExtensionDebuggerAPI.isShowing(page.web) else { throw ExtensionHost.Failure(Self.offScreen) }
         let image: NSImage = try await bounded { finish in
             page.web.takeSnapshot(with: configuration) { image, error in
                 finish(image.map(Result.success) ?? .failure(error ?? ExtensionDebuggerAPI.failure(-32000, "Unable to capture screenshot")))
@@ -873,7 +880,9 @@ extension NSApplication {
         }
         // The picture is of whatever was on screen when it was taken: only this document's.
         let after = try await probe(page.web)
-        guard after.count == 4, after[0] as? String == page.href, after[3] as? Double == page.began else {
+        guard after.count == 4, let moved = (after[0] as? String).flatMap(URL.init(string:)),
+              ExtensionDebuggerAPI.origin(of: moved) == ExtensionDebuggerAPI.origin(of: page.url),
+              after[3] as? Double == page.began, ExtensionDebuggerAPI.isShowing(page.web) else {
             throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed")
         }
         guard let bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil).map(NSBitmapImageRep.init(cgImage:)),
@@ -1008,7 +1017,7 @@ extension NSApplication {
         // AppKit turns ⌘ shortcuts into commands in its menus, which this event never
         // reaches; the commands Chrome's caller names stand in for them, once each.
         guard modifiers & 4 != 0 else { return }
-        for command in parameters["commands"] as? [String] ?? [] where ExtensionDebuggerAPI.isEditingCommand(command) {
+        for command in (parameters["commands"] as? [String] ?? []).compactMap(ExtensionDebuggerAPI.editingCommand) {
             let selector = NSSelectorFromString(command + ":")
             if web.responds(to: selector) { web.perform(selector, with: nil) }
         }
