@@ -130,8 +130,13 @@ with Allow saving under Never Saved in Settings → Passwords.
 ## Manage and protect credentials
 
 **Require Touch ID to view passwords** (on by default, for every profile) locks Settings →
-Passwords. Opening the pane shows only an Unlock button and asks once with the same
-device-owner authentication as reveal (login-password fallback). The list locks again after
+Passwords. Like a locked folder, the locked pane holds the inline Touch ID control and starts
+listening as soon as Settings is in front, so a touch of the sensor opens the list with no
+system sheet. It starts on its own once per presentation: after a cancel or failure, tap the
+control to try again. **Use Password…** opens the macOS sheet with the login-password
+fallback. The Locked Folders unlock method in Settings → Privacy and Security applies here
+too: **System**, or a Mac without Touch ID, uses the macOS sheet instead of the inline
+control. Leaving the pane takes a waiting scan down. The list locks again after
 five minutes without a key press, click or scroll in Settings, and when Settings closes, the
 screen locks, the Mac sleeps, the session switches or another profile is selected. Switching
 to another Settings pane and back does not ask again. Turning the setting on while the list
@@ -210,11 +215,14 @@ authenticator and the Keychain reader, in a never-shown window that reports itse
 test raises a system prompt, and under XCTest the unstubbed gate refuses instead of prompting. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
 Keychain-dependent tests skip explicitly if the host cannot store disposable items.
 `VANE_PASSWORD_SNAPSHOTS=/tmp/vane-password-ui` writes native fixture PNGs, including the
-manager's list, locked, detail, undo-toast and add-sheet states in light and dark
+manager's list, locked (listening, after a cancel, and the macOS-sheet method), detail,
+undo-toast and add-sheet states in light and dark
 (`PasswordManagerSnapshotTests`, a names-only fixture list and a stubbed lock). Tests never
 show a real Touch ID prompt: `TestEnvironment.prepare()` installs a denying
-`Passwords.authenticator` (debug builds only, so release builds cannot reach it), and
-`PasswordPaneLockTests` inject their own.
+`Passwords.authenticator` (debug builds only, so release builds cannot reach it) that also
+answers the pane's inline scan, and `PasswordPaneLockTests` inject their own. The embedded
+Touch ID view draws nothing offscreen, so the listening snapshot shows an empty space where
+the fingerprint appears in the app.
 
 `python3 scripts/check-browser-smoke.py --binary .build/debug/vane` assembles an ad-hoc
 signed sandbox fixture. It also writes disposable credentials, exits, reads them from a

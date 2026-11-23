@@ -23,6 +23,14 @@ import XCTest
         UserDefaults.vane.removeObject(forKey: PasswordPaneLock.requiredKey)
     }
 
+    /// Settings in front and, unless `inline`, the macOS sheet: the pane prompts as it
+    /// would in the app, into a stub.
+    private func prompting(_ lock: PasswordPaneLock, inline: Bool = false) -> PasswordPaneLock {
+        lock.mayPrompt = { true }
+        lock.biometricsAvailable = { inline }
+        return lock
+    }
+
     private func unlockedLock() -> PasswordPaneLock {
         let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in done(true); return nil })
         lock.unlock(profile)
@@ -89,8 +97,18 @@ import XCTest
             let list = try render(pane(lock: unlockedLock()), name: "list", dark: dark)
             XCTAssertGreaterThan(distinctColors(list), 4)
 
-            let denied = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in nil })
-            try render(pane(lock: denied), name: "locked", dark: dark)
+            // Opened: the inline Touch ID control, already listening.
+            let listening = prompting(PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in nil }), inline: true)
+            try render(pane(lock: listening), name: "locked", dark: dark)
+            XCTAssertTrue(listening.authenticating)
+            // After a cancel: tap to try again, or use the password.
+            let cancelled = prompting(PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in done(false); return nil }), inline: true)
+            try render(pane(lock: cancelled), name: "locked-retry", dark: dark)
+            XCTAssertNotNil(cancelled.problem)
+            // "System" unlock method, or a Mac without Touch ID: the macOS sheet is up.
+            let system = prompting(PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in nil }))
+            try render(pane(lock: system), name: "locked-system", dark: dark)
+            XCTAssertTrue(system.usingPassword)
 
             let secrets = PasswordManagerSecrets()
             secrets.revealed[fixture[0].id] = "Il1O0-pass!42"
@@ -113,7 +131,7 @@ import XCTest
     /// draws must not depend on which logins are saved, while the unlocked list does.
     func testLockedPaneHidesTheListAndPromptsOnAppear() throws {
         var asked = 0
-        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in asked += 1; return nil })
+        let lock = prompting(PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, _ in asked += 1; return nil }))
         let png = { (bitmap: NSBitmapImageRep) in bitmap.representation(using: .png, properties: [:]) }
         let locked = try render(pane(lock: lock), dark: false)
         XCTAssertEqual(asked, 1, "Opening the pane must ask for authentication")
@@ -170,9 +188,9 @@ import XCTest
     /// A pane instance that last showed another profile must not keep that unlock.
     func testOpeningThePaneForAnotherProfileRelocks() throws {
         var asked = 0
-        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in
+        let lock = prompting(PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in
             asked += 1; done(asked == 1); return nil
-        })
+        }))
         let elsewhere = UUID()
         lock.unlock(elsewhere)
         XCTAssertEqual(lock.unlockedProfile, elsewhere)
@@ -217,9 +235,9 @@ import XCTest
 
     func testPresentingThePaneAgainAsksAgain() throws {
         var asked = 0
-        let lock = PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in
+        let lock = prompting(PasswordPaneLock(distributed: NotificationCenter(), authenticate: { _, done in
             asked += 1; done(false); return nil
-        })
+        }))
         let (window, hosting) = host(pane(lock: lock))
         defer { window.close() }
         XCTAssertEqual(asked, 1)
@@ -229,6 +247,34 @@ import XCTest
         NotificationCenter.default.post(name: SettingsWindow.presentationRequest, object: "passwords")
         settle(hosting)
         XCTAssertEqual(asked, 2, "Reopening Passwords on a retained view must ask again")
+    }
+
+    /// The embedded view is recreated for every new context; a cancelled scan must not
+    /// restart from that, and leaving the pane must take a waiting scan down.
+    func testTheInlineScanStartsOnceOnAppearAndStopsWhenThePaneGoes() throws {
+        var scans = 0, sheets = 0
+        var waiting: [@MainActor (Bool) -> Void] = []
+        let lock = prompting(PasswordPaneLock(
+            distributed: NotificationCenter(), authenticate: { _, _ in sheets += 1; return nil },
+            inline: { _, _, done in scans += 1; waiting.append(done); return nil }), inline: true)
+        let (window, hosting) = host(AnyView(pane(lock: lock)))
+        defer { window.close() }
+        XCTAssertEqual(scans, 1, "Opening the locked pane must start the inline scan")
+        XCTAssertEqual(sheets, 0, "…without the macOS sheet")
+        waiting.removeFirst()(false)
+        settle(hosting)
+        settle(hosting)
+        XCTAssertEqual(scans, 1, "A cancelled scan must wait for a tap")
+        XCTAssertNotNil(lock.problem)
+        lock.unlock(profile)
+        XCTAssertEqual(scans, 2)
+        let listening = lock.inlineContext
+        hosting.rootView = AnyView(EmptyView())
+        settle(hosting)
+        XCTAssertFalse(lock.authenticating, "Leaving the pane must take the scan down")
+        XCTAssertFalse(lock.inlineContext === listening)
+        waiting.removeFirst()(true)
+        XCTAssertNil(lock.unlockedProfile, "…and ignore its late answer")
     }
 
     /// Delete, leave the pane before the toast expires, save the same login again: the

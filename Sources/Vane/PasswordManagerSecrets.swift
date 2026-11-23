@@ -73,9 +73,15 @@ import LocalAuthentication
 /// switching to another Settings pane and back is not a reason to ask again, but closing
 /// Settings, locking the screen, sleeping, switching profile or five idle minutes are.
 /// Reveal, copy and edit still ask on their own — this only hides the list.
+///
+/// Like a locked folder, the locked pane holds the inline Touch ID control and starts it
+/// once per presentation; Settings → Privacy and Security → Locked Folders' "System" method,
+/// a Mac without Touch ID, or "Use Password…" take the macOS sheet instead.
 @MainActor final class PasswordPaneLock: ObservableObject {
     /// Returns the prompt's context, if any, so locking can take a sheet still on screen down.
     typealias Authenticate = @MainActor (String, @escaping @MainActor (Bool) -> Void) -> LAContext?
+    /// Evaluates Touch ID on the pane's embedded context.
+    typealias Inline = @MainActor (LAContext, String, @escaping @MainActor (Bool) -> Void) -> LAContext?
     static let requiredKey = "passwordsRequireAuthentication"
     static var required: Bool { UserDefaults.vane.object(forKey: requiredKey) as? Bool ?? true }
     static let shared = PasswordPaneLock(observing: true)
@@ -84,8 +90,21 @@ import LocalAuthentication
     @Published private(set) var unlockedProfile: UUID?
     @Published private(set) var authenticating = false
     @Published private(set) var problem: String?
+    /// Whether the attempt on screen is the macOS sheet rather than the inline scan.
+    @Published private(set) var usingPassword = false
+    /// Attached to the pane's embedded Touch ID view. A used context can reuse its
+    /// credential, so it is replaced after every attempt and on every lock.
+    @Published private(set) var inlineContext = LAContext()
     let idle: Duration
     private let authenticate: Authenticate
+    private let inline: Inline
+    var biometricsAvailable: @MainActor () -> Bool = {
+        LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+    }
+    /// Starting on its own needs Settings in front; a test hosts the pane elsewhere.
+    var mayPrompt: @MainActor () -> Bool = { SettingsWindow.isKey }
+    /// The profile the automatic attempt already ran for since the pane was presented.
+    private var automaticProfile: UUID?
     private var request = UUID()
     private var context: LAContext?
     private var lastInteraction = ContinuousClock.now
@@ -101,9 +120,13 @@ import LocalAuthentication
     init(idle: Duration = .seconds(300), observing: Bool = false,
          workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
          distributed: NotificationCenter = DistributedNotificationCenter.default(),
-         authenticate: @escaping Authenticate = { Passwords.authenticate($0, $1) }) {
+         authenticate: Authenticate? = nil, inline: Inline? = nil) {
         self.idle = idle
-        self.authenticate = authenticate
+        self.authenticate = authenticate ?? { Passwords.authenticate($0, $1) }
+        // A stub given for the sheet alone answers the inline scan too.
+        if let inline { self.inline = inline }
+        else if let authenticate { self.inline = { _, reason, done in authenticate(reason, done) } }
+        else { self.inline = { Passwords.authenticateInline($0, $1, $2) } }
         guard observing else { return }
         for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
             observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -116,6 +139,8 @@ import LocalAuthentication
     }
 
     func isUnlocked(_ profile: UUID) -> Bool { !Self.required || unlockedProfile == profile }
+
+    var usesInline: Bool { Prefs.folderUnlockMethod == .touchID && biometricsAvailable() }
 
     /// Settings exists only once it has been shown, so the close hook and the interaction
     /// monitor are installed by the pane rather than at init. Both are installed once.
@@ -130,17 +155,32 @@ import LocalAuthentication
         }
     }
 
-    func unlock(_ profile: UUID) {
+    /// Once per presentation, and only with Settings in front: a cancel or failure waits
+    /// for a tap rather than starting again.
+    func beginAutomaticUnlock(_ profile: UUID) {
+        guard mayPrompt(), !isUnlocked(profile), !authenticating, automaticProfile != profile else { return }
+        automaticProfile = profile
+        unlock(profile)
+    }
+
+    /// The pane was presented again, so it may start on its own once more.
+    func rearm() { automaticProfile = nil }
+
+    /// `password` takes the macOS sheet, retiring an inline scan still waiting.
+    func unlock(_ profile: UUID, password: Bool = false) {
         guard !isUnlocked(profile) else { return }
+        if password, authenticating, !usingPassword { cancel() }
         guard !authenticating else { return }
         let request = UUID()
         self.request = request
         authenticating = true
         problem = nil
-        context = authenticate("view your saved passwords") { [weak self] ok in
+        usingPassword = password || !usesInline
+        let reply: @MainActor (Bool) -> Void = { [weak self] ok in
             guard let self, self.request == request else { return }
             self.context = nil
             self.authenticating = false
+            self.retireInlineContext()
             guard ok else {
                 self.problem = "Authentication was not completed. Try again and use your Mac login password if Touch ID is unavailable."
                 return
@@ -149,6 +189,23 @@ import LocalAuthentication
             self.touch()
             self.scheduleExpiry()
         }
+        let reason = "view your saved passwords"
+        let started = usingPassword ? authenticate(reason, reply) : inline(inlineContext, reason, reply)
+        // A stub or an unavailable policy may already have answered.
+        if self.request == request, authenticating { context = started }
+    }
+
+    /// Takes down the attempt on screen without locking: the pane went away.
+    func cancel() {
+        request = UUID()
+        context?.invalidate(); context = nil
+        authenticating = false
+        retireInlineContext()
+    }
+
+    private func retireInlineContext() {
+        inlineContext.invalidate()
+        inlineContext = LAContext()
     }
 
     /// Turning the requirement on while already looking at the list keeps it open: that
@@ -168,10 +225,11 @@ import LocalAuthentication
     /// Also invalidates an authentication still on screen, so a late success cannot
     /// reopen a pane that was locked while its prompt was up, and its sheet goes away.
     func lock() {
-        request = UUID()
-        context?.invalidate(); context = nil
-        authenticating = false
+        cancel()
         expiry?.cancel(); expiry = nil
+        // A relock uses up the automatic attempt: nobody may be at the Mac, so it waits
+        // for a tap. Another profile still starts on its own (the guard compares profiles).
+        if let open = unlockedProfile { automaticProfile = open }
         if unlockedProfile != nil { unlockedProfile = nil }
     }
 

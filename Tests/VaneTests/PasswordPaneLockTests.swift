@@ -35,8 +35,128 @@ final class SpyContext: LAContext {
     override func setUp() {
         TestEnvironment.prepare()
         UserDefaults.vane.removeObject(forKey: PasswordPaneLock.requiredKey)
+        UserDefaults.vane.removeObject(forKey: FolderUnlockMethod.key)
     }
-    override func tearDown() { UserDefaults.vane.removeObject(forKey: PasswordPaneLock.requiredKey) }
+    override func tearDown() {
+        UserDefaults.vane.removeObject(forKey: PasswordPaneLock.requiredKey)
+        UserDefaults.vane.removeObject(forKey: FolderUnlockMethod.key)
+    }
+
+    /// Separate stubs for the inline scan and the macOS sheet, Settings in front and a
+    /// Mac with Touch ID unless a test says otherwise. Neither stub ever prompts.
+    private func inlineLock(_ sheet: StubAuthenticator, _ scan: StubAuthenticator,
+                            biometrics: Bool = true) -> (PasswordPaneLock, () -> [LAContext]) {
+        var attached: [LAContext] = []
+        let inline = scan.authenticate
+        let lock = PasswordPaneLock(observing: true, workspace: workspace, distributed: distributed,
+                                    authenticate: sheet.authenticate,
+                                    inline: { context, reason, done in attached.append(context); return inline(reason, done) })
+        lock.biometricsAvailable = { biometrics }
+        lock.mayPrompt = { true }
+        return (lock, { attached })
+    }
+
+    func testOpeningStartsTheInlineScanOnceAndACancelWaitsForATap() {
+        let sheet = StubAuthenticator(), scan = StubAuthenticator()
+        let (lock, attached) = inlineLock(sheet, scan)
+        let profile = UUID()
+        let first = lock.inlineContext
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertEqual(scan.reasons.count, 1, "The locked pane must start listening for Touch ID on its own")
+        XCTAssertTrue(sheet.reasons.isEmpty, "…inline, without the macOS sheet")
+        XCTAssertTrue(attached().first === first, "The scan must run on the context the embedded view holds")
+        XCTAssertFalse(lock.usingPassword)
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertEqual(scan.reasons.count, 1, "One attempt at a time")
+        scan.pending.removeFirst()(false)
+        XCTAssertFalse(lock.inlineContext === first, "A finished attempt's context must be retired")
+        XCTAssertNotNil(lock.problem)
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertEqual(scan.reasons.count, 1, "A cancel or failure must wait for a tap, not start again")
+        lock.unlock(profile)
+        XCTAssertEqual(scan.reasons.count, 2, "Tapping the control retries")
+        scan.pending.removeFirst()(true)
+        XCTAssertTrue(lock.isUnlocked(profile))
+    }
+
+    func testARelockWaitsForATapEvenAfterThePaneWasShownAgain() {
+        let sheet = StubAuthenticator(), scan = StubAuthenticator()
+        let (lock, _) = inlineLock(sheet, scan)
+        let profile = UUID()
+        lock.beginAutomaticUnlock(profile)
+        scan.pending.removeFirst()(true)
+        XCTAssertTrue(lock.isUnlocked(profile))
+        lock.rearm() // switched to another Settings pane and back while unlocked
+        lock.lock()  // then idle, screen lock or sleep with Settings still in front
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertTrue(scan.reasons.count == 1 && sheet.reasons.isEmpty,
+                      "Nobody may be at the Mac after a relock; nothing starts on its own")
+        lock.unlock(profile)
+        XCTAssertEqual(scan.reasons.count, 2, "A tap still unlocks")
+    }
+
+    func testTheScanWaitsForSettingsToBeInFront() {
+        let sheet = StubAuthenticator(), scan = StubAuthenticator()
+        let (lock, _) = inlineLock(sheet, scan)
+        var front = false
+        lock.mayPrompt = { front }
+        let profile = UUID()
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertTrue(scan.reasons.isEmpty && sheet.reasons.isEmpty, "Nothing may start while Settings is not key")
+        front = true
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertEqual(scan.reasons.count, 1)
+    }
+
+    func testUsePasswordRetiresTheScanForTheMacOSSheet() {
+        let sheet = StubAuthenticator(), scan = StubAuthenticator()
+        let (lock, _) = inlineLock(sheet, scan)
+        let profile = UUID()
+        lock.beginAutomaticUnlock(profile)
+        let late = scan.pending.removeFirst()
+        lock.unlock(profile, password: true)
+        XCTAssertEqual(scan.contexts.map(\.invalidated), [true], "The waiting scan must be taken down")
+        XCTAssertEqual(sheet.reasons.count, 1, "Use Password… opens the macOS sheet")
+        XCTAssertTrue(lock.usingPassword)
+        late(true)
+        XCTAssertFalse(lock.isUnlocked(profile), "The retired scan's late answer must not unlock")
+        XCTAssertTrue(lock.authenticating)
+        sheet.pending.removeFirst()(true)
+        XCTAssertTrue(lock.isUnlocked(profile))
+    }
+
+    func testSystemMethodAndMacsWithoutTouchIDUseTheMacOSSheet() {
+        for (method, biometrics) in [(FolderUnlockMethod.system, true), (.touchID, false)] {
+            Prefs.folderUnlockMethod = method
+            let sheet = StubAuthenticator(), scan = StubAuthenticator()
+            let (lock, _) = inlineLock(sheet, scan, biometrics: biometrics)
+            XCTAssertFalse(lock.usesInline)
+            lock.beginAutomaticUnlock(UUID())
+            XCTAssertTrue(scan.reasons.isEmpty, "\(method) with Touch ID \(biometrics) must not scan inline")
+            XCTAssertEqual(sheet.reasons.count, 1)
+            XCTAssertTrue(lock.usingPassword)
+        }
+    }
+
+    func testLeavingThePaneTakesTheScanDownAndPresentingAgainStartsIt() {
+        let sheet = StubAuthenticator(), scan = StubAuthenticator()
+        let (lock, _) = inlineLock(sheet, scan)
+        let profile = UUID()
+        lock.beginAutomaticUnlock(profile)
+        let used = lock.inlineContext
+        lock.cancel()
+        XCTAssertEqual(scan.contexts.map(\.invalidated), [true])
+        XCTAssertFalse(lock.authenticating)
+        XCTAssertFalse(lock.inlineContext === used)
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertEqual(scan.reasons.count, 1, "Not presented again yet")
+        lock.rearm()
+        lock.beginAutomaticUnlock(profile)
+        XCTAssertEqual(scan.reasons.count, 2, "A new presentation starts listening again")
+        let scanning = lock.inlineContext
+        lock.lock()
+        XCTAssertFalse(lock.inlineContext === scanning, "Locking retires the embedded context too")
+    }
 
     private func lock(_ stub: StubAuthenticator, idle: Duration = .seconds(300)) -> PasswordPaneLock {
         PasswordPaneLock(idle: idle, observing: true, workspace: workspace,

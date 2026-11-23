@@ -178,6 +178,9 @@ enum LinkTarget {
         return candidate === window && window.isVisible
     }
 
+    /// Settings is open and in front, so a pane may start an unlock on its own.
+    static var isKey: Bool { window.map { $0.isVisible && $0.isKeyWindow } ?? false }
+
     /// Told when this window closes; the token unregisters it again. Recorders and password
     /// drafts must let go of their temporary state as soon as Settings closes. The pane's
     /// `.onDisappear` never fires because its hosting view is kept for the next opening.
