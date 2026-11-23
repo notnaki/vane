@@ -139,6 +139,7 @@ import WebKit
 @MainActor final class ExtensionAuthFlow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
     nonisolated static let windowIdentifier = NSUserInterfaceItemIdentifier("vane.extension.sign-in")
     let web: WKWebView
+    private let url: URL
     private let redirectHost: String
     private let interactive: Bool
     private let title: String
@@ -152,6 +153,7 @@ import WebKit
     var preparePopup: ((WKWebView) -> Void)?
 
     init(request: ExtensionIdentityAPI.Request, redirectHost: String, configuration: WKWebViewConfiguration, title: String) {
+        url = request.url
         self.redirectHost = redirectHost
         self.title = title
         interactive = request.interactive
@@ -167,7 +169,6 @@ import WebKit
                 if !Task.isCancelled { self?.cancel("User interaction required.") }
             }
         }
-        web.load(URLRequest(url: request.url))
     }
 
     private func makeWindow(for web: WKWebView) -> NSWindow {
@@ -189,6 +190,8 @@ import WebKit
 
     func run(over parent: NSWindow?) async throws -> String {
         guard !finished else { throw ExtensionHost.Failure(pending ?? "The user did not approve access.") }
+        // Loads here, not in init, so the caller sets the user agent before the first request.
+        web.load(URLRequest(url: url))
         if let window {
             if let parent { window.setFrameOrigin(NSPoint(x: parent.frame.midX - window.frame.width / 2,
                                                           y: parent.frame.maxY - window.frame.height - 60)) }

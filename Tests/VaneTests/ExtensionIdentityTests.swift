@@ -151,6 +151,8 @@ import XCTest
             // Without a window: a server redirect completes, a page that stays needs the user.
             let silent = try await flow("/silent", interactive: false)
             XCTAssertEqual(silent, done.absoluteString)
+            let silentRequest = server.requests.first { $0.hasPrefix("GET /silent ") }
+            XCTAssertTrue(silentRequest?.contains("Safari/") == true, "The first request carries Vane's user agent: \(silentRequest ?? "none")")
             let stays = try await flow("/form", interactive: false)
             XCTAssertEqual(stays, "error: User interaction required.")
             XCTAssertFalse(NSApp.windows.contains { $0.identifier == ExtensionAuthFlow.windowIdentifier && $0.isVisible })
