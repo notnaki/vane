@@ -32,6 +32,26 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Keep every caller (including history menus and site controls) behind the same guard.
     weak var navigationOwner: Tab?
 
+    /// WebKit makes its view first responder whenever page script focuses an element, so
+    /// a page could pull the keyboard out of Find or the command bar and wait there for a
+    /// Return. While another view holds the keyboard, only the user and Vane hand it to a
+    /// page. When nobody holds it, a page that focuses its own field still may take it.
+    private var keyboardWatch: NSKeyValueObservation?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        keyboardWatch = window?.observe(\.firstResponder, options: [.initial]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.keyboardHolderChanged() }
+        }
+    }
+
+    private func keyboardHolderChanged() {
+        guard let window else { return }
+        let holder = window.firstResponder as? NSView
+        let elsewhere = holder.map { $0.window === window && !$0.isDescendant(of: self) } ?? false
+        VaneSetBooleanPreference(self, NSSelectorFromString("_setShouldSuppressFirstResponderChanges:"), elsewhere)
+    }
+
     private func requested(_ navigation: WKNavigation?) -> WKNavigation? {
         navigationOwner?.expectNavigation(navigation)
         // A same-document command can finish synchronously inside super, before expect
@@ -555,9 +575,31 @@ struct TitleReveal: Equatable, Sendable {
     private var passwordOfferExpiry: Task<Void, Never>?
     private var lastPasswordAttempt: String?
     var passwordReader = Passwords.Reader()
+    var passwordFillGate = PasswordFillGate.shared
     private var passwordReadTask: Task<Void, Never>?
     private var passwordReadRequest = UUID()
     private var passwordExplicitFillRequest: UUID?
+    /// A fill whose system prompt is up, until WebKit answers it. The prompt takes key
+    /// from this window and hands it back; the page reports both as a blur and a fresh
+    /// focus, and neither is the user changing their mind.
+    private var passwordAuthenticatingFill: UUID?
+    /// Whether that prompt has taken key from this window yet. A focus the page reports
+    /// before it has is the page's own — a field it focused while being filled — and not
+    /// the prompt handing key back.
+    private var passwordPromptTookKey = false
+    /// The target whose list a real focus opened. Filling it needs that focus to still
+    /// hold; the menu command's list hangs under a field nobody has to be in.
+    private var passwordFocusTarget: String?
+    /// Whether the list on screen is one a focus in the page opened.
+    var chooserFollowsFocus: Bool { passwordChoice?.target != nil && passwordChoice?.target == passwordFocusTarget }
+    /// Whether keys typed now go to this page: its view is first responder in the key
+    /// window. WebKit reports a script's `focus()` as trusted wherever the keyboard is, so
+    /// a page can focus its login while the user types in Find or the command bar.
+    var pageHoldsKeyboard: Bool {
+        guard let web = existingWeb, let window = web.window, window.isKeyWindow,
+              let responder = window.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: web)
+    }
     private var passwordSaveReadTask: Task<Void, Never>?
     private var passwordCommitOffer: UUID?
     private var passwordSaveReadRequest = UUID()
@@ -1650,7 +1692,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Fills both fields and remembers the choice, so this account leads the list next time.
     /// The password is read here and nowhere else, and lives exactly as long as the call.
     func fill(_ login: Passwords.Login, automatic: Bool = false, target: String? = nil,
-              continuation: PasswordContinuation? = nil) {
+              continuation: PasswordContinuation? = nil, focused: Bool = false) {
         guard !isPrivate, !provisional, secureOrigin == login.origin else { return }
         if let continuation, !permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
         guard let target else {
@@ -1671,29 +1713,59 @@ struct TitleReveal: Equatable, Sendable {
         passwordReadTask?.cancel()
         let request = UUID(), document = readingDocumentGeneration
         let page = web, pageURL = page.url, profile = profileID, reader = passwordReader
+        // The isolated script's token says when only a username can be written. That step
+        // releases no secret, so it reads none and asks nobody. Anything else fails closed.
+        let needsSecret = !target.contains(":username:"), gate = passwordFillGate
         passwordReadRequest = request
         passwordExplicitFillRequest = automatic ? nil : request
+        passwordAuthenticatingFill = needsSecret && gate.needsPrompt ? request : nil
+        passwordPromptTookKey = false
+        // Everything a fill was authorized against. Rechecked after each suspension, and the
+        // system prompt is the long one: a navigation behind it must end the fill.
+        let current: @MainActor () -> Bool = { [weak self, weak page] in
+            guard let self, let page else { return false }
+            return !Task.isCancelled && !self.tornDown && !self.suspended && !self.isPrivate
+                && self.profileID == profile && self.existingWeb === page && page.url == pageURL
+                && self.readingDocumentGeneration == document && !self.provisional
+                && self.secureOrigin == login.origin && self.passwordReadRequest == request
+                && (continuation.map { self.permitsPasswordContinuation($0, origin: login.origin, account: login.account) } ?? true)
+        }
         passwordReadTask = Task { [weak self, weak page] in
+            var delivered = false
+            defer { if !delivered, self?.passwordAuthenticatingFill == request { self?.passwordAuthenticatingFill = nil } }
             do {
                 if let continuation {
                     guard !Task.isCancelled,
                           self?.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) == true else { return }
                 }
-                guard let password = try await reader.secret(login, profileID: profile)
-                else { throw Passwords.Failure(status: errSecItemNotFound) }
-                guard let self, let page, !Task.isCancelled, !self.tornDown, !self.suspended,
-                      !self.isPrivate, self.profileID == profile, self.existingWeb === page,
-                      page.url == pageURL, self.readingDocumentGeneration == document,
-                      !self.provisional, self.secureOrigin == login.origin, self.passwordReadRequest == request else { return }
-                if let continuation, !self.permitsPasswordContinuation(continuation, origin: login.origin, account: login.account) { return }
+                var password = ""
+                if needsSecret {
+                    guard await gate.authorize("fill your password for \(login.host)") else {
+                        guard current(), let self else { return }
+                        // Closing the prompt refocuses the field; that is not a request to ask again.
+                        self.lastFilledAt = .now
+                        if let continuation, self.passwordStep?.id == continuation.id {
+                            self.passwordStep?.continuationAllowed = false
+                        }
+                        if !automatic { axAnnounce("Password not filled.") }
+                        return
+                    }
+                    guard current() else { return }
+                    guard let secret = try await reader.secret(login, profileID: profile)
+                    else { throw Passwords.Failure(status: errSecItemNotFound) }
+                    password = secret
+                }
+                guard current(), let self, let page else { return }
                 if let continuation {
                     self.passwordContinuationFill = (continuation.id, request, document, nil)
                 }
+                delivered = true
                 page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
                                                      automatic: automatic, target: target, continuation: continuation != nil,
-                                                     origin: login.origin),
+                                                     focused: focused, origin: login.origin),
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
                     guard let self else { return }
+                    if self.passwordAuthenticatingFill == request { self.passwordAuthenticatingFill = nil }
                     var retryRejectedTarget = false
                     defer {
                         if self.passwordContinuationFill?.request == request {
@@ -1754,7 +1826,8 @@ struct TitleReveal: Equatable, Sendable {
         guard !isPrivate else { return }
         // The secret reader resolves an owned persistent reference for this exact
         // account; another metadata enumeration would add a blur/dismiss race here.
-        fill(.init(origin: PasswordOrigin(host: host, port: port), account: account), target: target)
+        fill(.init(origin: PasswordOrigin(host: host, port: port), account: account), target: target,
+             focused: target != nil && target == passwordFocusTarget)
     }
 
     /// Whether the pointer is over the list. Set by the view; read by `closeChooser` for the
@@ -1766,7 +1839,9 @@ struct TitleReveal: Equatable, Sendable {
     /// window's, and the keyboard's.
     func closeChooser(_ event: ChooserEvent) {
         let choosingBlur = event == .blur && passwordExplicitFillRequest == passwordReadRequest
-        if event != .filled && !choosingBlur && !PasswordChooser.opens(event,
+        let authenticating = (event == .blur || event == .resign) && passwordAuthenticatingFill == passwordReadRequest
+        if authenticating { passwordPromptTookKey = true }
+        if event != .filled && !choosingBlur && !authenticating && !PasswordChooser.opens(event,
                 sinceFill: Date.now.timeIntervalSince(lastFilledAt), pointerInside: chooserHovered) {
             passwordReadTask?.cancel()
             passwordReadRequest = UUID()
@@ -1807,8 +1882,8 @@ struct TitleReveal: Equatable, Sendable {
     /// ponytail: the anchor is read once, when the list opens — nothing tracks the element
     /// after that, which is why every scroll, blur and click closes the list instead.
     private func openChooser(host: String, accounts: [String], at r: [String: Double],
-                             target: String? = nil, accountHint: String? = nil) {
-        guard !isPrivate else { return }
+                             target: String? = nil, accountHint: String? = nil, focused: Bool = false) {
+        guard !isPrivate, !focused || pageHoldsKeyboard else { return }
         guard PasswordChooser.opens(.focus, sinceFill: Date.now.timeIntervalSince(lastFilledAt)),
               let x = r["x"], let y = r["y"], let w = r["w"] else { return }
         let z = web.pageZoom
@@ -1822,6 +1897,7 @@ struct TitleReveal: Equatable, Sendable {
         else { return }
         guard let origin = secureOrigin, origin.host == host else { return }
         passwordGeneration = nil
+        passwordFocusTarget = focused ? target : nil
         passwordChoice = PasswordChoice(target: target, port: origin.port, host: host, accounts: accounts, anchor: anchor,
                                         selected: accountHint.flatMap { accounts.firstIndex(of: $0) } ?? 0)
     }
@@ -1886,6 +1962,11 @@ struct TitleReveal: Equatable, Sendable {
         release()
     }
 
+    private func cancelPasswordRead() {
+        passwordReadTask?.cancel()
+        passwordReadRequest = UUID()
+    }
+
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         #if DEBUG
         recordNavigationStage("provisional-received", navigation: navigation,
@@ -1899,6 +1980,9 @@ struct TitleReveal: Equatable, Sendable {
         #endif
         provisional = true
         retitleTask?.cancel()
+        // A fill waiting on Touch ID belongs to the page that asked; cancelling it takes the
+        // prompt down, so approving it afterwards cannot open the window for nothing.
+        cancelPasswordRead()
         if w === existingWeb {
             readingDocumentGeneration = UUID()
             passwordContinuationFill = nil
@@ -2043,6 +2127,7 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        cancelPasswordRead()
         if navigationState.simulated !== navigation { httpsOnlyContinuation = nil }
         DiagnosticLog.shared.record(.navigationCommitted, isPrivate: isPrivate)
         // A canceled provisional load/download leaves the old call document alive.
@@ -2520,14 +2605,19 @@ struct TitleReveal: Equatable, Sendable {
         // A login field was focused: the list opens for any saved login, and choosing a row
         // is what fills. Names only: nothing is decrypted to answer "is there a choice here".
         if body["focus"] as? Bool == true {
-            guard let origin = secureOrigin else { return }
+            // The prompt handing key back is this fill's own echo, not a new request, and
+            // reading names for it would cancel the fill it belongs to.
+            // Without a target there is no field to hold the fill to. A focus reported
+            // while the keyboard is somewhere else is the page's doing, not the user's.
+            guard !(passwordPromptTookKey && passwordAuthenticatingFill == passwordReadRequest), pageHoldsKeyboard,
+                  let origin = secureOrigin, let target = body["target"] as? String else { return }
             let host = origin.host
             let anchor = body.compactMapValues { $0 as? Double }
-            let target = body["target"] as? String, hint = body["accountHint"] as? String
+            let hint = body["accountHint"] as? String
             readPasswordLogins(origin: origin, announcing: true) { [weak self] hits in
                 guard !hits.isEmpty else { return }
                 self?.openChooser(host: host, accounts: hits.map(\.account), at: anchor,
-                                  target: target, accountHint: hint)
+                                  target: target, accountHint: hint, focused: true)
             }
             return
         }

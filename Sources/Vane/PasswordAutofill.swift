@@ -529,8 +529,10 @@ import WebKit
           listen(document, name, handler, true);
           return handler;
         }
-        credentialListener('focusin', function (e) { focused(eventField(e)); });
-        credentialListener('click', function (e) { focused(eventField(e)); });
+        // Script can dispatch focusin and click at a field nobody is in. Only the browser's
+        // own events open the list; element.focus() still does, and really moves the focus.
+        credentialListener('focusin', function (e) { if (e.isTrusted) focused(eventField(e)); });
+        credentialListener('click', function (e) { if (e.isTrusted) focused(eventField(e)); });
         // Everything that means "not interested any more". The list is anchored to a point
         // that stops being true the moment any of these happens, so each one closes it.
         credentialListener('focusout', function (e) {
@@ -624,10 +626,17 @@ import WebKit
           if (retired || !attachedDocument()) return;
           discoverFrames(observe()); ready();
         });
-        function fill(account, password, automatic, target, continuation) {
+        // A list opened by focusing a field fills only while the focus is still in that
+        // login. A page can keep the blur from reaching these listeners, so ask the
+        // document. activeElement survives the window losing key to a row click or prompt.
+        function holdsFocus(p) {
+          var active = deepActive(document);
+          return !!active && (active === p.user || active === p.pass);
+        }
+        function fill(account, password, automatic, target, continuation, focused) {
           var p = targetPair();
           if (!visible(p) || (target && token(p) !== target)) { return false; }
-          if (!focusedFrame()) return false;
+          if (!focusedFrame() || (focused && !holdsFocus(p))) return false;
           // Read-only/hidden account hints are useful for validation, never for writing.
           var identity = pair(rootFor(p.pass || p.user), true);
           if (identity && identity.user && identity.user !== p.user) {
@@ -651,7 +660,7 @@ import WebKit
           // Site input handlers can replace, hide, or reclassify fields synchronously.
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
-            if (!liveDocument() || !focusedFrame() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
+            if (!liveDocument() || !focusedFrame() || (focused && !holdsFocus(p)) || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
                 rootFor(p.pass) !== root || token(targetPair()) !== expectedTarget ||
                 (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
@@ -779,9 +788,9 @@ import WebKit
         var ctx = currentContext(target);
         return JSON.stringify(ctx && ctx.live() ? ctx.anchor() : null);
       };
-      topWindow.__vaneFill = function (account, password, automatic, target, continuation) {
+      topWindow.__vaneFill = function (account, password, automatic, target, continuation, focused) {
         var ctx = currentContext(target);
-        return !!ctx && ctx.fill(account, password, automatic, target, continuation);
+        return !!ctx && ctx.fill(account, password, automatic, target, continuation, focused);
       };
       topWindow.__vaneGenerate = function (password, target) {
         var ctx = currentContext(target);
@@ -800,8 +809,10 @@ import WebKit
     /// `origin` is the document the secret was read for. The main frame can commit another
     /// document between that read and this script running, so the script checks first.
     static func fillJS(account: String, password: String, automatic: Bool = false,
-                       target: String? = nil, continuation: Bool = false, origin: PasswordOrigin? = nil) -> String {
-        let fill = call("__vaneFill", [account, password, automatic, target as Any? ?? NSNull(), continuation])
+                       target: String? = nil, continuation: Bool = false, focused: Bool = false,
+                       origin: PasswordOrigin? = nil) -> String {
+        let fill = call("__vaneFill", [account, password, automatic, target as Any? ?? NSNull(), continuation]
+                        + (focused ? [true] : []))
         guard let origin else { return fill }
         return "(location.origin === \(Reader.jsString(origin.url.absoluteString)) && (\(fill)))"
     }
