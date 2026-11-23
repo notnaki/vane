@@ -10,8 +10,9 @@ import XCTest
 @MainActor final class MainToolbarTests: XCTestCase {
     func testToolbarPushesThePageDownAndTogglesBack() async throws {
         TestEnvironment.prepare()
+        // Straight to the setting: a front window's toggle would wait for its paint.
         let was = MainToolbar.shown
-        if was { MainToolbar.toggle() }
+        UserDefaults.vane.set(false, forKey: MainToolbar.prefKey)
         let profile = ProfileManager.shared.create(name: "Toolbar fixture")
         let store = TabStore(profileID: profile.id, session: [])
         let tab = store.newBlankTab()
@@ -27,7 +28,7 @@ import XCTest
             .transaction { $0.disablesAnimations = true })
         window.orderFront(nil)
         defer {
-            if MainToolbar.shown != was { MainToolbar.toggle() }
+            UserDefaults.vane.set(was, forKey: MainToolbar.prefKey)
             window.contentView = nil
             window.close()
             store.window = nil
@@ -49,9 +50,10 @@ import XCTest
             return try XCTUnwrap(view.window).convertToScreen(view.convert(view.bounds, to: nil))
         }
         // The row starts above the card's usual top gap, centred on the traffic lights.
-        let room = MainToolbar.top + Look.pillHeight
-        XCTAssertEqual(MainToolbar.top + Look.pillHeight / 2, Look.topInset + Look.topRow / 2,
+        let room = MainToolbar.top + MainToolbar.height
+        XCTAssertEqual(MainToolbar.top + MainToolbar.height / 2, Look.topInset + Look.topRow / 2,
                        "the toolbar row is centred on the sidebar's top row")
+        XCTAssertEqual(MainToolbar.top, Look.cardGap, "as far from the window's top as the card is from its sides")
         // What the sidebar draws, sampled where its buttons and pill stand. The test host
         // exposes no accessibility tree, so the check reads pixels: the share of a strip that
         // differs from the bare sidebar just left of it, in the same row.
@@ -143,8 +145,9 @@ import XCTest
         let saver = BatterySaver.shared
         let previousMode = saver.mode
         saver.setMode(.off)
+        // Straight to the setting: a front window's toggle would wait for its paint.
         let was = MainToolbar.shown
-        if was { MainToolbar.toggle() }
+        UserDefaults.vane.set(false, forKey: MainToolbar.prefKey)
         let profile = ProfileManager.shared.create(name: "Toolbar lights fixture")
         let store = TabStore(profileID: profile.id, session: [])
         let tab = store.newBlankTab()
@@ -167,7 +170,7 @@ import XCTest
         if NSApp.isHidden { NSApp.unhideWithoutActivation() }
         window.orderFrontRegardless()
         defer {
-            if MainToolbar.shown != was { MainToolbar.toggle() }
+            UserDefaults.vane.set(was, forKey: MainToolbar.prefKey)
             saver.setMode(previousMode)
             window.orderOut(nil)
             window.contentView = nil
@@ -200,24 +203,47 @@ import XCTest
         }
         try await settle()
         let docked = try light()
+        // A peek's spring leaves a sub-point tail for a while after it has visibly landed.
+        func assertLight(_ rect: NSRect, _ message: String = "") {
+            XCTAssertEqual(rect.minX, docked.minX, accuracy: 0.5, message)
+            XCTAssertEqual(rect.minY, docked.minY, accuracy: 0.5, message)
+        }
 
-        // The buffered resize, both ways, with the sidebar shown.
+        // Hiding is buffered, as a sidebar close is; showing is not, as a sidebar open is not,
+        // since a page painted shorter than its card would leave the card's foot bare.
         _ = try await tab.web.evaluateJavaScript("window.scrollTo(0, 600)")
         try await Task.sleep(for: .milliseconds(100))
         let web = tab.web
+        func assertFilled(_ message: String) throws {
+            let host = try XCTUnwrap(web.superview)
+            XCTAssertLessThanOrEqual(web.frame.minY, host.bounds.minY + 0.5, "no bare strip under the page: \(message)")
+            XCTAssertGreaterThanOrEqual(web.frame.maxY, host.bounds.maxY - 0.5, "no bare strip over the page: \(message)")
+        }
         for showing in [true, false] {
             let start = web.frame.height
             let target = start + (showing ? -MainToolbar.room : MainToolbar.room)
             MainToolbar.toggle(in: store)
-            XCTAssertNotEqual(MainToolbar.shown, showing, "the setting waits for the prepared paint")
-            XCTAssertEqual(web.frame.height, target, accuracy: 0.5, "painted at its final height first")
+            if showing {
+                XCTAssertTrue(MainToolbar.shown, "showing flips at once")
+            } else {
+                XCTAssertTrue(MainToolbar.shown, "the setting waits for the prepared paint")
+                XCTAssertEqual(web.frame.height, target, accuracy: 0.5, "painted at its final height first")
+            }
             var hostHeights: Set<Int> = []
+            var captured = false
             for _ in 0..<30 {
                 try await Task.sleep(for: .milliseconds(16))
                 window.contentView?.layoutSubtreeIfNeeded()
                 if let host = web.superview { hostHeights.insert(Int(host.bounds.height.rounded())) }
-                XCTAssertEqual(web.frame.height, target, accuracy: 0.5,
-                               "no per-frame reflow while the bar slides (showing: \(showing))")
+                try assertFilled("showing: \(showing)")
+                if !showing {
+                    XCTAssertEqual(web.frame.height, target, accuracy: 0.5,
+                                   "no per-frame reflow while the bar slides")
+                }
+                if !captured, MainToolbar.shown == showing {
+                    captured = true
+                    await captureScreen(window, "mid-slide-\(showing ? "show" : "hide")")
+                }
             }
             try await settle()
             XCTAssertEqual(MainToolbar.shown, showing)
@@ -228,6 +254,38 @@ import XCTest
             let kept = try await scrollY()
             XCTAssertEqual(kept, 600, accuracy: 1, "scroll kept (showing: \(showing))")
         }
+
+        // A second ⇧⌘D while the hide waits for paint cancels it; the page goes back.
+        MainToolbar.toggle(in: store)
+        try await settle()
+        let shownHeight = web.frame.height
+        MainToolbar.toggle(in: store)
+        XCTAssertEqual(web.frame.height, shownHeight + MainToolbar.room, accuracy: 0.5)
+        MainToolbar.toggle(in: store)
+        XCTAssertTrue(MainToolbar.shown)
+        XCTAssertEqual(web.frame.height, shownHeight, accuracy: 0.5, "cancelled")
+        try await settle()
+        XCTAssertTrue(MainToolbar.shown, "a cancelled hide stays cancelled")
+        // Anything else that ends the wait still hides the bar: here ⌘S right after ⇧⌘D.
+        MainToolbar.toggle(in: store)
+        XCTAssertTrue(MainToolbar.shown)
+        store.toggleSidebar()
+        try await settle()
+        XCTAssertFalse(MainToolbar.shown, "⇧⌘D is not lost to the sidebar's resize")
+        XCTAssertFalse(store.sidebarShown)
+        try assertFilled("after an interrupted hide")
+        store.sidebarShown = true
+        try await settle()
+        // A second ⇧⌘D during the show's slide flips at once instead of preparing a height
+        // from a card that is still moving.
+        MainToolbar.toggle(in: store)
+        XCTAssertTrue(MainToolbar.shown)
+        try await Task.sleep(for: .milliseconds(30))
+        MainToolbar.toggle(in: store)
+        XCTAssertFalse(MainToolbar.shown, "mid-slide, the toggle is immediate")
+        try await settle()
+        try assertFilled("after toggling mid-slide")
+        XCTAssertEqual(web.frame.height, try XCTUnwrap(web.superview).bounds.height, accuracy: 0.5)
 
         // Sidebar hidden, toolbar on: lights and toggle stay where the sidebar had them.
         for dark in [false, true] {
@@ -240,8 +298,17 @@ import XCTest
             await captureScreen(window, "\(dark ? "dark" : "light")-sidebar-shown")
             store.sidebarShown = false
             try await settle()
-            XCTAssertEqual(try light(), docked, "the lights do not move when the sidebar goes")
+            assertLight(try light(), "the lights do not move when the sidebar goes")
             await captureScreen(window, "\(dark ? "dark" : "light")-sidebar-hidden")
+            // A peek floats the lights out with the panel and brings them home after it.
+            store.sidebarPeeking = true
+            try await settle()
+            XCTAssertEqual(try light().minX, docked.minX + Look.floatingSidebarGap, accuracy: 0.5,
+                           "the lights ride the peeking panel")
+            store.sidebarPeeking = false
+            try await settle()
+            assertLight(try light(), "back on the toolbar's row after a peek")
+            await captureScreen(window, "\(dark ? "dark" : "light")-after-peek")
             // The toggle, where the sidebar's own row draws it, brings the sidebar back.
             let x = Look.inset + Look.trafficLights
                 + SidebarChromeLayout(width: SidebarWidth.inWindow(store)).headerSpacing + Look.control / 2
@@ -254,7 +321,7 @@ import XCTest
             }
             try await settle()
             XCTAssertTrue(store.sidebarShown, "the toolbar's toggle reopens the sidebar")
-            XCTAssertEqual(try light(), docked)
+            assertLight(try light())
             MainToolbar.toggle(in: store)
             try await settle()
         }

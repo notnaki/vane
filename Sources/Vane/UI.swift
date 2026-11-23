@@ -555,7 +555,9 @@ private struct BrowserWindowContent: View {
     @State private var windowWidth: CGFloat = 0
     @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
     /// The width of the lights-and-toggle group the toolbar leads with, once measured.
-    @State private var toolbarLead: CGFloat = 0
+    /// Seeded with the row's unmeasured width so its first frame already clears the lights.
+    @State private var toolbarLead: CGFloat = Look.trafficLights
+        + SidebarChromeLayout(width: Look.sidebarWidth).headerSpacing + Look.control
     /// View › Show Toolbar with no sidebar on screen: the toolbar row is the window's only
     /// title bar, so the lights stay and the sidebar's toggle stands beside them, as in Arc.
     private var toolbarHoldsLights: Bool {
@@ -702,6 +704,8 @@ private struct BrowserWindowContent: View {
                     .transition(.opacity)
             }
         }
+        // VoiceOver reaches the toggle as the toolbar's first item; see MainToolbarBar.
+        .accessibilityHidden(true)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbarHoldsLights)
         .zIndex(1)
@@ -792,7 +796,9 @@ private struct SidebarSurfaceLayout: ViewModifier {
             }
             .modifier(SidebarTrafficLightMotion(store: store,
                 slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
-                inset: floating ? Look.floatingSidebarGap : 0,
+                // Lights that stay follow the peeking panel only while it is out: a floating
+                // surface still sliding away after the peek would leave them off the row.
+                inset: (toolbar ? peeking : floating) ? Look.floatingSidebarGap : 0,
                 visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
                 lightsStay: toolbar))
     }
@@ -1594,12 +1600,15 @@ private struct NavigationTarget: ViewModifier {
 @MainActor enum MainToolbar {
     static let prefKey = "mainWindowShowsToolbar"
     /// The row is centred on the traffic lights and the sidebar's top row, as in Arc.
-    static let top = Look.topInset + (Look.topRow - Look.pillHeight) / 2
+    /// The row is a control tall, so centred on that line it clears the window's top edge
+    /// by exactly the card's own margin, and leaves the same margin down to the card.
+    static let height = Look.control
+    static let top = Look.lightsCentre - height / 2
     /// Arc's pill stops short of the window's width; what is left either side is empty
     /// title bar to drag.
     static let pillMaxWidth: CGFloat = 640
     /// How far the page's top edge moves when the bar comes or goes.
-    static let room = top + Look.pillHeight
+    static let room = top + height
     static var shown: Bool { UserDefaults.vane.bool(forKey: prefKey) }
     /// The front window's page is painted at its new height first, the way a sidebar
     /// close is, so the slide moves a finished page rather than reflowing it every frame.
@@ -1609,7 +1618,11 @@ private struct NavigationTarget: ViewModifier {
            window.prepareToolbarToggle(store, commit: flip) { return }
         flip()
     }
+    /// When the bar last came or went: its slide is still running for a moment after.
+    private(set) static var flippedAt = Date.distantPast
+    static var sliding: Bool { Date().timeIntervalSince(flippedAt) < UIAnimation.feedback.duration(0.15) + 0.05 }
     private static func flip() {
+        flippedAt = Date()
         UserDefaults.vane.set(!shown, forKey: prefKey)
         rebuild()   // the menu item's tick
     }
@@ -1634,19 +1647,28 @@ private struct MainToolbarBar: View {
 
     var body: some View {
         HStack(spacing: Look.inset) {
+            if lead > 0 {
+                // Room for the window-pinned lights and toggle; still title bar to drag.
+                // It stands in for that toggle with VoiceOver, so the row reads as one bar.
+                Color.clear
+                    .frame(width: Look.inset + lead - Look.cardGap)
+                    .accessibilityElement()
+                    .accessibilityLabel("Toggle Sidebar")
+                    .accessibilityValue("Hidden")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { store.toggleSidebar() }
+            }
             NavButtons(tab: store.active)
             Spacer(minLength: 0)
             // Sized as the full-width sidebar's pill, never its compact face.
-            AddressPill(tab: store.active, layoutWidth: Look.sidebarWidth)
+            AddressPill(tab: store.active, layoutWidth: Look.sidebarWidth, height: MainToolbar.height)
                 .frame(maxWidth: MainToolbar.pillMaxWidth)
                 .layoutPriority(1)
             Spacer(minLength: 0)
         }
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
-        .frame(height: Look.pillHeight)
-        // Room for the window-pinned lights and toggle; still title bar to drag.
-        .padding(.leading, lead > 0 ? Look.inset + lead + Look.inset - Look.cardGap : 0)
+        .frame(height: MainToolbar.height)
         .background(WindowDragArea())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Toolbar")
@@ -1662,6 +1684,7 @@ struct AddressPill: View {
     var showsProfile = false
     var displayAddress: String? = nil
     var layoutWidth: CGFloat? = nil
+    var height = Look.pillHeight
     @ObservedObject private var changes = SiteChanges.shared
     @State private var tabRevision: UInt = 0
 
@@ -1671,7 +1694,7 @@ struct AddressPill: View {
         let _ = tabRevision
         let site = tab.map { SiteControlModel($0) } ?? SiteControlModel()
         PillBody(tab: tab, host: host, address: displayAddress ?? tab?.address ?? "", site: site,
-                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth)
+                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth, height: height)
             .onReceive(tab?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) {
                 tabRevision &+= 1
             }
@@ -1704,6 +1727,9 @@ private struct PillBody: View {
     var zoom: String?
     var showsProfile = false
     var layoutWidth: CGFloat? = nil
+    var height = Look.pillHeight
+    /// The sidebar's 12pt on its own pill; a slimmer one keeps the same proportion.
+    private var radius: CGFloat { min(Look.pillRadius, height / 3) }
     @State private var hovering = false
     @State private var showingSiteControls = false
     @State private var pillFocused = false
@@ -1718,20 +1744,20 @@ private struct PillBody: View {
         .font(Look.pillGlyph)
         .foregroundStyle(showsProfile ? Color.white.opacity(0.95) : Look.inkSecondary)
         .padding(.horizontal, Look.pillInset)
-        .frame(height: Look.pillHeight)
+        .frame(height: height)
         .frame(maxWidth: .infinity, alignment: .leading)
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
         .background {
             if showsProfile {
-                RoundedRectangle(cornerRadius: Look.pillRadius)
+                RoundedRectangle(cornerRadius: radius)
                     .fill(chromeTheme.bubble.opacity(0.8))
                     .overlay {
-                        RoundedRectangle(cornerRadius: Look.pillRadius)
+                        RoundedRectangle(cornerRadius: radius)
                             .fill(.white.opacity(hovering ? 0.08 : 0))
                     }
             } else {
-                RoundedRectangle(cornerRadius: Look.pillRadius)
+                RoundedRectangle(cornerRadius: radius)
                     .fill(hovering ? chromeTheme.selected : chromeTheme.pillFill)
             }
         }

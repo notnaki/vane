@@ -465,6 +465,8 @@ extension EnvironmentValues {
     private var active = false
     private(set) var published = false
     var awaitingPaint: Bool { active && !published }
+    /// Ending before the paint still commits: the command must not be lost to a resize.
+    var commitsOnCancel = false
 
 
     init(window: NSWindow, pages: [PreparedPageResize],
@@ -530,6 +532,7 @@ extension EnvironmentValues {
             PageResizeStyle.finish(page.web)
         }
         pages.removeAll()
+        if commitsOnCancel && !published { commit() }
     }
 
     private var ownsLayout: Bool {
