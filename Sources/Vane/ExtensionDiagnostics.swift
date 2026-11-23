@@ -21,12 +21,18 @@ import WebKit
         let declared = Set(((manifest["permissions"] as? [String] ?? [])
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
-        // Vane supplies `sidePanel` itself; see ExtensionSidePanel.swift.
-        var issues = declared.subtracting(recognized).subtracting([ExtensionSidePanelAPI.permission]).sorted().map {
+        // Vane supplies `sidePanel` and `identity` itself; see ExtensionSidePanel.swift, ExtensionIdentity.swift.
+        var issues = declared.subtracting(recognized).subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission]).sorted().map {
             "\($0): \(unrecognized)"
         }
         if declared.contains(ExtensionSidePanelAPI.permission) {
             issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events and runtime.getContexts are unavailable.")
+        }
+        if ExtensionIdentityAPI.declared(manifest) {
+            issues.append("identity: Vane runs web sign-in (launchWebAuthFlow) in its own window. Google account tokens (getAuthToken) are unavailable.")
+        } else if declared.contains(ExtensionIdentityAPI.permission) {
+            // WebKit cannot grant a permission it does not know, so there is no grant to honour.
+            issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"

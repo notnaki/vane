@@ -23,6 +23,36 @@ navigation. It remains heuristic: unavailable/paywalled text, embedded frames, a
 articles below the 140-word threshold are not recovered. Exit Reader reloads the
 original page; it does not add a history entry.
 
+## Translate Page
+
+Choose **Translate Page** from Page Actions, Site Controls, **View → Translate Page**,
+or the command bar to translate the page in place into your first preferred macOS
+language. Translation runs on this Mac through Apple's Translation framework; no page
+text is sent to a translation service. The page language is detected from its text, with
+its `lang` attribute as a fallback. If the language pair is not downloaded yet, macOS asks
+before downloading it. A page already in your language shows a notice instead.
+
+Vane rewrites only visible text. Form fields, code, hidden text, and anything the page
+marks `translate="no"` or `notranslate` stay unchanged, so layout and typing are not
+affected. **Show Original**, in the same places, restores the original text. Opening
+another page in the tab ends the translation, and going back shows the page's original
+text; a link that starts a download leaves the translated page as it is. Translating a
+second tab in the same window while the first is still filling in stops the first and
+restores its text. Translation in private windows works the same way and saves nothing.
+
+When a page finishes loading in a language other than yours, and macOS can translate it,
+a small **Translate this page?** card appears under the address bar: **Translate**,
+**Not now** (×), or **Never Translate This Site**. After Not now it is not offered again
+while the tab stays on that site; after Translate, later pages on that site in the tab
+translate themselves. Never in private windows, nor on pages marked not to translate. The never list is per profile and covers subdomains
+(`google.com` covers `mail.google.com`). To offer again on a site, turn **Offer to
+Translate** back on in Site Controls; turning it off there adds the site.
+
+Limits: text is translated one text node at a time, so a sentence split by a link or bold
+text loses some context. At most 5,000 text nodes are translated per page. Text inside
+iframes and shadow DOM is not translated. Text the page adds after translating, such as
+more items in a feed, is not translated; choose Show Original and translate again.
+
 ## Offline reading queue
 
 Choose **Page Actions → Save for Offline** or **View → Save for Offline** on a readable

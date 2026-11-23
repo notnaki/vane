@@ -157,7 +157,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case actualSize, zoomIn, zoomOut, fullScreen
     case copyPageURL, showLibrary
     case showReader, biggerReaderText, smallerReaderText, readerSerif
-    case saveForOffline, readingQueue
+    case saveForOffline, readingQueue, translatePage
     // History / Archive
     case back, forward, clearHistory
     case viewArchive, viewHistory, showDownloads, clearArchive
@@ -237,6 +237,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .showLibrary: "Show Library"
         case .showReader: "Show Reader"
         case .saveForOffline: "Save for Offline"
+        case .translatePage: "Translate Page"
         case .readingQueue: "Reading Queue"
         case .biggerReaderText: "Bigger Reader Text"
         case .smallerReaderText: "Smaller Reader Text"
@@ -320,7 +321,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
              .toggleSidebar, .toggleToolbar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
-             .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .copyPageURL, .showLibrary: .view
+             .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .translatePage, .copyPageURL, .showLibrary: .view
         case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
              .clearArchive: .history
         case .bookmarkPage: .bookmarks
