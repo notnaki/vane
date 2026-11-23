@@ -311,6 +311,8 @@ import WebKit
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
         WebKitStartup.configureExtensionPages(webConfiguration)
         ExtensionMV2Compatibility.configure(webConfiguration)
+        ExtensionChromiumGaps.configure(webConfiguration)
+        ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
@@ -1587,6 +1589,16 @@ import WebKit
     /// gesture, which is what `activeTab` extensions actually wait for.
     func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
         guard installed.contains(where: { $0 === context }) else { return }
+        noteSidePanelGesture(context)
+        // Only an extension that asked for `openPanelOnActionClick` has its button toggle
+        // its panel. Any other click reaches the popup or `onClicked`, as in Chrome.
+        if sidePanelsOnAction.contains(ObjectIdentifier(context)), let tab, let store = store(holding: tab) {
+            // In a window too narrow for both, the dock hides the panel and leaves it open.
+            // The press still closes it, and the next opens it hidden: nothing shows until
+            // the window widens, exactly as for a panel the extension opened itself.
+            if let panel = sidePanel(in: store), panel.context === context { closeSidePanel(panel); return }
+            if (try? openSidePanel(context, tab: tab, in: store)) != nil { return }
+        }
         let key = ActionKey(context, tab)
         if let existing = actionWindows[key], !existing.isClosed {
             context.performAction(for: shim(tab))
@@ -1942,6 +1954,7 @@ import WebKit
                 presentation.close()
             }
         }
+        syncSidePanels()
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -2050,6 +2063,11 @@ import WebKit
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         try requireActive(context)
+        if let request = ExtensionSidePanelAPI.Request(configuration.url, base: context.baseURL) {
+            try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
+                        store: (configuration.window as? ExtWindow)?.store, for: context)
+            return nil
+        }
         if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
             throw Failure("Extensions cannot navigate to Vane’s internal URLs.")
         }
@@ -2187,6 +2205,168 @@ import WebKit
         presentation.show()
     }
 
+    // MARK: Side panels
+    //
+    // ponytail: options and behaviour live as long as the loaded extension, not across
+    // restarts. Persist them per installation if an extension sets them once in
+    // `onInstalled` and never again.
+
+    @Published private(set) var sidePanels: [ExtensionSidePanel] = []
+    /// Published: a tab's `enabled` decides whether the window's panel shows on it.
+    @Published private var sidePanelOptions: [ActionKey: ExtensionSidePanelAPI.Options] = [:]
+    private var sidePanelsOnAction: Set<ObjectIdentifier> = []
+    private var sidePanelGestures: [ObjectIdentifier: ContinuousClock.Instant] = [:]
+
+    /// The panel a window shows: its current tab's own, else the window's unless that tab
+    /// has it disabled.
+    func sidePanel(in store: TabStore) -> ExtensionSidePanel? {
+        if let own = sidePanels.first(where: { $0.tabID != nil && $0.tabID == store.current && $0.store === store }) {
+            return own
+        }
+        guard let shared = sidePanels.first(where: { $0.tabID == nil && $0.store === store }),
+              sidePanelPage(shared.context, tab: store.tabs.first { $0.id == store.current }).enabled else { return nil }
+        return shared
+    }
+
+    /// How long ago the user last pressed the mouse anywhere. A variable so a test can
+    /// answer for a machine somebody is using.
+    var secondsSinceClick: () -> CFTimeInterval = {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown)
+    }
+
+    /// The user just pressed this extension's button or shortcut.
+    func noteSidePanelGesture(_ context: WKWebExtensionContext) {
+        sidePanelGestures[ObjectIdentifier(context)] = .now
+    }
+
+    /// `sidePanel.open()` answers a user gesture, as in Chrome: the extension's button or
+    /// shortcut a moment ago, a click in the calling extension page, WebKit's own record
+    /// for the tab, or a real click in the target's key window a moment ago. The last is
+    /// Chrome's documented pattern: a button in the page messages the worker, which opens
+    /// the panel for `sender.tab.id`.
+    // ponytail: advisory, not a security boundary. Any context of the extension can forge
+    // the reported click (it is the caller's own `navigator.userActivation`, sent over the
+    // bridge), any click in the window counts for every extension, and WebKit's
+    // `hasActiveUserGesture(in:)` stays true until the tab navigates. The gate only keeps
+    // a panel from opening out of nowhere; the worst a forgery does is show the
+    // extension's own page in a panel the header closes. A host-observed gesture token
+    // per call is the upgrade if that ever matters.
+    private func hasSidePanelGesture(_ context: WKWebExtensionContext, tab: Tab?, in store: TabStore,
+                                     reported: Bool) -> Bool {
+        if reported { return true }
+        if let last = sidePanelGestures[ObjectIdentifier(context)], .now - last < .seconds(5) { return true }
+        if store.window?.isKeyWindow == true, secondsSinceClick() < 5 { return true }
+        return shim(tab).map { context.hasActiveUserGesture(in: $0) } ?? false
+    }
+
+    /// A tab's panel and options last as long as the tab, and a Space kept alive behind the
+    /// one on screen still holds its tabs: `sidePanel(in:)` hides them, nothing closes.
+    private func syncSidePanels() {
+        guard !sidePanels.isEmpty || sidePanelOptions.keys.contains(where: { $0.tab != nil }) else { return }
+        let held = Set(TabStore.all.filter { $0.profileID == profileID }.flatMap { $0.everyTab.map(\.id) })
+        for panel in sidePanels {
+            if let id = panel.tabID {
+                if let tab = panel.tab, let store = store(holding: tab) { move(panel, to: store) }
+                else if !held.contains(id) { closeSidePanel(panel) }
+            } else if let store = panel.store, TabStore.all.contains(where: { $0 === store }),
+                      store.window != nil || store.isParked {
+                // A window's panel lasts as long as its store has a window, on screen or
+                // parked behind another profile's (`Windows.hop`), where it stays hidden.
+            } else { closeSidePanel(panel) }
+        }
+        if sidePanelOptions.keys.contains(where: { $0.tab.map { !held.contains($0) } ?? false }) {
+            sidePanelOptions = sidePanelOptions.filter { $0.key.tab.map(held.contains) ?? true }
+        }
+    }
+
+    /// A tab's panel follows it to another window, and its page delegate with it.
+    private func move(_ panel: ExtensionSidePanel, to store: TabStore) {
+        guard panel.store !== store else { return }
+        panel.store = store
+        pageUI.removeValue(forKey: ObjectIdentifier(panel.web))?.invalidate()
+        if let window = store.window { configurePageUI(panel.web, context: panel.context, window: window) }
+        objectWillChange.send()
+    }
+
+    private func sidePanelPage(_ context: WKWebExtensionContext, tab: Tab?) -> (url: URL?, enabled: Bool, ownPath: Bool) {
+        let own = tab.flatMap { sidePanelOptions[ActionKey(context, $0)] }
+        let shared = sidePanelOptions[ActionKey(context, nil)]
+        let path = own?.path ?? shared?.path
+            ?? (context.webExtension.manifest["side_panel"] as? [String: Any])?["default_path"] as? String
+        return (path.flatMap { ExtensionSidePanelAPI.page($0, base: context.baseURL) },
+                own?.enabled ?? shared?.enabled ?? true, own?.path != nil)
+    }
+
+    private func perform(_ request: ExtensionSidePanelAPI.Request, tab: Tab?, store: TabStore?,
+                         for context: WKWebExtensionContext) throws {
+        guard ExtensionSidePanelAPI.declared(context.webExtension.manifest) else {
+            throw Failure("This extension has not requested the sidePanel permission.")
+        }
+        let target = tab.flatMap { self.store(holding: $0) } ?? store
+        switch request.operation {
+        case .setPanelBehavior:
+            if request.options.enabled == true { sidePanelsOnAction.insert(ObjectIdentifier(context)) }
+            else { sidePanelsOnAction.remove(ObjectIdentifier(context)) }
+        case .setOptions:
+            let key = ActionKey(context, tab)
+            var options = sidePanelOptions[key] ?? .init()
+            if let path = request.options.path { options.path = path }
+            if let enabled = request.options.enabled { options.enabled = enabled }
+            sidePanelOptions[key] = options
+            // An open panel follows its options: a disabled one closes, a new path loads.
+            for panel in sidePanels where panel.context === context && (tab == nil || panel.tabID == tab?.id) {
+                let current = sidePanelPage(context, tab: panel.tab)
+                if !current.enabled { closeSidePanel(panel) }
+                else if let url = current.url, url != panel.page {
+                    panel.page = url
+                    panel.web.load(URLRequest(url: url))
+                }
+            }
+        case .open:
+            guard let target else { throw Failure("sidePanel.open() needs the tabId or windowId of an open window.") }
+            guard hasSidePanelGesture(context, tab: tab ?? target.tabs.first { $0.id == target.current },
+                                      in: target, reported: request.gesture) else {
+                throw Failure("sidePanel.open() may only be called in response to a user gesture.")
+            }
+            try openSidePanel(context, tab: tab, in: target)
+        case .close:
+            for panel in sidePanels where panel.context === context && (target == nil || panel.store === target)
+                && (panel.tabID == nil || tab == nil || panel.tabID == tab?.id) { closeSidePanel(panel) }
+        }
+    }
+
+    private func openSidePanel(_ context: WKWebExtensionContext, tab: Tab?, in store: TabStore) throws {
+        let page = sidePanelPage(context, tab: tab)
+        guard page.enabled, let url = page.url, let cfg = context.webViewConfiguration else {
+            throw Failure("“\(context.webExtension.displayName ?? "This extension")” has no enabled side panel to open here.")
+        }
+        // A tab with a path of its own gets a panel of its own; any other shares the window's.
+        let owner = page.ownPath ? tab : nil
+        // A window's panel sits under a tab's own. Opened for the tab on screen, it must
+        // not stay hidden behind another extension's.
+        if owner == nil, tab == nil || tab?.id == store.current,
+           let cover = sidePanel(in: store), cover.tabID != nil, cover.context !== context { closeSidePanel(cover) }
+        if sidePanels.contains(where: { $0.context === context && $0.store === store && $0.tabID == owner?.id }) { return }
+        for panel in sidePanels where panel.store === store && panel.tabID == owner?.id { closeSidePanel(panel) }
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: ExtensionSidePanelAPI.width, height: 600), configuration: cfg)
+        userAgent.track(web)
+        web.isInspectable = Settings.inspectorEnabled
+        let panel = ExtensionSidePanel(context: context, web: web, page: url, tab: owner, store: store)
+        panel.didClose = { [weak self] in self?.closeSidePanel($0) }
+        panel.openExternal = { [weak panel] in panel?.store?.newBlankTab().navigate(to: $0) }
+        web.uiDelegate = panel
+        if let window = store.window { configurePageUI(web, context: context, window: window) }
+        sidePanels.append(panel)
+        web.load(URLRequest(url: url))
+    }
+
+    func closeSidePanel(_ panel: ExtensionSidePanel) {
+        guard let index = sidePanels.firstIndex(where: { $0 === panel }) else { return }
+        sidePanels.remove(at: index)
+        pageUI.removeValue(forKey: ObjectIdentifier(panel.web))?.invalidate()
+        panel.web.stopLoading()
+    }
+
     /// Any of this profile's windows that is actually key, Little Vane included — unlike
     /// `myFocusedStore`, which is the browser window an extension is allowed to *act* on and
     /// deliberately skips a Little Vane. A popup only needs somewhere to be drawn.
@@ -2318,6 +2498,10 @@ import WebKit
             pageUI.removeValue(forKey: key)?.invalidate()
         }
         for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
+        for panel in sidePanels where panel.context === context { closeSidePanel(panel) }
+        sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
+        sidePanelsOnAction.remove(ObjectIdentifier(context))
+        sidePanelGestures[ObjectIdentifier(context)] = nil
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()

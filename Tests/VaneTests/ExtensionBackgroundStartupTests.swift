@@ -45,7 +45,7 @@ import ObjectiveC
     // Removing the bounded callback bridge leaves this task suspended even after
     // cancellation, and retains both the candidate context and its private revision.
     func testThrowingWorkerInstallFinishesAndDiscardsCandidate() async throws {
-        try writeWorker("chrome.runtime.onUpdateAvailable.addListener(() => {});")
+        try writeWorker("chrome.absentNamespace.onEvent.addListener(() => {});")
         let host = ExtensionHost.host(for: profile)
         let finished = expectation(description: "Throwing worker reports startup failure")
         let install = Task {
@@ -190,7 +190,7 @@ import ObjectiveC
         ExtensionHost.forget(profile)
         let store = ExtensionCodeStore(profileID: profile)
         let record = try XCTUnwrap(store.records()[folder.path])
-        try writeWorker("chrome.runtime.onUpdateAvailable.addListener(() => {});", in: store.code(for: record))
+        try writeWorker("chrome.absentNamespace.onEvent.addListener(() => {});", in: store.code(for: record))
         let again = ExtensionHost.host(for: profile)
         let deadline = ContinuousClock.now + .seconds(8)
         while again.isBusy, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
@@ -287,7 +287,7 @@ extension ExtensionBackgroundStartupTests {
         let store = ExtensionCodeStore(profileID: profile)
         let accepted = try XCTUnwrap(store.records()[folder.path])
         let acceptedBytes = try Data(contentsOf: store.code(for: accepted).appendingPathComponent("bg.js"))
-        try writeWorker("chrome.runtime.onUpdateAvailable.addListener(() => {});", version: version, optionalPermissions: ["tabs"])
+        try writeWorker("chrome.absentNamespace.onEvent.addListener(() => {});", version: version, optionalPermissions: ["tabs"])
         let finished = expectation(description: "Throwing update reports failure")
         var failure: String?
         let update = Task {

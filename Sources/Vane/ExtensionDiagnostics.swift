@@ -21,8 +21,12 @@ import WebKit
         let declared = Set(((manifest["permissions"] as? [String] ?? [])
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
-        var issues = declared.subtracting(recognized).sorted().map {
+        // Vane supplies `sidePanel` itself; see ExtensionSidePanel.swift.
+        var issues = declared.subtracting(recognized).subtracting([ExtensionSidePanelAPI.permission]).sorted().map {
             "\($0): \(unrecognized)"
+        }
+        if declared.contains(ExtensionSidePanelAPI.permission) {
+            issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events and runtime.getContexts are unavailable.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
@@ -40,7 +44,6 @@ import WebKit
         }
         for (key, detail) in [
             ("chrome_url_overrides", "replacement browser pages"),
-            ("side_panel", "extension side panels"),
             ("devtools_page", "extension developer-tools panels"),
             ("omnibox", "extension search keywords"),
             ("oauth2", "Chrome identity integration")
