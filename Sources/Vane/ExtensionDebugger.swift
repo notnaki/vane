@@ -129,9 +129,10 @@ import WebKit
         let values: [String: String]
 
         /// Only the owning extension's bridge URL is a request; anything else is a tab.
-        nonisolated init?(_ url: URL?, base: URL) {
+        /// `path` is another bridge's, such as `ExtensionTabGroupsAPI.bridgePath`.
+        nonisolated init?(_ url: URL?, base: URL, path: String = bridgePath) {
             guard let url, url.scheme == base.scheme, url.host == base.host, url.port == base.port,
-                  url.path == bridgePath,
+                  url.path == path,
                   let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQueryItems else { return nil }
             // `URLSearchParams` writes a space as `+`, which Foundation leaves alone.
             var values: [String: String] = [:]
@@ -592,7 +593,8 @@ extension NSApplication {
         }
     }
 
-    private func reply(_ result: Any, for context: WKWebExtensionContext) -> ExtensionBridgeReply {
+    /// Also answers the tab group bridge's calls; see ExtensionTabGroups.swift.
+    func reply(_ result: Any, for context: WKWebExtensionContext) -> ExtensionBridgeReply {
         let key = ObjectIdentifier(context)
         let now = Date()
         let reply = replies[key]?.first { $0.busyUntil <= now } ?? {

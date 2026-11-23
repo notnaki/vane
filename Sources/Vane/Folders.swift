@@ -41,6 +41,13 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
     /// folder saved before today fail to decode — and nil and [] both mean "nothing hidden".
     /// See `GitHub.dismissed`.
     var dismissed: [String]? = nil
+    /// The extension that made this folder through `chrome.tabs.group`, by its base URL's
+    /// host. Only such a folder is an extension's to change or empty away; a folder the
+    /// user made stays theirs. See ExtensionTabGroups.swift. Optional for the reason above.
+    var extensionOwner: String? = nil
+    /// The `chrome.tabGroups.Color` an extension gave the folder. Vane folders have no
+    /// colour of their own, so it is kept only to be read back.
+    var groupColor: String? = nil
 
     static let defaultIcon = "folder"
 
