@@ -311,6 +311,7 @@ import WebKit
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
         WebKitStartup.configureExtensionPages(webConfiguration)
         ExtensionMV2Compatibility.configure(webConfiguration)
+        ExtensionIdentityAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
@@ -1490,6 +1491,10 @@ import WebKit
         guard version == 2 || version == 3 else {
             throw Failure("manifest_version must be 2 or 3 (found \(manifest["manifest_version"] ?? "nothing")).")
         }
+        // Vane's own names; an extension's manifest has no say in them.
+        if let key = manifest.keys.first(where: { $0.lowercased().hasPrefix("__vane") }) {
+            throw Failure("manifest.json uses \"\(key)\", a name Vane reserves.")
+        }
         return manifest
     }
 
@@ -2063,6 +2068,9 @@ import WebKit
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         try requireActive(context)
+        if let request = try ExtensionIdentityAPI.Request(configuration.url, base: context.baseURL) {
+            throw Failure(ExtensionIdentityAPI.marker + (await authenticate(request, for: context)))
+        }
         if let request = ExtensionSidePanelAPI.Request(configuration.url, base: context.baseURL) {
             try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
                         store: (configuration.window as? ExtWindow)?.store, for: context)
@@ -2203,6 +2211,47 @@ import WebKit
             hold(presentation?.window.isKeyWindow == true)
         }
         presentation.show()
+    }
+
+    // MARK: Web sign-in
+
+    /// By flow: an extension may run several at once, as in Chrome.
+    private var authFlows: [ObjectIdentifier: (context: WKWebExtensionContext, flow: ExtensionAuthFlow)] = [:]
+
+    /// The ID Chrome would give a loaded extension: its store's, its `key`'s, else its own.
+    /// Never the extension's word, which is only its manifest.
+    private func chromeID(of context: WKWebExtensionContext, path: String?) -> (id: String, fromKey: Bool) {
+        if let id = path.flatMap({ records[$0]?.store?.id }) { return (id.lowercased(), false) }
+        if let id = ExtensionIdentityAPI.chromeID(storeID: nil, manifest: context.webExtension.manifest) { return (id, true) }
+        return (context.uniqueIdentifier.lowercased(), false)
+    }
+
+    /// `identity.launchWebAuthFlow`'s answer: `resolve <url>` or `reject <Chrome's message>`.
+    private func authenticate(_ request: ExtensionIdentityAPI.Request, for context: WKWebExtensionContext) async -> String {
+        guard ExtensionIdentityAPI.declared(context.webExtension.manifest) else {
+            return "reject This extension has not requested the identity permission."
+        }
+        let path = loaded.first { $0.context === context }?.path
+        let (id, fromKey) = chromeID(of: context, path: path)
+        // A folder's `key` can name any ID, another installed extension's included; its
+        // redirect URL and the provider's trust in it stay that extension's.
+        if fromKey, loaded.contains(where: { $0.context !== context && chromeID(of: $0.context, path: $0.path).id == id })
+            || records.contains(where: { $0.key != path && $0.value.store?.id.lowercased() == id }) {
+            return "reject This extension's key gives it another installed extension's ID."
+        }
+        let cfg = WKWebViewConfiguration()
+        if let store = controller.configuration.defaultWebsiteDataStore { cfg.websiteDataStore = store }
+        let name = context.webExtension.displayName ?? "Extension"
+        let flow = ExtensionAuthFlow(request: request, redirectHost: ExtensionIdentityAPI.redirectHost(id),
+                                     configuration: cfg, title: "Sign in for “\(name)”")
+        userAgent.track(flow.web)
+        flow.preparePopup = { [weak self] in self?.userAgent.track($0) }
+        let key = ObjectIdentifier(flow)
+        authFlows[key] = (context, flow)
+        defer { authFlows[key] = nil }
+        // WebKit ends the message with a period unless it has one; this one is the URL's end.
+        do { return "resolve " + (try await flow.run(over: frontmostStore?.window)) + "." }
+        catch { return "reject " + error.localizedDescription }
     }
 
     // MARK: Side panels
@@ -2499,6 +2548,7 @@ import WebKit
         }
         for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
         for panel in sidePanels where panel.context === context { closeSidePanel(panel) }
+        for entry in authFlows.values where entry.context === context { entry.flow.cancel() }
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
