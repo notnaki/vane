@@ -38,6 +38,10 @@ class ProvisioningTests(unittest.TestCase):
         self.assertTrue(result["com.apple.security.app-sandbox"])
         self.assertEqual(result["keychain-access-groups"], [self.app])
         self.assertNotIn("get-task-allow", result)
+    def testCopiesPasskeyGrantOnlyWhenProfileHasIt(self):
+        self.assertNotIn(module.PASSKEYS, self.generate())
+        self.profile["Entitlements"][module.PASSKEYS] = True
+        self.assertIs(self.generate()[module.PASSKEYS], True)
     def testRejectsExpiredProfile(self):
         self.profile["ExpirationDate"] = datetime.datetime(2000, 1, 1)
         with self.assertRaisesRegex(ValueError, "expired"): self.generate()
