@@ -839,6 +839,8 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.reload) { Windows.current?.active?.reload() },
         item(.hardReload) { Windows.current?.active?.hardReload() },
         item(.toggleSidebar) { Windows.current?.toggleSidebar() },
+        item(.toggleTabStrip) { TabStrip.toggle() },
+        item(.toggleTabStripFocus) { TabStrip.toggleFocus() },
         item(.nextFocusArea) {
             guard let store = Windows.current, store.window === NSApp.keyWindow else { return }
             store.focusNextArea()

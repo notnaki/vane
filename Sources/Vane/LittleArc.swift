@@ -673,9 +673,21 @@ struct CompactBarEngaged: PreferenceKey {
 
 /// A Little Vane's or a Peek's bar over its page. See `CompactBar`.
 struct CompactBarStack<Bar: View, Page: View>: View {
-    var shownChanged: (Bool) -> Void = { _ in }
-    @ViewBuilder var bar: Bar
-    @ViewBuilder var page: Page
+    /// The browser window's tab strip decides for itself (its own focus setting);
+    /// nil follows the Little Vane and Peek setting.
+    var hides: Bool?
+    var shownChanged: (Bool) -> Void
+    var bar: Bar
+    var page: Page
+
+    init(hides: Bool? = nil, shownChanged: @escaping (Bool) -> Void = { _ in },
+         @ViewBuilder bar: () -> Bar, @ViewBuilder page: () -> Page) {
+        self.hides = hides
+        self.shownChanged = shownChanged
+        self.bar = bar()
+        self.page = page()
+        _shown = State(initialValue: !(hides ?? UserDefaults.vane.bool(forKey: CompactBar.prefKey)))
+    }
     @EnvironmentObject private var store: TabStore
     @AppStorage(CompactBar.prefKey, store: .vane) private var autoHide = false
     @State private var overEdge = false
@@ -684,12 +696,14 @@ struct CompactBarStack<Bar: View, Page: View>: View {
     @State private var menuOpen = false
     @State private var pulsed = false
     @State private var voiceOver = NSWorkspace.shared.isVoiceOverEnabled
-    @State private var shown = !UserDefaults.vane.bool(forKey: CompactBar.prefKey)
+    @State private var shown: Bool
     @State private var measured: CGFloat?
 
     /// Anything using the bar holds it; only the setting lets it go.
+    private var autoHides: Bool { hides ?? autoHide }
+
     private var wanted: Bool {
-        !autoHide || overEdge || overBar || engaged || menuOpen || store.barHeld > 0
+        !autoHides || overEdge || overBar || engaged || menuOpen || store.barHeld > 0
             || store.palette != nil || pulsed || voiceOver
     }
 
@@ -697,7 +711,7 @@ struct CompactBarStack<Bar: View, Page: View>: View {
         // Off, this is main's VStack exactly; on, the page takes the bar's room and the bar
         // slides over it. `AnyLayout` keeps both children's identity, so flipping the setting
         // never rebuilds the page.
-        let layout = autoHide ? AnyLayout(ZStackLayout(alignment: .top)) : AnyLayout(VStackLayout(spacing: 0))
+        let layout = autoHides ? AnyLayout(ZStackLayout(alignment: .top)) : AnyLayout(VStackLayout(spacing: 0))
         layout {
             // Slid out rather than faded, so VoiceOver still finds it — faded only until its
             // height is known, so a bar that starts hidden never shows on the first frame.
@@ -709,7 +723,7 @@ struct CompactBarStack<Bar: View, Page: View>: View {
                 .allowsHitTesting(shown)
                 .zIndex(1)
             page.overlay(alignment: .top) {
-                if autoHide { EdgeHover { overEdge = $0 }.frame(height: CompactBar.edge) }
+                if autoHides { EdgeHover { overEdge = $0 }.frame(height: CompactBar.edge) }
             }
         }
         .task(id: wanted) {

@@ -1568,12 +1568,26 @@ private struct AdvancedPane: View {
     @State private var afterCrash = Prefs.afterCrash
     @State private var toastSeconds = Prefs.toastSeconds
     @State private var stackSplits = Prefs.stackSplits
+    @AppStorage(TabStrip.prefKey) private var tabStrip = false
+    @AppStorage(TabStrip.focusKey) private var tabStripFocus = false
 
     var body: some View {
         Pane(spacing: Look.inset / 2) {
-            SettingsDisclosure("Interface", summary: "Animation speeds",
+            SettingsDisclosure("Interface", summary: "Tab layout, animation speeds",
                                icon: "waveform.path", tint: .blue) {
                 SettingsCard {
+                    // Here rather than General: that pane has to fit the minimum window.
+                    SettingsRow("Tabs", icon: "rectangle.topthird.inset.filled", tint: .blue) {
+                        Picker("Tabs", selection: Binding(
+                            get: { !tabStrip ? 0 : tabStripFocus ? 2 : 1 },
+                            set: { tabStrip = $0 > 0; tabStripFocus = $0 == 2 })) {
+                            Text("Sidebar").tag(0)
+                            Text("Across the top").tag(1)
+                            Text("Top, hidden until hover").tag(2)
+                        }.labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
+                            .help("Across the top: a compact tab bar replaces the sidebar (\u{2325}\u{2318}S). "
+                                  + "Hidden until hover: the bar slides down when the pointer reaches the top edge (\u{21E7}\u{2325}\u{2318}S).")
+                    }
                     SettingsRow("UI Animations", icon: "waveform.path", tint: .blue) {
                         Button("Animation Settings…") { selection.id = "animations" }
                     }

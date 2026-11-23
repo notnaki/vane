@@ -61,6 +61,42 @@ its saved page, its sidebar row shows `/` before its title and offers **Return t
 Tab**; returning loads the pinned URL again. Favorites belong to a profile, while pinned
 and Today tabs belong to a Space. Library lists Spaces across all profiles.
 
+### Tabs across the top
+
+Set **Settings → Advanced → Interface → Tabs** to **Across the top**, choose **View → Tabs Across the
+Top**, or press `⌥⌘S` to show tabs in a compact bar beside the window buttons instead of
+in the sidebar. The setting applies to every window; Little Vane keeps its own toolbar.
+The page keeps a narrower margin around it than it does beside the sidebar.
+
+- The bar starts with a pill showing the current Space's icon and name, with the
+  profile's colour when you have more than one profile. Click it to switch to any Space,
+  grouped by profile, or to create a Space. Creating one opens the sidebar to name it.
+- Favourites and pinned tabs appear as icons, followed by a divider and Today tabs with
+  their titles. Titles widen to use spare room and narrow as tabs are added; when even
+  narrow tabs no longer fit, the row scrolls and follows the selected tab. Hover a Today
+  tab to show its close button; right-click any tab for the same menu as the sidebar.
+  **+** opens a new tab.
+- Swipe horizontally over the bar to move one Space left or right. `⌃1`–`⌃9` and
+  `⌥⌘←`/`⌥⌘→` also switch Spaces. With the bar, Spaces change without the sidebar's
+  slide; the bar's tabs slide in from the side you moved toward.
+- `⌘S` still shows the sidebar; the bar steps aside while the sidebar is open. Hovering
+  the window's leading edge peeks the sidebar, and Library opens as usual.
+
+**Focus mode.** Choose **Top, hidden until hover** (Settings → Advanced → Interface → Tabs), **View → Hide
+Tabs Until Hover**, or `⇧⌥⌘S` to let the page fill the window. Move the pointer to the top
+edge to slide the bar down over the page, with the window buttons; it hides again
+shortly after the pointer leaves, and stays while one of its menus is open or the
+search bar is up. Turning focus mode on also turns on the bar.
+
+**Not in the bar.** These stay in the sidebar (`⌘S`):
+
+- Folders: pinned folders' tabs show in order, without the folder.
+- Split View: each pane shows as its own tab.
+- Dragging tabs to reorder, pin, or favourite them, and dropping links or files.
+- Renaming: **Rename** in a tab's menu opens the sidebar to name it.
+- Live folders, Tidy Tabs, and the sidebar's Space footer, downloads and extension
+  buttons.
+
 ## Copy a clean link
 
 Press **⌘⇧C** (**View → Copy Page URL**) to copy the current page's URL with known
@@ -394,6 +430,8 @@ evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
+| Tabs across the top | `⌥⌘S` |
+| Hide tabs until hover | `⇧⌥⌘S` |
 
 Shortcuts can be changed in Settings. The menu bar shows the current bindings, including
 numbered tab selection and search commands. Choose **Prefer Website** for a shortcut to
