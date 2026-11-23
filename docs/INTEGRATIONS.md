@@ -286,9 +286,10 @@ and returns no value; so does code over 512 KB or nested more than 32 blocks dee
 **Tab groups.** An MV3 extension that lists `tabGroups` in `permissions` gets
 `chrome.tabGroups` (`get`, `query`, `update`, `move`, the four events,
 `TAB_GROUP_ID_NONE` and `Color`) and `tabs.group`/`tabs.ungroup`. A group is a
-folder in Today, in the Space the window is showing; `tabs.get` and `tabs.query` report
-each tab's `groupId` (the folder it sits in directly) and `tabs.query({groupId})`
-filters on it. Rules:
+folder in Today, in the Space the window is showing. Tabs from `tabs.get`, `query`,
+`create`, `update`, `move` and `duplicate`, and in `tabs.onCreated` and `tabs.onUpdated`,
+carry `groupId` (the folder the tab sits in directly, or -1), and
+`tabs.query({groupId})` filters on it. Rules:
 
 - Only Today tabs can be grouped. Pinned tabs and Favourites are refused and stay put.
 - `tabs.group` without `groupId` makes a new folder beside the tab, named after the
@@ -297,7 +298,12 @@ filters on it. Rules:
   move, fill or empty only folders an extension made. A folder the user made is
   refused with an error and never changes.
 - An extension-made folder whose last tab leaves goes, as Chrome removes an empty
-  group. Today removes empty folders anyway; no user folder is emptied by an extension.
+  group. Today removes empty folders anyway, so a change that would leave a user's
+  folder empty — moving an extension's folder out of it, say — is refused.
+- `tabs.group` and `tabs.ungroup` change all the named tabs or none. Ungrouping a tab
+  in no group, or a pinned tab or Favourite, does nothing. A failed call made with a
+  callback sets `runtime.lastError` for that callback, as in Chrome.
+- `tabGroups.move` puts the group's first tab at `index`, as in Chrome.
 - Tabs stay in their own window: joining a group in another window, or moving a group
   to another window, fails. `createProperties.windowId` is ignored.
 - Colours are kept and read back; Vane folders do not show them.
@@ -306,6 +312,9 @@ filters on it. Rules:
 - Group ids are integers stable for the session. Events fire for changes made by any
   extension and for folders appearing or going as tabs change; a user's rename or fold
   is announced at the next tab change. While a context listens, it keeps one call open.
+- Gaps: `tabs.onUpdated` reports a `groupId` change only for the extension's own
+  `tabs.group`/`ungroup`, not for the user's moves or another extension's. Tabs from
+  `windows.get`/`getAll` with `populate`, and other events' tabs, have no `groupId`.
 - Changes animate like any other sidebar move, and are instant with Reduce Motion or
   Battery Saver.
 

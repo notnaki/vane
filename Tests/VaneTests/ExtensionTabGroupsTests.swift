@@ -206,6 +206,79 @@ import XCTest
         XCTAssertTrue(privateStore.todayShape.entries.compactMap(\.folder).isEmpty)
     }
 
+    func testAnExtensionNeverEmptiesTheUsersFolderAndMovesLikeChrome() async throws {
+        let store = browser()
+        let pinned = store.newBlankTab(as: .pinned)
+        let a = store.newBlankTab(), b = store.newBlankTab(), c = store.newBlankTab(), d = store.newBlankTab()
+        let e = store.newBlankTab()
+        let host = ExtensionHost.host(for: profile)
+        _ = try await host.load(folder, installing: true) { _ in true }
+        let context = try XCTUnwrap(host.installed.first)
+        // The user's folder holds only an extension's folder, which holds `c`.
+        let mine = try XCTUnwrap(store.newFolder(from: c.id, in: \.todayShape))
+        store.renamingFolder = nil
+        var shape = store.todayShape
+        shape.edit(folder: mine.id) { $0.name = "Mine" }
+        let nested = try XCTUnwrap(shape.newFolder(named: "Nested", next: c.id.uuidString))
+        shape.edit(folder: nested.id) { $0.extensionOwner = context.baseURL.host; $0.groupColor = "grey" }
+        shape.move(c.id.uuidString, into: nested.id)
+        store.todayShape = shape
+        store.applyOrder(.today)
+        XCTAssertEqual(store.todayShape.folder(holding: c.id.uuidString)?.id, nested.id)
+        XCTAssertEqual(store.todayShape.tabs(in: mine.id), [c.id.uuidString])
+        XCTAssertEqual(store.accessibleTabs.map(\.id), [pinned, a, b, c, d, e].map(\.id))
+        host.sync()
+        let page = try await page(context)
+        defer { page.stopLoading() }
+
+        let result = try await run("""
+            const ids = (await chrome.tabs.query({})).sort((x, y) => x.index - y.index).map(tab => tab.id);
+            const [pinned, a, b, c, d, e] = ids;
+            const failure = promise => promise.then(() => 'resolved', error => error.message);
+            const groupOf = async id => (await chrome.tabs.get(id)).groupId;
+            const changes = [];
+            chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+              if ('groupId' in info) changes.push([ids.indexOf(tabId), info.groupId, tab.groupId].join(':'));
+            });
+            const nested = await groupOf(c);
+            const group = await chrome.tabs.group({tabIds: [a, b]});
+            const out = [];
+            // Chrome's index is where the group's first tab ends up, either way.
+            await chrome.tabGroups.move(group, {index: 3});
+            out.push((await chrome.tabs.get(a)).index, (await chrome.tabs.get(b)).index);
+            await chrome.tabGroups.move(group, {index: 1});
+            out.push((await chrome.tabs.get(a)).index, (await chrome.tabs.get(b)).index);
+            // Nothing an extension does may empty the user's folder, or half-happen.
+            out.push(await failure(chrome.tabGroups.move(nested, {index: -1})),
+                     await failure(chrome.tabs.group({tabIds: c, groupId: group})),
+                     await failure(chrome.tabs.group({tabIds: [d, c], groupId: group})),
+                     await failure(chrome.tabs.group({tabIds: [d, pinned]})), await groupOf(d) === -1);
+            // A callback that fails reads runtime.lastError, and only inside.
+            out.push(await new Promise(done => chrome.tabGroups.move(nested, {index: -1},
+                       moved => done(String(moved) + '|' + chrome.runtime.lastError?.message))),
+                     chrome.runtime.lastError === undefined,
+                     await new Promise(done => chrome.tabGroups.get(group, got => done(got.id === group && chrome.runtime.lastError === undefined))));
+            // Ungrouping a tab in no group, or one that cannot be grouped, does nothing.
+            out.push(await failure(chrome.tabs.ungroup([pinned, d])), await failure(chrome.tabs.ungroup([pinned, a])),
+                     await groupOf(a), (await chrome.tabs.move(e, {index: -1})).groupId);
+            await new Promise(done => setTimeout(done, 200));
+            out.push(changes.join(','), String(group));
+            return JSON.stringify(out);
+            """, in: page)
+        let out = try XCTUnwrap(result.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [Any] })
+        let refusal = "That would empty “Mine”, a folder the user made."
+        let group = try XCTUnwrap((out.last as? String).flatMap(Int.init))
+        XCTAssertEqual(out.dropLast().map { "\($0)" }, [
+            "3", "4", "1", "2", refusal, refusal, refusal,
+            "Vane groups only Today tabs. Pinned tabs and Favourites stay where the user put them.", "1",
+            "undefined|" + refusal, "1", "1", "resolved", "resolved", "-1", "-1",
+            "1:\(group):\(group),2:\(group):\(group),1:-1:-1"])
+        XCTAssertEqual(store.todayShape.folder(mine.id)?.name, "Mine", "The user's folder stays")
+        XCTAssertEqual(store.todayShape.folder(holding: c.id.uuidString)?.id, nested.id)
+        XCTAssertNil(store.todayShape.folder(holding: d.id.uuidString), "A refused group moves no tab")
+        XCTAssertEqual(pinned.kind, .pinned)
+    }
+
     func testAnExtensionWithoutThePermissionHasNoTabGroups() async throws {
         try Data(#"{"manifest_version":3,"name":"Group Fixture","version":"1.0","optional_permissions":["tabGroups"],"background":{"service_worker":"worker.js"}}"#.utf8)
             .write(to: folder.appendingPathComponent("manifest.json"))
