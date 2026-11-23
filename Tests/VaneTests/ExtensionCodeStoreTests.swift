@@ -16,6 +16,25 @@ final class ExtensionCodeStoreTests: XCTestCase {
     }
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: directory) }
 
+    /// Review, icon and load all read a Safari extension's manifest from where staging froze it.
+    func testResourcesFolderIsWhereStagingPutTheManifest() throws {
+        let resources = source.appendingPathComponent("Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        try Data(#"{"manifest_version":3}"#.utf8).write(to: resources.appendingPathComponent("manifest.json"))
+        let stage = try store.stage(source, appExtension: true)
+        var record = ExtensionCodeStore.Record(identity: UUID().uuidString, revision: stage.revision, sourcePath: source.path,
+            name: "Safari", version: "1", summary: "", required: .init(permissions: [], sites: []),
+            optional: .init(permissions: [], sites: []), compatibility: [],
+            safari: SafariExtensionSource(appBundleID: "com.example.app", extensionBundleID: "com.example.app.ext",
+                                          teamID: "ABCDE12345", appPath: "/Applications/Example.app",
+                                          signatureHash: String(repeating: "a", count: 40)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.resources(for: record).appendingPathComponent("manifest.json").path))
+        XCTAssertEqual(store.bundle(for: record)?.appendingPathComponent("Contents/Resources", isDirectory: true), store.resources(for: record))
+        record.safari = nil
+        XCTAssertNil(store.bundle(for: record))
+        XCTAssertEqual(store.resources(for: record), store.code(for: record))
+    }
+
     func testNativeErrorApprovalMetadataRoundTripsOnlyInItsProfile() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "identity": UUID().uuidString, "revision": UUID().uuidString,

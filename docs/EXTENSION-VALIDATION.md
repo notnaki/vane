@@ -4,6 +4,48 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Page control for Claude in Chrome (`chrome.debugger`) — 2026-11-23
+
+Vane now answers the part of `chrome.debugger` that the official **Claude** extension uses to act on pages, and `runtime.getContexts`. With the unmodified extension installed and signed out, calls made through its own side panel's `chrome.debugger` attached to a page, evaluated script, took a screenshot, clicked a button and typed into a field. **No Claude account was used, so Claude itself never drove a page:** its agent loop, permission prompts and tools past the Log in screen are untested.
+
+**Build and package.** macOS 27.0.1 (26A434), debug test host built from this change on the side-panel branch at `d7a17c8d`, isolated temporary `VANE_DATA_DIR`, fresh profile. CRX from Google's public update endpoint, now version **1.0.109** (SHA-256 `036df34f2afb9647f42903300a381d1004b00b5a0c4db1350d5e8e8b8297a190`), unpacked without changes.
+
+**What Claude's code calls** (read from the package): `debugger.attach`, `detach`, `sendCommand`, `getTargets`, `onEvent`, `onDetach`, with these protocol methods and events.
+
+| Used by Claude | In Vane |
+| --- | --- |
+| `Runtime.evaluate` (its `javascript_tool`: `replMode`, `awaitPromise`, `returnByValue`, `timeout`) | Emulated. |
+| `Page.captureScreenshot` (`jpeg`, `quality`, optional `clip` with `scale`) | Emulated. |
+| `Input.dispatchMouseEvent` (move, press, release, wheel), `Input.dispatchKeyEvent`, `Input.insertText` | Emulated with trusted events, for the tab on screen. |
+| `Page.getFrameTree`, `Page.bringToFront` | Emulated (main frame). |
+| `Page.enable`, `Runtime.enable`, `Network.enable`/`disable`, `Network.setBypassServiceWorker`, `Emulation.setFocusEmulationEnabled`, `Page.startScreencast`/`stopScreencast`, `Input.cancelDragging` | Accepted and ignored. |
+| `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, `Network.requestWillBeSent`/`responseReceived`/`loadingFailed` | **Not sent.** Claude's console and network readers will be empty. |
+| `Page.javascriptDialogOpening`/`Closed`, `Page.handleJavaScriptDialog` | **Not sent; the command fails.** Vane shows its own dialog and Claude cannot answer it. |
+| `Page.frameNavigated`, `Page.frameStartedNavigating` | **Not sent.** Claude also follows navigation through `webNavigation`, which WebKit has. |
+| `runtime.getContexts` | Lists the background and open side panels. Claude's own check (`documentUrls: [location.href]`, every result a `SIDE_PANEL`) passes. |
+| `tabGroups`, `tabs.group`/`ungroup` | Still absent, on purpose. Claude creates, renames, recolours and removes groups on its own; mapped to Vane's folders that would let an extension create and delete folders in the user's sidebar, which needs a design decision rather than a stand-in. |
+| `identity` | See the identity section below. |
+| `notifications`, `offscreen`, `downloads`, `favicon`, `runtime.connectNative` | Unchanged from the sections below. |
+
+**Observed** in the signed-out run, each call made from Claude's side panel page in Chrome's callback style:
+
+| Step | Result |
+| --- | --- |
+| Install | The review lists the debugger capability. Installed and loaded; panel shows **Log in**. |
+| `getContexts` | `[["SIDE_PANEL", -1, true]]`: one side panel whose `documentUrl` is the panel's address. |
+| `attach`, `getTargets` | Attached; the tab reports `attached: true`; the pill “Claude is controlling this tab · Stop” appears. |
+| Claude's attach sequence | `Page.enable`, `Runtime.enable`, `Network.enable`, `Emulation.setFocusEmulationEnabled`, `Page.stopScreencast`, `Network.setBypassServiceWorker`, `Input.cancelDragging` each returned `{}`. `Accessibility.getFullAXTree` failed with `-32601`. |
+| `Runtime.evaluate` | Claude's wrapper shape (origin guard, labelled block, top-level `await`) returned `"Driven page / 9"`. |
+| `Page.captureScreenshot` | JPEG, 1180×1404 pixels for a 590×702-point page at 2×. |
+| Click and type | The button's `click` and the field's `keydown` events were trusted; the field read “Hi from Claude’s API ✓”. |
+| Stop | Session ended; the next command failed with “Debugger is not attached to the tab with id: 90.”, the message Claude re-attaches on. |
+
+One new error appeared in this version's worker and is not caused by this change: `TypeError: undefined is not an object (evaluating 'chrome.alarms.create(…).catch')`. WebKit's `alarms.create` returns nothing where Chrome returns a promise. The extension still starts and opens its panel. Vane cannot replace a method WebKit defines.
+
+**Not tested:** signing in; Claude's own tool calls; real sites; strict-CSP sites; background tabs (input is refused there, which Claude's flows for hidden tabs will meet); the ⌘E toggle end to end; an assembled signed app. The window snapshots show the page area blank because `screencapture` does not composite WebKit's content for the accessory test host; `captureScreenshot.jpg` is the page as the protocol returned it.
+
+Automated coverage: `ExtensionDebuggerTests` loads a synthetic MV3 extension with `debugger` and host access to `127.0.0.1` only, and no `tabs` permission. From an extension page and from its worker it attaches, evaluates (values, promises, top-level `await`, errors, a syntax error, a timeout), captures a PNG and a clipped scaled JPEG and checks their pixel sizes, clicks a button, types, edits with arrow, Backspace and ⌘A, scrolls with the wheel, and checks that every event was trusted. It also covers protocol errors for unsupported commands, `runtime.lastError` in callback style, refusal on a host without access, the pill's Stop and tab close reaching `onDetach` in both contexts, `getContexts`, an extension that lists `debugger` only as optional, and the bridge URL of another origin. No test moves the pointer. Evidence: `~/.cache/vane-task-evidence/chrome-debugger-2026-11-23/` (`probe.txt`, `indicator-light.png`, `indicator-dark.png`, `captureScreenshot.jpg`, the probe's source and the CRX). Since the review round it also checks that code closing the evaluation wrapper is refused as a `SyntaxError` and runs nothing, that nothing runs in a document of another origin, that `Page.navigate` to a host without access fails, that a synthesized ⌘ key and a plain key the page ignores come back through `NSApp.sendEvent` and reach no menu item when dropped as Vane's key monitor drops them (with a control showing the menu item fires otherwise), that dragging a link is cancelled, that a ninth held event call is answered late rather than at once, and that an unread reply object is reused. `ExtensionManagedCodeTests` covers the “Review new support” prompt for an extension recorded before `debugger` existed. Since the second review round it also checks that a tab shown without the pill cannot be attached, that a hidden page takes no input or evaluation and is handed no keyboard, that a click and keys land in the page showing while a text field elsewhere in the window keeps first responder, that synthesized keys are dropped in `NSApp.sendEvent` before the newest key monitor sees them (the control: the same chord, not synthesized, reaches the monitor and the menu item), that the drag guard holds against a page's own capturing `dragstart` listener and only between a press and its release, that a command pending when Stop is pressed never runs, that evaluation is refused at another address of the same origin, that `scrollWheel` and other unlisted selectors are not editing commands, and that an IPv6 origin keeps its brackets. The screenshot re-check after capture is not covered: the race it closes could not be produced deterministically. Indicator snapshots (split view, background tab, light and dark) are local evidence only.
+
 ## Chrome identity web sign-in and Copyleaks — 2026-11-23
 
 Vane now supplies `chrome.identity.getRedirectURL()` and `identity.launchWebAuthFlow()` for extensions that request the `identity` permission. The unmodified **AI Content Detector - Copyleaks** 5.1.0 (`gplcmncpklkdjiccbknjjkoidpgkcakd`) now installs and its background starts. Signing in was not tested: no Copyleaks, Google or other account was used.
@@ -95,7 +137,7 @@ One crash was found and fixed on the way: an extension page hosted by Vane (opti
 | Claude needs | WebKit | Consequence |
 | --- | --- | --- |
 | `sidePanel` | Absent; supplied by Vane | Panel opens. |
-| `debugger` (`attach`, `sendCommand`, `onEvent`) | Absent; events only in Vane, methods undefined | **Page actions do not work.** Claude clicks, types and takes screenshots through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`, `Network.*`). WebKit offers extensions no equivalent. |
+| `debugger` (`attach`, `sendCommand`, `onEvent`) | Absent; events only in Vane, methods undefined (since emulated in part: see the section above) | **Page actions do not work.** Claude clicks, types and takes screenshots through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`, `Network.*`). WebKit offers extensions no equivalent. |
 | `tabGroups`, `tabs.group`/`ungroup` | Absent; constants and events only | Claude's tab group is not created. |
 | `identity.launchWebAuthFlow` | Absent; undefined | Claude's silent OAuth refresh path fails. Whether interactive sign-in completes was not tested. |
 | `notifications`, `offscreen`, `downloads` | Absent; events only, methods undefined | No notifications, no offscreen audio/GIF document, no downloads from the extension. |

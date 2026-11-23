@@ -229,6 +229,34 @@ extension ExtensionManagedCodeTests {
         XCTAssertEqual(try store.records()[folder.path]?.integratedCapabilities, ["contextMenus"])
     }
 
+    func testADebuggerExtensionFromBeforeVaneProvidedItIsReviewedNotRefused() async throws {
+        try write(permissions: ["storage", "debugger"])
+        let (host, _) = try await install()
+        try host.disable(folder.path)
+        // As an earlier Vane recorded it: WebKit does not report `debugger`.
+        let store = ExtensionCodeStore(profileID: profile)
+        var records = try store.records()
+        let old = ExtensionAccess(permissions: ["storage"], sites: try XCTUnwrap(records[folder.path]).required.sites)
+        records[folder.path]?.required = old
+        records[folder.path]?.integratedCapabilities = []
+        try store.save(records)
+        try ExtensionConsent.save(old, for: folder, profileID: profile)
+        let again = try await restored()
+        var reviews = 0
+        try await again.setEnabled(true, for: folder.path) { review in
+            reviews += 1
+            XCTAssertEqual(review.newlySupportedCapabilities, ["debugger"])
+            XCTAssertTrue(ExtensionConsent.makePrompt(review).messageText.hasPrefix("Review new support for"))
+            return false
+        }
+        XCTAssertEqual(reviews, 1)
+        XCTAssertTrue(again.installed.isEmpty)
+        try await again.setEnabled(true, for: folder.path) { _ in true }
+        XCTAssertEqual(again.installed.count, 1)
+        XCTAssertEqual(try store.records()[folder.path]?.required.permissions, ["storage", "debugger"])
+        XCTAssertEqual(try store.records()[folder.path]?.integratedCapabilities, ["debugger"])
+    }
+
     func testFailedIndexCommitRestartsAcceptedVersionWithoutChangingApproval() async throws {
         let (host, old) = try await install()
         let identity = old.uniqueIdentifier

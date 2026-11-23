@@ -60,6 +60,7 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.showsDebuggerPill = tab != nil && !offscreen
         host.libraryNavigationPaintOwner = libraryPaintOwner
         host.resizeLayout = resizeLayout
         host.resizeFraction = NSSize(width: 1, height: 1)
@@ -124,6 +125,9 @@ final class WebHost: NSView {
         pageResizeLayoutDidUpdate?()
     }
     private(set) var web: WKWebView?
+    /// Whether this host's page sits under `ExtensionDebuggerBanner`: a `TabPage` on
+    /// screen. Only such a page may be driven; see `ExtensionDebuggerAPI.isShowing`.
+    var showsDebuggerPill = false
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
     /// neither Tab-able nor readable by VoiceOver, and it costs no compositing either.
@@ -468,6 +472,14 @@ struct TabPage: View {
                     }
                 }
                 .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
+                // An extension driving this page through `chrome.debugger`, and the way to
+                // stop it. On the page, so each pane of a split carries its own. At the
+                // foot: the top belongs to the find bar and a local site's dev bar.
+                .overlay(alignment: .bottom) {
+                    if !offscreen {
+                        ExtensionDebuggerBanner(debugger: store.extensions.debugger, host: store.extensions, tab: tab.id)
+                    }
+                }
             }
         } else if !offscreen {
             GeometryReader { geometry in
@@ -2271,6 +2283,7 @@ private struct FavoriteTile: View {
     }
     if tab.inMeetCall { bits.append("in a Google Meet call") }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
+    if store.extensions.debugger.session(on: tab.id) != nil { bits.append("controlled by an extension") }
     bits.append(tab.needsRecovery ? "paused after an unexpected stop, select to recover" : (tab.loading ? "loading" : "loaded"))
     return bits.joined(separator: ", ")
 }
@@ -2534,10 +2547,9 @@ struct PaneStrip: View {
             // muted from here, and the × closes the pane the row is showing.
             if let voice {
                 TabRowTrailing(store: store, tab: voice,
-                               pane: true, closes: panes.first { $0.id == split.activeTab })
+                               pane: true, closes: panes.first { $0.id == split.activeTab }, driven: panes.map(\.id))
                     .opacity(1 - (morph?.progress ?? 0))
-                    .frame(width: morph.map { (voice.audible || TabAudio.isMuted(voice) ? 2 : 1)
-                        * Look.rowTarget * (1 - $0.progress) })
+                    .frame(width: morph.map { trailingGlyphs(voice) * Look.rowTarget * (1 - $0.progress) })
             }
         }
         .padding(Look.paneInset)
@@ -2577,6 +2589,12 @@ struct PaneStrip: View {
     private var voice: Tab? {
         panes.first { $0.audible || TabAudio.isMuted($0) }
             ?? panes.first { $0.id == split.activeTab }
+    }
+
+    /// The ×, the speaker, and the glyph of a pane an extension is driving.
+    private func trailingGlyphs(_ voice: Tab) -> CGFloat {
+        1 + (voice.audible || TabAudio.isMuted(voice) ? 1 : 0)
+            + (panes.contains { store.extensions.debugger.session(on: $0.id) != nil } ? 1 : 0)
     }
 
     /// The container wears the row's own states, exactly as `SidebarRow` does.
@@ -5671,6 +5689,8 @@ private struct TabRowTrailing: View {
     /// the noise, but the × — like ⌘W and the row's "Close Pane" action — closes the pane
     /// the row is showing, which may be a different one.
     var closes: Tab? = nil
+    /// The tabs whose debugger sessions the row reports: every pane, on a split's row.
+    var driven: [Tab.ID]? = nil
     @State private var closeHovering = false
     @Environment(\.rowHovering) private var hovering
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -5683,10 +5703,15 @@ private struct TabRowTrailing: View {
             // Captured rows never hover: their zero-width close button has no ink.
             // Do not construct that button's focus/tooltip graph in every preview.
             HStack(spacing: 0) {
+                debuggerGlyph
                 if tab.audible || TabAudio.isMuted(tab) { audioGlyph }
             }
             .foregroundStyle(Look.inkSecondary)
         }
+    }
+
+    private var debuggerGlyph: some View {
+        ExtensionDebuggerRowGlyph(debugger: store.extensions.debugger, tabs: driven ?? [tab.id])
     }
 
     private var audioGlyph: some View {
@@ -5704,6 +5729,7 @@ private struct TabRowTrailing: View {
         // A gap on top of that would be a strip of bare row between two buttons, which
         // belongs to the row's own tap and so *shows* the tab from between its two glyphs.
         HStack(spacing: 0) {
+            debuggerGlyph
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     audioGlyph

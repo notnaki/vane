@@ -228,7 +228,7 @@ import WebKit
     private var workerIdentityUpdate: Task<Void, Never>?
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
-    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
+    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus", ExtensionDebuggerAPI.permission]
     private var metadataIcons: [String: NSImage] = [:]
     private struct LegacyMetadata {
         var version: String
@@ -312,6 +312,7 @@ import WebKit
         WebKitStartup.configureExtensionPages(webConfiguration)
         ExtensionMV2Compatibility.configure(webConfiguration)
         ExtensionIdentityAPI.configure(webConfiguration)
+        ExtensionDebuggerAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
@@ -369,7 +370,7 @@ import WebKit
         for path in contextIdentifiers.keys where folders[path] == nil { folders[path] = URL(fileURLWithPath: path).lastPathComponent }
         for path in Array(folders.keys) {
             if let metadataFailure { failures[path] = metadataFailure; continue }
-            if let record = records[path] { cacheIcon(for: path, in: record.safari == nil ? codeStore.code(for: record) : codeStore.code(for: record).appendingPathComponent("extension.appex/Contents/Resources")) }
+            if let record = records[path] { cacheIcon(for: path, in: codeStore.resources(for: record)) }
             else if let manifest = try? Self.validate(sourceFolder(for: path)) {
                 func optional(_ key: String) -> [String] { manifest[key] as? [String] ?? [] }
                 let declarations = optional("optional_permissions")
@@ -1351,9 +1352,9 @@ import WebKit
         if let safari = record.safari {
             let current = try await safari.resolve()
             guard recoveringSafariUpdate || current.source.signatureHash == safari.signatureHash else { throw Failure("The app was updated. Choose Update from App to review its extension before enabling it.") }
-            let bundleURL = codeStore.code(for: record).appendingPathComponent("extension.appex", isDirectory: true)
+            guard let bundleURL = codeStore.bundle(for: record) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             try await Self.verifySnapshot(bundleURL, source: safari)
-            folder = bundleURL.appendingPathComponent("Contents/Resources")
+            folder = codeStore.resources(for: record)
             guard let bundle = Bundle(url: bundleURL) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             appBundle = bundle
         } else {
@@ -1407,6 +1408,15 @@ import WebKit
                         enable: enabling, operationToken: token, review: ask)
                     return
                 }
+            }
+            // A record from before Vane provided `debugger` does not list it: WebKit never
+            // reported it. The accepted manifest does, so it is reviewed here as new support
+            // rather than refused later as code that changed.
+            var record = record
+            if let manifest = try? Self.validate(codeStore.resources(for: record)),
+               ExtensionDebuggerAPI.declared(manifest) {
+                record.required = ExtensionAccess(permissions: record.required.permissions.union([ExtensionDebuggerAPI.permission]),
+                                                  sites: record.required.sites)
             }
             let previous = ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID)
             let review = ExtensionConsent.Review(name: record.name, requested: record.required, previous: previous, installing: false, limitations: record.compatibility,
@@ -1960,6 +1970,7 @@ import WebKit
             }
         }
         syncSidePanels()
+        debugger.sync()
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -2075,6 +2086,9 @@ import WebKit
             try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
                         store: (configuration.window as? ExtWindow)?.store, for: context)
             return nil
+        }
+        if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
+            return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
         }
         if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
             throw Failure("Extensions cannot navigate to Vane’s internal URLs.")
@@ -2261,6 +2275,8 @@ import WebKit
     // `onInstalled` and never again.
 
     @Published private(set) var sidePanels: [ExtensionSidePanel] = []
+    /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
+    private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.
     @Published private var sidePanelOptions: [ActionKey: ExtensionSidePanelAPI.Options] = [:]
     private var sidePanelsOnAction: Set<ObjectIdentifier> = []
@@ -2552,6 +2568,7 @@ import WebKit
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
+        debugger.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()

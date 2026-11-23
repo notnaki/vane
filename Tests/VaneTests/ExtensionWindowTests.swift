@@ -11,6 +11,10 @@ import XCTest
     private var ownedProfiles: Set<UUID> = []
     private var folder: URL!
     private var stores: [TabStore] = []
+    /// `TabStore.window` is weak. A fixture window nothing else holds is released while it
+    /// is still on screen, by whichever thread lets go last: AppKit's window animation runs
+    /// on its own, and a window deallocating there aborts the next Windows-menu rebuild.
+    private var windows: [NSWindow] = []
     private var originalPolicy: NSApplication.ActivationPolicy!
 
     override func setUp() async throws {
@@ -38,6 +42,8 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
         }
         stores.removeAll()
+        windows.forEach { $0.close() }
+        windows.removeAll()
         try? FileManager.default.removeItem(at: folder)
         try await NativeFixtureProfileCleanup.release(ownedProfiles)
         ownedProfiles.removeAll()
@@ -79,7 +85,9 @@ import XCTest
         let window = NSWindow(contentRect: NSRect(x: 120, y: 150, width: 700, height: 500),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
         store.window = window
+        windows.append(window)
         stores.append(store)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
