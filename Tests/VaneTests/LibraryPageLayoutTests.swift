@@ -134,7 +134,7 @@ import XCTest
                 for _ in 0..<8 {
                     try await Task.sleep(for: .milliseconds(20))
                     let bounds = try presentedCardBounds()
-                    XCTAssertEqual(bounds.maxX, 629, accuracy: 1,
+                    XCTAssertEqual(bounds.maxX, 640 - Look.cardGap, accuracy: 1,
                         "The visible rim must not drift during navigation")
                     XCTAssertGreaterThanOrEqual(bounds.minX, 227)
                     XCTAssertLessThanOrEqual(bounds.minX, 393)
@@ -165,10 +165,10 @@ import XCTest
             let paintState = bridges(host).map {
                 "target=\($0.target) progress=\(String(describing: $0.paint?.progress)) preparing=\(String(describing: $0.paint?.isPreparing))"
             }
-            XCTAssertEqual(bounds.minX, floating ? 11 + 381 * progress : 228 + 164 * progress, accuracy: 1,
+            XCTAssertEqual(bounds.minX, floating ? Look.cardGap + (392 - Look.cardGap) * progress : 228 + 164 * progress, accuracy: 1,
                 "The real card must start after navigation, during navigation (step \(progress); \(paintState); needsLayout=\(host.needsLayout))")
-            XCTAssertEqual(bounds.maxX, 629, accuracy: 1,
-                "The real card's rim must stay eleven points inside the narrow window")
+            XCTAssertEqual(bounds.maxX, 640 - Look.cardGap, accuracy: 1,
+                "The real card's rim must stay cardGap inside the narrow window")
             if let second {
                 let firstBounds = tab.web.convert(tab.web.bounds, to: host)
                 let secondBounds = second.web.convert(second.web.bounds, to: host)
