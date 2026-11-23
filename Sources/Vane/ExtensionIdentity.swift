@@ -189,22 +189,25 @@ import WebKit
     }
 
     func run(over parent: NSWindow?) async throws -> String {
-        guard !finished else { throw ExtensionHost.Failure(pending ?? "The user did not approve access.") }
-        // Loads here, not in init, so the caller sets the user agent before the first request.
-        web.load(URLRequest(url: url))
+        guard !finished else { throw ExtensionHost.Failure("The user did not approve access.") }
         if let window {
             if let parent { window.setFrameOrigin(NSPoint(x: parent.frame.midX - window.frame.width / 2,
                                                           y: parent.frame.maxY - window.frame.height - 60)) }
             else { window.center() }
             window.makeKeyAndOrderFront(nil)
         }
-        return try await withCheckedThrowingContinuation { continuation = $0 }
+        return try await withCheckedThrowingContinuation {
+            continuation = $0
+            // Loads here, not in init, so the caller sets the user agent before the first
+            // request, and after the continuation, so nothing can finish without resuming it.
+            web.load(URLRequest(url: url))
+        }
     }
 
     /// Chrome's messages, so an extension's own checks still match.
     func cancel(_ message: String = "The user did not approve access.") { finish(.failure(ExtensionHost.Failure(message))) }
 
-    private var finished = false, pending: String?
+    private var finished = false
     private func finish(_ result: Result<String, any Error>) {
         guard !finished else { return }
         finished = true
@@ -220,11 +223,8 @@ import WebKit
             window.close()
         }
         popups = []
-        // A failure before `run` (a load that failed at once) waits for it.
-        guard let continuation else {
-            if case .failure(let error) = result { pending = error.localizedDescription }
-            return
-        }
+        // Before `run` nothing has loaded, so only a cancel lands here; `run` then refuses.
+        guard let continuation else { return }
         self.continuation = nil
         continuation.resume(with: result)
     }

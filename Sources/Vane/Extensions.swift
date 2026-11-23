@@ -2241,7 +2241,6 @@ import WebKit
         }
         let cfg = WKWebViewConfiguration()
         if let store = controller.configuration.defaultWebsiteDataStore { cfg.websiteDataStore = store }
-        userAgent.configure(cfg)
         let name = context.webExtension.displayName ?? "Extension"
         let flow = ExtensionAuthFlow(request: request, redirectHost: ExtensionIdentityAPI.redirectHost(id),
                                      configuration: cfg, title: "Sign in for “\(name)”")
