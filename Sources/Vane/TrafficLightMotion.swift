@@ -12,9 +12,15 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     var visibility: CGFloat
     let libraryOpen: Bool
     let peeking: Bool
-    /// The toolbar's row holds the lights while the sidebar is away: they keep the
-    /// sidebar's spot (following a peeking panel's inset) instead of leaving with it.
+    /// View › Show Toolbar: the lights stay when the sidebar goes, stepping into the card's
+    /// toolbar strip (as far in and down as the strip's own top row), or following a
+    /// peeking panel's inset while it is out.
     var lightsStay = false
+
+    private var stayingOffset: CGPoint {
+        CGPoint(x: lightsInset + (1 - visibility) * MainToolbar.lightsShift.width,
+                y: lightsInset + (1 - visibility) * MainToolbar.lightsShift.height)
+    }
 
     nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
         get { AnimatablePair(AnimatablePair(slide, inset), AnimatablePair(lightsInset, visibility)) }
@@ -34,7 +40,8 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
             .opacity(visibility)
             .background {
                 TrafficLightPlacement(store: store,
-                    offset: libraryOpen ? .zero : CGPoint(x: (lightsStay ? 0 : slide) + lightsInset, y: lightsInset),
+                    offset: libraryOpen ? .zero : lightsStay ? stayingOffset
+                        : CGPoint(x: slide + lightsInset, y: lightsInset),
                     visibility: libraryOpen || lightsStay ? 1 : visibility, peeking: peeking)
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false).accessibilityHidden(true)

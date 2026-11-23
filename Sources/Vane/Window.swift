@@ -78,7 +78,7 @@ final class VaneWindow: NSWindow {
 
     private var toolbarResizePreparation: SidebarPageResizePreparation?
 
-    /// Hiding View › Show Toolbar raises the page's top edge by `MainToolbar.room`. Paint the
+    /// Hiding View › Show Toolbar raises the page's top edge by `MainToolbar.height`. Paint the
     /// page at its new height under the card's clip first, exactly as a sidebar close does,
     /// then flip the setting; the slide then moves a page that has already reflowed once.
     /// Showing is not buffered, as a sidebar open is not: a shorter page would leave the
@@ -98,7 +98,7 @@ final class VaneWindow: NSWindow {
               !inLiveResize, let root = contentView, !store.isLittle, !store.libraryOpen
         else { return false }
         let pages = WindowResizePreparation.targets(in: root, nextSize: root.bounds.size,
-                                                    heightExpansion: MainToolbar.room)
+                                                    heightExpansion: MainToolbar.height)
         guard !pages.isEmpty else { return false }
         pages.forEach { $0.topAnchored = true }
         let preparation = SidebarPageResizePreparation(window: self, pages: pages,

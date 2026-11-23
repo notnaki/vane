@@ -50,12 +50,13 @@ in other profiles. Each window keeps its own sidebar visibility.
 sidebar again returns to your tabs.
 
 **View › Show Toolbar** (`⇧⌘D` by default, as in Arc, or **Show Toolbar** in the command
-bar) adds a slim bar above the page with Back, Forward, Reload, and the page's address,
-for the active tab or split pane; they move there from the top of the sidebar, which
-keeps its sidebar button. It applies to every browser window and is remembered
-after you quit. With the sidebar hidden, the toolbar starts with the window's close,
-minimise, and zoom buttons and the sidebar button, in the same place the sidebar shows
-them, and you can drag the toolbar's empty space to move the window. Little Vane and
+bar) adds a slim strip to the top of the page card with Back, Forward and Reload, the
+page's host in the middle, and Copy Link, pinned extensions and Page Actions on the right,
+for the active tab or split pane. Click the host to edit the address. The buttons and
+address move there from the top of the sidebar, which keeps its sidebar button. It
+applies to every browser window and is remembered after you quit. With the sidebar
+hidden, the strip starts with the window's close, minimise, and zoom buttons and the
+sidebar button, and you can drag its empty space to move the window. Little Vane and
 Peek keep their own bar.
 
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.

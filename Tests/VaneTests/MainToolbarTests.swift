@@ -5,8 +5,9 @@ import WebKit
 import XCTest
 @testable import vane
 
-/// View › Show Toolbar: the bar takes room above the page card, never covers it, in either
-/// sidebar presentation, and a second toggle gives the room back.
+/// View › Show Toolbar: a strip inside the page card's top edge. The card keeps its margins
+/// and the page below the strip gives up exactly its height, in either sidebar presentation;
+/// a second toggle gives it back.
 @MainActor final class MainToolbarTests: XCTestCase {
     func testToolbarPushesThePageDownAndTogglesBack() async throws {
         TestEnvironment.prepare()
@@ -49,11 +50,9 @@ import XCTest
             let view = try XCTUnwrap(tab.existingWeb?.superview)
             return try XCTUnwrap(view.window).convertToScreen(view.convert(view.bounds, to: nil))
         }
-        // The row starts above the card's usual top gap, centred on the traffic lights.
-        let room = MainToolbar.top + MainToolbar.height
-        XCTAssertEqual(MainToolbar.top + MainToolbar.height / 2, Look.topInset + Look.topRow / 2,
-                       "the toolbar row is centred on the sidebar's top row")
-        XCTAssertEqual(MainToolbar.top, Look.cardGap, "as far from the window's top as the card is from its sides")
+        let room = MainToolbar.height
+        XCTAssertEqual(Look.lightsCentre + MainToolbar.lightsShift.height, Look.cardGap + MainToolbar.height / 2,
+                       "lights that step into the strip sit on its centre line")
         // What the sidebar draws, sampled where its buttons and pill stand. The test host
         // exposes no accessibility tree, so the check reads pixels: the share of a strip that
         // differs from the bare sidebar just left of it, in the same row.
@@ -137,8 +136,8 @@ import XCTest
     }
 
     /// A production-shaped window, on screen, with its own traffic lights: with the sidebar
-    /// hidden the toolbar row leads with the lights and the sidebar toggle, in the sidebar's
-    /// spot, and the toggle brings the sidebar back. The page is painted at its new height
+    /// hidden the card's strip leads with the lights and the sidebar toggle, on the strip's
+    /// centre line, and the toggle brings the sidebar back. The page is painted at its new height
     /// before the bar slides, and keeps that height (and its scroll) through the slide.
     func testSidebarHiddenRowAndBufferedResize() async throws {
         TestEnvironment.prepare()
@@ -221,7 +220,7 @@ import XCTest
         }
         for showing in [true, false] {
             let start = web.frame.height
-            let target = start + (showing ? -MainToolbar.room : MainToolbar.room)
+            let target = start + (showing ? -MainToolbar.height : MainToolbar.height)
             MainToolbar.toggle(in: store)
             if showing {
                 XCTAssertTrue(MainToolbar.shown, "showing flips at once")
@@ -260,7 +259,7 @@ import XCTest
         try await settle()
         let shownHeight = web.frame.height
         MainToolbar.toggle(in: store)
-        XCTAssertEqual(web.frame.height, shownHeight + MainToolbar.room, accuracy: 0.5)
+        XCTAssertEqual(web.frame.height, shownHeight + MainToolbar.height, accuracy: 0.5)
         MainToolbar.toggle(in: store)
         XCTAssertTrue(MainToolbar.shown)
         XCTAssertEqual(web.frame.height, shownHeight, accuracy: 0.5, "cancelled")
@@ -287,7 +286,16 @@ import XCTest
         try assertFilled("after toggling mid-slide")
         XCTAssertEqual(web.frame.height, try XCTUnwrap(web.superview).bounds.height, accuracy: 0.5)
 
-        // Sidebar hidden, toolbar on: lights and toggle stay where the sidebar had them.
+        // Sidebar hidden, toolbar on: the lights step into the card's strip.
+        func assertInStrip(_ rect: NSRect, _ message: String) {
+            XCTAssertEqual(rect.minX, docked.minX + MainToolbar.lightsShift.width, accuracy: 0.5, message)
+            XCTAssertEqual(rect.minY, docked.minY - MainToolbar.lightsShift.height, accuracy: 0.5, message)
+        }
+        // A real page for the captures, e.g. a loopback server's, so the strip shows a host.
+        if let page = ProcessInfo.processInfo.environment["VANE_MAIN_TOOLBAR_PAGE"].flatMap(URL.init(string:)) {
+            tab.web.load(URLRequest(url: page))
+            try await compatibilityWait { !tab.web.isLoading && !tab.address.isEmpty }
+        }
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             store.sidebarShown = true
@@ -296,9 +304,10 @@ import XCTest
             MainToolbar.toggle(in: store)
             try await settle()
             await captureScreen(window, "\(dark ? "dark" : "light")-sidebar-shown")
+            assertLight(try light(), "with the sidebar shown the lights stay where they always are")
             store.sidebarShown = false
             try await settle()
-            assertLight(try light(), "the lights do not move when the sidebar goes")
+            assertInStrip(try light(), "the lights lead the strip when the sidebar goes")
             await captureScreen(window, "\(dark ? "dark" : "light")-sidebar-hidden")
             // A peek floats the lights out with the panel and brings them home after it.
             store.sidebarPeeking = true
@@ -307,12 +316,12 @@ import XCTest
                            "the lights ride the peeking panel")
             store.sidebarPeeking = false
             try await settle()
-            assertLight(try light(), "back on the toolbar's row after a peek")
+            assertInStrip(try light(), "back in the strip after a peek")
             await captureScreen(window, "\(dark ? "dark" : "light")-after-peek")
-            // The toggle, where the sidebar's own row draws it, brings the sidebar back.
-            let x = Look.inset + Look.trafficLights
+            // The strip's toggle, beside the lights as in the sidebar's row, brings it back.
+            let x = Look.cardGap + Look.inset + Look.trafficLights
                 + SidebarChromeLayout(width: SidebarWidth.inWindow(store)).headerSpacing + Look.control / 2
-            let y = window.contentView!.bounds.height - (Look.topInset + Look.topRow / 2)
+            let y = window.contentView!.bounds.height - (Look.cardGap + MainToolbar.height / 2)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y),
                     modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,

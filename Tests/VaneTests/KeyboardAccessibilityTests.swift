@@ -665,8 +665,8 @@ private struct DisabledKeyboardSurface: View {
             defer { UserDefaults.vane.set(was, forKey: MainToolbar.prefKey) }
             store.sidebarShown = false
             store.sidebarPeeking = false
-            // View › Show Toolbar's pill: the same AddressPill, above the page.
-            let host = NSHostingView(rootView: AddressPill(tab: store.active, layoutWidth: Look.sidebarWidth)
+            // View › Show Toolbar's host field: the same AddressPill, in its plain face.
+            let host = NSHostingView(rootView: AddressPill(tab: store.active, plain: true)
                 .environmentObject(store))
             let container = NSView(frame: window.contentView!.frame)
             host.frame = NSRect(x: 100, y: 560, width: 400, height: 40)

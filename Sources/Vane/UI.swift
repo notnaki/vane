@@ -554,15 +554,6 @@ private struct BrowserWindowContent: View {
     /// still receives exact native geometry without republishing every window pixel.
     @State private var windowWidth: CGFloat = 0
     @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
-    /// The width of the lights-and-toggle group the toolbar leads with, once measured.
-    /// Seeded with the row's unmeasured width so its first frame already clears the lights.
-    @State private var toolbarLead: CGFloat = Look.trafficLights
-        + SidebarChromeLayout(width: Look.sidebarWidth).headerSpacing + Look.control
-    /// View › Show Toolbar with no sidebar on screen: the toolbar row is the window's only
-    /// title bar, so the lights stay and the sidebar's toggle stands beside them, as in Arc.
-    private var toolbarHoldsLights: Bool {
-        showsToolbar && !store.isLittle && !store.sidebarShown && !peeking && !store.libraryOpen
-    }
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
     /// follow. The Library counts: it stands where the sidebar does, with the lights' own
@@ -605,7 +596,6 @@ private struct BrowserWindowContent: View {
                             libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
-            toolbarLeadingGroup
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
@@ -643,7 +633,6 @@ private struct BrowserWindowContent: View {
         } action: { windowWidth = $0 }
         .environment(\.sidebarWindowWidth, windowWidth > 0 ? min(windowWidth, SidebarWidth.maximum + 200) : .infinity)
         .environment(\.librarySpaceCatalog, librarySpaces)
-        .environment(\.mainToolbarLead, toolbarHoldsLights ? toolbarLead : 0)
         .onAppear {
             if !store.isPrivate { librarySpaces.prepare(manager: profiles) }
         }
@@ -688,27 +677,6 @@ private struct BrowserWindowContent: View {
         .spaceChrome(store)
         .vaneMotionPolicy()
         .background { WindowTitleSync() }
-    }
-
-    /// The sidebar's own top row, minus the page's buttons, pinned where the sidebar draws
-    /// it: the lights and toggle stand still while the sidebar slides away under them.
-    /// Fixed to the window rather than riding on the toolbar, which moves with the card.
-    private var toolbarLeadingGroup: some View {
-        ZStack(alignment: .topLeading) {
-            if toolbarHoldsLights {
-                TopRow(showsNavigation: false)
-                    .fixedSize()
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarLead = $0 }
-                    .padding(.leading, Look.inset)
-                    .padding(.top, Look.topInset)
-                    .transition(.opacity)
-            }
-        }
-        // VoiceOver reaches the toggle as the toolbar's first item; see MainToolbarBar.
-        .accessibilityHidden(true)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbarHoldsLights)
-        .zIndex(1)
     }
 
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
@@ -958,26 +926,27 @@ struct WebCard: View {
     private var toolbar: Bool { showsToolbar && !edgeToEdge && !store.isLittle }
 
     var body: some View {
+        // View › Show Toolbar is part of the card, as in Arc: a strip inside its corners
+        // with the page below it. The card's margins do not change.
         VStack(spacing: 0) {
             if toolbar {
                 MainToolbarBar()
-                    .padding(.bottom, Look.cardGap)
-                    // The strip above the row drags the window too, up to its top edge.
-                    .background(WindowDragArea().padding(.top, -MainToolbar.top))
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.move(edge: .top))
             }
-            card
+            page
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
+        .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
+        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        .padding(.top, toolbar ? MainToolbar.top : topGap)
+        .padding(.top, topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 
-    private var card: some View {
+    private var page: some View {
         ZStack(alignment: .top) {
             // A split is one card holding several pages; everything that floats over the
             // page — find, the save prompt, the status bar — still belongs to `store.active`,
@@ -1065,8 +1034,6 @@ struct WebCard: View {
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
-        .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
     }
 
     /// The native viewport and the card share one width. Freezing only the
@@ -1095,7 +1062,7 @@ struct EmptyPane: View {
     var radius: CGFloat = Look.pageRadius
     var fill: Color = Look.emptyPaneFill
     var body: some View {
-        RoundedRectangle(cornerRadius: radius)
+        RoundedRectangle(cornerRadius: Look.pillRadius)
             .fill(fill)
             .hairline(radius: radius)
             // Decoration. The window already says it has no tabs — the sidebar's empty list
@@ -1595,21 +1562,17 @@ private struct NavigationTarget: ViewModifier {
     }
 }
 
-/// View › Show Toolbar (⇧⌘D, as in Arc): a slim row above the browser window's page card
-/// with the page's back, forward and reload and its address. One app-wide setting that
-/// outlives the window, like the sidebar's width. Little Vane and Peek keep their own bar.
+/// View › Show Toolbar (⇧⌘D, as in Arc): a strip at the top of the browser window's page
+/// card with the page's back, forward and reload, its host, and its page actions. One
+/// app-wide setting that outlives the window, like the sidebar's width. Little Vane and
+/// Peek keep their own bar.
 @MainActor enum MainToolbar {
     static let prefKey = "mainWindowShowsToolbar"
-    /// The row is centred on the traffic lights and the sidebar's top row, as in Arc.
-    /// The row is a control tall, so centred on that line it clears the window's top edge
-    /// by exactly the card's own margin, and leaves the same margin down to the card.
-    static let height = Look.control
-    static let top = Look.lightsCentre - height / 2
-    /// Arc's pill stops short of the window's width; what is left either side is empty
-    /// title bar to drag.
-    static let pillMaxWidth: CGFloat = 640
-    /// How far the page's top edge moves when the bar comes or goes.
-    static let room = top + height
+    /// The strip's height, which is also how far the page's top edge moves.
+    static let height = Look.pillHeight
+    /// With the sidebar away the lights step into the strip: in by the card's margin, and
+    /// down onto the strip's centre line.
+    static let lightsShift = CGSize(width: Look.cardGap, height: Look.cardGap + height / 2 - Look.lightsCentre)
     static var shown: Bool { UserDefaults.vane.bool(forKey: prefKey) }
     /// The front window's page is painted at its new height first, the way a sidebar
     /// close is, so the slide moves a finished page rather than reflowing it every frame.
@@ -1629,48 +1592,29 @@ private struct NavigationTarget: ViewModifier {
     }
 }
 
-private struct MainToolbarLeadKey: EnvironmentKey { static let defaultValue: CGFloat = 0 }
-extension EnvironmentValues {
-    /// The lights-and-toggle group's width while the toolbar row leads with it, else 0.
-    var mainToolbarLead: CGFloat {
-        get { self[MainToolbarLeadKey.self] }
-        set { self[MainToolbarLeadKey.self] = newValue }
-    }
-}
-
-/// The toolbar's row. The sidebar's pill and buttons, moved here: while it is up the
-/// sidebar keeps only its lights and toggle. For whichever tab —
-/// or split pane — is active. Dragging its empty space moves the window, which matters
-/// with the sidebar hidden: then this row is the window's only title bar.
+/// The strip itself: the sidebar's own buttons, then the host centred as plain text, and
+/// the pill's page actions at the trailing edge. With the sidebar away it leads with the
+/// lights and the sidebar toggle, the sidebar's top row without its buttons. Its empty
+/// space drags the window, which matters then: it is the window's only title bar.
 private struct MainToolbarBar: View {
     @EnvironmentObject private var store: TabStore
-    @Environment(\.mainToolbarLead) private var lead
 
     var body: some View {
         HStack(spacing: Look.inset) {
-            if lead > 0 {
-                // Room for the window-pinned lights and toggle; still title bar to drag.
-                // It stands in for that toggle with VoiceOver, so the row reads as one bar.
-                Color.clear
-                    .frame(width: Look.inset + lead - Look.cardGap)
-                    .accessibilityElement()
-                    .accessibilityLabel("Toggle Sidebar")
-                    .accessibilityValue("Hidden")
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction { store.toggleSidebar() }
+            if !store.sidebarShown {
+                TopRow(showsNavigation: false).fixedSize().transition(.opacity)
             }
             NavButtons(tab: store.active)
-            Spacer(minLength: 0)
-            // Sized as the full-width sidebar's pill, never its compact face.
-            AddressPill(tab: store.active, layoutWidth: Look.sidebarWidth, height: MainToolbar.height)
-                .frame(maxWidth: MainToolbar.pillMaxWidth)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
         }
+        .padding(.horizontal, Look.inset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay { AddressPill(tab: store.active, plain: true).padding(.horizontal, Look.inset) }
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .frame(height: MainToolbar.height)
         .background(WindowDragArea())
+        .background(.background)
+        .overlay(alignment: .bottom) { Rectangle().fill(Look.hairline).frame(height: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Toolbar")
     }
@@ -1685,7 +1629,8 @@ struct AddressPill: View {
     var showsProfile = false
     var displayAddress: String? = nil
     var layoutWidth: CGFloat? = nil
-    var height = Look.pillHeight
+    /// View › Show Toolbar's face: the host as centred text, no pill, actions trailing.
+    var plain = false
     @ObservedObject private var changes = SiteChanges.shared
     @State private var tabRevision: UInt = 0
 
@@ -1695,7 +1640,7 @@ struct AddressPill: View {
         let _ = tabRevision
         let site = tab.map { SiteControlModel($0) } ?? SiteControlModel()
         PillBody(tab: tab, host: host, address: displayAddress ?? tab?.address ?? "", site: site,
-                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth, height: height)
+                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth, plain: plain)
             .onReceive(tab?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) {
                 tabRevision &+= 1
             }
@@ -1728,9 +1673,7 @@ private struct PillBody: View {
     var zoom: String?
     var showsProfile = false
     var layoutWidth: CGFloat? = nil
-    var height = Look.pillHeight
-    /// The sidebar's 12pt on its own pill; a slimmer one keeps the same proportion.
-    private var radius: CGFloat { min(Look.pillRadius, height / 3) }
+    var plain = false
     @State private var hovering = false
     @State private var showingSiteControls = false
     @State private var pillFocused = false
@@ -1744,21 +1687,24 @@ private struct PillBody: View {
         .buttonStyle(TactileButtonStyle())
         .font(Look.pillGlyph)
         .foregroundStyle(showsProfile ? Color.white.opacity(0.95) : Look.inkSecondary)
-        .padding(.horizontal, Look.pillInset)
-        .frame(height: height)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, plain ? Look.inset : Look.pillInset)
+        .frame(height: plain ? Look.control : Look.pillHeight)
+        .frame(maxWidth: plain ? nil : .infinity, alignment: .leading)
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
         .background {
             if showsProfile {
-                RoundedRectangle(cornerRadius: radius)
+                RoundedRectangle(cornerRadius: Look.pillRadius)
                     .fill(chromeTheme.bubble.opacity(0.8))
                     .overlay {
-                        RoundedRectangle(cornerRadius: radius)
+                        RoundedRectangle(cornerRadius: Look.pillRadius)
                             .fill(.white.opacity(hovering ? 0.08 : 0))
                     }
+            } else if plain {
+                RoundedRectangle(cornerRadius: Look.cardRadius)
+                    .fill(hovering ? Look.hairline : .clear)
             } else {
-                RoundedRectangle(cornerRadius: radius)
+                RoundedRectangle(cornerRadius: Look.pillRadius)
                     .fill(hovering ? chromeTheme.selected : chromeTheme.pillFill)
             }
         }
@@ -1795,11 +1741,44 @@ private struct PillBody: View {
         .accessibilityElement(children: .contain)
         .onChange(of: tab?.id) { showingSiteControls = false }
         .onChange(of: address) { showingSiteControls = false }
+        // The toolbar's host sits centred on the strip; only it opens the bar, and the
+        // rest of the strip stays title bar to drag.
+        .frame(maxWidth: plain ? .infinity : nil)
+        .overlay(alignment: .trailing) { if plain { plainActions } }
+    }
+
+    /// The pill's own page actions, out in the open at the toolbar's trailing edge.
+    private var plainActions: some View {
+        HStack(spacing: Look.pillGlyphGap) {
+            if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
+            if !address.isEmpty, let tab, tab.easelID == nil {
+                Button(action: copyLink) {
+                    CopyLinkGlyph(copied: store.feedback.copiedURL == address)
+                        .frame(width: Look.control, height: Look.control).contentShape(.rect)
+                }
+                .vaneTooltip("Copy Link", shortcut: Keybindings.binding(for: .copyPageURL).display)
+                .accessibilityLabel("Copy Link")
+            }
+            PinnedExtensions(store: store, tab: tab)
+            overflowMenu.frame(width: Look.control, height: Look.control)
+        }
+        .buttonStyle(TactileButtonStyle())
+        .font(Look.pillGlyph)
+        .foregroundStyle(Look.inkSecondary)
     }
 
     @ViewBuilder private var content: some View {
         if showsProfile {
             profileContent
+        } else if plain {
+            HStack(spacing: Look.pillGlyphGap) {
+                Image(systemName: address.isEmpty ? "magnifyingglass"
+                      : site.insecure ? "exclamationmark.triangle" : "link")
+                Text(address.isEmpty ? "Search or Enter URL…" : host)
+                    .font(Look.text).lineLimit(1).truncationMode(.head)
+            }
+            .accessibilityHidden(true)
+            .vaneTooltip(address)
         } else if compact {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {

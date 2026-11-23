@@ -100,7 +100,7 @@ import QuartzCore
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        // With Show Toolbar on the lights stay on the row, but the panel must keep its gap.
+        // With Show Toolbar on the lights stay for the card's strip, but the panel must keep its gap.
         let toolbarWas = MainToolbar.shown
         for toolbar in [false, true] where failure == nil {
             UserDefaults.vane.set(toolbar, forKey: MainToolbar.prefKey)
