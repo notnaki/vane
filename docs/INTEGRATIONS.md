@@ -242,7 +242,9 @@ and need the page to redirect without loading, within `timeoutMsForNonInteractiv
 (one minute at most). Several flows may run at once. `identity` in `optional_permissions`
 only gets no API. `getAuthToken` and the manifest's
 `oauth2` (Google account sign-in) are not available. Callbacks cannot receive
-`runtime.lastError`.
+`runtime.lastError`. A folder extension whose `key` copies another extension's gets that
+extension's redirect URL, as an unpacked extension does in Chrome; Vane refuses it only
+when the other extension is installed in the same profile, so load folders you trust.
 
 **Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
 `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves

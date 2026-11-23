@@ -2245,6 +2245,7 @@ import WebKit
         let flow = ExtensionAuthFlow(request: request, redirectHost: ExtensionIdentityAPI.redirectHost(id),
                                      configuration: cfg, title: "Sign in for “\(name)”")
         userAgent.track(flow.web)
+        flow.preparePopup = { [weak self] in self?.userAgent.track($0) }
         let key = ObjectIdentifier(flow)
         authFlows[key] = (context, flow)
         defer { authFlows[key] = nil }

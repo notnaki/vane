@@ -54,7 +54,8 @@ import WebKit
                 }
                 return H.slice(0, 4).map(v => [...(v >>> 0).toString(16).padStart(8, '0')].map(x => String.fromCharCode(97 + parseInt(x, 16))).join('')).join('');
               };
-              const base = 'https://' + (chromeID(manifest.key) ?? runtime.id.toLowerCase()) + '.chromiumapp.org/';
+              // A store install runs under its store ID, which the host also prefers to its key.
+              const base = 'https://' + (/^[a-p]{32}$/.test(runtime.id) ? runtime.id : chromeID(manifest.key) ?? runtime.id.toLowerCase()) + '.chromiumapp.org/';
               const marker = '[vane-identity] ';
               const event = Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false});
               Object.defineProperty(api, 'identity', {configurable: true, value: Object.freeze({
@@ -105,7 +106,7 @@ import WebKit
 
     /// Only the redirect host itself, over https on its default port; never a look-alike.
     nonisolated static func isRedirect(_ url: URL?, host: String) -> Bool {
-        url?.scheme?.lowercased() == "https" && url?.host?.lowercased() == host && url?.port == nil
+        url?.scheme?.lowercased() == "https" && url?.host?.lowercased() == host && (url?.port ?? 443) == 443
     }
 
     /// Chrome's ceiling for a flow without a window.
@@ -147,6 +148,8 @@ import WebKit
     private var continuation: CheckedContinuation<String, any Error>?
     private var observations: [NSKeyValueObservation] = []
     private var timeout: Task<Void, Never>?
+    /// Popups get the same treatment as the sign-in view (its user agent).
+    var preparePopup: ((WKWebView) -> Void)?
 
     init(request: ExtensionIdentityAPI.Request, redirectHost: String, configuration: WKWebViewConfiguration, title: String) {
         self.redirectHost = redirectHost
@@ -185,13 +188,13 @@ import WebKit
     }
 
     func run(over parent: NSWindow?) async throws -> String {
+        guard !finished else { throw ExtensionHost.Failure(pending ?? "The user did not approve access.") }
         if let window {
             if let parent { window.setFrameOrigin(NSPoint(x: parent.frame.midX - window.frame.width / 2,
                                                           y: parent.frame.maxY - window.frame.height - 60)) }
             else { window.center() }
             window.makeKeyAndOrderFront(nil)
         }
-        guard !finished else { throw ExtensionHost.Failure(pending ?? "The user did not approve access.") }
         return try await withCheckedThrowingContinuation { continuation = $0 }
     }
 
@@ -224,8 +227,9 @@ import WebKit
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
-        guard action.targetFrame?.isMainFrame != false,
-              ExtensionIdentityAPI.isRedirect(action.request.url, host: redirectHost) else { return .allow }
+        guard ExtensionIdentityAPI.isRedirect(action.request.url, host: redirectHost) else { return .allow }
+        // A subframe at the redirect URL is not the answer, but its code must not reach the network.
+        guard action.targetFrame?.isMainFrame != false else { return .cancel }
         finish(.success(action.request.url!.absoluteString))
         return .cancel
     }
@@ -262,6 +266,7 @@ import WebKit
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard interactive, !finished else { return nil }
         let popup = WKWebView(frame: NSRect(x: 0, y: 0, width: 480, height: 640), configuration: configuration)
+        preparePopup?(popup)
         let window = makeWindow(for: popup)
         popups.append(window)
         window.setFrameOrigin(NSPoint(x: (self.window?.frame.minX ?? 0) + 30, y: (self.window?.frame.minY ?? 0) - 30))

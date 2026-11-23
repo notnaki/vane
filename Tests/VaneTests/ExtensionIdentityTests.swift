@@ -171,8 +171,8 @@ import XCTest
             let both = [try await first.value, try await second.value]
             XCTAssertEqual(both, Array(repeating: "https://\(Self.id).chromiumapp.org/cb?code=script#state", count: 2))
 
-            // Only the top frame's navigations count. The subframe asks the real host, which
-            // is fine: whatever it answers is not the result.
+            // Only the top frame's navigations count; the subframe's is cancelled, so it never
+            // reaches the network.
             server.pages["/frame"] = """
                 <title>Frame</title><iframe src="https://\(Self.id).chromiumapp.org/cb?code=frame"></iframe>
                 <script>setTimeout(() => location.href = 'https://\(Self.id).chromiumapp.org/cb?code=top', 1500)</script>
