@@ -743,6 +743,8 @@ private struct SidebarSurfaceLayout: ViewModifier {
     let peeking: Bool
     /// View › Show Toolbar keeps the lights on its row whether or not the sidebar is there.
     var toolbar = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
         content
@@ -769,7 +771,9 @@ private struct SidebarSurfaceLayout: ViewModifier {
                 // keeps its gap while it slides away, but the lights go back to the row.
                 lightsInset: (toolbar ? peeking : floating) ? Look.floatingSidebarGap : 0,
                 visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
-                lightsStay: toolbar))
+                stay: toolbar ? 1 : 0))
+            // With the strip's own slide, so the lights arrive and leave with it.
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
     }
 }
 
@@ -928,16 +932,17 @@ struct WebCard: View {
     var body: some View {
         // View › Show Toolbar is part of the card, as in Arc: a strip inside its corners
         // with the page below it. The card's margins do not change.
+        // A split gives each pane its own strip instead; see SplitView's `Pane`.
         VStack(spacing: 0) {
-            if toolbar {
-                MainToolbarBar()
+            if toolbar && (store.folderUnlockPage != nil || store.activeSplit == nil) {
+                MainToolbarBar(tab: store.active)
                     .transition(.move(edge: .top))
             }
-            page
+            // Peek centres on the page, under the strip, as in Arc.
+            page.anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
@@ -1062,7 +1067,7 @@ struct EmptyPane: View {
     var radius: CGFloat = Look.pageRadius
     var fill: Color = Look.emptyPaneFill
     var body: some View {
-        RoundedRectangle(cornerRadius: Look.pillRadius)
+        RoundedRectangle(cornerRadius: radius)
             .fill(fill)
             .hairline(radius: radius)
             // Decoration. The window already says it has no tabs — the sidebar's empty list
@@ -1593,30 +1598,62 @@ private struct NavigationTarget: ViewModifier {
 }
 
 /// The strip itself: the sidebar's own buttons, then the host centred as plain text, and
-/// the pill's page actions at the trailing edge. With the sidebar away it leads with the
-/// lights and the sidebar toggle, the sidebar's top row without its buttons. Its empty
+/// the pill's page actions at the trailing edge. With the sidebar away the strip in the
+/// window's top-leading corner leads with the lights and the sidebar toggle, the sidebar's
+/// top row without its buttons — unless the Library stands there with its own. Its empty
 /// space drags the window, which matters then: it is the window's only title bar.
-private struct MainToolbarBar: View {
+/// One per split pane, each about its own page, as in Arc.
+struct MainToolbarBar: View {
     @EnvironmentObject private var store: TabStore
+    let tab: Tab?
+    /// Whether this strip is in the window's top-leading corner, where the lights go.
+    var leads = true
 
     var body: some View {
-        HStack(spacing: Look.inset) {
-            if !store.sidebarShown {
-                TopRow(showsNavigation: false).fixedSize().transition(.opacity)
+        MainToolbarRow(spacing: Look.inset) {
+            HStack(spacing: Look.inset) {
+                if leads && !store.sidebarShown && !store.libraryOpen {
+                    TopRow(showsNavigation: false).fixedSize().transition(.opacity)
+                }
+                NavButtons(tab: tab)
             }
-            NavButtons(tab: store.active)
+            // The host, then its page actions: two of the row's three parts.
+            AddressPill(tab: tab, plain: true)
         }
         .padding(.horizontal, Look.inset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay { AddressPill(tab: store.active, plain: true).padding(.horizontal, Look.inset) }
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .frame(height: MainToolbar.height)
         .background(WindowDragArea())
-        .background(.background)
+        // The card's own ground, which follows the Space's and a private window's look.
+        .background(Color(nsColor: Look.pageGround))
         .overlay(alignment: .bottom) { Rectangle().fill(Look.hairline).frame(height: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Toolbar")
+    }
+}
+
+/// Leading group, centred host, trailing group. The host gets only the room between the
+/// wider side and its mirror, so it stays centred and truncates rather than running under
+/// a button. ponytail: a narrow window can still squeeze the host to nothing.
+struct MainToolbarRow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0,
+               height: subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count >= 3, let first = subviews.first, let last = subviews.last else { return }
+        let lead = first.sizeThatFits(.unspecified).width, trail = last.sizeThatFits(.unspecified).width
+        first.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+        last.place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: .unspecified)
+        let room = max(0, bounds.width - 2 * (max(lead, trail) + spacing))
+        for middle in subviews.dropFirst().dropLast() {
+            middle.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                         proposal: ProposedViewSize(width: room, height: bounds.height))
+        }
     }
 }
 
@@ -1710,11 +1747,17 @@ private struct PillBody: View {
         }
     }
 
-    var body: some View {
+    /// Plain, the field and its actions are two separate parts of the toolbar's row.
+    @ViewBuilder var body: some View {
+        pill
+        if plain { plainActions }
+    }
+
+    private var pill: some View {
         #if DEBUG
         let _ = ResizeTimingDiagnostics.record("sidebar.body.pill")
         #endif
-        field
+        return field
         .animation(reduced ? nil : Look.quick, value: hovering)
         .animation(reduced ? nil : Look.quick, value: compact)
         .vaneMotionPolicy()
@@ -1733,7 +1776,8 @@ private struct PillBody: View {
         .preference(key: CompactBarEngaged.self, value: pillFocused || showingSiteControls)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
-        .onDrop(of: [.plainText, .url],
+        // Not the toolbar's host: that is the page's, not the top of the sidebar.
+        .onDrop(of: plain ? [] : [.plainText, .url],
                 delegate: TabDrop(store: store, target: nil, into: .favourite,
                                   axis: .horizontal, extent: 0, marker: dropMarker, side: .constant(nil),
                                   favouritePreview: dragPreview))
@@ -1741,10 +1785,6 @@ private struct PillBody: View {
         .accessibilityElement(children: .contain)
         .onChange(of: tab?.id) { showingSiteControls = false }
         .onChange(of: address) { showingSiteControls = false }
-        // The toolbar's host sits centred on the strip; only it opens the bar, and the
-        // rest of the strip stays title bar to drag.
-        .frame(maxWidth: plain ? .infinity : nil)
-        .overlay(alignment: .trailing) { if plain { plainActions } }
     }
 
     /// The pill's own page actions, out in the open at the toolbar's trailing edge.
@@ -1927,7 +1967,11 @@ private struct PillBody: View {
 
     /// With a page, the bar opens on its address; with none, on nothing — and what is
     /// submitted becomes the window's first tab.
-    private func open() { store.palette = tab == nil ? .newTab : .address }
+    private func open() {
+        // A split pane's own toolbar points the bar at that pane first.
+        if let tab, tab !== store.active { store.focusPane(tab.id) }
+        store.palette = tab == nil ? .newTab : .address
+    }
 
     private func copyLink() {
         guard let u = tab?.currentURL else { return }

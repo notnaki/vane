@@ -336,6 +336,192 @@ import XCTest
         }
     }
 
+    /// A long address — a hostless page shows the whole of it — stays between the strip's
+    /// buttons: Back, the sidebar toggle and the host each take their own clicks. A split
+    /// gives every pane its own strip, in either orientation, and a pane's host opens the
+    /// bar on that pane.
+    func testLongAddressLeavesControlsAndSplitPanesHaveTheirOwnStrip() async throws {
+        TestEnvironment.prepare()
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        let was = MainToolbar.shown
+        UserDefaults.vane.set(true, forKey: MainToolbar.prefKey)
+        let server = try NavigationHTTPFixture()
+        server.pages["/a"] = "<title>A</title><body>A</body>"
+        let profile = ProfileManager.shared.create(name: "Toolbar long address fixture")
+        let store = TabStore(profileID: profile.id, session: [])
+        let tab = store.newBlankTab()
+        store.palette = nil
+        let window = VaneWindow(contentRect: .init(x: 140, y: 140, width: 1100, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        store.window = window
+        // A window in the background, so the host's tap takes the first click as a button does.
+        window.contentView = FirstMouseHost(rootView: AnyView(BrowserWindow()
+            .environmentObject(store).environmentObject(ProfileManager.shared)))
+        if NSApp.isHidden { NSApp.unhideWithoutActivation() }
+        window.orderFrontRegardless()
+        defer {
+            UserDefaults.vane.set(was, forKey: MainToolbar.prefKey)
+            saver.setMode(previousMode)
+            server.stop()
+            window.orderOut(nil)
+            window.contentView = nil
+            window.close()
+            store.window = nil
+            store.dropStashes()
+            let tabs = store.tabs
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            Store.forget(profile.id)
+            _ = ProfileManager.shared.delete(profile.id)
+        }
+        func settle() async throws {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(450))
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        func click(_ point: NSPoint) throws {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
+            }
+        }
+        func frame(_ web: WKWebView) throws -> NSRect {
+            let host = try XCTUnwrap(web.superview)
+            return host.convert(host.bounds, to: nil)
+        }
+        try await compatibilityWait {
+            server.port != nil && window.isVisible && window.occlusionState.contains(.visible)
+        }
+        let first = try server.url("/a")
+        tab.web.load(URLRequest(url: first))
+        try await compatibilityWait { !tab.web.isLoading && tab.currentURL == first }
+        let long = URL(string: "data:text/html," + String(repeating: "long-address-", count: 120))!
+        tab.web.load(URLRequest(url: long))
+        try await compatibilityWait { !tab.web.isLoading && tab.canGoBack && tab.currentURL == long }
+        try await settle()
+
+        let top = try XCTUnwrap(window.contentView).bounds.height
+        let stripY = top - (Look.cardGap + MainToolbar.height / 2)
+        let page = try frame(tab.web)
+        XCTAssertEqual(page.maxY, top - Look.cardGap - MainToolbar.height, accuracy: 1)
+        // Back, the strip's first button.
+        try click(NSPoint(x: page.minX + Look.inset + Look.control / 2, y: stripY))
+        try await compatibilityWait { tab.currentURL == first && !tab.web.isLoading }
+        XCTAssertNil(store.palette, "Back is not under the host")
+        tab.forward()
+        try await compatibilityWait { tab.currentURL == long && !tab.web.isLoading }
+        try await settle()
+        // The host, centred, still opens the bar.
+        try click(NSPoint(x: page.midX, y: stripY))
+        XCTAssertEqual(store.palette, .address)
+        store.palette = nil
+        // Sidebar away: the toggle beside the lights still takes its click.
+        store.sidebarShown = false
+        try await settle()
+        try click(NSPoint(x: Look.cardGap + Look.inset + Look.trafficLights
+            + SidebarChromeLayout(width: SidebarWidth.inWindow(store)).headerSpacing + Look.control / 2, y: stripY))
+        try await settle()
+        XCTAssertTrue(store.sidebarShown, "the toggle is not under the host")
+        XCTAssertNil(store.palette)
+        for dark in [false, true] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            for sidebar in [true, false] {
+                store.sidebarShown = sidebar
+                try await settle()
+                await captureScreen(window, "long-\(dark ? "dark" : "light")-sidebar-\(sidebar ? "shown" : "hidden")")
+            }
+        }
+        window.appearance = nil
+        store.sidebarShown = true
+
+        // A split: one strip per pane, each pane's page below its own strip.
+        let other = store.newBlankTab()
+        _ = other.web
+        store.palette = nil
+        store.addPane(other.id, beside: tab.id, at: .trailing)
+        for vertical in [false, true] {
+            if vertical {
+                store.dropPane(other.id)
+                store.addPane(other.id, beside: tab.id, at: .bottom)
+            }
+            try await settle()
+            XCTAssertEqual(store.activeSplit?.vertical, vertical)
+            let a = try frame(tab.web), b = try frame(other.web)
+            XCTAssertEqual(a.maxY, top - Look.cardGap - MainToolbar.height, accuracy: 1, "vertical: \(vertical)")
+            if vertical {
+                XCTAssertEqual(a.height, b.height, accuracy: 1, "both panes give up a strip")
+                XCTAssertGreaterThan(a.minY - b.maxY, MainToolbar.height, "the lower pane has its own strip")
+            } else {
+                XCTAssertEqual(b.maxY, a.maxY, accuracy: 1)
+            }
+            await captureScreen(window, "split-\(vertical ? "vertical" : "horizontal")")
+            // The other pane's own host points the bar at that pane.
+            store.focusPane(tab.id)
+            try await settle()
+            try click(NSPoint(x: b.midX, y: b.maxY + MainToolbar.height / 2))
+            XCTAssertEqual(store.current, other.id, "vertical: \(vertical)")
+            XCTAssertEqual(store.palette, .address)
+            store.palette = nil
+        }
+
+        // A private window's strip, for the visual check: the card's own dark ground.
+        if ProcessInfo.processInfo.environment["VANE_MAIN_TOOLBAR_CAPTURE"] != nil {
+            let incognito = TabStore(isPrivate: true)
+            incognito.palette = nil
+            let privateTab = incognito.newBlankTab()
+            privateTab.web.load(URLRequest(url: first))
+            incognito.palette = nil
+            let privateWindow = VaneWindow(contentRect: .init(x: 160, y: 160, width: 1100, height: 700),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            privateWindow.titlebarAppearsTransparent = true
+            privateWindow.titleVisibility = .hidden
+            privateWindow.isReleasedWhenClosed = false
+            incognito.window = privateWindow
+            incognito.applySpaceAppearance()
+            privateWindow.contentView = NSHostingView(rootView: BrowserWindow()
+                .environmentObject(incognito).environmentObject(ProfileManager.shared))
+            privateWindow.orderFrontRegardless()
+            defer {
+                privateWindow.orderOut(nil)
+                privateWindow.contentView = nil
+                privateWindow.close()
+                incognito.window = nil
+                incognito.dropStashes()
+                TabStore.all.removeAll { $0 === incognito }
+            }
+            try await compatibilityWait { !privateTab.web.isLoading && privateTab.currentURL == first }
+            try await Task.sleep(for: .milliseconds(450))
+            await captureScreen(privateWindow, "private")
+        }
+    }
+
+    private final class FirstMouseHost: NSHostingView<AnyView> {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+
+    /// In full screen macOS owns the lights, in its own titlebar over the menu bar, and the
+    /// strip leaves them no spacer: the toolbar neither keeps nor moves them there.
+    func testFullScreenLeavesTheLightsToMacOS() {
+        let normal = CGPoint(x: -300, y: 0), staying = CGPoint(x: 10, y: 11)
+        let full = TrafficLightPlacementView.resolve(offset: normal, visibility: 0, stay: 1, staying: staying, fullScreen: true)
+        XCTAssertEqual(full.offset, normal)
+        XCTAssertEqual(full.visibility, 0)
+        let windowed = TrafficLightPlacementView.resolve(offset: normal, visibility: 0, stay: 1, staying: staying, fullScreen: false)
+        XCTAssertEqual(windowed.offset, staying)
+        XCTAssertEqual(windowed.visibility, 1)
+        let halfway = TrafficLightPlacementView.resolve(offset: normal, visibility: 0, stay: 0.5, staying: staying, fullScreen: false)
+        XCTAssertEqual(halfway.visibility, 0.5, "the lights fade in with the strip, not ahead of it")
+    }
+
     /// The window as the compositor shows it, traffic lights included, and its top-left
     /// corner, under `VANE_MAIN_TOOLBAR_CAPTURE`.
     private func captureScreen(_ window: NSWindow, _ name: String) async {
