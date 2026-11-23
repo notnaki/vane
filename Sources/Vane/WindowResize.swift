@@ -495,6 +495,9 @@ extension EnvironmentValues {
             }
         }
         pages.forEach { $0.prepare() }
+#if DEBUG
+        ResizeTimingDiagnostics.record("sidebar.prepare.start")
+#endif
         armDeadline(after: 0.25)
         for page in pages {
             let callback: @MainActor @Sendable () -> Void = { [weak self] in self?.presented() }
@@ -513,10 +516,34 @@ extension EnvironmentValues {
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
         if let deadline { deadline(interval, timeout) }
         else {
-            let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            // Count only time this process was running. A stalled host (a paused VM,
+            // a blocked main thread) passes wall-clock time without letting WebKit's
+            // paint reply arrive; expiring on resume would reveal the width unpainted.
+            // ponytail: a stall counts as at most two ticks; a WebContent process that
+            // alone is starved still times out after `interval` of responsive ticks.
+            deadlineRemaining = interval
+            deadlineLast = CACurrentMediaTime()
+            let timer = Timer(timeInterval: Self.deadlineTick, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.deadlineTicked(token, timeout) }
+            }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
+    }
+
+    private static let deadlineTick: TimeInterval = 0.05
+    private var deadlineRemaining: TimeInterval = 0
+    private var deadlineLast: CFTimeInterval = 0
+
+    private func deadlineTicked(_ token: UUID, _ timeout: @MainActor () -> Void) {
+        guard deadlineToken == token else { return }
+        let now = CACurrentMediaTime()
+        deadlineRemaining -= min(now - deadlineLast, 2 * Self.deadlineTick)
+        deadlineLast = now
+        guard deadlineRemaining <= 0 else { return }
+        timer?.invalidate()
+        timer = nil
+        timeout()
     }
 
     func cancel() {
@@ -545,6 +572,9 @@ extension EnvironmentValues {
         guard active, !published else { return }
         remaining -= 1
         guard remaining == 0 else { return }
+#if DEBUG
+        ResizeTimingDiagnostics.record("sidebar.prepare.presented")
+#endif
         guard ownsLayout, isCurrent(), pages.allSatisfy(\.stillOwned) else { cancel(); return }
         pages.forEach { $0.installNativeGeometry() }
         published = true
@@ -571,6 +601,9 @@ extension EnvironmentValues {
     private func timedOut(_ token: UUID) {
         guard active, deadlineToken == token else { return }
         let shouldCommit = !published && ownsLayout && isCurrent()
+#if DEBUG
+        if !published { ResizeTimingDiagnostics.record("sidebar.prepare.timeout") }
+#endif
         cancel()
         // A stalled WebContent process must not disable the sidebar command.
         if shouldCommit { commit() }
