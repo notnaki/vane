@@ -1001,7 +1001,8 @@ struct WebCard: View {
             }
         }
         // An extension driving this tab through `chrome.debugger`, and the way to stop it.
-        .overlay(alignment: .top) {
+        // At the foot of the page: the top belongs to the find bar and a local site's dev bar.
+        .overlay(alignment: .bottom) {
             ExtensionDebuggerBanner(debugger: store.extensions.debugger, host: store.extensions,
                                     onScreen: store.onScreenTabs.map(\.id))
         }

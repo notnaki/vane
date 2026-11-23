@@ -230,9 +230,47 @@ for every extension, and WebKit's own record of a gesture on a tab lasts until t
 navigates. It keeps panels from opening unprompted; a forged call can only show the
 extension's own page, which the ✕ closes. Limits: options and behaviour are forgotten when the extension reloads or Vane
 restarts, `getOptions` answers from the calling context's own writes, and
-`sidePanel.onOpened`/`onClosed` and `runtime.getContexts` are not available.
+`sidePanel.onOpened`/`onClosed` are not available. `runtime.getContexts` lists the
+background and each open side panel (with its `documentUrl`); popups and options pages
+are not listed, and `tabId` and `windowId` are always `-1`.
 
-**Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
+**Page control (`chrome.debugger`).** WebKit has no `chrome.debugger`. For an extension
+that lists `debugger` in `permissions`, Vane supplies `attach`, `detach`, `sendCommand`,
+`getTargets`, `onDetach` and `onEvent`, and answers part of the Chrome DevTools Protocol
+with public WebKit calls. The install review names the capability (“Control pages you
+allow it on: read them, click, type and take screenshots”); an extension accepted before
+this existed must be updated from its source to be reviewed again. Only the extension's
+own worker and pages can reach it. A page, a content script, and an extension without
+the permission cannot. Every command is checked against the document actually loaded:
+it must be `http` or `https`, on a host the extension has access to, and in a private
+window only with private access. This is stricter than Chrome, where `debugger` alone
+reaches every site. One debugger per tab.
+
+While a tab is attached, a pill at the foot of its page says “*Extension* is controlling
+this tab” with **Stop**. Stop detaches and tells the extension (`canceled_by_user`);
+closing the tab does too (`target_closed`). As in Chrome, the extension may attach again.
+
+| Command | In Vane |
+| --- | --- |
+| `Runtime.evaluate` | Runs in the page's own world, without `eval`, so a page's Content Security Policy does not block it. Top-level `await` works and the last expression's value is returned (`replMode`). `returnByValue`, `awaitPromise`, `timeout` and `exceptionDetails` are honoured. No object handles: without `returnByValue` only the description comes back. |
+| `Page.captureScreenshot` | `png` or `jpeg` with `quality`; `clip` with `scale`. No `webp`, nothing beyond the viewport. |
+| `Input.dispatchMouseEvent` | Move, press, release and drag with the left or right button, and the wheel. The page sees trusted events. The pointer on screen does not move. |
+| `Input.dispatchKeyEvent`, `Input.insertText` | Keys by DOM `code`, with modifiers; text goes to the focused field. With ⌘, the editing `commands` Chrome's caller names (`selectAll`, `copy`, `paste`, `move…`, `delete…`) are performed; no other selector is. |
+| `Page.navigate`, `Page.reload`, `Page.getFrameTree`, `Page.bringToFront` | `http` and `https` only; the main frame only. |
+| `Page.enable`, `Runtime.enable`, `Network.enable`/`disable`, `Network.setBypassServiceWorker`, `Emulation.setFocusEmulationEnabled`, `Page.startScreencast`/`stopScreencast`, `Input.cancelDragging` | Accepted and ignored, so an attach sequence completes. Their events are never sent. |
+| Anything else | Fails at once with a protocol error such as `{"code":-32601,"message":"'DOM.getDocument' wasn't found"}`. |
+
+Limits: input reaches only a tab that is on screen in its window; a background tab's
+input commands fail. Console, network, navigation and JavaScript-dialog events are not
+sent, so an extension's console and network readers stay empty and it cannot answer an
+`alert`. The middle mouse button, `webp`, object handles, frames other than the main
+one, and `var`/function declarations that outlive one evaluation are not provided. A
+drag on a draggable element may start a real drag session. In callback style
+`runtime.lastError.message` carries WebKit's prefix (`Invalid call to tabs.create(). …`).
+The last-expression rewrite is a tokenizer, not a parser: code it misreads still runs,
+and returns no value.
+
+**Chromium-only namespaces.** When an MV3 extension requests `downloads`,
 `identity`, `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
 the namespace out and the extension's background would stop at its first
 `chrome.notifications.onClicked.addListener(…)`. Vane defines each one with its events,
@@ -241,7 +279,7 @@ which never fire, and its constants. Methods stay undefined, so a check such as
 fall back; calling one anyway throws as it would in any browser without it. Names listed
 only in `optional_permissions` get nothing. This lets the rest of the extension start;
 the features behind these namespaces do not work. The manager still lists each one as
-unrecognized. `storage.managed` reads as empty, because Vane has no administrator policy.
+unrecognized. `debugger` is the exception: see Page control above. `storage.managed` reads as empty, because Vane has no administrator policy.
 The namespaces exist in the worker and extension pages only. Content scripts declared in
 the manifest of an MV3 worker extension get the `chrome.runtime` constants alone
 (`OnInstalledReason`, `ContextType`), from a generated script that runs ahead of the

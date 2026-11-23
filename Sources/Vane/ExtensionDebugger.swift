@@ -891,7 +891,7 @@ struct ExtensionDebuggerBanner: View {
                 .padding(.leading, Look.rowInset).padding(.trailing, 5).padding(.vertical, 5)
                 .background(Look.panelFill, in: .capsule)
                 .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor)) }
-                .padding(.top, Look.inset)
+                .padding(.bottom, Look.inset)
                 .accessibilityElement(children: .contain)
                 .id(ObjectIdentifier(session))
                 .transition(.opacity)
