@@ -180,8 +180,10 @@ not read, fill, generate through the saved-password bridge, or persist password 
 Existing import/export remains available; this change adds no export format or new
 plaintext-export action. No strength or reused-password analysis is added.
 
-Passkeys remain outside this implementation. Settings explains the pending Apple browser
-capability approval and provisioning; Vane does not simulate passkey support.
+Passkeys are WebKit's own: Apple approved Vane's managed browser passkey entitlement
+(2026-10-06), and builds signed with the provisioning profile that carries it hand WebAuthn
+requests to the macOS passkey sheet. Ad-hoc and unprovisioned builds lack it, and Settings
+says so. Vane does not store or simulate passkeys itself.
 
 ## Apple Passwords and iCloud Keychain
 
