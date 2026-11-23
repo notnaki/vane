@@ -546,7 +546,9 @@ import XCTest
             characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
         NSApp.sendEvent(real)
         XCTAssertEqual(strangers, 1)
-        XCTAssertEqual(probe.fired, 1, "The probe item answers ⌘J when the key is not a synthesized one")
+        // The page is asked first; the key reaches the menu when WebKit sends it back.
+        try await wait("the probe item to answer ⌘J when the key is not a synthesized one") { probe.fired == 1 }
+        XCTAssertEqual(returned, 0)
     }
 
     func testAnExtensionWithoutThePermissionHasNoDebugger() async throws {
