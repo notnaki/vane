@@ -7,10 +7,12 @@ import Foundation
     struct Metadata: Equatable {
         let profiles: [Profile]
         let revision: Int
+        let order: [UUID]
 
         @MainActor init(_ manager: ProfileManager) {
             profiles = manager.profiles
             revision = manager.spacesRevision
+            order = manager.spaceOrder
         }
     }
 
@@ -23,7 +25,7 @@ import Foundation
         let identity = ObjectIdentifier(manager)
         if metadataManager == identity, let metadataPublisher { return metadataPublisher }
         let publisher = manager.$profiles.removeDuplicates()
-            .combineLatest(manager.$spacesRevision.removeDuplicates())
+            .combineLatest(manager.$spacesRevision.removeDuplicates(), manager.$spaceOrder.removeDuplicates())
             .debounce(for: .zero, scheduler: DispatchQueue.main)
             .map { _ in MainActor.assumeIsolated { Metadata(manager) } }
             .removeDuplicates()
@@ -110,11 +112,13 @@ import Foundation
 
     func strip(manager: ProfileManager = .shared, preview: Space? = nil) -> [Space] {
         guard loadedKey == Key(manager) else { return [] }
-        guard let preview, let index = persisted.firstIndex(where: {
+        // The strip the footer and the swipe walk, so the bar's Space rows read the same way.
+        var result = Spaces.strip(profiles: manager.profiles, spacesOf: { profile in
+            persisted.filter { $0.profileID == profile.id }
+        }, order: manager.spaceOrder)
+        if let preview, let index = result.firstIndex(where: {
             $0.id == preview.id && $0.profileID == preview.profileID
-        }) else { return persisted }
-        var result = persisted
-        result[index] = preview
+        }) { result[index] = preview }
         return result
     }
 

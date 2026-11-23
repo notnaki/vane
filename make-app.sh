@@ -145,6 +145,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>            <string>$BUILD</string>
   <key>VaneDefaultBrowserPromptEnabled</key> <$DEFAULT_BROWSER_PROMPT/>
+  <!-- The Manage Spaces card drag uses this private type, and it has to be declared. SwiftUI
+       builds a drop's item providers from the pasteboard types it can resolve, and an
+       undeclared identifier resolves to nothing ("Failed to instantiate a content type"),
+       so the card's onDrop gets a provider with no types and the reorder never runs.
+       SpaceCardDragging.swift defines the same identifier; a test keeps the two in step. -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>          <string>app.vane.space-card</string>
+      <key>UTTypeDescription</key>         <string>Vane space card</string>
+      <key>UTTypeConformsTo</key>          <array><string>public.data</string></array>
+    </dict>
+  </array>
   <key>LSMinimumSystemVersion</key>     <string>26.0</string>
   <key>NSHighResolutionCapable</key>    <true/>
   <key>NSPrincipalClass</key>           <string>NSApplication</string>

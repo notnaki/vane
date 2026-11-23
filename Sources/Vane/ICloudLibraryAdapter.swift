@@ -335,6 +335,12 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
                 }
             }
         }
+        // The global Space order: one record for every profile, and none while there is no
+        // order, so a Mac that never reordered cannot overwrite another Mac's with nothing.
+        if enabled.isSuperset(of: ICloudItem.spaceOrderCategories), !profiles.spaceOrder.isEmpty {
+            out.append(ICloudItem(category: .sidebarFolders, id: ICloudItem.spaceOrderID, profileID: nil, parentID: nil,
+                fields: ["ids": try data(profiles.spaceOrder)]))
+        }
         // Remote device-owned entries are retained in capture so baseline diffing cannot
         // interpret a device's local list as deletion of another Mac's observations.
         try loadRemote()
@@ -351,6 +357,20 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
         let checkpoint = remoteCheckpoint()
         var remoteCommitted = false
         defer { if !remoteCommitted { restoreRemote(checkpoint) } }
+        // Decide now whether the remote Space order wins: the Spaces applied below settle
+        // into the local order as they land, which would read as a local edit afterwards.
+        // It is saved last, once every Space it names in this batch exists. An order that
+        // is already this Mac's is left alone, so that settling is not undone, and one that
+        // cannot be read is skipped rather than failing every other record with it. A
+        // deleted one (an older build's doing, see `ICloudItem.isSpaceOrder`) is not in
+        // `items`, and takes no order away: the loops below skip a record with no profile.
+        var spaceOrder: [UUID]?
+        if enabled.isSuperset(of: ICloudItem.spaceOrderCategories), let item = items.first(where: \.isSpaceOrder) {
+            let current = profiles.spaceOrder.isEmpty ? [:] : ["ids": try data(profiles.spaceOrder)]
+            if let bytes = ICloudApplyContext.reconcile(item, current: current).fields["ids"],
+               let ids = (try? JSONDecoder().decode([UUID].self, from: bytes)).map(ProfileManager.validSpaceOrder),
+               ids != profiles.spaceOrder { spaceOrder = ids }
+        }
         // Dependency deletion is authoritative even if a descendant switch is off.
         for item in deleted where enabled.contains(item.category) && item.category == .profiles {
             try ICloudApplyContext.check()
@@ -445,6 +465,10 @@ struct ICloudRemoteDownload: Codable, Equatable, Identifiable, Sendable {
                 remoteItems.removeAll { $0.key == item.key }
             default: break
             }
+        }
+        if let spaceOrder {
+            try ICloudApplyContext.check()
+            guard profiles.saveSpaceOrder(spaceOrder) else { throw CocoaError(.fileWriteUnknown) }
         }
         try ICloudApplyContext.check()
         try saveRemote(); try publishRemote()
