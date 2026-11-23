@@ -796,9 +796,10 @@ private struct SidebarSurfaceLayout: ViewModifier {
             }
             .modifier(SidebarTrafficLightMotion(store: store,
                 slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
-                // Lights that stay follow the peeking panel only while it is out: a floating
-                // surface still sliding away after the peek would leave them off the row.
-                inset: (toolbar ? peeking : floating) ? Look.floatingSidebarGap : 0,
+                inset: floating ? Look.floatingSidebarGap : 0,
+                // Lights that stay follow the peeking panel only while it is out: the panel
+                // keeps its gap while it slides away, but the lights go back to the row.
+                lightsInset: (toolbar ? peeking : floating) ? Look.floatingSidebarGap : 0,
                 visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
                 lightsStay: toolbar))
     }

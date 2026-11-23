@@ -661,8 +661,8 @@ private struct DisabledKeyboardSurface: View {
     func testToolbarAddressEndpointWorksWithTheSidebarHidden() async throws {
         try await withNativePageFixture { store, window, web in
             let was = MainToolbar.shown
-            if !was { MainToolbar.toggle() }
-            defer { if MainToolbar.shown != was { MainToolbar.toggle() } }
+            UserDefaults.vane.set(true, forKey: MainToolbar.prefKey)
+            defer { UserDefaults.vane.set(was, forKey: MainToolbar.prefKey) }
             store.sidebarShown = false
             store.sidebarPeeking = false
             // View › Show Toolbar's pill: the same AddressPill, above the page.

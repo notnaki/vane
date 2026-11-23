@@ -7,6 +7,8 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     let store: TabStore
     var slide: CGFloat
     var inset: CGFloat
+    /// The lights' own inset, so they can settle on the row while the panel keeps its gap.
+    var lightsInset: CGFloat
     var visibility: CGFloat
     let libraryOpen: Bool
     let peeking: Bool
@@ -14,9 +16,12 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
     /// sidebar's spot (following a peeking panel's inset) instead of leaving with it.
     var lightsStay = false
 
-    nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
-        get { AnimatablePair(AnimatablePair(slide, inset), visibility) }
-        set { slide = newValue.first.first; inset = newValue.first.second; visibility = newValue.second }
+    nonisolated var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(slide, inset), AnimatablePair(lightsInset, visibility)) }
+        set {
+            slide = newValue.first.first; inset = newValue.first.second
+            lightsInset = newValue.second.first; visibility = newValue.second.second
+        }
     }
 
     func body(content: Content) -> some View {
@@ -29,7 +34,7 @@ struct SidebarTrafficLightMotion: AnimatableModifier {
             .opacity(visibility)
             .background {
                 TrafficLightPlacement(store: store,
-                    offset: libraryOpen ? .zero : CGPoint(x: (lightsStay ? 0 : slide) + inset, y: inset),
+                    offset: libraryOpen ? .zero : CGPoint(x: (lightsStay ? 0 : slide) + lightsInset, y: lightsInset),
                     visibility: libraryOpen || lightsStay ? 1 : visibility, peeking: peeking)
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false).accessibilityHidden(true)
