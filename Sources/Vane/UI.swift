@@ -1771,7 +1771,7 @@ private struct PillBody: View {
             ("Copy Link", copyLink),
             ("Site Controls", { if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true } }),
             ("Actual Size", { if let tab, zoom != nil { Zoom.reset(tab) } })
-        ], focusChanged: { pillFocused = $0 }, action: open)
+        ], focusChanged: { pillFocused = $0 }, claims: !plain || tab == nil || tab === store.active, action: open)
         // An auto-hidden Little Vane bar stays up while its field is in use.
         .preference(key: CompactBarEngaged.self, value: pillFocused || showingSiteControls)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is

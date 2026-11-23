@@ -87,6 +87,9 @@ extension TabStore {
     var perform: (() -> Void)?
     var focusChanged: ((Bool) -> Void)?
     var addressValue = ""
+    /// Split View mounts one toolbar host per pane; only the active pane's is the
+    /// window's address endpoint, so F6, Tab and VoiceOver reach the page in use.
+    var claims = true
     private var focusDeliveryScheduled = false
 
     override init(frame: NSRect) {
@@ -167,6 +170,10 @@ extension TabStore {
     }
     func registerOwner() {
         guard let store else { return }
+        guard claims else {
+            if store.mountedAddressEndpoint === self { store.mountedAddressEndpoint = nil }
+            return
+        }
         // Mounting can precede TabStore.window installation. Remember the weak
         // candidate now; available still requires exact store/window ownership.
         if let window, store.profileVisible, store.window == nil || store.window === window {
@@ -254,12 +261,14 @@ private struct MountedAddressSurface: NSViewRepresentable {
     let action: () -> Void
     let customActions: [(String, () -> Void)]
     let focusChanged: (Bool) -> Void
+    let claims: Bool
     func makeNSView(context: Context) -> MountedAddressButton { MountedAddressButton(frame: .zero) }
     func updateNSView(_ view: MountedAddressButton, context: Context) {
         if view.store !== store || view.token != token { view.retire() }
         view.store = store; view.token = token; view.isEnabled = enabled
         view.perform = action; view.focusChanged = focusChanged
         view.addressValue = value
+        view.claims = claims
         view.setAccessibilityCustomActions(customActions.map { name, action in
             NSAccessibilityCustomAction(name: name) { [weak view] in
                 view?.performAccessibilityAction(action) ?? false
@@ -277,6 +286,7 @@ private struct AddressKeyboardAction: ViewModifier {
     let action: () -> Void
     let customActions: [(String, () -> Void)]
     let focusChanged: (Bool) -> Void
+    let claims: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var token = UUID()
@@ -286,9 +296,9 @@ private struct AddressKeyboardAction: ViewModifier {
         content
             .background {
                 MountedAddressSurface(store: store, token: token, enabled: enabled, value: value,
-                                      action: action, customActions: customActions) { value in
+                                      action: action, customActions: customActions, focusChanged: { value in
                     if focused != value { focused = value; focusChanged(value) }
-                }
+                }, claims: claims)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background {
@@ -316,9 +326,10 @@ extension View {
     func addressKeyboardAction(store: TabStore, value: String,
                                customActions: [(String, () -> Void)],
                                focusChanged: @escaping (Bool) -> Void,
+                               claims: Bool = true,
                                action: @escaping () -> Void) -> some View {
         modifier(AddressKeyboardAction(store: store, value: value, action: action,
-                                       customActions: customActions, focusChanged: focusChanged))
+                                       customActions: customActions, focusChanged: focusChanged, claims: claims))
     }
 }
 

@@ -84,6 +84,9 @@ final class TrafficLightPlacementView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         fullScreenObservers.forEach(NotificationCenter.default.removeObserver)
+        fullScreenObservers = []
+        // A nil object would observe every window's full screen.
+        guard let window else { return }
         fullScreenObservers = [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification]
             .map { NotificationCenter.default.addObserver(forName: $0, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.place() }
