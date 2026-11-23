@@ -37,6 +37,7 @@ import XCTest
             #l { position: fixed; left: 300px; top: 30px; font-size: 20px; }</style>
             <button id="b">Press</button><input id="i"><a id="l" href="/page">A link to drag</a>
             <script>
+              addEventListener('dragstart', e => e.stopImmediatePropagation(), true);
               window.log = [];
               b.addEventListener('click', e => log.push('click:' + e.isTrusted + ':' + e.detail));
               i.addEventListener('keydown', e => log.push('key:' + e.isTrusted + ':' + e.key + ':' + e.code));
@@ -114,9 +115,14 @@ import XCTest
         for command in ["selectAll", "paste", "moveToBeginningOfLine", "deleteBackward"] {
             XCTAssertTrue(ExtensionDebuggerAPI.isEditingCommand(command), command)
         }
-        for command in ["terminate", "print", "release", "move:", "performClose", ""] {
+        for command in ["terminate", "print", "release", "move:", "performClose", "", "scrollWheel", "scrollPoint",
+                        "moveNowhere", "deleteEverything", "pageDown"] {
             XCTAssertFalse(ExtensionDebuggerAPI.isEditingCommand(command), command)
         }
+        // `URL.host` drops an IPv6 literal's brackets; `location.origin` keeps them.
+        XCTAssertEqual(ExtensionDebuggerAPI.origin(of: URL(string: "http://[::1]:8080/a?b")!), "http://[::1]:8080")
+        XCTAssertEqual(ExtensionDebuggerAPI.origin(of: URL(string: "https://[2001:db8::1]/")!), "https://[2001:db8::1]")
+        XCTAssertEqual(ExtensionDebuggerAPI.origin(of: URL(string: "https://example.com/a")!), "https://example.com")
     }
 
     func testTheLastExpressionIsReturnedWithoutEval() {
@@ -160,8 +166,8 @@ import XCTest
         XCTAssertEqual(last, .run("return new B((\n1 + 1\n))"))
         let written = await ExtensionDebuggerAPI.body(for: "return 5", box: "B")
         XCTAssertEqual(written, .run("return 5"))
-        XCTAssertTrue(ExtensionDebuggerAPI.evaluation("x", token: "T").hasPrefix("if (location.origin !== T_options.origin) return"),
-                      "The origin check is the first statement")
+        XCTAssertTrue(ExtensionDebuggerAPI.evaluation("x", token: "T").hasPrefix("if (location.href !== T_options.url) return"),
+                      "The address check is the first statement")
     }
 
     func testAnExtensionDrivesAPageThroughTheDebugger() async throws {
@@ -185,8 +191,12 @@ import XCTest
         store.window = window
         windows.append(window)
         stores.append(store)
-        tab.web.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
-        window.contentView?.addSubview(tab.web)
+        // As `TabPage` mounts it: in a host, under the pill.
+        let mount = WebHost(nil)
+        mount.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        window.contentView?.addSubview(mount)
+        mount.show(tab.web)
+        mount.showsDebuggerPill = true
         window.makeKeyAndOrderFront(nil)
         tab.navigate(to: try server.url("/page"))
         try await wait("driven page") { !tab.web.isLoading && tab.web.title == "Driven page" }
@@ -224,6 +234,12 @@ import XCTest
         // Nothing before attach; one debugger per tab.
         let refused = try await run("return await failure(send('Page.enable'))", in: page)
         XCTAssertEqual(refused, "Debugger is not attached to the tab with id: \(id).")
+        // No attaching to a page shown without the pill, as a Peek shows one.
+        mount.showsDebuggerPill = false
+        let unseen = try await run("return await failure(chrome.debugger.attach({tabId}, '1.3'))", in: page)
+        XCTAssertEqual(unseen, "Vane can only control a tab that is on screen.")
+        XCTAssertNil(host.debugger.session(on: tab.id))
+        mount.showsDebuggerPill = true
         let attach = try await run("""
             await chrome.debugger.attach({tabId}, '1.3');
             const again = await failure(chrome.debugger.attach({tabId}, '1.3'));
@@ -271,10 +287,13 @@ import XCTest
             return out.exceptionDetails.exception.className + '|' + await evaluate('typeof escaped');
             """, in: page)
         XCTAssertEqual(escaped, #"SyntaxError|{"result":{"type":"string","value":"undefined"}}"#)
-        let elsewhere = try await tab.web.callAsyncJavaScript(
-            ExtensionDebuggerAPI.evaluation("window.ranElsewhere = true", token: "T"),
-            arguments: ["T_options": ["origin": "http://elsewhere.example"]], in: nil, contentWorld: .page) as? String
-        XCTAssertEqual(elsewhere, #"{"moved":true}"#)
+        // Nor at another address of the same origin: host access can turn on the path.
+        for moved in ["http://elsewhere.example/page", try server.url("/other").absoluteString] {
+            let elsewhere = try await tab.web.callAsyncJavaScript(
+                ExtensionDebuggerAPI.evaluation("window.ranElsewhere = true", token: "T"),
+                arguments: ["T_options": ["url": moved]], in: nil, contentWorld: .page) as? String
+            XCTAssertEqual(elsewhere, #"{"moved":true}"#, moved)
+        }
         let ran = try await tab.web.evaluateJavaScript("typeof ranElsewhere") as? String
         XCTAssertEqual(ran, "undefined")
 
@@ -322,21 +341,29 @@ import XCTest
             "hI ✓|true|click:true:1,key:true:h:KeyH,key:true:I:KeyI", "hI✓", "x"
         ])
 
-        try await keysStayInThePage(page)
+        try await theUsersKeyboardStaysTheirs(page, tab: tab, mount: mount, window: window)
+        try await keysStayInThePage(page, window: window)
 
-        // After a synthesized press, a drag the page would start is cancelled: AppKit's drag
-        // session would follow the real pointer. Asked of the page directly, since whether
-        // WebKit begins a drag from these moves depends on the host's focus and timing.
+        // Between a synthesized press and its release, a drag the page would start is
+        // cancelled: AppKit's drag session would follow the real pointer. The page's own
+        // capturing listener, which stops the event at the window, is no way round it.
+        // Before the press and after the release the page's drags are its own. Asked of the
+        // page directly, since whether WebKit begins a drag from these moves depends on the
+        // host's focus and timing.
+        let allowed = #"JSON.parse(await evaluate('String(l.dispatchEvent(new DragEvent("dragstart", {bubbles: true, cancelable: true})))')).result.value"#
         let dragged = try await run("""
             const mouse = (type, x, y, extra = {}) => send('Input.dispatchMouseEvent', {type, x, y, button: 'left', buttons: 0, clickCount: 1, modifiers: 0, ...extra});
-            const allowed = 'String(l.dispatchEvent(new DragEvent("dragstart", {bubbles: true, cancelable: true})))';
-            const before = JSON.parse(await evaluate(allowed)).result.value;
+            const before = \(allowed);
             await mouse('mouseMoved', 320, 42, {button: 'none'});
             await mouse('mousePressed', 320, 42, {buttons: 1});
+            const during = \(allowed);
             await mouse('mouseReleased', 380, 130);
-            return before + '|' + JSON.parse(await evaluate(allowed)).result.value;
+            return before + '|' + during;
             """, in: page)
         XCTAssertEqual(dragged, "true|false")
+        try await wait("the page's drags to be its own again after the release") {
+            try await self.run("return \(allowed)", in: page) == "true"
+        }
 
         // A wheel event the page trusts, and the scroll it causes.
         _ = try await run("await send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: 300, y: 300, deltaX: 0, deltaY: 240, modifiers: 0}); return 'sent'", in: page)
@@ -363,6 +390,21 @@ import XCTest
             """, in: page)
         XCTAssertEqual(worker, #"{"result":{"type":"string","value":"Driven page"}}|error: Invalid call to tabs.create(). {"code":-32601,"message":"'DOM.getDocument' wasn't found"}.|"#
                        + "Invalid call to tabs.create(). Another debugger is already attached to the tab with id: \(id).")
+
+        // Stop while a command is still being checked against the page: it never runs.
+        let late = try XCTUnwrap(ExtensionDebuggerAPI.Request(URL(string: "__vane_bridge__?op=sendCommand&tabId=\(id)"
+            + "&method=Runtime.evaluate&params=%7B%22expression%22%3A%22window.ranAfterStop%3D1%22%7D", relativeTo: context.baseURL)?.absoluteURL,
+            base: context.baseURL))
+        let shim = host.adapter(for: tab, in: store)
+        let pending = Task { try await host.debugger.handle(late, tab: shim, panels: [], for: context) }
+        await Task.yield()
+        host.debugger.stop(try XCTUnwrap(host.debugger.session(on: tab.id)))
+        do {
+            _ = try await pending.value
+            XCTFail("A command answered after Stop")
+        } catch { XCTAssertEqual(error.localizedDescription, "Debugger is not attached to the tab with id: \(id).") }
+        let afterStop = try await run("await chrome.debugger.attach({tabId}, '1.3'); return await evaluate('typeof ranAfterStop')", in: page)
+        XCTAssertEqual(afterStop, #"{"result":{"type":"string","value":"undefined"}}"#)
 
         // runtime.getContexts: the background, and no side panel while none is open.
         let contexts = try await run("""
@@ -423,9 +465,53 @@ import XCTest
         XCTAssertTrue(heard?.contains("canceled_by_user") == true, "The worker hears detaches too: \(heard ?? "nil")")
     }
 
-    /// A key the page leaves alone comes back from WebKit through `NSApp.sendEvent`. Vane's
-    /// key monitor drops it there, as this one does: no shortcut, no menu item.
-    private func keysStayInThePage(_ page: WKWebView) async throws {
+    /// A synthesized click does not take the keyboard from where the user has it, and a
+    /// page the user cannot see takes no input at all.
+    private func theUsersKeyboardStaysTheirs(_ page: WKWebView, tab: Tab, mount: WebHost, window: NSWindow) async throws {
+        // The address bar, in effect: a field outside the page, being typed in.
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+        window.contentView?.addSubview(field)
+        defer { field.removeFromSuperview() }
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let holder = try XCTUnwrap(window.firstResponder)
+        XCTAssertFalse(holder === tab.web)
+        let input = """
+            const mouse = (type, extra = {}) => send('Input.dispatchMouseEvent', {type, x: 140, y: 112, button: 'left', buttons: 0, clickCount: 1, modifiers: 0, ...extra});
+            const attempt = async () => {
+                await mouse('mousePressed', {buttons: 1});
+                await mouse('mouseReleased');
+                await send('Input.dispatchKeyEvent', {type: 'keyDown', key: 'q', code: 'KeyQ', text: 'q', unmodifiedText: 'q', modifiers: 0});
+                await send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'q', code: 'KeyQ', modifiers: 0});
+                await send('Input.insertText', {text: 'r'});
+            };
+            """
+        // On the page showing, the click and the keys land; the field keeps the keyboard.
+        _ = try await run(input + "await attempt(); return 'sent'", in: page)
+        try await wait("keys typed into the page while the field holds the keyboard") {
+            try await self.run("return JSON.parse(await evaluate('i.value')).result.value", in: page) == "xqr"
+        }
+        XCTAssertTrue(window.firstResponder === holder, "The click took the keyboard from the field")
+        XCTAssertEqual(field.stringValue, "")
+
+        // Behind another page the host keeps it mounted but hidden: nothing reaches it, and
+        // it is handed no keyboard. Nor does anything else run in it.
+        tab.web.isHidden = true
+        let hidden = try await run(input + """
+            return [await failure(attempt()), await failure(send('Input.insertText', {text: 'z'})),
+                    await failure(send('Runtime.evaluate', {expression: 'i.value = "driven unseen"'}))].join('|');
+            """, in: page)
+        tab.web.isHidden = false
+        XCTAssertEqual(hidden, Array(repeating: "Vane can only control a tab that is on screen.", count: 3).joined(separator: "|"))
+        XCTAssertTrue(window.firstResponder === holder, "A hidden page took the keyboard")
+        let untouched = try await run("return JSON.parse(await evaluate('i.value')).result.value", in: page)
+        XCTAssertEqual(untouched, "xqr")
+        XCTAssertTrue(window.makeFirstResponder(tab.web))
+    }
+
+    /// A key the page leaves alone comes back from WebKit through `NSApp.sendEvent`, where it
+    /// is dropped before any key monitor: no shortcut, no menu item. A monitor added now is
+    /// the newest, so it would be the first to see one.
+    private func keysStayInThePage(_ page: WKWebView, window: NSWindow) async throws {
         let probe = MenuProbe()
         let menu = NSMenu(), items = NSMenu()
         let item = items.addItem(withTitle: "Probe", action: #selector(MenuProbe.fire(_:)), keyEquivalent: "j")
@@ -433,28 +519,34 @@ import XCTest
         menu.addItem(withTitle: "Probe", action: nil, keyEquivalent: "").submenu = items
         let previous = NSApp.mainMenu
         NSApp.mainMenu = menu
-        var swallow = false, returned = 0, strangers = 0
+        var returned = 0, strangers = 0
         let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard ExtensionDebuggerAPI.isSynthesized(event) else { strangers += 1; return event }
-            returned += 1
-            return swallow ? nil : event
+            if ExtensionDebuggerAPI.isSynthesized(event) { returned += 1 } else { strangers += 1 }
+            return event
         }
         defer { monitor.map(NSEvent.removeMonitor); NSApp.mainMenu = previous }
-        let chord = "await send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'j', code: 'KeyJ', modifiers: 4}); return 'sent'"
-        // The control: let through, the same event reaches the main menu.
-        _ = try await run(chord, in: page)
-        try await wait("the key equivalent an unguarded application performs") { probe.fired == 1 }
-        swallow = true
-        _ = try await run(chord, in: page)
-        try await wait("the synthesized key to come back") { returned == 2 }
-        // Plain keys come back too, and are dropped the same way.
-        _ = try await run("await send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'F6', code: 'F6', modifiers: 0}); return 'sent'", in: page)
-        try await wait("the plain key to come back") { returned == 3 }
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(probe.fired, 1, "A swallowed key performs nothing")
+        // ⌘J twice and a plain key, none of which the page handles.
+        _ = try await run("""
+            await send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'j', code: 'KeyJ', modifiers: 4});
+            await send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'j', code: 'KeyJ', modifiers: 4});
+            await send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'F6', code: 'F6', modifiers: 0});
+            return 'sent';
+            """, in: page)
+        try await wait("the page to hear the keys") {
+            try await self.run("return JSON.parse(await evaluate('log.filter(line => line.endsWith(\":KeyJ\") || line.endsWith(\":F6\")).length')).result.description", in: page) == "3"
+        }
+        // WebKit sends each back once the page has left it alone; give that its time.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(returned, 0, "No monitor sees a synthesized key")
+        XCTAssertEqual(probe.fired, 0, "A synthesized key performs nothing")
         XCTAssertEqual(strangers, 0)
-        let seen = try await run("return JSON.parse(await evaluate('log.filter(line => line.endsWith(\":KeyJ\")).length')).result.description", in: page)
-        XCTAssertEqual(seen, "2", "The page still hears both")
+        // The control: the same chord from anywhere else passes the monitors and reaches the menu.
+        let real = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        NSApp.sendEvent(real)
+        XCTAssertEqual(strangers, 1)
+        XCTAssertEqual(probe.fired, 1, "The probe item answers ⌘J when the key is not a synthesized one")
     }
 
     func testAnExtensionWithoutThePermissionHasNoDebugger() async throws {

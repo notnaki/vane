@@ -60,6 +60,7 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ host: WebHost, context: Context) {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
+        host.showsDebuggerPill = tab != nil && !offscreen
         host.libraryNavigationPaintOwner = libraryPaintOwner
         host.resizeLayout = resizeLayout
         host.resizeFraction = NSSize(width: 1, height: 1)
@@ -124,6 +125,9 @@ final class WebHost: NSView {
         pageResizeLayoutDidUpdate?()
     }
     private(set) var web: WKWebView?
+    /// Whether this host's page sits under `ExtensionDebuggerBanner`: a `TabPage` on
+    /// screen. Only such a page may be driven; see `ExtensionDebuggerAPI.isShowing`.
+    var showsDebuggerPill = false
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
     /// of the window's key loop and out of the accessibility tree, so an invisible page is
     /// neither Tab-able nor readable by VoiceOver, and it costs no compositing either.

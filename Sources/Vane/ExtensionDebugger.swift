@@ -304,12 +304,13 @@ import WebKit
     enum Body: Equatable, Sendable { case run(String), syntax(String) }
 
     /// The function body WebKit runs for one evaluation; `body` has passed `syntaxError`.
-    /// The origin is checked before anything of the caller's runs. Only names carrying
+    /// The address is checked before anything of the caller's runs: the whole of it, since
+    /// host access can turn on a path and not only an origin. Only names carrying
     /// `token` are in scope of the caller's code, so none can shadow a page global it
     /// meant to read; `location` is the window's own, which a page cannot replace.
     nonisolated static func evaluation(_ body: String, token: String) -> String {
         """
-        if (location.origin !== \(token)_options.origin) return JSON.stringify({moved: true});
+        if (location.href !== \(token)_options.url) return JSON.stringify({moved: true});
         class \(token) { constructor(value) { this.value = value; } }
         const \(token)_run = (async function () {
         \(body)
@@ -386,27 +387,66 @@ import WebKit
     ]
 
     /// Editing commands a ⌘ shortcut may name. A selector from an extension is never
-    /// performed unless it is one of these.
-    nonisolated static func isEditingCommand(_ name: String) -> Bool {
-        ["selectAll", "copy", "cut", "paste", "pasteAsPlainText", "undo", "redo"].contains(name)
-            || (["move", "delete", "scroll", "page"].contains { name.hasPrefix($0) } && name.allSatisfy { $0.isASCII && $0.isLetter })
-    }
+    /// performed unless it is one of these, by name: no prefix admits `scrollWheel`.
+    nonisolated static let editingCommands: Set<String> = Set([
+        "selectAll", "copy", "cut", "paste", "pasteAsPlainText", "undo", "redo",
+        "deleteBackward", "deleteForward", "deleteWordBackward", "deleteWordForward",
+        "deleteToBeginningOfLine", "deleteToEndOfLine"
+    ] + ["Left", "Right", "Up", "Down", "WordLeft", "WordRight", "ToBeginningOfLine", "ToEndOfLine", "ToLeftEndOfLine",
+         "ToRightEndOfLine", "ToBeginningOfDocument", "ToEndOfDocument"].flatMap { ["move" + $0, "move" + $0 + "AndModifySelection"] })
+    nonisolated static func isEditingCommand(_ name: String) -> Bool { editingCommands.contains(name) }
 
     /// Key events Vane made for an extension. WebKit hands a key the page left alone back
-    /// to the application, where Vane's shortcuts and the main menu would take it as the
-    /// user's; the key monitor drops these instead. Held weakly, by identity.
+    /// to the application (`NSApp.sendEvent`), where every key monitor, Vane's shortcuts
+    /// and the main menu would take it as the user's. It is dropped on arrival there,
+    /// ahead of them all. Held weakly, by identity.
     private static let synthesized = NSHashTable<NSEvent>(options: [.weakMemory, .objectPointerPersonality])
     static func isSynthesized(_ event: NSEvent) -> Bool { synthesized.contains(event) }
-    fileprivate static func markSynthesized(_ event: NSEvent) { synthesized.add(event) }
+    fileprivate static func markSynthesized(_ event: NSEvent) {
+        _ = guardsApplication
+        synthesized.add(event)
+    }
 
-    /// Run in the page's isolated world when an extension presses the mouse: a drag the
-    /// page would start from there becomes an AppKit drag session, which follows the real
-    /// pointer. Switched off again when the session ends.
-    // ponytail: the main frame only; a draggable link inside a cross-origin frame still
-    // starts a session. A user script in every frame is the upgrade.
-    nonisolated static func dragGuard(_ on: Bool) -> String {
-        "globalThis.__vaneDragGuard ? (__vaneDragGuard.on = \(on)) : \(on) && (globalThis.__vaneDragGuard = {on: true}, "
-            + "addEventListener('dragstart', event => { if (__vaneDragGuard.on) event.preventDefault(); }, true)); 0"
+    // Local event monitors run inside `sendEvent`, newest first, so no monitor is early
+    // enough; the method itself is. Exchanged once, when the first key is synthesized.
+    // ponytail: a swizzle, because the application object is not always Vane's to subclass
+    // (the test host makes its own). An `NSApplication` subclass is the plainer form.
+    private static let guardsApplication: Void = {
+        guard let original = class_getInstanceMethod(NSApplication.self, #selector(NSApplication.sendEvent(_:))),
+              let guarded = class_getInstanceMethod(NSApplication.self, #selector(NSApplication.vaneSendEvent(_:))) else { return }
+        method_exchangeImplementations(original, guarded)
+    }()
+
+    /// Every tab's main frame runs this at document start, in Vane's isolated world: a drag
+    /// the page would start from a synthesized press becomes an AppKit drag session, which
+    /// follows the real pointer. The listener is the window's first, so no listener of the
+    /// page's can stop the event short of it. Armed by a synthesized press (`armDragGuard`)
+    /// and disarmed by the release that follows, in the page, in event order. A count, not
+    /// a flag: the next press may be announced before the last release has arrived.
+    // ponytail: the main frame only; a draggable link inside a frame still starts a
+    // session. Refusing the session in AppKit needs a web view subclass and WebKit's
+    // drag-end bookkeeping; that is the upgrade.
+    nonisolated static let dragGuard = """
+        globalThis.__vaneDragGuard = {on: 0};
+        addEventListener('dragstart', event => { if (__vaneDragGuard.on > 0) event.preventDefault(); }, true);
+        addEventListener('mouseup', event => { if (event.button === 0 && __vaneDragGuard.on > 0) __vaneDragGuard.on--; }, true);
+        """
+    nonisolated static func armDragGuard(_ on: Bool) -> String {
+        "globalThis.__vaneDragGuard && (__vaneDragGuard.on \(on ? "+= 1" : "= 0")); 0"
+    }
+
+    /// A URL's origin as `location.origin` writes it: an IPv6 host keeps its brackets.
+    nonisolated static func origin(of url: URL) -> String {
+        let host = url.host ?? ""
+        return (url.scheme ?? "") + "://" + (host.contains(":") ? "[\(host)]" : host) + (url.port.map { ":\($0)" } ?? "")
+    }
+
+    /// Whether `web` is the page the user is looking at, under the pill that names its
+    /// driver and stops it. Nothing else is driven: not a page kept hidden behind the one
+    /// showing, not a tab in the background, not a Peek (which has no pill).
+    static func isShowing(_ web: WKWebView) -> Bool {
+        guard let host = web.superview as? WebHost, host.web === web, host.showsDebuggerPill else { return false }
+        return web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor
     }
 
     /// CDP's modifier bits: Alt 1, Ctrl 2, Meta 4, Shift 8.
@@ -417,6 +457,14 @@ import WebKit
         if modifiers & 4 != 0 { flags.insert(.command) }
         if modifiers & 8 != 0 { flags.insert(.shift) }
         return flags
+    }
+}
+
+extension NSApplication {
+    /// `sendEvent(_:)` once exchanged, so the call below is the original.
+    @objc fileprivate dynamic func vaneSendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, ExtensionDebuggerAPI.isSynthesized(event) { return }
+        vaneSendEvent(event)
     }
 }
 
@@ -526,6 +574,10 @@ import WebKit
                 throw ExtensionHost.Failure("Debugger is not attached to the tab with id: \(label).")
             }
             let page = try await page(shim, label: label, for: context)
+            // Stop, or a detach, while the page was being asked: nothing runs after it.
+            guard sessions.contains(where: { $0 === session }) else {
+                throw ExtensionHost.Failure("Debugger is not attached to the tab with id: \(label).")
+            }
             let parameters = (try? JSONSerialization.jsonObject(with: Data((request.values["params"] ?? "{}").utf8))) as? [String: Any] ?? [:]
             let result = try await command(request.values["method"] ?? "", parameters, session: session, page: page,
                                            shim: shim, context: context)
@@ -598,9 +650,9 @@ import WebKit
         emit(["tabId": session.label, "reason": reason], to: session.context)
     }
 
-    /// The page gets its own drags back; see `ExtensionDebuggerAPI.dragGuard`.
+    /// The page gets its own drags back, had a press not been released; see `ExtensionDebuggerAPI.dragGuard`.
     private func release(_ session: Session) {
-        session.tab?.existingWeb?.evaluateJavaScript(ExtensionDebuggerAPI.dragGuard(false), in: nil, in: .defaultClient)
+        session.tab?.existingWeb?.evaluateJavaScript(ExtensionDebuggerAPI.armDragGuard(false), in: nil, in: .defaultClient)
     }
 
     /// The banner's Stop: the user takes the tab back.
@@ -628,6 +680,8 @@ import WebKit
         let tab: Tab
         let web: WKWebView
         let url: URL
+        /// The address as the page gave it, for comparing with what the page gives later.
+        let href: String
         let scroll: CGPoint
         /// When the loaded document began: its identity, which a reload changes too.
         let began: Double
@@ -652,13 +706,14 @@ import WebKit
         }.value
     }
 
-    /// The tab's page, if this extension may drive it now: an open tab it can see, showing
-    /// a website it has host access to. Checked against the document that is actually
-    /// loaded, which is not always the address the tab reports while it navigates.
+    /// The tab's page, if this extension may drive it now: an open tab it can see, on
+    /// screen under its pill, showing a website it has host access to. Checked against the
+    /// document that is actually loaded, which is not always the address the tab reports
+    /// while it navigates.
     // ponytail: checked once per command, before it runs. `Runtime.evaluate` checks the
-    // origin again inside the page and a screenshot is checked again once taken; input is
-    // not, so a navigation in the few milliseconds between check and delivery lands on
-    // the new page.
+    // address again inside the page and a screenshot is checked again once taken; input
+    // checks again only that the page is still showing, so a navigation in the few
+    // milliseconds between check and delivery lands on the new page.
     private func probe(_ web: WKWebView) async throws -> [Any] {
         try await bounded { finish in
             web.evaluateJavaScript("[location.href, scrollX, scrollY, performance.timeOrigin]", in: nil, in: .defaultClient) { result in
@@ -681,15 +736,16 @@ import WebKit
               !tab.isPrivate || context.hasAccessToPrivateData else {
             throw ExtensionHost.Failure("No tab with given id \(label).")
         }
+        guard ExtensionDebuggerAPI.isShowing(web) else { throw ExtensionHost.Failure(Self.offScreen) }
         let probe = try await probe(web)
-        guard probe.count == 4, let url = (probe[0] as? String).flatMap(URL.init(string:)),
+        guard probe.count == 4, let href = probe[0] as? String, let url = URL(string: href),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
             throw ExtensionHost.Failure("Cannot attach to this target.")
         }
         guard allows(url, shim, context) else {
             throw ExtensionHost.Failure("Cannot access contents of the page. Extension manifest must request permission to access the respective host.")
         }
-        return Page(tab: tab, web: web, url: url,
+        return Page(tab: tab, web: web, url: url, href: href,
                     scroll: CGPoint(x: (probe[1] as? Double) ?? 0, y: (probe[2] as? Double) ?? 0),
                     began: (probe[3] as? Double) ?? 0)
     }
@@ -723,10 +779,9 @@ import WebKit
             page.tab.reload()
             return none
         case "Page.getFrameTree":
-            let origin = page.url.scheme.map { $0 + "://" + (page.url.host ?? "") + (page.url.port.map { ":\($0)" } ?? "") } ?? ""
             return ["frameTree": ["frame": [
                 "id": frameID(session), "loaderId": loaderID(page), "url": page.url.absoluteString,
-                "domainAndRegistry": page.url.host ?? "", "securityOrigin": origin, "mimeType": "text/html",
+                "domainAndRegistry": page.url.host ?? "", "securityOrigin": ExtensionDebuggerAPI.origin(of: page.url), "mimeType": "text/html",
                 "secureContextType": page.url.scheme == "https" ? "Secure" : "InsecureScheme",
                 "crossOriginIsolatedContextType": "NotIsolated", "gatedAPIFeatures": [String]()
             ] as [String: Any]]]
@@ -754,9 +809,8 @@ import WebKit
             throw ExtensionDebuggerAPI.failure(-32602, "Invalid parameters: expression")
         }
         let token = "__vane" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let port = page.url.port.map { ":\($0)" } ?? ""
         let options: [String: Any] = [
-            "origin": (page.url.scheme ?? "") + "://" + (page.url.host ?? "") + port,
+            "url": page.href,
             "awaitPromise": parameters["awaitPromise"] as? Bool ?? false,
             "returnByValue": parameters["returnByValue"] as? Bool ?? false,
             "timeout": parameters["timeout"] as? Double ?? 0
@@ -819,7 +873,7 @@ import WebKit
         }
         // The picture is of whatever was on screen when it was taken: only this document's.
         let after = try await probe(page.web)
-        guard after.count == 4, after[0] as? String == page.url.absoluteString, after[3] as? Double == page.began else {
+        guard after.count == 4, after[0] as? String == page.href, after[3] as? Double == page.began else {
             throw ExtensionDebuggerAPI.failure(-32000, "Inspected target navigated or closed")
         }
         guard let bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil).map(NSBitmapImageRep.init(cgImage:)),
@@ -833,12 +887,17 @@ import WebKit
     // Input reaches the page as AppKit events handed straight to its web view: WebKit
     // treats them as the user's, so the page sees trusted events. Nothing is posted to
     // the system and the pointer never moves.
-    // ponytail: a view outside a window takes no events, so only a tab that is on screen
-    // can be driven. Hosting background tabs in an offscreen window is the upgrade.
+    // ponytail: a view outside a window takes no events, and a tab off screen has no
+    // pill, so only the page that is showing is driven. Hosting background tabs in an
+    // offscreen window, with an indicator of their own, is the upgrade.
 
+    private static let offScreen = "Vane can only control a tab that is on screen."
+
+    /// Asked again as the event is made: the user may have switched tabs since `page`, and
+    /// the page they left stays in the window, hidden.
     private func window(of web: WKWebView) throws -> NSWindow {
-        guard let window = web.window else {
-            throw ExtensionDebuggerAPI.failure(-32000, "Vane can only send input to a tab that is on screen.")
+        guard ExtensionDebuggerAPI.isShowing(web), let window = web.window else {
+            throw ExtensionDebuggerAPI.failure(-32000, Self.offScreen)
         }
         return window
     }
@@ -894,9 +953,11 @@ import WebKit
         }
         switch kind {
         case .leftMouseDown:
-            // A click focuses the page, as the user's would.
-            if window.firstResponder !== web { window.makeFirstResponder(web) }
-            web.evaluateJavaScript(ExtensionDebuggerAPI.dragGuard(true), in: nil, in: .defaultClient)
+            // A click focuses the page only when nothing else holds the keyboard. The user
+            // typing in the address bar, a side panel or another pane keeps it; the
+            // extension's keys and text are handed to the page directly either way.
+            if window.firstResponder === window { window.makeFirstResponder(web) }
+            web.evaluateJavaScript(ExtensionDebuggerAPI.armDragGuard(true), in: nil, in: .defaultClient)
             web.mouseDown(with: event)
         case .leftMouseUp: web.mouseUp(with: event)
         case .rightMouseDown: web.rightMouseDown(with: event)
@@ -940,8 +1001,8 @@ import WebKit
             throw ExtensionDebuggerAPI.failure(-32000, "Unable to create the key event")
         }
         if type == "keyUp" { web.keyUp(with: event); return }
-        // A key the page leaves alone comes back through the application; the key monitor
-        // knows this one and drops it there, short of Vane's shortcuts and the main menu.
+        // A key the page leaves alone comes back through the application, which knows this
+        // one and drops it, short of every key monitor, Vane's shortcuts and the main menu.
         ExtensionDebuggerAPI.markSynthesized(event)
         web.keyDown(with: event)
         // AppKit turns ⌘ shortcuts into commands in its menus, which this event never

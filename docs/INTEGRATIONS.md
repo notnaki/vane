@@ -247,18 +247,25 @@ it must be `http` or `https`, on a host the extension has access to, and in a pr
 window only with private access. This is stricter than Chrome, where `debugger` alone
 reaches every site. One debugger per tab.
 
+Only the page on screen is driven: `attach` and every command fail with “Vane can only
+control a tab that is on screen.” for a tab in the background, a page kept hidden behind
+the one showing, a Peek, and a window that is not visible. Chrome drives background tabs;
+Vane does not, so that a driven page is always under its pill. A session stays attached
+while its tab is in the background and answers again when the tab is shown.
+
 While a tab is attached, a pill at the foot of its page says “*Extension* is controlling
 this tab” with **Stop**; in Split View each attached pane has its own. The tab's sidebar
 row carries a small pointer glyph, whether or not the tab is on screen (a split's row
-shows it when any of its panes is attached). Stop detaches and tells the extension (`canceled_by_user`);
+shows it when any of its panes is attached). Stop detaches and tells the extension (`canceled_by_user`),
+and a command already on its way to the page is not run;
 closing the tab does too (`target_closed`). As in Chrome, the extension may attach again.
 
 | Command | In Vane |
 | --- | --- |
-| `Runtime.evaluate` | Runs in the page's own world, without `eval`, so a page's Content Security Policy does not block it. The code must compile as one whole function body, checked by Vane before any page sees it, so it cannot close the wrapper it runs in; otherwise the answer is a `SyntaxError`. The document's origin is checked again inside the page before any of the code runs. Top-level `await` works and the last expression's value is returned (`replMode`). `returnByValue`, `awaitPromise`, `timeout` and `exceptionDetails` are honoured. No object handles: without `returnByValue` only the description comes back. |
+| `Runtime.evaluate` | Runs in the page's own world, without `eval`, so a page's Content Security Policy does not block it. The code must compile as one whole function body, checked by Vane before any page sees it, so it cannot close the wrapper it runs in; otherwise the answer is a `SyntaxError`. The document's full address is checked again inside the page before any of the code runs, so a navigation in between, even within the same site, fails the command. Top-level `await` works and the last expression's value is returned (`replMode`). `returnByValue`, `awaitPromise`, `timeout` and `exceptionDetails` are honoured. No object handles: without `returnByValue` only the description comes back. |
 | `Page.captureScreenshot` | `png` or `jpeg` with `quality`; `clip` with `scale`. No `webp`, nothing beyond the viewport. The image is discarded, and the command fails, if the document or its address changed while it was taken. |
-| `Input.dispatchMouseEvent` | Move, press, release and drag with the left or right button, and the wheel. The page sees trusted events. The pointer on screen does not move. |
-| `Input.dispatchKeyEvent`, `Input.insertText` | Keys by DOM `code`, with modifiers; text goes to the focused field. With ⌘, the editing `commands` Chrome's caller names (`selectAll`, `copy`, `paste`, `move…`, `delete…`) are performed, once each; no other selector is. A key the page leaves alone goes no further: it never reaches Vane's shortcuts, another extension's commands or the main menu. |
+| `Input.dispatchMouseEvent` | Move, press, release and drag with the left or right button, and the wheel. The page sees trusted events. The pointer on screen does not move. A click focuses the page only when nothing else in the window holds the keyboard: the address bar, a side panel or another pane keeps it. Between a press and its release, a drag the main frame would start is cancelled (it would follow the real pointer); the page's own listeners cannot prevent that, and its drags are its own again after the release. |
+| `Input.dispatchKeyEvent`, `Input.insertText` | Keys by DOM `code`, with modifiers; text goes to the focused field. They reach the page whether or not it holds the keyboard. With ⌘, the editing `commands` Chrome's caller names are performed, once each, from a fixed list (`selectAll`, `copy`, `cut`, `paste`, `undo`, `redo`, and the `move…` and `delete…` caret commands); no other selector is. A key the page leaves alone goes no further: it is dropped as it returns to the application, before any key monitor, so it never reaches Vane's shortcuts, the tab switcher, another extension's commands or the main menu. |
 | `Page.navigate`, `Page.reload`, `Page.getFrameTree`, `Page.bringToFront` | `http` and `https` only; the main frame only. `Page.navigate` also requires host access to the destination (stricter than Chrome). |
 | `Page.enable`, `Runtime.enable`, `Network.enable`/`disable`, `Network.setBypassServiceWorker`, `Emulation.setFocusEmulationEnabled`, `Page.startScreencast`/`stopScreencast`, `Input.cancelDragging` | Accepted and ignored, so an attach sequence completes. Their events are never sent. |
 | Anything else | Fails at once with a protocol error such as `{"code":-32601,"message":"'DOM.getDocument' wasn't found"}`. |

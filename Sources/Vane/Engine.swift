@@ -871,6 +871,9 @@ struct TitleReveal: Equatable, Sendable {
         c.addUserScript(
             WKUserScript(source: LinkContextWebView.script, injectionTime: .atDocumentStart,
                          forMainFrameOnly: false, in: LinkContextWebView.world))
+        // Document start, so its `dragstart` listener is ahead of any the page adds.
+        c.addUserScript(WKUserScript(source: ExtensionDebuggerAPI.dragGuard, injectionTime: .atDocumentStart,
+                                    forMainFrameOnly: true, in: .defaultClient))
         // A tab built around WebKit's own configuration never went through
         // `Tab.configuration`, so the blocker is attached here rather than there.
         Blocker.apply(to: c, profileID: profileID)
