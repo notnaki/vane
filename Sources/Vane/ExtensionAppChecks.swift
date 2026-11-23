@@ -539,6 +539,11 @@ import WebKit
                 for window in NSApp.windows where window !== store.window && window.isVisible && window.styleMask.contains(.titled)
                     && window.contentView.map({ webView(in: $0, url: context.baseURL) != nil }) == true { window.close() }
                 guard parts.count >= 2, let url = URL(string: parts[1].hasPrefix("/") ? base + parts[1] : parts[1]) else { return }
+                // Large rule sets compile in the background after activation; a settle time
+                // tells a slow compile from a failed one.
+                if let settle = ProcessInfo.processInfo.environment["VANE_EXTENSIONCHECK_SETTLE"].flatMap(Double.init), settle.isFinite, settle > 0 {
+                    try? await Task.sleep(for: .seconds(settle))
+                }
                 server?.requests = [:]
                 tab.go(url)
                 try await wait("content page loads", seconds: 45) { !tab.web.isLoading && tab.web.url != nil }

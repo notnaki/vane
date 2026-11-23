@@ -316,6 +316,28 @@ the manifest of an MV3 worker extension get the `chrome.runtime` constants alone
 extension's own; scripts injected with `scripting.registerContentScripts` or
 `executeScript` do not.
 
+**Other Chromium-only members.** MV3 workers and extension pages also get what ad
+blockers read at their top level: `webRequest.ResourceType` (only the types WebKit accepts
+in a listener filter, so no `webtransport` or `webbundle`), `scripting.ExecutionWorld`,
+`declarativeNetRequest.getAvailableStaticRuleCount` (always 30,000, Chrome's guaranteed
+minimum; WebKit itself limits only the number of enabled rulesets, to 50), and stand-in
+`webNavigation.onHistoryStateUpdated`, `onReferenceFragmentUpdated` and `onTabReplaced`
+events that never fire. `webNavigation.onCreatedNavigationTarget` fires when a tab opened
+by another tab appears, with the opener as `sourceTabId` and `sourceFrameId` 0.
+`management.getSelf()` answers from the manifest (install type `normal`) without the
+`management` permission, as in Chrome; no other `management` method exists. With the
+`idle` permission, `idle.queryState()` always answers `active` and `onStateChanged`
+never fires. A `webRequest` listener filter with `ws://` or `wss://` URL patterns, which
+WebKit refuses as a whole, is registered without those patterns.
+
+**Large rule sets take a while to start blocking.** WebKit compiles every enabled
+declarative rule of an extension into one content-blocker list, in the background, after
+activation and again after each rule change. It caps that list at 150,000 entries after
+its own translation, which can expand a rule with N `requestDomains` into N. AdBlock's
+default lists (EasyList, Acceptable Ads and ABP anti-circumvention, 59,072 rules)
+took about one to one and a half minutes on first install; until then pages load
+unfiltered. The compiled list is reused on later launches.
+
 Vane does not provide native messaging hosts, replacement browser pages,
 developer-tools panels, omnibox keywords, or Chrome's Google-account OAuth (`oauth2`). Native
 messaging has public WebKit hooks, but Vane has no approved host-execution mechanism.

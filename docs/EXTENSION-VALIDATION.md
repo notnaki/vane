@@ -68,6 +68,34 @@ Vane now supplies `chrome.identity.getRedirectURL()` and `identity.launchWebAuth
 
 Evidence: `~/.cache/vane-task-evidence/chrome-identity-2026-11-23/` (Copyleaks run log and result file, native test logs, light and dark screenshots of the sign-in window on the loopback fixture page).
 
+## AdBlock, uBlock and GPTZero on Vane's stand-ins — 2026-11-23
+
+Three unmodified Chrome Web Store packages, checked with `extensioncheck --store` as in the section below. No account was used anywhere. Nothing was signed in to.
+
+**Build.** macOS **27.0.1 (26A434)**. This change ([#782](https://github.com/notnaki/vane/pull/782)), stacked on [#775](https://github.com/notnaki/vane/pull/775) at `e59bbd69`, debug configuration, assembled by `./make-app.sh debug` and re-signed ad hoc with Vane's sandbox entitlements under its own bundle identifier. Each run used its own new `VANE_DATA_DIR`. `VANE_EXTENSIONCHECK_SETTLE=<seconds>`, new here, waits that long before the content page loads (see AdBlock below).
+
+| Extension | Store ID | Version | CRX SHA-256 |
+| --- | --- | --- | --- |
+| AdBlock — block ads across the web | `gighmmpiobklfepjocnamgkkbiglidom` | 6.54.0 | `01a03a8d78c16c2fabf7640fae8b06fe22789b41e0d901cf9bbe326673ef109a` |
+| uBlock | `epcnnfbjfcgphgdmggkamkmgojdagdnn` | 25.5.1 | `38e96acbf15ec022a6cf5a43c7cb12fff128e22c6d55889d20fa8c8f80325709` |
+| GPTZero: AI Detection & Writing Replay | `kgobeoibakoahbfnlficpmibdbkdchap` | 2026.11.6 | `3aad788684fb14d49a8c61783d93cc70b6e780d84cac2a9644a1169bdcf028f2` |
+
+**Added in Vane** (MV3 workers and extension pages; details in [Extensions and integrations](INTEGRATIONS.md#compatibility-and-validation)): `webRequest.ResourceType` with only WebKit's accepted types, `scripting.ExecutionWorld`, `idle` (always `active`), `management.getSelf()` from the manifest, `declarativeNetRequest.getAvailableStaticRuleCount()`, `webNavigation.onCreatedNavigationTarget` derived from a new tab's opener, never-firing `onHistoryStateUpdated`/`onReferenceFragmentUpdated`/`onTabReplaced`, and `webRequest` listener filters with `ws://`/`wss://` patterns, which WebKit refused as a whole, registered without them. `idle` and `management` are no longer listed as unrecognized.
+
+**Results.**
+
+| Extension | Verdict | Observed |
+| --- | --- | --- |
+| AdBlock 6.54.0 | **Works** for request blocking | Background starts; the popup shows its page (“Block Ads 0 on this page 0 in total … Pause on this site”). Its ledger enabled its defaults, EasyList, Acceptable Ads and ABP anti-circumvention, and it downloaded list updates as 2,130 dynamic rules. With a 120-second settle `/88/tag.min.js` was not requested on `/ad-check` (twice). Without one (page about 16 seconds after install) it was still requested and ran. Remaining errors: “[ipm]: No remote configuration” (AdBlock's own messaging service) and one `updateEnabledRulesets` call that disables all three rulesets before its defaults are recorded. WebKit answers it with “Failed to apply rules” and keeps them enabled, which is the state AdBlock settles on anyway. Its popup blocker hears `onCreatedNavigationTarget` only for tabs Vane knows the opener of. |
+| uBlock 25.5.1 | **Works** for request blocking | Before the `ws://` fix its engine (eyeo's, the same as AdBlock's) stopped at startup on “'ws://*/*' is an invalid match pattern” and the missing `webNavigation.onHistoryStateUpdated`, so `/88/tag.min.js` was requested. After it: no context errors, popup “Pause uBlock / Allow ads on this site”, the same three rulesets enabled by uBlock itself, and `/88/tag.min.js` not requested (twice, 120-second settle). |
+| GPTZero 2026.11.6 | **Works partly** | On the public view-only Doc its content scripts now run: 20 elements matched its IDs and classes, 19 visible, among them `g0-docs-widget-host#g0-widget`, `g0-revision-count-host#g0-revision-count`, `g0-ratings-popup-host#g0-ratings-popup` and `g0-textarea-recorder-host#g0-textarea-recorder`. #775's runtime constants in content scripts did this; no `OnInstalledReason` error remains. The popup shows “Log in to start scanning”. Remaining: its sign-in cookie listener throws on `e.cookie` (WebKit's `cookies.onChanged` passes no details, handled on a separate branch), and “Failed to get Google Docs token”, expected signed out. Scanning needs an account and was not tested. |
+
+**Why AdBlock seemed not to block.** Bisection with diagnostic copies (worker replaced by an empty one) showed EasyList alone blocking at once, and EasyList with Acceptable Ads not. No single Acceptable Ads rule was at fault: each half of a failing 1,027-rule slice blocked on its own. The same three rulesets blocked after a 120-second settle. WebKit compiles every enabled rule of an extension into one content-blocker list in the background. Its translation emits one entry per `requestDomains` value, which by a count of its rule shapes takes Acceptable Ads' 8,223 rules to about 50,000 entries. For AdBlock the first compile finished 54 to 90 seconds after activation (the 152 MB compiled list's file times); pages load unfiltered until then. WebKit reuses the compiled list on later launches. Nothing in Vane can shorten this.
+
+**WebKit behaviour noted on the way.** Disabling a ruleset that is already disabled fails with “The number of enabled static rulesets exceeds the limit. Only 50 rulesets can be enabled at once.” (a synthetic probe). AdBlock already avoids this. WebKit limits enabled rulesets to 50 and does not limit static rules.
+
+Automated coverage: `ExtensionSidePanelTests.testWorkerReadsChromiumOnlyMembersAdBlockUsesAtItsTopLevel` loads a synthetic MV3 worker that uses each new member at its top level (including a `ws://` listener filter), then checks the answers, the derived navigation-target event for a tab opened with a parent, and that the context has no errors. Logs, result files, diagnostic copies and the bisection script are kept locally under `~/.cache/vane-task-evidence/adblock-gaps-2026-11-23/`.
+
 ## Arc extensions from the Chrome Web Store — 2026-11-23
 
 Five Chrome Web Store extensions one user relied on in Arc, checked through Vane's own store installer: download from Google's update endpoint, CRX signature check, review, and activation. No account was used anywhere. Nothing was signed in to.
@@ -104,11 +132,11 @@ The diagnostic copies changed only the worker entry and popup; every verdict abo
 ### Belongs in PR #775, not duplicated here
 
 - `chrome.identity.getRedirectURL()` as a synchronous function (Copyleaks).
-- `webRequest.ResourceType` with WebKit's accepted values, `scripting.ExecutionWorld`, and `idle`/`management` stand-ins (AdBlock).
+- `webRequest.ResourceType` with WebKit's accepted values, `scripting.ExecutionWorld`, and `idle`/`management` stand-ins (AdBlock). Done since: see [AdBlock, uBlock and GPTZero](#adblock-ublock-and-gptzero-on-vanes-stand-ins--2026-11-23), where AdBlock blocks.
 
 ### Not fixable in Vane today
 
-- **Runtime enums in content scripts** (GPTZero). WebKit defines `runtime.OnInstalledReason` only in the main world. Vane injects compatibility scripts into workers and extension pages, but not into the isolated content-script world. That world is WebKit's named `WebExtension-<uniqueIdentifier>` world ([WebExtensionContextCocoa.mm](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm)), so a document-start user script in that world might work. Whether it would run before the extension's own content scripts was not tested.
+- ~~**Runtime enums in content scripts** (GPTZero).~~ Fixed since by #775, which runs the `chrome.runtime` constants ahead of each declared isolated-world content script group. GPTZero's Doc widget now appears; see [AdBlock, uBlock and GPTZero](#adblock-ublock-and-gptzero-on-vanes-stand-ins--2026-11-23).
 - **`cookies.onChanged` details.** WebKit fires the event without the changed cookie.
 - **`identity.launchWebAuthFlow` and `oauth2`.** There is no Chrome identity integration in Vane; it would need its own web-authentication window.
 
