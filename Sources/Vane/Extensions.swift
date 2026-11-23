@@ -311,6 +311,7 @@ import WebKit
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
         WebKitStartup.configureExtensionPages(webConfiguration)
         ExtensionMV2Compatibility.configure(webConfiguration)
+        ExtensionDebuggerAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
@@ -1955,6 +1956,7 @@ import WebKit
             }
         }
         syncSidePanels()
+        debugger.sync()
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -2067,6 +2069,9 @@ import WebKit
             try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
                         store: (configuration.window as? ExtWindow)?.store, for: context)
             return nil
+        }
+        if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
+            return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
         }
         if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
             throw Failure("Extensions cannot navigate to Vane’s internal URLs.")
@@ -2212,6 +2217,8 @@ import WebKit
     // `onInstalled` and never again.
 
     @Published private(set) var sidePanels: [ExtensionSidePanel] = []
+    /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
+    private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.
     @Published private var sidePanelOptions: [ActionKey: ExtensionSidePanelAPI.Options] = [:]
     private var sidePanelsOnAction: Set<ObjectIdentifier> = []
@@ -2502,6 +2509,7 @@ import WebKit
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
+        debugger.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()

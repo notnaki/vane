@@ -9,7 +9,9 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
     let sites: Set<String>
 
     @MainActor init(_ ext: WKWebExtension) {
+        // WebKit does not know `debugger`; Vane provides it, so the review must name it.
         permissions = Set(ext.requestedPermissions.map(\.rawValue))
+            .union(ExtensionDebuggerAPI.declared(ext.manifest) ? [ExtensionDebuggerAPI.permission] : [])
         sites = Set(ext.requestedPermissionMatchPatterns.union(ext.allRequestedMatchPatterns).map(\.string))
     }
 
@@ -41,6 +43,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         case "clipboardWrite": "Write to your clipboard"
         case "contextMenus", "menus": "Add items to page and tab menus"
         case "cookies": "Read and change website cookies"
+        case "debugger": "Control pages you allow it on: read them, click, type and take screenshots"
         case "declarativeNetRequest", "declarativeNetRequestWithHostAccess": "Block or modify website requests"
         case "declarativeNetRequestFeedback": "Read information about filtered website requests"
         case "nativeMessaging": "Exchange messages with native apps"

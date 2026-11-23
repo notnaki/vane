@@ -1000,6 +1000,11 @@ struct WebCard: View {
                 StatusBarView(tab: tab).padding(Look.statusInset)
             }
         }
+        // An extension driving this tab through `chrome.debugger`, and the way to stop it.
+        .overlay(alignment: .top) {
+            ExtensionDebuggerBanner(debugger: store.extensions.debugger, host: store.extensions,
+                                    onScreen: store.onScreenTabs.map(\.id))
+        }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))

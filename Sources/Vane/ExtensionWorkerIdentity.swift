@@ -162,7 +162,7 @@ import WebKit
           }
           if (navigator.userAgent !== config.ua) throw new Error('Vane worker identity bootstrap failed');
         })();
-        """ + "\n" + ExtensionChromiumGaps.script + "\n" + ExtensionSidePanelAPI.script
+        """ + "\n" + ExtensionDebuggerAPI.script + "\n" + ExtensionChromiumGaps.script + "\n" + ExtensionSidePanelAPI.script
     }
 
 }

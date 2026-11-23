@@ -22,11 +22,15 @@ import WebKit
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
         // Vane supplies `sidePanel` itself; see ExtensionSidePanel.swift.
-        var issues = declared.subtracting(recognized).subtracting([ExtensionSidePanelAPI.permission]).sorted().map {
+        var issues = declared.subtracting(recognized)
+            .subtracting([ExtensionSidePanelAPI.permission, ExtensionDebuggerAPI.permission]).sorted().map {
             "\($0): \(unrecognized)"
         }
         if declared.contains(ExtensionSidePanelAPI.permission) {
-            issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events and runtime.getContexts are unavailable.")
+            issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events are unavailable.")
+        }
+        if declared.contains(ExtensionDebuggerAPI.permission) {
+            issues.append("debugger: Vane answers part of the DevTools protocol for the tab on screen: Runtime.evaluate, Page.captureScreenshot, mouse, key and text input, Page.navigate and Page.reload. Console, network and dialog events are not sent, and other commands fail.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
