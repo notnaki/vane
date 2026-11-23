@@ -369,7 +369,7 @@ import WebKit
         for path in contextIdentifiers.keys where folders[path] == nil { folders[path] = URL(fileURLWithPath: path).lastPathComponent }
         for path in Array(folders.keys) {
             if let metadataFailure { failures[path] = metadataFailure; continue }
-            if let record = records[path] { cacheIcon(for: path, in: record.safari == nil ? codeStore.code(for: record) : codeStore.code(for: record).appendingPathComponent("extension.appex/Contents/Resources")) }
+            if let record = records[path] { cacheIcon(for: path, in: codeStore.resources(for: record)) }
             else if let manifest = try? Self.validate(sourceFolder(for: path)) {
                 func optional(_ key: String) -> [String] { manifest[key] as? [String] ?? [] }
                 let declarations = optional("optional_permissions")
@@ -1351,9 +1351,9 @@ import WebKit
         if let safari = record.safari {
             let current = try await safari.resolve()
             guard recoveringSafariUpdate || current.source.signatureHash == safari.signatureHash else { throw Failure("The app was updated. Choose Update from App to review its extension before enabling it.") }
-            let bundleURL = codeStore.code(for: record).appendingPathComponent("extension.appex", isDirectory: true)
+            guard let bundleURL = codeStore.bundle(for: record) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             try await Self.verifySnapshot(bundleURL, source: safari)
-            folder = bundleURL.appendingPathComponent("Contents/Resources")
+            folder = codeStore.resources(for: record)
             guard let bundle = Bundle(url: bundleURL) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             appBundle = bundle
         } else {
@@ -1412,8 +1412,7 @@ import WebKit
             // reported it. The accepted manifest does, so it is reviewed here as new support
             // rather than refused later as code that changed.
             var record = record
-            let code = codeStore.code(for: record)
-            if let manifest = try? Self.validate(record.safari == nil ? code : code.appendingPathComponent("extension.appex/Contents/Resources")),
+            if let manifest = try? Self.validate(codeStore.resources(for: record)),
                ExtensionDebuggerAPI.declared(manifest) {
                 record.required = ExtensionAccess(permissions: record.required.permissions.union([ExtensionDebuggerAPI.permission]),
                                                   sites: record.required.sites)

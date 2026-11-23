@@ -108,6 +108,16 @@ struct ExtensionCodeStore: Sendable {
         root.appendingPathComponent("revisions", isDirectory: true).appendingPathComponent(record.revision, isDirectory: true)
     }
 
+    /// A Safari extension's frozen bundle, where `stage(_:appExtension:)` put it.
+    func bundle(for record: Record) -> URL? {
+        record.safari == nil ? nil : code(for: record).appendingPathComponent("extension.appex", isDirectory: true)
+    }
+
+    /// The folder holding a record's manifest: the one it was reviewed from and is loaded from.
+    func resources(for record: Record) -> URL {
+        bundle(for: record).map { $0.appendingPathComponent("Contents/Resources", isDirectory: true) } ?? code(for: record)
+    }
+
     /// Called after candidate validation/activation. Atomic index replacement selects the
     /// accepted revision. The previous code remains available until the caller finishes.
     func save(_ records: [String: Record]) throws {

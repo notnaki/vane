@@ -498,10 +498,19 @@ import XCTest
         tab.web.isHidden = true
         let hidden = try await run(input + """
             return [await failure(attempt()), await failure(send('Input.insertText', {text: 'z'})),
-                    await failure(send('Runtime.evaluate', {expression: 'i.value = "driven unseen"'}))].join('|');
+                    await failure(send('Runtime.evaluate', {expression: 'i.value = "driven unseen"'})),
+                    await failure(send('Page.captureScreenshot', {}))].join('|');
             """, in: page)
         tab.web.isHidden = false
-        XCTAssertEqual(hidden, Array(repeating: "Vane can only control a tab that is on screen.", count: 3).joined(separator: "|"))
+        XCTAssertEqual(hidden, Array(repeating: "Vane can only control a tab that is on screen.", count: 4).joined(separator: "|"))
+        // On screen but with no pill over it (a Peek, a popup): nothing runs there either.
+        mount.showsDebuggerPill = false
+        let unmarked = try await run("""
+            return [await failure(send('Runtime.evaluate', {expression: 'i.value = "driven unmarked"'})),
+                    await failure(send('Page.captureScreenshot', {}))].join('|');
+            """, in: page)
+        mount.showsDebuggerPill = true
+        XCTAssertEqual(unmarked, Array(repeating: "Vane can only control a tab that is on screen.", count: 2).joined(separator: "|"))
         XCTAssertTrue(window.firstResponder === holder, "A hidden page took the keyboard")
         let untouched = try await run("return JSON.parse(await evaluate('i.value')).result.value", in: page)
         XCTAssertEqual(untouched, "xqr")
