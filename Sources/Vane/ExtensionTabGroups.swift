@@ -67,7 +67,9 @@ import WebKit
               const snapshot = async () => {
                 const ids = [...new Set((await original.query({})).map(tab => tab.windowId).filter(Number.isInteger))];
                 const groups = new Map();
-                for (const reply of await Promise.all(ids.map(inWindow)))
+                // A window that is not Vane's, such as the extension's own popup, is skipped.
+                const replies = await Promise.all(ids.map(id => inWindow(id).catch(() => ({groups: []}))));
+                for (const reply of replies)
                   for (const group of reply.groups) if (!groups.has(group.id)) groups.set(group.id, shape(group));
                 return [...groups.values()];
               };
@@ -405,7 +407,12 @@ import WebKit
                 else { byStore.append((store, [tab])) }
             }
             for (store, tabs) in byStore { try ungroup(tabs, in: store, check: true) }
-            for (store, tabs) in byStore { try ungroup(tabs, in: store) }
+            for (store, tabs) in byStore {
+                // Windows on one Space share Today; settle the last window's change into this
+                // one first, or this write would put it back.
+                if store.sharingReady { SharedTabs.flush() }
+                try ungroup(tabs, in: store)
+            }
             sync(contexts: contexts)
             return reply([String: Any]())
         case "update":
