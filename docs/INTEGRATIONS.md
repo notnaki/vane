@@ -234,11 +234,13 @@ restarts, `getOptions` answers from the calling context's own writes, and
 
 **Web sign-in (`chrome.identity`).** For extensions that request `identity`, Vane
 supplies `getRedirectURL()` (`https://<Chrome ID>.chromiumapp.org/`, using the Web Store
-ID or the manifest `key`'s ID) and `launchWebAuthFlow()`. An interactive flow opens the
+ID or the manifest `key`'s ID, for every extension kind) and `launchWebAuthFlow()`. An interactive flow opens the
 sign-in page in a Vane window titled with the extension's name and the page's host, on
 the profile's own cookies. It ends when the page navigates to the redirect URL, which
 never loads, or rejects when the window is closed. Non-interactive flows have no window
-and need the page to redirect without loading. `getAuthToken` and the manifest's
+and need the page to redirect without loading, within `timeoutMsForNonInteractive`
+(one minute at most). Several flows may run at once. `identity` in `optional_permissions`
+only gets no API. `getAuthToken` and the manifest's
 `oauth2` (Google account sign-in) are not available. Callbacks cannot receive
 `runtime.lastError`.
 

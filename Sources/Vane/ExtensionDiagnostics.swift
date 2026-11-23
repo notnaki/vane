@@ -28,8 +28,11 @@ import WebKit
         if declared.contains(ExtensionSidePanelAPI.permission) {
             issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events and runtime.getContexts are unavailable.")
         }
-        if declared.contains(ExtensionIdentityAPI.permission) {
+        if ExtensionIdentityAPI.declared(manifest) {
             issues.append("identity: Vane runs web sign-in (launchWebAuthFlow) in its own window. Google account tokens (getAuthToken) are unavailable.")
+        } else if declared.contains(ExtensionIdentityAPI.permission) {
+            // WebKit cannot grant a permission it does not know, so there is no grant to honour.
+            issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
