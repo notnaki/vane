@@ -6,7 +6,6 @@ import LocalAuthenticationEmbeddedUI
 /// Only a frozen, heavily obscured image is drawn behind the unlock control. The live
 /// WebView has already been released, so it cannot receive clicks, focus, or accessibility.
 struct LockedFolderPage: View {
-    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     let folder: Folder
     @StateObject private var control = FolderUnlockControl()
@@ -42,41 +41,16 @@ struct LockedFolderPage: View {
                     .foregroundStyle(Look.inkSecondary)
                     .padding(.top, 6)
                     .padding(.bottom, 24)
-                Button { unlock(password: !usesInline) } label: {
-                    HStack(spacing: 10) {
-                        if usesInline {
-                            ZStack {
-                                EmbeddedFolderAuthentication(context: control.context)
-                                    .id(ObjectIdentifier(control.context))
-                                    .task {
-                                        guard !Task.isCancelled else { return }
-                                        if control.beginAutomaticUnlock(for: folder.id, usingInline: usesInline) {
-                                            unlock(password: false)
-                                        }
-                                    }
-                                Image(systemName: "touchid")
-                                    .font(.system(size: 25, weight: .light))
-                                    .foregroundStyle(Look.inkSecondary)
-                                    .opacity(control.authenticating ? 0 : 1)
-                            }
-                            .frame(width: 28, height: 28)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                        } else {
-                            Image(systemName: "key.fill").font(.system(size: 13))
+                InlineUnlockButton(
+                    context: control.context, inline: usesInline, authenticating: control.authenticating,
+                    title: control.authenticating ? (usingPassword ? "Unlocking…" : "Touch the Touch ID sensor")
+                        : (usesInline ? "Unlock with Touch ID" : "Unlock folder…"),
+                    attached: {
+                        if control.beginAutomaticUnlock(for: folder.id, usingInline: usesInline) {
+                            unlock(password: false)
                         }
-                        Text(control.authenticating ? (usingPassword ? "Unlocking…" : "Touch the Touch ID sensor") : (usesInline ? "Unlock with Touch ID" : "Unlock folder…"))
-                            .font(.system(size: 12, weight: .medium))
                     }
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(chromeTheme.pillFill, in: .rect(cornerRadius: 10))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10).strokeBorder(Look.inkTertiary.opacity(0.15))
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(control.authenticating)
-                .animation(Motion.reduced ? nil : Look.quick, value: control.authenticating)
+                ) { unlock(password: !usesInline) }
                 HStack(spacing: 16) {
                     if usesInline {
                         Button("More unlock options…") {
@@ -191,6 +165,56 @@ struct LockedFolderPage: View {
         authenticating = false
         failed = false
         if leavingPage { automaticFolder = nil }
+    }
+}
+
+/// The unlock pill shared by locked folders and Settings → Passwords. With `inline`, the
+/// embedded LocalAuthentication view sits under a fingerprint glyph inside it, so the scan
+/// runs in the page rather than in a system sheet; `attached` runs once that view (for each
+/// context) is attached, which is the earliest an embedded evaluation stays inline.
+struct InlineUnlockButton: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    let context: LAContext
+    let inline: Bool
+    let authenticating: Bool
+    let title: String
+    var attached: () -> Void = {}
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if inline {
+                    ZStack {
+                        EmbeddedFolderAuthentication(context: context)
+                            .id(ObjectIdentifier(context))
+                            .task {
+                                guard !Task.isCancelled else { return }
+                                attached()
+                            }
+                        Image(systemName: "touchid")
+                            .font(.system(size: 25, weight: .light))
+                            .foregroundStyle(Look.inkSecondary)
+                            .opacity(authenticating ? 0 : 1)
+                    }
+                    .frame(width: 28, height: 28)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                } else {
+                    Image(systemName: "key.fill").font(.system(size: 13))
+                        .task { attached() }
+                }
+                Text(title).font(.system(size: 12, weight: .medium))
+            }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(chromeTheme.pillFill, in: .rect(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10).strokeBorder(Look.inkTertiary.opacity(0.15))
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(authenticating)
+        .animation(Motion.reduced ? nil : Look.quick, value: authenticating)
     }
 }
 

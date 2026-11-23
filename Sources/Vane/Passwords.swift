@@ -851,6 +851,25 @@ enum Passwords {
         return ctx
     }
 
+    /// The locked Settings → Passwords pane's inline scan: biometrics only, evaluated on the
+    /// context its embedded Touch ID view is attached to, so no sheet appears. The pane's
+    /// "Use Password…" goes through `authenticate` for the login-password fallback.
+    @discardableResult
+    @MainActor static func authenticateInline(_ context: LAContext, _ reason: String,
+                                              _ done: @escaping @MainActor (Bool) -> Void) -> LAContext? {
+        #if DEBUG
+        if let authenticator { authenticator(reason, done); return nil }
+        #endif
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) else {
+            done(false)
+            return nil
+        }
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { ok, _ in
+            Task { @MainActor in done(ok) }
+        }
+        return context
+    }
+
     /// Erasing one instance must leave every other data directory's credentials alone.
     /// Enumerate metadata first, then delete exact owned references, including legacy tokens.
     @discardableResult static func deleteEverything(dataDir: String? = Store.overrideDirectory,

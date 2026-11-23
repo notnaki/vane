@@ -185,7 +185,12 @@ import SwiftUI
         // Measure the list, not the locked view: allow the pane's unlock prompt.
         let denied = Passwords.authenticator
         Passwords.authenticator = { _, done in done(true) }
-        defer { Passwords.authenticator = denied; PasswordPaneLock.shared.lock() }
+        // An offscreen test window may never be key; the pane starts its unlock anyway.
+        PasswordPaneLock.shared.mayPrompt = { true }
+        defer {
+            Passwords.authenticator = denied; PasswordPaneLock.shared.lock()
+            PasswordPaneLock.shared.mayPrompt = { SettingsWindow.isKey }
+        }
         SettingsWindow.show(tab: "shortcuts")
         let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Shortcuts" && $0.isVisible })
         defer { window.close() }

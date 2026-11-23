@@ -23,6 +23,8 @@ import SwiftUI
     /// Deletes wait on an Undo toast before they reach the Keychain.
     @ObservedObject private var deletion: PasswordPendingDeletion
     @AppStorage(PasswordPaneLock.requiredKey, store: UserDefaults.vane) private var requiresUnlock = true
+    /// Only observed, so a change in Privacy and Security redraws the locked control.
+    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var unlockMethod = FolderUnlockMethod.touchID
     @State private var query = ""
     @State private var sort = PasswordSort.website
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
@@ -186,15 +188,22 @@ import SwiftUI
             lock.watchSettings(); deletion.watchSettingsClose()
             // Another pane instance may have unlocked a different profile.
             if let open = lock.unlockedProfile, open != profileID { lock.lock() }
-            if !unlocked { lock.unlock(profileID) }
+            lock.rearm()
         }
-        .onDisappear { deletion.commit(); secrets.stopWatching(); metadata.stopWatching() }
+        .onDisappear {
+            deletion.commit(); secrets.stopWatching(); metadata.stopWatching()
+            lock.cancel(); lock.rearm()
+        }
         .onReceive(NotificationCenter.default.publisher(for: SettingsWindow.presentationRequest)) { note in
             // Retained hosting views also skip onAppear when reopening. Only an
             // explicit presentation of this pane should restart its metadata read.
             guard note.object as? String == "passwords" else { return }
             reload()
-            if !unlocked { lock.unlock(profileID) }
+            lock.rearm(); lock.beginAutomaticUnlock(profileID)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            // Shown while Vane was in the background: start once Settings comes forward.
+            if SettingsWindow.holds(note.object as? NSWindow) { lock.beginAutomaticUnlock(profileID) }
         }
         .onChange(of: logins) {
             // Reloads finish asynchronously; reconcile the detail destination only
@@ -234,9 +243,23 @@ import SwiftUI
                 .accessibilityHidden(true)
             Text("Passwords are locked").font(Look.heading).foregroundStyle(Look.inkPrimary)
             quiet("Unlock with Touch ID or your Mac login password to see saved passwords.")
-            Button { lock.unlock(profileID) } label: { Text("Unlock").frame(minWidth: 80) }
-                .buttonStyle(.borderedProminent).controlSize(.large)
+            // Like a locked folder: the Touch ID control itself, already listening.
+            // Tapping it retries after a cancel or failure.
+            let inline = lock.usesInline
+            InlineUnlockButton(
+                context: lock.inlineContext, inline: inline, authenticating: lock.authenticating,
+                title: lock.authenticating ? (lock.usingPassword ? "Unlocking…" : "Touch the Touch ID sensor")
+                    : (inline ? "Unlock with Touch ID" : "Unlock passwords…"),
+                attached: { lock.beginAutomaticUnlock(profileID) }
+            ) { lock.unlock(profileID) }
                 .keyboardShortcut(.defaultAction)
+                .padding(.top, Look.inset * 0.5)
+            if inline {
+                Button("Use Password…") { lock.unlock(profileID, password: true) }
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Look.inkSecondary)
+                    .help("Opens macOS authentication, where you can use your Mac login password.")
+                    .disabled(lock.authenticating && lock.usingPassword)
+            }
             if let problem = lock.problem {
                 Text(problem).font(Look.caption).foregroundStyle(Look.warning)
                     .fixedSize(horizontal: false, vertical: true)
