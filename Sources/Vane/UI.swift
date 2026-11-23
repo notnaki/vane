@@ -565,6 +565,7 @@ private struct BrowserWindowContent: View {
     /// Available chrome width, capped once both navigation columns fit. The page
     /// still receives exact native geometry without republishing every window pixel.
     @State private var windowWidth: CGFloat = 0
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
     /// follow. The Library counts: it stands where the sidebar does, with the lights' own
@@ -721,7 +722,8 @@ private struct BrowserWindowContent: View {
                                               blocked: !visible || store.palette != nil))
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
-                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
+                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking,
+                toolbar: showsToolbar && !store.isLittle))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
             .zIndex(1)
@@ -752,6 +754,10 @@ private struct SidebarSurfaceLayout: ViewModifier {
     let floating: Bool
     let libraryOpen: Bool
     let peeking: Bool
+    /// View › Show Toolbar keeps the lights on its row whether or not the sidebar is there.
+    var toolbar = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
         content
@@ -774,7 +780,13 @@ private struct SidebarSurfaceLayout: ViewModifier {
             .modifier(SidebarTrafficLightMotion(store: store,
                 slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
                 inset: floating ? Look.floatingSidebarGap : 0,
-                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking))
+                // Lights that stay follow the peeking panel only while it is out: the panel
+                // keeps its gap while it slides away, but the lights go back to the row.
+                lightsInset: (toolbar ? peeking : floating) ? Look.floatingSidebarGap : 0,
+                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
+                stay: toolbar ? 1 : 0))
+            // With the strip's own slide, so the lights arrive and leave with it.
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
     }
 }
 
@@ -926,8 +938,35 @@ struct WebCard: View {
     /// Little Vane's document meets the native window edges beneath its toolbar.
     var edgeToEdge = false
     private var radius: CGFloat { edgeToEdge ? 0 : Look.pageRadius }
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
+    /// View › Show Toolbar belongs to the browser window; Little Vane has its own bar.
+    private var toolbar: Bool { showsToolbar && !edgeToEdge && !store.isLittle }
 
     var body: some View {
+        // View › Show Toolbar is part of the card, as in Arc: a strip inside its corners
+        // with the page below it. The card's margins do not change.
+        // A split gives each pane its own strip instead; see SplitView's `Pane`.
+        VStack(spacing: 0) {
+            if toolbar && (store.folderUnlockPage != nil || store.activeSplit == nil) {
+                MainToolbarBar(tab: store.active)
+                    .transition(.move(edge: .top))
+            }
+            // Peek centres on the page, under the strip, as in Arc.
+            page.anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
+        .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
+        .modifier(ExtensionSidePanelDock(host: store.extensions, store: store, current: store.current,
+                                         radius: radius, edgeToEdge: edgeToEdge))
+        // No inset on the leading edge while the sidebar is docked — its own padding
+        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
+        // column stands in the same place and leaves the same gap.
+        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
+        .padding(.top, topGap)
+        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
+    }
+
+    private var page: some View {
         ZStack(alignment: .top) {
             // A split is one card holding several pages; everything that floats over the
             // page — find, the save prompt, the status bar — still belongs to `store.active`,
@@ -1017,16 +1056,6 @@ struct WebCard: View {
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
-        .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
-        // No inset on the leading edge while the sidebar is docked — its own padding
-        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
-        // column stands in the same place and leaves the same gap.
-        .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
-        .modifier(ExtensionSidePanelDock(host: store.extensions, store: store, current: store.current,
-                                         radius: radius, edgeToEdge: edgeToEdge))
-        .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
-        .padding(.top, topGap)
-        .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
     }
 
     /// The native viewport and the card share one width. Freezing only the
@@ -1118,6 +1147,8 @@ private struct Sidebar: View {
     @ChromeObserved var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isolatesSpaceContent = NativeSidebarBoundaryExperiment.enabled
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
+    private var toolbar: Bool { showsToolbar && !store.isLittle }
     @StateObject private var dropMarker = SidebarDropMarker()
     @StateObject private var downloadsHover = DownloadsHover()
     @State private var feedbackScope = FeedbackOcclusionScope()
@@ -1154,8 +1185,19 @@ private struct Sidebar: View {
         let _ = ResizeTimingDiagnostics.record("sidebar.body.sidebar")
         #endif
         SidebarChrome {
-            TopRow()
-            ActiveAddressPill()
+            TopRow(showsNavigation: !toolbar)
+                .overlay(alignment: .bottom) {
+                    // Where the pill stood, so empty Favourites still opens its drop tile
+                    // under the top row while the toolbar has the pill.
+                    if toolbar {
+                        SidebarDragAnchor(preview: dragPreview, store: store, region: .pill)
+                            .frame(height: 0)
+                    }
+                }
+            // View › Show Toolbar takes the pill and buttons up to its own row, as Arc does.
+            if !toolbar {
+                ActiveAddressPill().transition(.opacity)
+            }
             ZStack {
             if store.creatingSpace {
                 // Arc's Create a Space takes the whole strip, favourites included: the form
@@ -1198,6 +1240,8 @@ private struct Sidebar: View {
             BottomRow(downloadsHover: downloadsHover, hasPreviewItems: !previewItems.isEmpty,
                       preparePreview: preparePreview)
         }
+        // The same motion as the toolbar arriving over the page.
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
         .environment(\.sidebarDropMarker, dropMarker)
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
@@ -1336,14 +1380,19 @@ private struct ActiveNavButtons: View {
 struct TopRow: View {
     @EnvironmentObject var store: TabStore
     var layoutWidth: CGFloat? = nil
+    /// Off while View › Show Toolbar has the page's buttons; the lights and toggle stay.
+    var showsNavigation = true
 
-    var body: some View { TopRowContent(store: store, layoutWidth: layoutWidth) }
+    var body: some View {
+        TopRowContent(store: store, layoutWidth: layoutWidth, showsNavigation: showsNavigation)
+    }
 }
 
 private struct TopRowContent: View {
     @ChromeObserved var store: TabStore
     @WindowSidebarWidth private var sidebarWidth
     var layoutWidth: CGFloat? = nil
+    var showsNavigation = true
     private var layout: SidebarChromeLayout {
         SidebarChromeLayout(width: layoutWidth ?? sidebarWidth, fullScreen: fullScreen)
     }
@@ -1358,9 +1407,13 @@ private struct TopRowContent: View {
         #endif
         HStack(spacing: layout.headerSpacing) {
             if !fullScreen { Spacer().frame(width: Look.trafficLights) }
-            if !layout.usesOverflow { toggle }
+            // Narrow, the toggle rides with the buttons; with them gone it stands alone.
+            if !layout.usesOverflow || !showsNavigation { toggle }
             Spacer(minLength: 0)
-            ActiveNavButtons(spacing: layout.navigationSpacing, showsSidebarToggle: layout.usesOverflow)
+            if showsNavigation {
+                ActiveNavButtons(spacing: layout.navigationSpacing, showsSidebarToggle: layout.usesOverflow)
+                    .transition(.opacity)
+            }
         }
         .frame(height: Look.topRow)
         .buttonStyle(TactileButtonStyle())
@@ -1531,6 +1584,96 @@ private struct NavigationTarget: ViewModifier {
     }
 }
 
+/// View › Show Toolbar (⇧⌘D, as in Arc): a strip at the top of the browser window's page
+/// card with the page's back, forward and reload, its host, and its page actions. One
+/// app-wide setting that outlives the window, like the sidebar's width. Little Vane and
+/// Peek keep their own bar.
+@MainActor enum MainToolbar {
+    static let prefKey = "mainWindowShowsToolbar"
+    /// The strip's height, which is also how far the page's top edge moves.
+    static let height = Look.pillHeight
+    /// With the sidebar away the lights step into the strip: in by the card's margin, and
+    /// down onto the strip's centre line.
+    static let lightsShift = CGSize(width: Look.cardGap, height: Look.cardGap + height / 2 - Look.lightsCentre)
+    static var shown: Bool { UserDefaults.vane.bool(forKey: prefKey) }
+    /// The front window's page is painted at its new height first, the way a sidebar
+    /// close is, so the slide moves a finished page rather than reflowing it every frame.
+    static func toggle(in store: TabStore? = nil) {
+        let store = store ?? TabStore.all.first { $0.window === NSApp.keyWindow && $0.profileVisible }
+        if let store, let window = store.window as? VaneWindow,
+           window.prepareToolbarToggle(store, commit: flip) { return }
+        flip()
+    }
+    /// When the bar last came or went: its slide is still running for a moment after.
+    private(set) static var flippedAt = Date.distantPast
+    static var sliding: Bool { Date().timeIntervalSince(flippedAt) < UIAnimation.feedback.duration(0.15) + 0.05 }
+    private static func flip() {
+        flippedAt = Date()
+        UserDefaults.vane.set(!shown, forKey: prefKey)
+        rebuild()   // the menu item's tick
+    }
+}
+
+/// The strip itself: the sidebar's own buttons, then the host centred as plain text, and
+/// the pill's page actions at the trailing edge. With the sidebar away the strip in the
+/// window's top-leading corner leads with the lights and the sidebar toggle, the sidebar's
+/// top row without its buttons — unless the Library stands there with its own. Its empty
+/// space drags the window, which matters then: it is the window's only title bar.
+/// One per split pane, each about its own page, as in Arc.
+struct MainToolbarBar: View {
+    @EnvironmentObject private var store: TabStore
+    let tab: Tab?
+    /// Whether this strip is in the window's top-leading corner, where the lights go.
+    var leads = true
+
+    var body: some View {
+        MainToolbarRow(spacing: Look.inset) {
+            HStack(spacing: Look.inset) {
+                if leads && !store.sidebarShown && !store.libraryOpen {
+                    TopRow(showsNavigation: false).fixedSize().transition(.opacity)
+                }
+                NavButtons(tab: tab)
+            }
+            // The host, then its page actions: two of the row's three parts.
+            AddressPill(tab: tab, plain: true)
+        }
+        .padding(.horizontal, Look.inset)
+        .font(Look.icon)
+        .foregroundStyle(Look.inkSecondary)
+        .frame(height: MainToolbar.height)
+        .background(WindowDragArea())
+        // The card's own ground, which follows the Space's and a private window's look.
+        .background(Color(nsColor: Look.pageGround))
+        .overlay(alignment: .bottom) { Rectangle().fill(Look.hairline).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Toolbar")
+    }
+}
+
+/// Leading group, centred host, trailing group. The host gets only the room between the
+/// wider side and its mirror, so it stays centred and truncates rather than running under
+/// a button. ponytail: a narrow window can still squeeze the host to nothing.
+struct MainToolbarRow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0,
+               height: subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count >= 3, let first = subviews.first, let last = subviews.last else { return }
+        let lead = first.sizeThatFits(.unspecified).width, trail = last.sizeThatFits(.unspecified).width
+        first.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+        last.place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: .unspecified)
+        let room = max(0, bounds.width - 2 * (max(lead, trail) + spacing))
+        for middle in subviews.dropFirst().dropLast() {
+            middle.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                         proposal: ProposedViewSize(width: room, height: bounds.height))
+        }
+    }
+}
+
 /// Where the address bar used to be. It is a button, not a field: typing happens in the
 /// search bar, which is the one place in Vane a url or a search is entered.
 /// With no address it shows a search prompt; clicking opens the search bar.
@@ -1540,6 +1683,8 @@ struct AddressPill: View {
     var showsProfile = false
     var displayAddress: String? = nil
     var layoutWidth: CGFloat? = nil
+    /// View › Show Toolbar's face: the host as centred text, no pill, actions trailing.
+    var plain = false
     @ObservedObject private var changes = SiteChanges.shared
     @State private var tabRevision: UInt = 0
 
@@ -1549,7 +1694,7 @@ struct AddressPill: View {
         let _ = tabRevision
         let site = tab.map { SiteControlModel($0) } ?? SiteControlModel()
         PillBody(tab: tab, host: host, address: displayAddress ?? tab?.address ?? "", site: site,
-                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth)
+                 zoom: PillState.zoomLabel(tab?.zoom ?? 1), showsProfile: showsProfile, layoutWidth: layoutWidth, plain: plain)
             .onReceive(tab?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) {
                 tabRevision &+= 1
             }
@@ -1582,6 +1727,7 @@ private struct PillBody: View {
     var zoom: String?
     var showsProfile = false
     var layoutWidth: CGFloat? = nil
+    var plain = false
     @State private var hovering = false
     @State private var showingSiteControls = false
     @State private var pillFocused = false
@@ -1595,9 +1741,9 @@ private struct PillBody: View {
         .buttonStyle(TactileButtonStyle())
         .font(Look.pillGlyph)
         .foregroundStyle(showsProfile ? Color.white.opacity(0.95) : Look.inkSecondary)
-        .padding(.horizontal, Look.pillInset)
-        .frame(height: Look.pillHeight)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, plain ? Look.inset : Look.pillInset)
+        .frame(height: plain ? Look.control : Look.pillHeight)
+        .frame(maxWidth: plain ? nil : .infinity, alignment: .leading)
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
         .background {
@@ -1608,6 +1754,9 @@ private struct PillBody: View {
                         RoundedRectangle(cornerRadius: Look.pillRadius)
                             .fill(.white.opacity(hovering ? 0.08 : 0))
                     }
+            } else if plain {
+                RoundedRectangle(cornerRadius: Look.cardRadius)
+                    .fill(hovering ? Look.hairline : .clear)
             } else {
                 RoundedRectangle(cornerRadius: Look.pillRadius)
                     .fill(hovering ? chromeTheme.selected : chromeTheme.pillFill)
@@ -1615,11 +1764,17 @@ private struct PillBody: View {
         }
     }
 
-    var body: some View {
+    /// Plain, the field and its actions are two separate parts of the toolbar's row.
+    @ViewBuilder var body: some View {
+        pill
+        if plain { plainActions }
+    }
+
+    private var pill: some View {
         #if DEBUG
         let _ = ResizeTimingDiagnostics.record("sidebar.body.pill")
         #endif
-        field
+        return field
         .animation(reduced ? nil : Look.quick, value: hovering)
         .animation(reduced ? nil : Look.quick, value: compact)
         .vaneMotionPolicy()
@@ -1633,12 +1788,13 @@ private struct PillBody: View {
             ("Copy Link", copyLink),
             ("Site Controls", { if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true } }),
             ("Actual Size", { if let tab, zoom != nil { Zoom.reset(tab) } })
-        ], focusChanged: { pillFocused = $0 }, action: open)
+        ], focusChanged: { pillFocused = $0 }, claims: !plain || tab == nil || tab === store.active, action: open)
         // An auto-hidden Little Vane bar stays up while its field is in use.
         .preference(key: CompactBarEngaged.self, value: pillFocused || showingSiteControls)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
-        .onDrop(of: [.plainText, .url],
+        // Not the toolbar's host: that is the page's, not the top of the sidebar.
+        .onDrop(of: plain ? [] : [.plainText, .url],
                 delegate: TabDrop(store: store, target: nil, into: .favourite,
                                   axis: .horizontal, extent: 0, marker: dropMarker, side: .constant(nil),
                                   favouritePreview: dragPreview))
@@ -1648,9 +1804,38 @@ private struct PillBody: View {
         .onChange(of: address) { showingSiteControls = false }
     }
 
+    /// The pill's own page actions, out in the open at the toolbar's trailing edge.
+    private var plainActions: some View {
+        HStack(spacing: Look.pillGlyphGap) {
+            if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
+            if !address.isEmpty, let tab, tab.easelID == nil {
+                Button(action: copyLink) {
+                    CopyLinkGlyph(copied: store.feedback.copiedURL == address)
+                        .frame(width: Look.control, height: Look.control).contentShape(.rect)
+                }
+                .vaneTooltip("Copy Link", shortcut: Keybindings.binding(for: .copyPageURL).display)
+                .accessibilityLabel("Copy Link")
+            }
+            PinnedExtensions(store: store, tab: tab)
+            overflowMenu.frame(width: Look.control, height: Look.control)
+        }
+        .buttonStyle(TactileButtonStyle())
+        .font(Look.pillGlyph)
+        .foregroundStyle(Look.inkSecondary)
+    }
+
     @ViewBuilder private var content: some View {
         if showsProfile {
             profileContent
+        } else if plain {
+            HStack(spacing: Look.pillGlyphGap) {
+                Image(systemName: address.isEmpty ? "magnifyingglass"
+                      : site.insecure ? "exclamationmark.triangle" : "link")
+                Text(address.isEmpty ? "Search or Enter URL…" : host)
+                    .font(Look.text).lineLimit(1).truncationMode(.head)
+            }
+            .accessibilityHidden(true)
+            .vaneTooltip(address)
         } else if compact {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
@@ -1800,7 +1985,11 @@ private struct PillBody: View {
 
     /// With a page, the bar opens on its address; with none, on nothing — and what is
     /// submitted becomes the window's first tab.
-    private func open() { store.palette = tab == nil ? .newTab : .address }
+    private func open() {
+        // A split pane's own toolbar points the bar at that pane first.
+        if let tab, tab !== store.active { store.focusPane(tab.id) }
+        store.palette = tab == nil ? .newTab : .address
+    }
 
     private func copyLink() {
         guard let u = tab?.currentURL else { return }

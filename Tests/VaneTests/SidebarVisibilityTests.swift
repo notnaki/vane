@@ -100,7 +100,13 @@ import QuartzCore
         defer { app.setActivationPolicy(policy) }
         let loop = try await NativeFixtureApplicationLoop.acquire(activationPolicy: .accessory)
         var failure: (any Error)?
-        do { try await exerciseDismissalGeometry() } catch { failure = error }
+        // With Show Toolbar on the lights stay for the card's strip, but the panel must keep its gap.
+        let toolbarWas = MainToolbar.shown
+        for toolbar in [false, true] where failure == nil {
+            UserDefaults.vane.set(toolbar, forKey: MainToolbar.prefKey)
+            do { try await exerciseDismissalGeometry() } catch { failure = error }
+        }
+        UserDefaults.vane.set(toolbarWas, forKey: MainToolbar.prefKey)
         do { try await loop.close() }
         catch {
             if failure == nil { failure = error }

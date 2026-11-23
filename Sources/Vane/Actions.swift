@@ -175,6 +175,8 @@ extension PaletteCommand {
         // and a private window has no Spaces — neither has anything for these to act on.
         if !store.isLittle {
             out.append(PaletteCommand(.toggleSidebar, icon: "sidebar.left"))
+            out.append(PaletteCommand(MainToolbar.shown ? "Hide Toolbar" : "Show Toolbar",
+                                      icon: "menubar.rectangle", command: .toggleToolbar))
             if active != nil {
                 out += [
                     PaletteCommand(active?.kind == .pinned ? "Unpin Tab" : "Pin Tab",
@@ -306,7 +308,7 @@ extension PaletteCommand {
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
         .showReader, .translatePage, .pictureInPicture, .muteTab, .pauseAllMedia, .zoomIn, .zoomOut, .actualSize,
         .sharePage, .savePageAs, .capturePage, .captureFullPage, .showWebInspector,
-        .toggleSidebar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
+        .toggleSidebar, .toggleToolbar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
         .tidyTabs, .clearTabs, .newSpace, .nextSpace, .previousSpace,
         .showLibrary, .viewArchive, .viewHistory, .showDownloads,
         .settings, .keyboardShortcutsHelp, .vaneHelp,
