@@ -260,6 +260,17 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     return name.isEmpty ? nil : name
 }
 
+/// Translate Page reads as Show Original while the page is translated, asked each time the
+/// View menu opens rather than rebuilt on every tab switch.
+@MainActor private func translatePageItem() -> NSMenuItem {
+    let entry = item(.translatePage) { PageTranslation.toggle(Windows.current?.active) }
+    return validated(entry) { [weak entry] in
+        let tab = Windows.current?.active
+        entry?.title = PageTranslation.title(for: tab)
+        return tab?.existingWeb != nil && tab?.easelID == nil
+    }
+}
+
 @MainActor private func readerTypefaceItem() -> NSMenuItem {
     let entry = item(.readerSerif) {
         Reader.setSerif(!Reader.serif, in: Windows.current?.active)
@@ -852,6 +863,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.fullScreen) { NSApp.keyWindow?.toggleFullScreen(nil) },
         .separator(),
         item(.showReader) { Windows.current?.active.map(Reader.toggle) },
+        translatePageItem(),
         validated(item(.saveForOffline) {
             if let store = Windows.current, let tab = store.active { Task { await ReadingQueueCapture.shared.save(tab: tab, in: store) } }
         }) { ReadingQueueCapture.canSave(tab: Windows.current?.active, in: Windows.current) },

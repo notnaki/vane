@@ -627,6 +627,7 @@ private struct BrowserWindowContent: View {
         .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
+        .modifier(PageTranslationHost(store: store))
         .sheet(isPresented: $store.liveFolderSheet.presented(when: store.profileVisible)) {
             LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
         }
@@ -994,6 +995,8 @@ struct WebCard: View {
                 // prompt has never actually appeared. The view has to be the one observing.
                 if let tab = store.active {
                     PasswordOffer(tab: tab)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    TranslateOffer(tab: tab, store: store)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
@@ -1725,6 +1728,7 @@ private struct PillBody: View {
                     Button(Reader.isOn(tab) ? "Exit Reader" : "Enter Reader") { Reader.toggle(tab) }
                     ReaderPreferencesMenu(tab: tab)
                 }
+                Button(PageTranslation.title(for: tab)) { PageTranslation.toggle(tab, in: store) }
                 Button(store.isPrivate ? "Save for Offline (Unavailable in Private Browsing)" : "Save for Offline") {
                     Task { await ReadingQueueCapture.shared.save(tab: tab, in: store) }
                 }.disabled(!ReadingQueueCapture.canSave(tab: tab, in: store))

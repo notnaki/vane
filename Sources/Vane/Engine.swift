@@ -1263,6 +1263,7 @@ struct TitleReveal: Equatable, Sendable {
         readingDocumentGeneration = UUID()
         passwordContinuationFill = nil
         Reader.forget(tab: self)
+        PageTranslation.forget(tab: self, released: true)
         passwordStep = nil
         chosenAccount = nil
         passwordGeneration = nil
@@ -2065,6 +2066,9 @@ struct TitleReveal: Equatable, Sendable {
         updatePageTitle(from: w)
         if w === existingWeb {
             Reader.navigationCommitted(self)
+            // At commit, not provisional start: a link that turns out to be a download
+            // leaves the translated page on screen, and its state with it.
+            PageTranslation.forget(tab: self)
             for hook in Array(documentCommitHooks.values) { hook() }
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
@@ -2101,6 +2105,7 @@ struct TitleReveal: Equatable, Sendable {
         Trace.note("favicon")
         favicons.load(for: self)
         guard let url = w.url else { return }
+        if !displayingNavigationError { PageTranslation.offer(self) }
         bookmarked = history.isBookmarked(url)
         let document = readingDocumentGeneration
         Task { [weak self, weak w] in

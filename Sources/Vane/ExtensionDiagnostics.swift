@@ -21,9 +21,9 @@ import WebKit
         let declared = Set(((manifest["permissions"] as? [String] ?? [])
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
-        // Vane supplies `sidePanel` itself; see ExtensionSidePanel.swift.
+        // Vane supplies `sidePanel` and `identity` itself; see ExtensionSidePanel.swift, ExtensionIdentity.swift.
         var issues = declared.subtracting(recognized)
-            .subtracting([ExtensionSidePanelAPI.permission, ExtensionDebuggerAPI.permission]).sorted().map {
+            .subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission]).sorted().map {
             "\($0): \(unrecognized)"
         }
         if declared.contains(ExtensionSidePanelAPI.permission) {
@@ -31,6 +31,12 @@ import WebKit
         }
         if declared.contains(ExtensionDebuggerAPI.permission) {
             issues.append("debugger: Vane answers part of the DevTools protocol for the tab on screen: Runtime.evaluate, Page.captureScreenshot, mouse, key and text input, Page.navigate and Page.reload. Console, network and dialog events are not sent, and other commands fail.")
+        }
+        if ExtensionIdentityAPI.declared(manifest) {
+            issues.append("identity: Vane runs web sign-in (launchWebAuthFlow) in its own window. Google account tokens (getAuthToken) are unavailable.")
+        } else if declared.contains(ExtensionIdentityAPI.permission) {
+            // WebKit cannot grant a permission it does not know, so there is no grant to honour.
+            issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"

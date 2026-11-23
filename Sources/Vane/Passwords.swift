@@ -1247,6 +1247,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("certificate trust", CertificateTrust.check),
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
+                               ("page translation", PageTranslation.check),
                                ("command palette", Palette.check),
                                ("find in page", Find.check),
                                ("clear browsing data", BrowsingData.check),
@@ -1528,6 +1529,29 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             ProfileManager.shared.deleteSpace(space.id, in: profileID)
         } else {
             print("  --    no private VANE_DATA_DIR, nothing to pin")
+        }
+
+        // Not pure: real commits on a real page. Only on a private `VANE_DATA_DIR`.
+        print("page translation across a navigation")
+        if Store.overrideDirectory != nil {
+            let store = TabStore(isPrivate: true)
+            let tab = store.newBlankTab(focus: false)
+            var serial = 0
+            for (name, ok) in PageTranslation.liveCheck(tab: tab, load: { html in
+                serial += 1
+                let url = URL(string: "https://translate\(serial).example/")!
+                tab.web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+                let deadline = Date().addingTimeInterval(5)
+                // `url` moves at provisional start; `isLoading` ends after commit and load.
+                while (tab.web.url != url || tab.web.isLoading || tab.loading), Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+                }
+                return tab.web.url == url && !tab.web.isLoading
+            }) { check(name, ok) }
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        } else {
+            print("  --    no private VANE_DATA_DIR, nothing to translate")
         }
 
         print("closing a selected pinned page")
