@@ -316,7 +316,7 @@ import SwiftUI
             Text("Optional password sync is managed in Settings → iCloud. Local saved logins remain available when sync is off.")
             Text(Self.passkeysSigned
                  ? "Passkeys use macOS’s passkey sheet, with Touch ID and Apple Passwords or another passkey app you’ve turned on."
-                 : "This build isn’t signed for passkeys, so websites can’t use them here. Vane’s signed releases support them.")
+                 : "This build isn’t signed for passkeys, so websites can’t use them here.")
         }
         .font(Look.caption).foregroundStyle(Look.inkSecondary)
         .fixedSize(horizontal: false, vertical: true)

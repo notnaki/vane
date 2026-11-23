@@ -181,8 +181,9 @@ Existing import/export remains available; this change adds no export format or n
 plaintext-export action. No strength or reused-password analysis is added.
 
 Passkeys are WebKit's own: Apple approved Vane's managed browser passkey entitlement
-(2026-10-06), and builds signed with the provisioning profile that carries it hand WebAuthn
-requests to the macOS passkey sheet. Ad-hoc and unprovisioned builds lack it, and Settings
+(2026-10-06), and builds signed with the provisioning profile that carries it should hand
+WebAuthn requests to the macOS passkey sheet; real-site sign-in is not yet verified (see the
+[readiness tracker](BROWSER-READINESS-TODO.md)). Ad-hoc and unprovisioned builds lack it, and Settings
 says so. Vane does not store or simulate passkeys itself.
 
 ## Apple Passwords and iCloud Keychain
