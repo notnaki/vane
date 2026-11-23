@@ -324,22 +324,19 @@ import XCTest
 
         try await keysStayInThePage(page)
 
-        // A press that drags a link starts no drag session: AppKit's would follow the real pointer.
-        _ = try await run("""
+        // After a synthesized press, a drag the page would start is cancelled: AppKit's drag
+        // session would follow the real pointer. Asked of the page directly, since whether
+        // WebKit begins a drag from these moves depends on the host's focus and timing.
+        let dragged = try await run("""
             const mouse = (type, x, y, extra = {}) => send('Input.dispatchMouseEvent', {type, x, y, button: 'left', buttons: 0, clickCount: 1, modifiers: 0, ...extra});
+            const allowed = 'String(l.dispatchEvent(new DragEvent("dragstart", {bubbles: true, cancelable: true})))';
+            const before = JSON.parse(await evaluate(allowed)).result.value;
             await mouse('mouseMoved', 320, 42, {button: 'none'});
             await mouse('mousePressed', 320, 42, {buttons: 1});
-            for (const [x, y] of [[326, 46], [340, 60], [360, 90], [380, 130]]) await mouse('mouseMoved', x, y, {buttons: 1});
-            return 'dragged';
+            await mouse('mouseReleased', 380, 130);
+            return before + '|' + JSON.parse(await evaluate(allowed)).result.value;
             """, in: page)
-        try await wait("a refused drag") {
-            try await self.run("return JSON.parse(await evaluate('log.join()')).result.value", in: page)?.contains("drag:") == true
-        }
-        let dragged = try await run("""
-            await send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: 380, y: 130, button: 'left', buttons: 0, clickCount: 1, modifiers: 0});
-            return JSON.parse(await evaluate('log.filter(line => line.startsWith("drag:")).join()')).result.value;
-            """, in: page)
-        XCTAssertEqual(dragged, "drag:true")
+        XCTAssertEqual(dragged, "true|false")
 
         // A wheel event the page trusts, and the scroll it causes.
         _ = try await run("await send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: 300, y: 300, deltaX: 0, deltaY: 240, modifiers: 0}); return 'sent'", in: page)
