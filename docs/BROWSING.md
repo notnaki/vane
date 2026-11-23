@@ -53,8 +53,10 @@ sidebar again returns to your tabs.
 bar) adds a slim bar above the page with Back, Forward, Reload, and the page's address,
 for the active tab or split pane; they move there from the top of the sidebar, which
 keeps its sidebar button. It applies to every browser window and is remembered
-after you quit. With the sidebar hidden, drag the toolbar's empty space to move the
-window. Little Vane and Peek keep their own bar.
+after you quit. With the sidebar hidden, the toolbar starts with the window's close,
+minimise, and zoom buttons and the sidebar button, in the same place the sidebar shows
+them, and you can drag the toolbar's empty space to move the window. Little Vane and
+Peek keep their own bar.
 
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
 The tab's close button appears at the end of the row while you hover; otherwise the

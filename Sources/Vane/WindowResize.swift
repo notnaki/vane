@@ -78,12 +78,17 @@ extension EnvironmentValues {
     private let autoSubviews: Bool
     private var installed = false
     private var restored = false
+    private let originalOrigin: NSPoint
+    /// The page keeps its top edge, not its origin, while its height changes: in AppKit's
+    /// unflipped host that edge is the far one. Set before `prepare()`.
+    var topAnchored = false
 
     init(web: WKWebView, size: NSSize) {
         self.web = web
         self.size = size
         parent = web.superview
         originalSize = web.frame.size
+        originalOrigin = web.frame.origin
         originalParentSize = web.superview?.bounds.size ?? .zero
         preparationParentSize = originalParentSize
         mask = web.autoresizingMask
@@ -116,9 +121,15 @@ extension EnvironmentValues {
     }
 
     func prepare() {
+        let top = web.frame.maxY
         freezeNativeGeometry()
         prepareStyle()
         web.setFrameSize(size)
+        if topAnchored, let parent, !parent.isFlipped {
+            // Hang from the top and let the bottom margin take the host's slide.
+            web.setFrameOrigin(NSPoint(x: web.frame.minX, y: top - size.height))
+            web.autoresizingMask = [.minYMargin]
+        }
         web.prepareContent(in: NSRect(origin: .zero, size: size))
     }
 
@@ -138,6 +149,7 @@ extension EnvironmentValues {
             if committed { installNativeGeometry() }
             if !committed {
                 let parentSize = parent?.bounds.size ?? originalParentSize
+                if topAnchored { web.setFrameOrigin(originalOrigin) }
                 web.setFrameSize(NSSize(
                     width: originalSize.width + (mask.contains(.width) ? parentSize.width - originalParentSize.width : 0),
                     height: originalSize.height + (mask.contains(.height) ? parentSize.height - originalParentSize.height : 0)))
@@ -400,9 +412,10 @@ extension EnvironmentValues {
 
     private static let presentation = NSSelectorFromString("_doAfterNextPresentationUpdate:")
 
-    static func targets(in root: NSView, nextSize: NSSize, leadingExpansion: CGFloat = 0) -> [PreparedPageResize] {
+    static func targets(in root: NSView, nextSize: NSSize, leadingExpansion: CGFloat = 0,
+                        heightExpansion: CGFloat = 0) -> [PreparedPageResize] {
         let delta = NSSize(width: nextSize.width - root.bounds.width,
-                           height: nextSize.height - root.bounds.height)
+                           height: nextSize.height - root.bounds.height + heightExpansion)
         var result: [PreparedPageResize] = []
         var admitted = true
         func visit(_ view: NSView) {

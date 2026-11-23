@@ -1,5 +1,7 @@
 import AppKit
+import ScreenCaptureKit
 import SwiftUI
+import WebKit
 import XCTest
 @testable import vane
 
@@ -129,6 +131,156 @@ import XCTest
             try await settle()
             XCTAssertEqual(try page().maxY, without.maxY, accuracy: 1)
             if sidebar { try assertSidebarChrome(true, "toolbar off again") }
+        }
+    }
+
+    /// A production-shaped window, on screen, with its own traffic lights: with the sidebar
+    /// hidden the toolbar row leads with the lights and the sidebar toggle, in the sidebar's
+    /// spot, and the toggle brings the sidebar back. The page is painted at its new height
+    /// before the bar slides, and keeps that height (and its scroll) through the slide.
+    func testSidebarHiddenRowAndBufferedResize() async throws {
+        TestEnvironment.prepare()
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        let was = MainToolbar.shown
+        if was { MainToolbar.toggle() }
+        let profile = ProfileManager.shared.create(name: "Toolbar lights fixture")
+        let store = TabStore(profileID: profile.id, session: [])
+        let tab = store.newBlankTab()
+        let rows = (0..<300).map { "<p>Row \($0)</p>" }.joined()
+        tab.web.loadHTMLString("<body style='margin:0;font:16px sans-serif'>\(rows)</body>", baseURL: nil)
+        store.palette = nil
+        let window = VaneWindow(contentRect: .init(x: 120, y: 120, width: 1000, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.toolbar = NSToolbar(identifier: "VaneEmpty")
+        window.toolbarStyle = .unifiedCompact
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        store.window = window
+        window.contentView = NSHostingView(rootView: BrowserWindow()
+            .environmentObject(store).environmentObject(ProfileManager.shared))
+        if NSApp.isHidden { NSApp.unhideWithoutActivation() }
+        window.orderFrontRegardless()
+        defer {
+            if MainToolbar.shown != was { MainToolbar.toggle() }
+            saver.setMode(previousMode)
+            window.orderOut(nil)
+            window.contentView = nil
+            window.close()
+            store.window = nil
+            store.dropStashes()
+            let tabs = store.tabs
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            Store.forget(profile.id)
+            _ = ProfileManager.shared.delete(profile.id)
+        }
+        try await compatibilityWait {
+            reassertForeground(window, key: false)
+            return window.isVisible && window.occlusionState.contains(.visible) && !tab.web.isLoading
+                && (tab.existingWeb?.bounds.height ?? 0) > 100
+        }
+        func settle() async throws {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(450))
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        func scrollY() async throws -> Double {
+            try await tab.web.evaluateJavaScript("window.scrollY") as? Double ?? -1
+        }
+        func light() throws -> NSRect {
+            let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+            XCTAssertFalse(close.isHidden, "the close button is on screen")
+            return close.convert(close.bounds, to: nil)
+        }
+        try await settle()
+        let docked = try light()
+
+        // The buffered resize, both ways, with the sidebar shown.
+        _ = try await tab.web.evaluateJavaScript("window.scrollTo(0, 600)")
+        try await Task.sleep(for: .milliseconds(100))
+        let web = tab.web
+        for showing in [true, false] {
+            let start = web.frame.height
+            let target = start + (showing ? -MainToolbar.room : MainToolbar.room)
+            MainToolbar.toggle(in: store)
+            XCTAssertNotEqual(MainToolbar.shown, showing, "the setting waits for the prepared paint")
+            XCTAssertEqual(web.frame.height, target, accuracy: 0.5, "painted at its final height first")
+            var hostHeights: Set<Int> = []
+            for _ in 0..<30 {
+                try await Task.sleep(for: .milliseconds(16))
+                window.contentView?.layoutSubtreeIfNeeded()
+                if let host = web.superview { hostHeights.insert(Int(host.bounds.height.rounded())) }
+                XCTAssertEqual(web.frame.height, target, accuracy: 0.5,
+                               "no per-frame reflow while the bar slides (showing: \(showing))")
+            }
+            try await settle()
+            XCTAssertEqual(MainToolbar.shown, showing)
+            let host = try XCTUnwrap(web.superview)
+            XCTAssertEqual(web.frame.height, host.bounds.height, accuracy: 0.5)
+            XCTAssertEqual(web.frame.minY, host.bounds.minY, accuracy: 0.5)
+            XCTAssertGreaterThan(hostHeights.count, 1, "the card itself still slid")
+            let kept = try await scrollY()
+            XCTAssertEqual(kept, 600, accuracy: 1, "scroll kept (showing: \(showing))")
+        }
+
+        // Sidebar hidden, toolbar on: lights and toggle stay where the sidebar had them.
+        for dark in [false, true] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            store.sidebarShown = true
+            try await settle()
+            await captureScreen(window, "\(dark ? "dark" : "light")-toolbar-off-sidebar-shown")
+            MainToolbar.toggle(in: store)
+            try await settle()
+            await captureScreen(window, "\(dark ? "dark" : "light")-sidebar-shown")
+            store.sidebarShown = false
+            try await settle()
+            XCTAssertEqual(try light(), docked, "the lights do not move when the sidebar goes")
+            await captureScreen(window, "\(dark ? "dark" : "light")-sidebar-hidden")
+            // The toggle, where the sidebar's own row draws it, brings the sidebar back.
+            let x = Look.inset + Look.trafficLights
+                + SidebarChromeLayout(width: SidebarWidth.inWindow(store)).headerSpacing + Look.control / 2
+            let y = window.contentView!.bounds.height - (Look.topInset + Look.topRow / 2)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y),
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
+            }
+            try await settle()
+            XCTAssertTrue(store.sidebarShown, "the toolbar's toggle reopens the sidebar")
+            XCTAssertEqual(try light(), docked)
+            MainToolbar.toggle(in: store)
+            try await settle()
+        }
+    }
+
+    /// The window as the compositor shows it, traffic lights included, and its top-left
+    /// corner, under `VANE_MAIN_TOOLBAR_CAPTURE`.
+    private func captureScreen(_ window: NSWindow, _ name: String) async {
+        guard let dir = ProcessInfo.processInfo.environment["VANE_MAIN_TOOLBAR_CAPTURE"],
+              let content = try? await SCShareableContent.currentProcess,
+              let target = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) })
+        else { return }
+        let configuration = SCStreamConfiguration()
+        configuration.width = Int(window.frame.width * window.backingScaleFactor)
+        configuration.height = Int(window.frame.height * window.backingScaleFactor)
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        guard let image = try? await SCScreenshotManager.captureImage(
+            contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: configuration)
+        else { return }
+        let scale = window.backingScaleFactor
+        let corner = image.cropping(to: CGRect(x: 0, y: 0, width: 420 * scale, height: 110 * scale))
+        for (suffix, picture) in [("", image), ("-corner", corner)] {
+            guard let picture else { continue }
+            let url = URL(fileURLWithPath: dir).appendingPathComponent("window-\(name)\(suffix).png")
+            try? NSBitmapImageRep(cgImage: picture).representation(using: .png, properties: [:])?.write(to: url)
         }
     }
 

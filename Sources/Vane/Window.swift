@@ -76,6 +76,38 @@ final class VaneWindow: NSWindow {
         return true
     }
 
+    private var toolbarResizePreparation: SidebarPageResizePreparation?
+
+    /// View › Show Toolbar moves the page's top edge by `MainToolbar.room`. Paint the page at
+    /// its new height under the card's clip first, exactly as a sidebar close does, then
+    /// flip the setting; the slide then moves a page that has already reflowed once.
+    /// A second toggle while the first is still waiting for paint cancels it.
+    func prepareToolbarToggle(_ store: TabStore, commit: @escaping @MainActor () -> Void) -> Bool {
+        if toolbarResizePreparation?.awaitingPaint == true {
+            toolbarResizePreparation?.cancel()
+            toolbarResizePreparation = nil
+            return true
+        }
+        toolbarResizePreparation?.cancel()
+        toolbarResizePreparation = nil
+        guard isVisible, !isPreparingPageResize, !inLiveResize, let root = contentView,
+              !store.isLittle, !store.libraryOpen else { return false }
+        let pages = WindowResizePreparation.targets(in: root, nextSize: root.bounds.size,
+            heightExpansion: MainToolbar.shown ? MainToolbar.room : -MainToolbar.room)
+        guard !pages.isEmpty else { return false }
+        pages.forEach { $0.topAnchored = true }
+        let wanted = !MainToolbar.shown
+        let preparation = SidebarPageResizePreparation(window: self, pages: pages,
+            isCurrent: { [weak self, weak store] in
+                guard let self, let store else { return false }
+                return store.window === self && store.profileVisible && !store.libraryOpen
+                    && MainToolbar.shown != wanted
+            }, commit: commit)
+        toolbarResizePreparation = preparation
+        preparation.start()
+        return true
+    }
+
     var isPreparingPageResize: Bool { resizePreparation?.isPreparing == true || livePageResizeBuffer?.isPreparing == true }
 
     /// A covered native commit already runs AppKit's window layout lifecycle.

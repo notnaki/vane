@@ -553,6 +553,14 @@ private struct BrowserWindowContent: View {
     /// Available chrome width, capped once both navigation columns fit. The page
     /// still receives exact native geometry without republishing every window pixel.
     @State private var windowWidth: CGFloat = 0
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
+    /// The width of the lights-and-toggle group the toolbar leads with, once measured.
+    @State private var toolbarLead: CGFloat = 0
+    /// View › Show Toolbar with no sidebar on screen: the toolbar row is the window's only
+    /// title bar, so the lights stay and the sidebar's toggle stands beside them, as in Arc.
+    private var toolbarHoldsLights: Bool {
+        showsToolbar && !store.isLittle && !store.sidebarShown && !peeking && !store.libraryOpen
+    }
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
     /// follow. The Library counts: it stands where the sidebar does, with the lights' own
@@ -595,6 +603,7 @@ private struct BrowserWindowContent: View {
                             libraryNavigationEnabled: !store.spaceGesture.swiping)))
                     .anchorPreference(key: ToastBounds.self, value: .bounds) { [.page: $0] },
                 sidebar: sidebarSurface, panel: LibraryPanel())
+            toolbarLeadingGroup
             edgeStrip
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
@@ -632,6 +641,7 @@ private struct BrowserWindowContent: View {
         } action: { windowWidth = $0 }
         .environment(\.sidebarWindowWidth, windowWidth > 0 ? min(windowWidth, SidebarWidth.maximum + 200) : .infinity)
         .environment(\.librarySpaceCatalog, librarySpaces)
+        .environment(\.mainToolbarLead, toolbarHoldsLights ? toolbarLead : 0)
         .onAppear {
             if !store.isPrivate { librarySpaces.prepare(manager: profiles) }
         }
@@ -678,6 +688,25 @@ private struct BrowserWindowContent: View {
         .background { WindowTitleSync() }
     }
 
+    /// The sidebar's own top row, minus the page's buttons, pinned where the sidebar draws
+    /// it: the lights and toggle stand still while the sidebar slides away under them.
+    /// Fixed to the window rather than riding on the toolbar, which moves with the card.
+    private var toolbarLeadingGroup: some View {
+        ZStack(alignment: .topLeading) {
+            if toolbarHoldsLights {
+                TopRow(showsNavigation: false)
+                    .fixedSize()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarLead = $0 }
+                    .padding(.leading, Look.inset)
+                    .padding(.top, Look.topInset)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbarHoldsLights)
+        .zIndex(1)
+    }
+
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
     @ViewBuilder private var edgeStrip: some View {
         // Not while the Library is open: the strip is under the panel, and a sidebar
@@ -708,7 +737,8 @@ private struct BrowserWindowContent: View {
                                               blocked: !visible || store.palette != nil))
             .accessibilityHidden(!visible || store.palette != nil || store.libraryOpen)
             .modifier(SidebarSurfaceLayout(store: store, visible: visible, floating: floating,
-                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking))
+                libraryOpen: store.libraryOpen, peeking: !store.sidebarShown && peeking,
+                toolbar: showsToolbar && !store.isLittle))
             .allowsHitTesting(visible && !store.libraryOpen)
             // Above the page during edge reveal and dismissal; below the resize handle.
             .zIndex(1)
@@ -739,6 +769,8 @@ private struct SidebarSurfaceLayout: ViewModifier {
     let floating: Bool
     let libraryOpen: Bool
     let peeking: Bool
+    /// View › Show Toolbar keeps the lights on its row whether or not the sidebar is there.
+    var toolbar = false
 
     func body(content: Content) -> some View {
         content
@@ -761,7 +793,8 @@ private struct SidebarSurfaceLayout: ViewModifier {
             .modifier(SidebarTrafficLightMotion(store: store,
                 slide: visible ? 0 : -(width + 2 * Look.floatingSidebarGap),
                 inset: floating ? Look.floatingSidebarGap : 0,
-                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking))
+                visibility: visible ? 1 : 0, libraryOpen: libraryOpen, peeking: peeking,
+                lightsStay: toolbar))
     }
 }
 
@@ -1565,10 +1598,29 @@ private struct NavigationTarget: ViewModifier {
     /// Arc's pill stops short of the window's width; what is left either side is empty
     /// title bar to drag.
     static let pillMaxWidth: CGFloat = 640
+    /// How far the page's top edge moves when the bar comes or goes.
+    static let room = top + Look.pillHeight
     static var shown: Bool { UserDefaults.vane.bool(forKey: prefKey) }
-    static func toggle() {
+    /// The front window's page is painted at its new height first, the way a sidebar
+    /// close is, so the slide moves a finished page rather than reflowing it every frame.
+    static func toggle(in store: TabStore? = nil) {
+        let store = store ?? TabStore.all.first { $0.window === NSApp.keyWindow && $0.profileVisible }
+        if let store, let window = store.window as? VaneWindow,
+           window.prepareToolbarToggle(store, commit: flip) { return }
+        flip()
+    }
+    private static func flip() {
         UserDefaults.vane.set(!shown, forKey: prefKey)
         rebuild()   // the menu item's tick
+    }
+}
+
+private struct MainToolbarLeadKey: EnvironmentKey { static let defaultValue: CGFloat = 0 }
+extension EnvironmentValues {
+    /// The lights-and-toggle group's width while the toolbar row leads with it, else 0.
+    var mainToolbarLead: CGFloat {
+        get { self[MainToolbarLeadKey.self] }
+        set { self[MainToolbarLeadKey.self] = newValue }
     }
 }
 
@@ -1578,6 +1630,7 @@ private struct NavigationTarget: ViewModifier {
 /// with the sidebar hidden: then this row is the window's only title bar.
 private struct MainToolbarBar: View {
     @EnvironmentObject private var store: TabStore
+    @Environment(\.mainToolbarLead) private var lead
 
     var body: some View {
         HStack(spacing: Look.inset) {
@@ -1592,6 +1645,8 @@ private struct MainToolbarBar: View {
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .frame(height: Look.pillHeight)
+        // Room for the window-pinned lights and toggle; still title bar to drag.
+        .padding(.leading, lead > 0 ? Look.inset + lead + Look.inset - Look.cardGap : 0)
         .background(WindowDragArea())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Toolbar")
