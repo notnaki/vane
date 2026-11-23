@@ -20,8 +20,10 @@ import WebKit
     // Requests travel as `ExtensionDebuggerAPI`'s do: a `tabs.create` for a reserved URL,
     // answered by a "tab" whose title is JSON. WebKit resolves `openerTabId` and
     // `windowId`, so a tab or window the extension may not see never reaches the host.
-    // WebKit's tabs carry no `groupId`; the tabs the script hands back or announces get it
-    // from one call per window, which answers each tab's group by its index.
+    // WebKit's tabs carry no `groupId`; those `tabs.get` and `query` hand back get it from
+    // one call per window, which answers each tab's group by its index. WebKit's
+    // `runtime.lastError` and `tabs` events cannot be replaced, so a callback that fails
+    // here is answered by a bridge call that fails with the same message: WebKit sets it.
     // ponytail: a group's `windowId` is learned from those per-window calls. A group first
     // heard of in an event costs one call per window to place.
     nonisolated static let script = #"""
@@ -44,20 +46,15 @@ import WebKit
                 catch (error) { throw new Error(String(error?.message ?? error).replace(/^Invalid call to tabs\.create\(\)\. /, '')); }
                 return JSON.parse(tab.title).result;
               };
-              // A callback that fails runs with `runtime.lastError` set, as in Chrome.
-              let failure;
-              const native = Object.getOwnPropertyDescriptor(runtime, 'lastError')
-                ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(runtime), 'lastError');
-              try {
-                Object.defineProperty(runtime, 'lastError', {configurable: true,
-                  get: () => failure ?? (native?.get ? native.get.call(runtime) : native?.value)});
-              } catch (error) { console.error(error); }
               const settle = (promise, callback) => {
                 if (typeof callback !== 'function') return promise;
-                promise.then(callback, error => {
-                  failure = {message: String(error?.message ?? error)};
-                  try { callback(); } finally { failure = undefined; }
-                });
+                promise.then(callback, error => original.create({active: false, url: runtime.getURL('/__vane_tab_groups__?'
+                  + new URLSearchParams({op: 'fail', message: String(error?.message ?? error)}))}, () => callback()));
+              };
+              // WebKit's own call with a callback sets `runtime.lastError` itself.
+              const wrap = (method, args, callback, after) => {
+                if (typeof callback !== 'function') return method(...args).then(after);
+                method(...args, result => runtime.lastError ? callback() : after(result).then(callback, error => console.error(error)));
               };
               const windowIds = new Map();
               const inWindow = async windowId => {
@@ -86,94 +83,34 @@ import WebKit
                 for (const tab of list) tab.groupId = members.get(tab.windowId)?.[tab.index] ?? NONE;
                 return list;
               };
-              const tabIds = value => {
+              const tokens = async value => {
                 const ids = [value].flat();
                 if (!ids.length || !ids.every(Number.isInteger)) throw new Error('A tab id must be an integer.');
-                return ids;
+                return Promise.all(ids.map(tabId => call('token', {tabId})));
               };
               const extra = {
-                get(tabId, callback) { return settle(original.get(tabId).then(async tab => (await annotate([tab]))[0]), callback); },
+                get(tabId, callback) { return wrap(original.get, [tabId], callback, async tab => (await annotate([tab]))[0]); },
                 query(info, callback) {
                   if (typeof info === 'function') [info, callback] = [{}, info];
                   const {groupId, ...rest} = info ?? {};
-                  return settle(original.query(rest).then(annotate)
-                    .then(list => groupId === undefined ? list : list.filter(tab => tab.groupId === groupId)), callback);
+                  return wrap(original.query, [rest], callback, list => annotate(list)
+                    .then(list => groupId === undefined ? list : list.filter(tab => tab.groupId === groupId)));
                 },
                 // ponytail: `createProperties.windowId` is not read. Vane groups a tab in its
-                // own window and refuses to join a group in another. One call per window names every tab by its index, so the host changes all
-                // of a window's tabs at once or none of them.
+                // own window and refuses to join a group in another. Each tab is named by a
+                // token WebKit resolved for it, so the host changes exactly those tabs, all
+                // at once or none of them.
                 group(options, callback) {
                   return settle((async () => {
-                    const list = await annotate(await Promise.all(tabIds(options?.tabIds).map(id => original.get(id))));
-                    if (new Set(list.map(tab => tab.windowId)).size > 1) throw new Error('Vane cannot group tabs across windows.');
-                    const values = {tabs: list.map(tab => tab.index).join(',')};
+                    const values = {tabs: (await tokens(options?.tabIds)).join(',')};
                     if (options?.groupId !== undefined) values.groupId = String(options.groupId);
-                    const {groupId} = await call('group', {tabId: list[0].id}, values);
-                    for (const tab of list) if (tab.groupId !== groupId) changed(tab.id, groupId);
-                    return groupId;
+                    return (await call('group', {}, values)).groupId;
                   })(), callback);
                 },
                 ungroup(value, callback) {
-                  return settle((async () => {
-                    const byWindow = new Map();
-                    for (const tab of await annotate(await Promise.all(tabIds(value).map(id => original.get(id)))))
-                      byWindow.set(tab.windowId, [...(byWindow.get(tab.windowId) ?? []), tab]);
-                    const request = (list, extra = {}) => call('ungroup', {tabId: list[0].id}, {tabs: list.map(tab => tab.index).join(','), ...extra});
-                    for (const list of byWindow.values()) await request(list, {check: '1'});
-                    for (const list of byWindow.values()) {
-                      await request(list);
-                      for (const tab of list) if (tab.groupId !== NONE) changed(tab.id, NONE);
-                    }
-                  })(), callback);
+                  return settle((async () => { await call('ungroup', {}, {tabs: (await tokens(value)).join(',')}); })(), callback);
                 }
               };
-              // WebKit's tabs carry no `groupId`; what it hands back and announces gets one.
-              // ponytail: `tabs.onUpdated` reports a `groupId` change only for this extension's
-              // own `tabs.group`/`ungroup`; the user's moves and other extensions' are silent.
-              const one = async value => Array.isArray(value) ? annotate(value)
-                : value && typeof value === 'object' && Number.isInteger(value.id) ? (await annotate([value]))[0] : value;
-              for (const name of ['create', 'update', 'move', 'duplicate']) {
-                if (typeof tabs[name] !== 'function') continue;
-                const method = tabs[name].bind(tabs);
-                extra[name] = (...args) => {
-                  const callback = typeof args.at(-1) === 'function' ? args.pop() : undefined;
-                  return settle(method(...args).then(one), callback);
-                };
-              }
-              const updatedListeners = new Set();
-              const changed = (tabId, groupId) => {
-                if (!updatedListeners.size) return;
-                original.get(tabId).then(one).then(tab => {
-                  for (const listener of [...updatedListeners]) {
-                    try { listener(tabId, {groupId}, tab); } catch (error) { console.error(error); }
-                  }
-                }, error => console.error(error));
-              };
-              for (const [name, position] of [['onCreated', 0], ['onUpdated', 2]]) {
-                const source = tabs[name];
-                if (typeof source?.addListener !== 'function') continue;
-                const wrappers = new Map();
-                extra[name] = Object.freeze({
-                  addListener(listener) {
-                    if (typeof listener !== 'function' || wrappers.has(listener)) return;
-                    const wrapper = (...args) => {
-                      one(args[position]).then(() => listener(...args)).catch(error => console.error(error));
-                    };
-                    wrappers.set(listener, wrapper);
-                    if (name === 'onUpdated') updatedListeners.add(listener);
-                    source.addListener(wrapper);
-                  },
-                  removeListener(listener) {
-                    const wrapper = wrappers.get(listener);
-                    if (!wrapper) return;
-                    wrappers.delete(listener);
-                    updatedListeners.delete(listener);
-                    source.removeListener(wrapper);
-                  },
-                  hasListener: listener => wrappers.has(listener),
-                  hasListeners: () => wrappers.size > 0
-                });
-              }
               const listeners = {created: new Set(), updated: new Set(), removed: new Set(), moved: new Set()};
               const listening = () => Object.values(listeners).some(set => set.size > 0);
               let polling = false, cursor;
@@ -350,17 +287,15 @@ import WebKit
         }
     }
 
-    /// The tabs a request names by their index in the window, the first of which WebKit
-    /// resolved as `openerTabId`. A list that no longer starts there has moved under it.
-    private func named(_ value: String?, first: Tab, in store: TabStore) throws -> [Tab] {
-        let all = store.accessibleTabs
-        let indexes = (value ?? "").split(separator: ",").map { Int($0) }
-        guard let index = indexes.first ?? nil, all.indices.contains(index), all[index] === first else {
-            throw Failure("No tab with that id.")
-        }
-        return try indexes.map { index in
-            guard let index, all.indices.contains(index) else { throw Failure("No tab with that id.") }
-            return all[index]
+    /// The tabs a request names by the tokens `token` gave for them. A tab that has
+    /// closed or left this profile's windows since is refused, so is the whole request.
+    private func named(_ value: String?, for context: WKWebExtensionContext) throws -> [(tab: Tab, store: TabStore)] {
+        let tokens = (value ?? "").split(separator: ",").map { UUID(uuidString: String($0)) }
+        guard !tokens.isEmpty else { throw Failure("No tab with that id.") }
+        return try tokens.map { token in
+            guard let token, let store = TabStore.all.first(where: { $0.tabs.contains { $0.id == token } }),
+                  let tab = store.tabs.first(where: { $0.id == token }) else { throw Failure("No tab with that id.") }
+            return try resolve(ExtTab(tab, in: store), for: context)
         }
     }
 
@@ -451,17 +386,27 @@ import WebKit
         case "get":
             let found = try locate(values["groupId"], for: context)
             return reply(json(found.folder, in: found.store))
+        case "token":
+            return reply(try resolve(shim, for: context).tab.id.uuidString)
+        case "fail":
+            throw Failure(values["message"] ?? "")
         case "group":
-            let found = try resolve(shim, for: context)
-            let number = try group(try named(values["tabs"], first: found.tab, in: found.store), in: found.store,
-                                   into: values["groupId"], for: context)
+            let named = try named(values["tabs"], for: context)
+            let store = named[0].store
+            guard named.allSatisfy({ $0.store === store }) else { throw Failure("Vane cannot group tabs across windows.") }
+            let number = try group(named.map(\.tab), in: store, into: values["groupId"], for: context)
             sync(contexts: contexts)
             return reply(["groupId": number])
         case "ungroup":
-            let found = try resolve(shim, for: context)
-            let check = values["check"] != nil
-            try ungroup(try named(values["tabs"], first: found.tab, in: found.store), in: found.store, check: check)
-            if !check { sync(contexts: contexts) }
+            // Every window is checked before any changes, so all of them change or none.
+            var byStore: [(store: TabStore, tabs: [Tab])] = []
+            for (tab, store) in try named(values["tabs"], for: context) {
+                if let i = byStore.firstIndex(where: { $0.store === store }) { byStore[i].tabs.append(tab) }
+                else { byStore.append((store, [tab])) }
+            }
+            for (store, tabs) in byStore { try ungroup(tabs, in: store, check: true) }
+            for (store, tabs) in byStore { try ungroup(tabs, in: store) }
+            sync(contexts: contexts)
             return reply([String: Any]())
         case "update":
             let (store, folder) = try locate(values["groupId"], for: context)

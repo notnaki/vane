@@ -236,10 +236,6 @@ import XCTest
             const [pinned, a, b, c, d, e] = ids;
             const failure = promise => promise.then(() => 'resolved', error => error.message);
             const groupOf = async id => (await chrome.tabs.get(id)).groupId;
-            const changes = [];
-            chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-              if ('groupId' in info) changes.push([ids.indexOf(tabId), info.groupId, tab.groupId].join(':'));
-            });
             const nested = await groupOf(c);
             const group = await chrome.tabs.group({tabIds: [a, b]});
             const out = [];
@@ -253,26 +249,28 @@ import XCTest
                      await failure(chrome.tabs.group({tabIds: c, groupId: group})),
                      await failure(chrome.tabs.group({tabIds: [d, c], groupId: group})),
                      await failure(chrome.tabs.group({tabIds: [d, pinned]})), await groupOf(d) === -1);
-            // A callback that fails reads runtime.lastError, and only inside.
+            // A callback that fails reads runtime.lastError, set by WebKit, and only inside.
             out.push(await new Promise(done => chrome.tabGroups.move(nested, {index: -1},
                        moved => done(String(moved) + '|' + chrome.runtime.lastError?.message))),
-                     chrome.runtime.lastError === undefined,
-                     await new Promise(done => chrome.tabGroups.get(group, got => done(got.id === group && chrome.runtime.lastError === undefined))));
+                     await new Promise(done => chrome.tabs.group({tabIds: [d, pinned]},
+                       made => done(String(made) + '|' + chrome.runtime.lastError?.message))),
+                     await new Promise(done => chrome.tabs.get(2147483647, tab => done(String(tab) + '|' + Boolean(chrome.runtime.lastError)))),
+                     chrome.runtime.lastError === null,
+                     await new Promise(done => chrome.tabGroups.get(group, got => done(got.id === group && chrome.runtime.lastError === null))));
             // Ungrouping a tab in no group, or one that cannot be grouped, does nothing.
             out.push(await failure(chrome.tabs.ungroup([pinned, d])), await failure(chrome.tabs.ungroup([pinned, a])),
-                     await groupOf(a), (await chrome.tabs.move(e, {index: -1})).groupId);
-            await new Promise(done => setTimeout(done, 200));
-            out.push(changes.join(','), String(group));
+                     await groupOf(a));
             return JSON.stringify(out);
             """, in: page)
         let out = try XCTUnwrap(result.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [Any] })
         let refusal = "That would empty “Mine”, a folder the user made."
-        let group = try XCTUnwrap((out.last as? String).flatMap(Int.init))
-        XCTAssertEqual(out.dropLast().map { "\($0)" }, [
+        let prefix = "undefined|Invalid call to tabs.create(). "
+        XCTAssertEqual(out.map { "\($0)" }, [
             "3", "4", "1", "2", refusal, refusal, refusal,
             "Vane groups only Today tabs. Pinned tabs and Favourites stay where the user put them.", "1",
-            "undefined|" + refusal, "1", "1", "resolved", "resolved", "-1", "-1",
-            "1:\(group):\(group),2:\(group):\(group),1:-1:-1"])
+            prefix + refusal,
+            prefix + "Vane groups only Today tabs. Pinned tabs and Favourites stay where the user put them.",
+            "undefined|true", "1", "1", "resolved", "resolved", "-1"])
         XCTAssertEqual(store.todayShape.folder(mine.id)?.name, "Mine", "The user's folder stays")
         XCTAssertEqual(store.todayShape.folder(holding: c.id.uuidString)?.id, nested.id)
         XCTAssertNil(store.todayShape.folder(holding: d.id.uuidString), "A refused group moves no tab")
