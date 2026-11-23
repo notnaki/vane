@@ -384,7 +384,7 @@ import WebKit
 
     /// Collects every rendered text node worth translating and remembers it in this world,
     /// tagged with the job's `id`, with its original text and surrounding whitespace, for
-    /// `applyJS` and `restoreJS`. A node over 2,000 characters keeps its own text, and the
+    /// `applyJS` and `restoreJS`. A node over 20,000 characters keeps its own text, and the
     /// walk stops at 5,000 nodes or 100,000 characters.
     /// Also puts the page's text back as it is hidden, so a back-forward-cache return (which
     /// commits, and so is untranslated as far as Vane knows) shows the page as it came.
