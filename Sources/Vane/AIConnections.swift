@@ -2,13 +2,14 @@ import Foundation
 import CryptoKit
 
 enum AIFeature: String, CaseIterable, Codable, Sendable {
-    case tabTitles, tabGroups, downloads, summaries
+    case tabTitles, tabGroups, downloads, summaries, askOnPage
     var title: String {
         switch self {
         case .tabTitles: "Tab titles"
         case .tabGroups: "Tab grouping"
         case .downloads: "Download names"
         case .summaries: "Page summaries"
+        case .askOnPage: "Ask on Page"
         }
     }
 }

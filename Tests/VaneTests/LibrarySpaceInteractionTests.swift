@@ -19,6 +19,7 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
             SharedTabs.release(tabs)
             _ = manager.delete(profile.id)
+            manager.saveSpaceOrder([])
         }
         return (store, first, second)
     }
@@ -51,24 +52,52 @@ import XCTest
         let data = SpaceCardDragging.start(first)
         XCTAssertTrue(SpaceCardDragging.accept(data, onto: second, in: store))
         XCTAssertEqual(ProfileManager.shared.spaces(for: first.profileID).map(\.id), [second.id, first.id])
+        XCTAssertEqual(ProfileManager.shared.allSpaces.map(\.id).filter { [first.id, second.id].contains($0) },
+                       [second.id, first.id])
         XCTAssertFalse(SpaceCardDragging.accept(data, onto: second, in: store), "A consumed drag cannot replay")
     }
 
-    func testStaleForeignAndCrossProfileCardDropsDoNotChangeOrder() throws {
+    func testStaleAndForeignCardDropsAreRefusedWhileCrossProfileDropsReorder() throws {
         let (store, first, second) = fixture()
+        let manager = ProfileManager.shared
         let stale = SpaceCardDragging.start(first)
         let current = SpaceCardDragging.start(second)
         XCTAssertFalse(SpaceCardDragging.accept(stale, onto: second, in: store))
         XCTAssertFalse(SpaceCardDragging.accept(Data("foreign text".utf8), onto: first, in: store))
-        XCTAssertEqual(ProfileManager.shared.spaces(for: first.profileID).map(\.id), [first.id, second.id])
-        let other = ProfileManager.shared.create(name: "Foreign drag")
-        defer { _ = ProfileManager.shared.delete(other.id) }
-        let foreign = ProfileManager.shared.createSpace(name: "Foreign", in: other.id)
-        XCTAssertFalse(SpaceCardDragging.accept(current, onto: foreign, in: store))
+        XCTAssertEqual(manager.spaces(for: first.profileID).map(\.id), [first.id, second.id])
+        XCTAssertTrue(manager.spaceOrder.isEmpty, "A refused drop must not start a global order")
+
+        let other = manager.create(name: "Foreign drag")
+        defer { _ = manager.delete(other.id) }
+        let foreign = manager.createSpace(name: "Foreign", in: other.id)
+        let further = manager.createSpace(name: "Further", in: other.id)
+        let revision = manager.spacesRevision
+        // Onto the other profile's first card: `second` lands between that profile's two.
+        XCTAssertTrue(SpaceCardDragging.accept(current, onto: foreign, in: store))
+        let mine: Set = [first.id, second.id, foreign.id, further.id]
+        XCTAssertEqual(manager.allSpaces.map(\.id).filter(mine.contains), [first.id, foreign.id, second.id, further.id])
+        XCTAssertEqual(store.strip.map(\.id).filter(mine.contains), [first.id, foreign.id, second.id, further.id])
+        XCTAssertEqual(manager.spaces(for: first.profileID).map(\.id), [first.id, second.id], "Still its own profile's Space")
+        XCTAssertEqual(manager.spaces(for: other.id).map(\.id), [foreign.id, further.id])
+        XCTAssertEqual(manager.spacesRevision, revision, "No Space was saved, so no editor may be revoked")
+        XCTAssertFalse(SpaceCardDragging.accept(current, onto: first, in: store), "A consumed drag cannot replay")
+
         let deleted = SpaceCardDragging.start(second)
-        XCTAssertTrue(ProfileManager.shared.deleteSpace(second.id, in: second.profileID))
+        XCTAssertTrue(manager.deleteSpace(second.id, in: second.profileID))
         XCTAssertFalse(SpaceCardDragging.accept(deleted, onto: first, in: store))
-        XCTAssertEqual(ProfileManager.shared.spaces(for: first.profileID).map(\.id), [first.id])
+        XCTAssertEqual(manager.spaces(for: first.profileID).map(\.id), [first.id])
+        XCTAssertFalse(manager.spaceOrder.contains(second.id), "A deleted Space leaves the saved order")
+    }
+
+    /// SwiftUI only delivers a drop's custom type when the app bundle declares it, so the
+    /// identifier in the Info.plist that make-app.sh writes has to be the one dragged.
+    func testCardDragTypeIsDeclaredInTheAppBundle() throws {
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("make-app.sh")
+        let plist = try String(contentsOf: script, encoding: .utf8)
+        let declarations = try XCTUnwrap(plist.range(of: "<key>UTExportedTypeDeclarations</key>"))
+        XCTAssertTrue(plist[declarations.upperBound...].prefix(400)
+            .contains("<string>\(SpaceCardDragging.type.identifier)</string>"))
     }
 
     func testProfileHopClosesSourceAndReusedDestinationLibraries() async throws {
