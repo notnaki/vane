@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import NaturalLanguage
 import SwiftUI
@@ -43,8 +44,25 @@ import WebKit
     /// The job each window's session last began, so one it stopped for a newer job reads
     /// as cancelled even when the restart ended it with an error instead.
     private var running: [ObjectIdentifier: UUID] = [:]
+    /// Tabs whose page is being collected: a second Translate meanwhile is ignored, so it
+    /// cannot replace the node list the first one's texts are indexed against.
+    private var collecting: Set<UUID> = []
+    private var storesObservation: AnyCancellable?
 
-    struct Job: Sendable { let tab: Tab; let id = UUID(); let texts: [String] }
+    private init() {
+        // A closed window's session, job and configuration go with it.
+        storesObservation = TabStore.storesChanged.sink { [weak self] in
+            guard let self else { return }
+            let live = Set(TabStore.all.map(ObjectIdentifier.init))
+            if configs.keys.contains(where: { !live.contains($0) }) { configs = configs.filter { live.contains($0.key) } }
+            pending = pending.filter { live.contains($0.key) }
+            running = running.filter { live.contains($0.key) }
+        }
+    }
+
+    /// `id` also tags the page's collected node list, so a batch only lands on the list
+    /// its texts came from.
+    struct Job: Sendable { let tab: Tab; let id: UUID; let texts: [String] }
     struct Offer: Equatable { let id = UUID(); let host: String; let language: String }
 
     /// Page scripts can replace builtins in their own world; the walk lives in another.
@@ -56,10 +74,16 @@ import WebKit
     /// On main-frame commit and on release: the new document is untranslated and unoffered.
     /// Release also forgets the site answered in the tab.
     static func forget(tab: Tab, released: Bool = false) {
-        shared.tabs[tab.id] = nil
-        shared.offers[tab.id] = nil
+        if shared.tabs[tab.id] != nil { shared.tabs[tab.id] = nil }
+        if shared.offers[tab.id] != nil { shared.offers[tab.id] = nil }
         shared.pending = shared.pending.filter { $0.value.tab !== tab }
         if released { shared.answered[tab.id] = nil }
+    }
+
+    /// The window showing `tab`, for callers (Site Controls) that are not that window.
+    static func store(of tab: Tab) -> TabStore? {
+        let window = tab.existingWeb?.window
+        return TabStore.all.first { $0.window != nil && $0.window === window && $0.everyTab.contains { $0 === tab } }
     }
 
     private static func site(of tab: Tab) -> String? { tab.existingWeb?.url?.host().map(site) }
@@ -77,10 +101,15 @@ import WebKit
             SiteChanges.shared.bump()
             return
         }
-        guard let store else { return }
+        guard let store, !shared.collecting.contains(tab.id),
+              !shared.pending.values.contains(where: { $0.tab === tab }) else { return }
         let generation = tab.readingDocumentGeneration
+        let id = UUID()
+        shared.collecting.insert(tab.id)
         Task {
-            let result = try? await web.callAsyncJavaScript(collectJS, contentWorld: world) as? [String: Any]
+            defer { shared.collecting.remove(tab.id) }
+            let result = try? await web.callAsyncJavaScript(collectJS, arguments: ["id": id.uuidString],
+                                                            contentWorld: world) as? [String: Any]
             // A download or a 204 that began meanwhile is not "nothing to translate".
             guard tab.readingDocumentGeneration == generation else { return }
             guard let result, let texts = result["texts"] as? [String], !texts.isEmpty else {
@@ -108,7 +137,7 @@ import WebKit
             }
             // A job still running in this window is cancelled by the new configuration
             // below; `stopped` puts its page back and says so.
-            shared.pending[window] = Job(tab: tab, texts: texts)
+            shared.pending[window] = Job(tab: tab, id: id, texts: texts)
             if let s = site(of: tab) { shared.answered[tab.id] = (s, true) }
             let config = TranslationSession.Configuration(source: source, target: target)
             // An equal configuration would not restart the task; invalidating it does.
@@ -168,7 +197,8 @@ import WebKit
     /// the tab while a batch was out. A provisional load alone (a download, a 204) is not.
     private static func apply(_ batch: [String: String], _ job: Job) async -> Bool {
         guard shared.tabs[job.tab.id] == job.id, let web = job.tab.existingWeb else { return false }
-        _ = try? await web.callAsyncJavaScript(applyJS, arguments: ["batch": batch], contentWorld: world)
+        _ = try? await web.callAsyncJavaScript(applyJS, arguments: ["batch": batch, "id": job.id.uuidString],
+                                         contentWorld: world)
         return true
     }
 
@@ -298,12 +328,24 @@ import WebKit
     /// `lang="en"` over pages in another language.
     nonisolated static func sourceLanguage(lang: String?, sample: [String]) -> Locale.Language? {
         let recognizer = NLLanguageRecognizer()
-        recognizer.processString(String(sample.joined(separator: "\n").prefix(4000)))
+        recognizer.processString(languageSample(sample))
         if let detected = recognizer.dominantLanguage, detected != .undetermined {
             return Locale.Language(identifier: detected.rawValue)
         }
         guard let lang = lang?.trimmingCharacters(in: .whitespaces), !lang.isEmpty else { return nil }
         return Locale.Language(identifier: lang)
+    }
+
+    /// The first 4,000 characters of `texts`, one per line, without joining the rest. Pure.
+    nonisolated static func languageSample(_ texts: [String], limit: Int = 4000) -> String {
+        var out = "", left = limit
+        for text in texts where left > 0 {
+            let piece = text.prefix(left)
+            out += piece
+            left -= piece.count
+            if left > 0 { out += "\n"; left -= 1 }
+        }
+        return out
     }
 
     /// Same language and, where both say, the same script: Simplified and Traditional
@@ -320,8 +362,6 @@ import WebKit
 
     // MARK: - Page scripts
 
-    /// Collects every rendered text node worth translating and remembers it in this world,
-    /// with its original text and surrounding whitespace, for `applyJS` and `restoreJS`.
     /// The first ~1,000 characters of the page's visible text, for the offer's detector.
     /// Walks visible text nodes and stops there, rather than laying out the whole page for
     /// `innerText`. Empty for a page that asks not to be translated.
@@ -342,6 +382,10 @@ import WebKit
     return { lang: h.lang || '', text: text.slice(0, 1000) };
     """
 
+    /// Collects every rendered text node worth translating and remembers it in this world,
+    /// tagged with the job's `id`, with its original text and surrounding whitespace, for
+    /// `applyJS` and `restoreJS`. A node over 2,000 characters keeps its own text, and the
+    /// walk stops at 5,000 nodes or 100,000 characters.
     /// Also puts the page's text back as it is hidden, so a back-forward-cache return (which
     /// commits, and so is untranslated as far as Vane knows) shows the page as it came.
     static let collectJS = """
@@ -366,11 +410,15 @@ import WebKit
       if (p.checkVisibility && !p.checkVisibility()) return NodeFilter.FILTER_REJECT;
       return NodeFilter.FILTER_ACCEPT;
     }});
+    let total = 0;
     for (let n; (n = walker.nextNode()) && nodes.length < 5000;) {
-      const m = n.data.match(/^(\\s*)([\\s\\S]*?)(\\s*)$/);
-      nodes.push(n); originals.push(n.data); lead.push(m[1]); trail.push(m[3]); texts.push(m[2]);
+      const d = n.data, start = d.trimStart(), core = start.trimEnd();
+      if (core.length > 2000) continue;
+      if ((total += core.length) > 100000) break;
+      nodes.push(n); originals.push(d); lead.push(d.slice(0, d.length - start.length));
+      trail.push(start.slice(core.length)); texts.push(core);
     }
-    globalThis.__vaneTranslation = { nodes, originals, lead, trail, done: originals.slice() };
+    globalThis.__vaneTranslation = { id, nodes, originals, lead, trail, done: originals.slice() };
     return { lang: document.documentElement.lang || '', texts };
     """
 
@@ -378,7 +426,7 @@ import WebKit
     /// keeps the page's text.
     static let applyJS = """
     const t = globalThis.__vaneTranslation;
-    if (!t) return;
+    if (!t || t.id !== id) return;
     for (const [k, text] of Object.entries(batch)) {
       const i = Number(k), n = t.nodes[i];
       if (!n || !n.isConnected || n.data !== t.originals[i]) continue;
@@ -420,6 +468,9 @@ import WebKit
             ("a never-listed site covers its subdomains", neverListed("WWW.Google.com", in: ["google.com"])
              && neverListed("mail.google.com", in: ["google.com"]) && !neverListed("notgoogle.com", in: ["google.com"])),
             ("the never list round-trips", neverRoundTrip()),
+            ("the language sample stops at its limit",
+             languageSample(Array(repeating: String(repeating: "a", count: 3000), count: 1000)).count == 4000
+             && languageSample(["ab", "cd"], limit: 4) == "ab\nc"),
         ]
     }
 
@@ -447,8 +498,9 @@ import WebKit
             return box.value
         }
         guard load("<p>Bonjour tout le monde</p>") else { return [("a page loads", false)] }
-        _ = js(collectJS, world)
-        _ = js(applyJS, world, ["batch": ["0": "Hello everyone"]])
+        _ = js(collectJS, world, ["id": "a"])
+        _ = js(applyJS, world, ["batch": ["0": "Bonjour"], "id": "stale"])
+        _ = js(applyJS, world, ["batch": ["0": "Hello everyone"], "id": "a"])
         let text = { js("return document.body.innerText", .page) as? String }
         var out = [("a batch rewrites the text node", text() == "Hello everyone")]
         _ = js("dispatchEvent(new PageTransitionEvent('pagehide', {persisted: true}))", .page)

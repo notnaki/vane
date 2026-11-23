@@ -357,7 +357,7 @@ extension SiteControlModel {
             Blocker.refresh(completion: { [weak tab] in tab?.reload() })
         case .blockerSettings: SettingsWindow.show(tab: "privacy", profileID: tab.profileID)
         case .reader: Reader.toggle(tab)
-        case .translate: PageTranslation.toggle(tab)
+        case .translate: PageTranslation.toggle(tab, in: PageTranslation.store(of: tab) ?? Windows.current)
         case .translateOffers:
             let never = PageTranslation.neverListed(host, in: PageTranslation.neverTranslated(profileID: tab.profileID))
             PageTranslation.setOffers(never, host: host, tab: tab)
