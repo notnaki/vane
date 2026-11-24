@@ -760,7 +760,7 @@ extension NSApplication {
                          shim: ExtTab?, context: WKWebExtensionContext) async throws -> Any {
         let none = [String: Any]()
         switch method {
-        case "Runtime.evaluate": return try await evaluate(parameters, page)
+        case "Runtime.evaluate": return try await evaluate(parameters, page, session)
         case "Page.captureScreenshot": return try await screenshot(parameters, page)
         case "Input.dispatchMouseEvent": try mouse(parameters, page.web); return none
         case "Input.dispatchKeyEvent": try key(parameters, page.web); return none
@@ -808,7 +808,7 @@ extension NSApplication {
     private func frameID(_ session: Session) -> String { "vane-frame-" + session.tabID.uuidString }
     private func loaderID(_ page: Page) -> String { "vane-loader-\(page.began)" }
 
-    private func evaluate(_ parameters: [String: Any], _ page: Page) async throws -> Any {
+    private func evaluate(_ parameters: [String: Any], _ page: Page, _ session: Session) async throws -> Any {
         guard let expression = parameters["expression"] as? String else {
             throw ExtensionDebuggerAPI.failure(-32602, "Invalid parameters: expression")
         }
@@ -829,7 +829,8 @@ extension NSApplication {
         case .run(let compiled): body = compiled
         case .syntax(let error): return exception(error)
         }
-        // The compile awaited: the user may have switched tabs since the page was checked.
+        // The compile awaited: the user may have switched tabs, or pressed Stop, since the page was checked.
+        guard sessions.contains(where: { $0 === session }) else { throw ExtensionHost.Failure("Detached while handling command.") }
         guard ExtensionDebuggerAPI.isShowing(page.web) else { throw ExtensionHost.Failure(Self.offScreen) }
         let outcome: Result<Any, any Error> = try await bounded { finish in
             page.web.callAsyncJavaScript(ExtensionDebuggerAPI.evaluation(body, token: token),
