@@ -2087,6 +2087,9 @@ import WebKit
                         store: (configuration.window as? ExtWindow)?.store, for: context)
             return nil
         }
+        if let request = ExtensionChromiumGaps.Request(configuration.url, base: context.baseURL) {
+            throw Failure(ExtensionChromiumGaps.reply(Result { try answer(request, for: context) }))
+        }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
             return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
         }
@@ -2225,6 +2228,92 @@ import WebKit
             hold(presentation?.window.isKeyWindow == true)
         }
         presentation.show()
+    }
+
+    // MARK: Chromium stand-ins
+
+    /// `tabGroups` by extension; see `ExtensionChromiumGaps.TabGroups`.
+    private var tabGroups: [ObjectIdentifier: ExtensionChromiumGaps.TabGroups] = [:]
+    /// `offscreen`: one hidden extension page per extension, as in Chrome.
+    private var offscreenDocuments: [ObjectIdentifier: WKWebView] = [:]
+
+    private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) throws -> Any {
+        let key = ObjectIdentifier(context), arguments = request.arguments
+        let declared = Set(context.webExtension.manifest["permissions"] as? [String] ?? [])
+        func integers(_ name: String) -> [Int] { (arguments[name] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue } }
+        switch request.operation {
+        case "contexts":
+            return extensionContexts(context)
+        case "groups", "group", "ungroup", "update":
+            guard declared.contains("tabGroups") else { throw Failure("This extension has not requested the tabGroups permission.") }
+            var groups = tabGroups[key] ?? .init()
+            defer { tabGroups[key] = groups }
+            switch request.operation {
+            case "group":
+                return try groups.group(integers("tabIds"), into: (arguments["groupId"] as? NSNumber)?.intValue,
+                                        windowId: (arguments["windowId"] as? NSNumber)?.intValue ?? -1)
+            case "ungroup":
+                groups.ungroup(integers("tabIds"))
+                return NSNull()
+            case "update":
+                guard let id = (arguments["groupId"] as? NSNumber)?.intValue else { throw Failure("No group with id: undefined.") }
+                return try groups.update(id, title: arguments["title"] as? String, color: arguments["color"] as? String,
+                                         collapsed: arguments["collapsed"] as? Bool).json
+            default:
+                return groups.json
+            }
+        case "offscreenCreate", "offscreenHas", "offscreenClose":
+            guard declared.contains("offscreen") else { throw Failure("This extension has not requested the offscreen permission.") }
+            switch request.operation {
+            case "offscreenHas":
+                return offscreenDocuments[key] != nil
+            case "offscreenClose":
+                guard let web = offscreenDocuments.removeValue(forKey: key) else { throw Failure("No current offscreen document.") }
+                web.stopLoading()
+                return NSNull()
+            default:
+                guard offscreenDocuments[key] == nil else { throw Failure("Only a single offscreen document may be created.") }
+                // `page` keeps the document inside the extension; the stand-in sends its path.
+                guard let url = (arguments["url"] as? String).flatMap({ ExtensionSidePanelAPI.page($0, base: context.baseURL) }),
+                      let cfg = context.webViewConfiguration else { throw Failure("Invalid offscreen document URL.") }
+                let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: cfg)
+                userAgent.track(web)
+                web.isInspectable = Settings.inspectorEnabled
+                offscreenDocuments[key] = web
+                web.load(URLRequest(url: url))
+                return NSNull()
+            }
+        default:
+            throw Failure("Vane does not answer \(request.operation).")
+        }
+    }
+
+    /// `runtime.getContexts`: what this host shows of the extension. Tab and window IDs are
+    /// WebKit's to give and unknown here: -1, as Chrome reports for windowless contexts.
+    private func extensionContexts(_ context: WKWebExtensionContext) -> [[String: Any]] {
+        let origin = context.baseURL.absoluteString.hasSuffix("/") ? String(context.baseURL.absoluteString.dropLast()) : context.baseURL.absoluteString
+        var list: [[String: Any]] = []
+        func add(_ type: String, _ url: URL?, _ owner: AnyObject, frameId: Int = 0) {
+            var entry: [String: Any] = ["contextType": type, "contextId": String(UInt(bitPattern: ObjectIdentifier(owner).hashValue), radix: 16),
+                                        "tabId": -1, "windowId": -1, "frameId": frameId, "incognito": false, "documentOrigin": origin]
+            if let url { entry["documentUrl"] = url.absoluteString }
+            list.append(entry)
+        }
+        if context.webExtension.hasBackgroundContent {
+            let background = context.webExtension.manifest["background"] as? [String: Any]
+            let path = (background?["service_worker"] ?? background?["page"]) as? String
+            add("BACKGROUND", path.flatMap { URL(string: $0, relativeTo: context.baseURL)?.absoluteURL }, context, frameId: background?["service_worker"] != nil ? -1 : 0)
+        }
+        for panel in sidePanels where panel.context === context { add("SIDE_PANEL", panel.web.url ?? panel.page, panel) }
+        if let web = offscreenDocuments[ObjectIdentifier(context)] { add("OFFSCREEN_DOCUMENT", web.url, web) }
+        for presentation in actionWindows.values where presentation.context === context { add("POPUP", presentation.web.url, presentation) }
+        for adapter in requestedWindows.values where adapter.presentation.context === context {
+            add("TAB", adapter.presentation.web.url, adapter.presentation)
+        }
+        for tab in myStores.flatMap(\.tabs) {
+            if let url = tab.existingWeb?.url, url.scheme == context.baseURL.scheme, url.host == context.baseURL.host { add("TAB", url, tab) }
+        }
+        return list
     }
 
     // MARK: Web sign-in
@@ -2568,6 +2657,8 @@ import WebKit
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
+        tabGroups[ObjectIdentifier(context)] = nil
+        offscreenDocuments.removeValue(forKey: ObjectIdentifier(context))?.stopLoading()
         debugger.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {

@@ -87,6 +87,10 @@ import XCTest
         XCTAssertEqual(request.url.absoluteString, "https://auth.example/o?a=1")
         XCTAssertTrue(request.interactive)
         XCTAssertEqual(request.timeout, ExtensionIdentityAPI.nonInteractiveTimeout, "Chrome's minute by default")
+        XCTAssertTrue(request.abortOnLoad, "Chrome aborts a windowless flow on load by default")
+        let waiting = try XCTUnwrap(try ExtensionIdentityAPI.Request(
+            URL(string: "webkit-extension://abc/__vane_identity__?url=https%3A%2F%2Fa.example&abortOnLoad=false"), base: base))
+        XCTAssertFalse(waiting.abortOnLoad)
         for (value, timeout) in [("250", Duration.milliseconds(250)), ("-5", .zero), ("600000", ExtensionIdentityAPI.nonInteractiveTimeout)] {
             let timed = try XCTUnwrap(try ExtensionIdentityAPI.Request(
                 URL(string: "webkit-extension://abc/__vane_identity__?url=https%3A%2F%2Fa.example&timeout=" + value), base: base))

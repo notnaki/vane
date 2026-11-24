@@ -488,4 +488,52 @@ import XCTest
             XCTAssertEqual(answer, "13|false|true|locked|active|active|Gaps Fixture|true|2.5|normal|30000|[[\(tabIDs[0]),\(tabIDs[1])]]")
         }
     }
+
+    func testWorkerGetsPromisedAlarmsContextsTabGroupsAndOffscreenFromTheHost() async throws {
+        // Claude's worker chains `alarms.create(…).catch`, groups its agent's tabs, asks
+        // getContexts which panels are open and keeps an offscreen document.
+        try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["alarms","tabs","tabGroups","offscreen","sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"}}"#.utf8)
+            .write(to: folder.appendingPathComponent("manifest.json"))
+        try Data("<title>Offscreen</title>".utf8).write(to: folder.appendingPathComponent("off.html"))
+        try Data("""
+            const created = chrome.alarms.create('refresh', {delayInMinutes: 1});
+            const promised = typeof created?.then === 'function';
+            created.catch(() => {});
+            chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                (async () => {
+                    const [tab] = await chrome.tabs.query({});
+                    const before = (await chrome.tabs.get(tab.id)).groupId;
+                    const group = await chrome.tabs.group({tabIds: tab.id});
+                    await chrome.tabGroups.update(group, {title: 'Agent', color: chrome.tabGroups.Color.ORANGE});
+                    const listed = (await chrome.tabs.query({groupId: group})).map(t => t.id);
+                    const info = await chrome.tabGroups.get(group);
+                    await chrome.tabs.ungroup(tab.id);
+                    const gone = await chrome.tabGroups.get(group).then(() => 'kept', error => error.message);
+                    await chrome.offscreen.createDocument({url: 'off.html', reasons: [chrome.offscreen.Reason.BLOBS], justification: 'Test'});
+                    const types = (await chrome.runtime.getContexts({})).map(context => context.contextType).sort();
+                    const twice = await chrome.offscreen.createDocument({url: 'off.html', reasons: ['BLOBS'], justification: 'Test'}).then(() => 'twice', error => error.message);
+                    await chrome.offscreen.closeDocument();
+                    respond(JSON.stringify([promised, before, listed.length === 1 && listed[0] === tab.id, info.title, info.color, gone,
+                        types, twice, await chrome.offscreen.hasDocument(), (await chrome.action.getUserSettings()).isOnToolbar]));
+                })().catch(error => respond('failed: ' + error.message));
+                return true;
+            });
+            """.utf8).write(to: folder.appendingPathComponent("worker.js"))
+
+        try await withNativeWindowLoop {
+            let store = TabStore(profileID: profile, session: [])
+            _ = open(store)
+            let host = ExtensionHost.host(for: profile)
+            _ = try await host.load(folder, installing: true) { _ in true }
+            let context = try XCTUnwrap(host.installed.first)
+            XCTAssertTrue(ExtensionDiagnostics.runtimeErrors(context.errors, manifest: context.webExtension.manifest).isEmpty, "\(context.errors)")
+            let notes = host.entries.first?.compatibility ?? []
+            XCTAssertFalse(notes.contains(where: { ($0.hasPrefix("tabGroups") || $0.hasPrefix("offscreen")) && ExtensionDiagnostics.isUnsupported($0) }), "\(notes)")
+            host.sync()
+            let page = try await page(context)
+            defer { page.stopLoading() }
+            let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)
+            XCTAssertEqual(answer, #"[true,-1,true,"Agent","orange","No group with id: 1.",["BACKGROUND","OFFSCREEN_DOCUMENT"],"Only a single offscreen document may be created.",false,true]"#)
+        }
+    }
 }
