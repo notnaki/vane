@@ -234,13 +234,15 @@ import WebKit
               let host = url.host(), !host.isEmpty,
               !neverListed(host, in: neverTranslated(profileID: tab.profileID)) else { return }
         let generation = tab.readingDocumentGeneration
-        Task {
+        // The page's reply and the language check can outlive Close. Keep the tab weak
+        // across them so this background offer cannot prolong a closed tab.
+        Task { [weak tab] in
             guard let result = try? await web.callAsyncJavaScript(sampleJS, contentWorld: world) as? [String: Any],
                   let sample = result["text"] as? String,
                   let source = offerLanguage(lang: result["lang"] as? String, sample: sample,
                                              target: preferredLanguage()),
                   await LanguageAvailability().status(from: source, to: preferredLanguage()) != .unsupported,
-                  tab.readingDocumentGeneration == generation, tab.existingWeb === web, !isOn(tab),
+                  let tab, tab.readingDocumentGeneration == generation, tab.existingWeb === web, !isOn(tab),
                   !shared.pending.values.contains(where: { $0.tab === tab })
             else { return }
             // Read again: Show Original or Not now may have answered during the awaits.

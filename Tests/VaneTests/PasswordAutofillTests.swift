@@ -707,7 +707,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 afterPresentation()
             }, launchReadiness: {
-                self.nativeContinuationReady(window, document: document) && launchReadiness()
+                // A declined one-shot activation would otherwise hold readiness
+                // false for the whole budget. Every caller is a pre-action wait.
+                let ready = self.nativeContinuationReady(window, document: document)
+                if !ready { reassertForeground(window) }
+                return ready && launchReadiness()
             })
     }
 
@@ -770,8 +774,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             // Fit the complete decorated window, not just its content rectangle.
             window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                    width: size.width, height: size.height), display: false)
-            let loop = try await admitNativePresentation(window, document: tab.web,
-                launchReadiness: launchReadiness, afterPresentation: afterPresentation)
+            let loop: NativeFixtureApplicationLoop
+            do {
+                loop = try await admitNativePresentation(window, document: tab.web,
+                    launchReadiness: launchReadiness, afterPresentation: afterPresentation)
+            } catch {
+                // Name the readiness getter that held a failed launch admission.
+                emitNativeContinuationReadiness(window, document: tab.web, stage: "admission-failed")
+                NativeFixtureDiagnostics.emit("Native continuation admission failed: \(error). " +
+                    nativeWindowVisibilityState(window))
+                throw error
+            }
             acquiredLoop = loop
             afterLoopAdmission()
             // These fixtures choose native account rows. Establish that user-facing
