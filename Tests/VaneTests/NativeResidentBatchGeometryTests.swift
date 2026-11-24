@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import vane
@@ -14,6 +15,32 @@ import XCTest
         var fields: [String: WeakButton] = [:]
         var activationUpdates = 0
         var activeState: ControlActiveState?
+        /// Failure diagnostics: what reached the section while reuse was measured.
+        var tracing = false
+        var environment: [String] = []
+        var environmentChanges: [String] = []
+        var storeChanges = 0
+        var storeObservation: AnyCancellable?
+    }
+    /// Sits beside the section, inside the scroll view, so it sees every environment
+    /// change the section's bridge can (macOS 26 updates both for any change) and
+    /// records which entries changed.
+    private struct EnvironmentProbe: NSViewRepresentable {
+        let controls: Controls
+        func makeNSView(context: Context) -> NSView { NSView() }
+        func updateNSView(_ view: NSView, context: Context) {
+            let entries = String(describing: context.environment).components(separatedBy: ", ")
+            defer { controls.environment = entries }
+            guard controls.tracing, entries != controls.environment else { return }
+            let old = Set(controls.environment), new = Set(entries)
+            let changed = (new.subtracting(old).map { "+" + $0 } + old.subtracting(new).map { "-" + $0 })
+                .prefix(12).map { String($0.prefix(240)) }
+            var line = "change=\(controls.environmentChanges.count) \(changed.joined(separator: " | "))"
+            if controls.environmentChanges.count < 3 {
+                line += "\n  stack: " + Thread.callStackSymbols.prefix(40).joined(separator: "\n  ")
+            }
+            controls.environmentChanges.append(line)
+        }
     }
     /// Counts the hosting window's activation changes as SwiftUI delivers them, in the
     /// same pass as the section's. It sits outside the scroll view, and counts only a
@@ -63,6 +90,7 @@ import XCTest
                         pullRequests: [], transition: .opacity) { row, _, _ in
                             Control(id: row.id, controls: controls)
                         }
+                        .background(EnvironmentProbe(controls: controls))
                 }
             }
             .background(ActivationProbe(controls: controls))
@@ -173,7 +201,21 @@ import XCTest
         // Measure reuse from the admitted owner, before the first scroll action.
         let admittedRootUpdates = report.batchCounts.rootUpdates
         let admittedActivationUpdates = controls.activationUpdates
+        let admittedConfigures = report.batchCounts.configures
+        let admittedEnvironmentConfigures = report.batchCounts.environmentConfigures
         print("RESIDENT_BATCH_ADMISSION count=\(count) rootUpdates=\(admittedRootUpdates)")
+        controls.tracing = true
+        controls.storeObservation = store.objectWillChange.sink { [controls] in controls.storeChanges += 1 }
+        defer { controls.tracing = false; controls.storeObservation = nil }
+        var trace: [String] = []
+        func mark(_ phase: String) {
+            trace.append("\(phase) rootUpdates=\(report.batchCounts.rootUpdates - admittedRootUpdates)"
+                + " configures=\(report.batchCounts.configures - admittedConfigures)"
+                + " environmentConfigures=\(report.batchCounts.environmentConfigures - admittedEnvironmentConfigures)"
+                + " cachedGraphs=\(report.cachedGraphCount) disclosureUpdates=\(report.batchCounts.disclosureUpdates)"
+                + " environmentChanges=\(controls.environmentChanges.count) storeChanges=\(controls.storeChanges)"
+                + " activationUpdates=\(controls.activationUpdates - admittedActivationUpdates)")
+        }
         var previousControls: [String: WeakButton] = [:]
         for fraction in [CGFloat(0), 0.5, 1, 0.25, 0] {
             let y = max(0, extent - scroll.contentView.bounds.height) * fraction
@@ -224,6 +266,7 @@ import XCTest
                 if let old = previousControls[id]?.value { XCTAssertTrue(old === field) }
                 previousControls[id] = WeakButton(field)
             }
+            mark("jump fraction=\(fraction)")
         }
         // Warm every canonical owner, then prove native protection work is
         // bounded by live roots rather than all detached cached controls.
@@ -242,7 +285,9 @@ import XCTest
                         || controls.fields[tabs[index].id.uuidString]?.value?.window === window
                 }
             }
+            if first % 128 == 0 { mark("warm first=\(first)") }
         }
+        mark("warmed")
         XCTAssertEqual(report.cachedGraphCount, (count + 7) / 8, "The scan regression needs a fully warmed cache")
         XCTAssertGreaterThan(report.batchCounts.protectionOwnerTreeScans, 0,
                              "Instrumentation must observe real native protection scans")
@@ -280,6 +325,11 @@ import XCTest
         let activationUpdates = controls.activationUpdates - admittedActivationUpdates
         print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates) activationUpdates=\(activationUpdates)")
         let reused = report.batchCounts.rootUpdates == admittedRootUpdates
+        if !reused {
+            mark("protected")
+            print("RESIDENT_BATCH_RESUBMISSION count=\(count)\n" + trace.joined(separator: "\n"))
+            controls.environmentChanges.forEach { print("RESIDENT_BATCH_ENVIRONMENT \($0)") }
+        }
         if activationUpdates == 0 || reused {
             XCTAssertEqual(report.batchCounts.rootUpdates, admittedRootUpdates,
                            "Scrolling alone must reuse roots rather than resubmit SwiftUI content")
