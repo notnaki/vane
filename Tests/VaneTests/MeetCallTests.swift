@@ -383,13 +383,23 @@ import XCTest
             }
             let tab = store.newBlankTab(focus: true)
             tab.web.loadHTMLString("<title>Call fixture</title><button><span>call_end</span></button>", baseURL: URL(string: "https://meet.google.com/abc-defg-hij"))
-            try await compatibilityWait {
-                // An earlier fixture's hide or activation-policy transition can settle
-                // during this wait. A hidden app's windows are not visible, so a returning
-                // call rightly stays popped out; nothing below yields once this holds.
-                reassertForeground(window, key: false)
-                return tab.inMeetCall && tab.web.window === window && !tab.web.isHiddenOrHasHiddenAncestor
-                    && !NSApp.isHidden && window.isVisible
+            do {
+                try await compatibilityWait {
+                    // An earlier fixture's hide or activation-policy transition can settle
+                    // during this wait. A hidden app's windows are not visible, so a returning
+                    // call rightly stays popped out; nothing below yields once this holds.
+                    reassertForeground(window, key: false)
+                    return tab.inMeetCall && tab.web.window === window && !tab.web.isHiddenOrHasHiddenAncestor
+                        && !NSApp.isHidden && window.isVisible
+                }
+            } catch {
+                // Which half never held: the page's own call report (isolated world, so the
+                // page cannot fake it) or the browser's presentation of the tab.
+                let page = try? await tab.web.callAsyncJavaScript(
+                    "return JSON.stringify({state: window.__vaneMeetCallState ? window.__vaneMeetCallState() : null, href: location.href, ready: document.readyState, visibility: document.visibilityState, buttons: document.querySelectorAll('button').length})",
+                    arguments: [:], in: nil, contentWorld: MeetCall.world)
+                print("MEET_SPACE_ADMISSION inMeetCall=\(tab.inMeetCall) currentURL=\(String(describing: tab.currentURL)) webURL=\(String(describing: tab.web.url)) loading=\(tab.web.isLoading) title=\(String(describing: tab.web.title)) suspended=\(tab.suspended) tornDown=\(tab.tornDown) current=\(store.current == tab.id) pageOwned=\(tab.web.window === window) pageWindow=\(String(describing: tab.web.window)) superview=\(String(describing: tab.web.superview.map { type(of: $0) })) hidden=\(tab.web.isHidden) hiddenAncestor=\(tab.web.isHiddenOrHasHiddenAncestor) frame=\(tab.web.frame) appHidden=\(NSApp.isHidden) active=\(NSApp.isActive) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) policy=\(NSApp.activationPolicy().rawValue) page=\(String(describing: page))")
+                throw error
             }
             store.switchTo(space: second)
             XCTAssertNotNil(CallPopout.window(for: tab))
