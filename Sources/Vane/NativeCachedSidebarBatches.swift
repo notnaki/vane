@@ -26,6 +26,9 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var graphDetaches = 0
     var graphEvictions = 0
     var rootUpdates = 0
+    /// Section updates SwiftUI delivered, structural or environment-only; each one
+    /// resubmits every owner's root as it is next mounted.
+    var configures = 0
     var rangeChanges = 0
     var protectionOwnerTreeScans = 0
     var detachedProtectionOwnerTreeScans = 0
@@ -1369,6 +1372,7 @@ private final class NativeBatchMouseObservation {
                    owner: TabStore? = nil,
                    content: @escaping (SidebarRows.Row, Int, Int) -> Content) {
         guard !disposed else { return }
+        batchCounts.configures += 1
         let oldHeight = sectionHeight
         let sameScope = activeScope == environment.sidebarNativeReadinessScope
         let previousOrder = rows
