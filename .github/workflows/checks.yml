@@ -220,10 +220,10 @@ jobs:
           fi
           for i in $(seq 1 "$COUNT"); do
             if python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$FILTER" > "$RUNNER_TEMP/iter-$i.log" 2>&1; then
-              pass=$((pass+1)); echo "iteration $i PASS"; grep -aE "Test Case .*(passed|failed)" "$RUNNER_TEMP/iter-$i.log"
+              pass=$((pass+1)); echo "iteration $i PASS"; grep -aE "Test Case .*(passed|failed)|FAVICON_DEMO" "$RUNNER_TEMP/iter-$i.log"
             else
               fail=$((fail+1)); echo "iteration $i FAIL"
-              grep -aE "Test Case .*(passed|failed)|error:|SETTINGS_DISCLOSURE| key=|FAVICON" "$RUNNER_TEMP/iter-$i.log" | head -60
+              grep -aE "Test Case .*(passed|failed)|error:|SETTINGS_DISCLOSURE| key=|FAVICON|FAVICON_DEMO" "$RUNNER_TEMP/iter-$i.log" | head -60
               cat "$RUNNER_TEMP/iter-$i.log" >> "$RUNNER_TEMP/vane-swift-tests.log"
             fi
           done

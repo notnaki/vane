@@ -137,6 +137,13 @@ private actor QueuedFaviconPublicationRequests {
         let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
         let file = directory.appendingPathComponent(url.host!)
         let admission = AsyncStream<Void>.makeStream()
+        let tab = Tab(profileID: profile)
+        defer { tab.tearDown() }
+        tab.park(url: url, Parked(title: "Publication fixture"))
+        // Parking also loads the profile's shared cache. Drain it before the FIFO exists:
+        // its disk read would otherwise open the FIFO as a second reader, consume the
+        // authorized write and give the tab a different image than the cache under test.
+        await Favicons.forget(profile).value
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         var cache: Favicons? = Favicons(profileID: profile, fetch: { _ in
@@ -147,9 +154,6 @@ private actor QueuedFaviconPublicationRequests {
             admission.continuation.yield(())
             return data
         })
-        let tab = Tab(profileID: profile)
-        defer { tab.tearDown() }
-        tab.park(url: url, Parked(title: "Publication fixture"))
         cache?.load(for: tab)
         var admitted = admission.stream.makeAsyncIterator()
         let began: Void? = await admitted.next()
@@ -345,5 +349,35 @@ private actor QueuedFaviconPublicationRequests {
         cache = nil
         try await waitUntil { completing == nil }
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+    func testDemoLateSharedReadStealsFIFO() async throws {
+        TestEnvironment.prepare()
+        let profile = UUID(), data = Self.artwork
+        let url = URL(string: "https://demo-\(UUID().uuidString.lowercased()).invalid/")!
+        let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
+        let file = directory.appendingPathComponent(url.host!)
+        let admission = AsyncStream<Void>.makeStream()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory); Favicons.forget(profile) }
+        var cache: Favicons? = Favicons(profileID: profile, fetch: { _ in
+            defer { admission.continuation.finish() }
+            guard file.path.withCString({ mkfifo($0, S_IRUSR | S_IWUSR) }) == 0 else { return nil }
+            admission.continuation.yield(())
+            return data
+        })
+        let tab = Tab(profileID: profile)
+        defer { tab.tearDown() }
+        tab.park(url: url, Parked(title: "Demo"))
+        cache?.load(for: tab)
+        var admitted = admission.stream.makeAsyncIterator()
+        _ = await admitted.next()
+        // What a slow runner does by chance: the shared cache reads the host file late.
+        Favicons.cache(for: profile).load(for: tab)
+        try? await waitUntil { cache?.icon(for: url) != nil }
+        try await Task.sleep(for: .milliseconds(500))
+        let same = cache?.icon(for: url) === tab.favicon
+        let persisted = await Self.drain(file)
+        print("FAVICON_DEMO identical=\(same) drained=\(persisted.count)")
+        cache = nil
     }
 }
