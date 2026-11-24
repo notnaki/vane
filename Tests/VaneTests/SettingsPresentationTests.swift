@@ -94,6 +94,7 @@ import XCTest
 
     func testNativeDisclosureExpandsAndCollapsesItsControls() async throws {
         TestEnvironment.prepare()
+        _ = NSApplication.shared
         // Never inherit a pending or prohibited policy from an earlier fixture.
         let callerPolicy = NSApp.activationPolicy()
         defer { NSApp.setActivationPolicy(callerPolicy) }
