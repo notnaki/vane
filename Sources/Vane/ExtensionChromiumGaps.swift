@@ -279,7 +279,9 @@ import WebKit
         guard ["*", "http", "https"].contains(scheme), let slash = rest.firstIndex(of: "/") else { return nil }
         let host = String(rest[..<slash]), path = String(rest[slash...])
         // Chrome refuses a wildcard for every host here; so does Vane, or every site would get `chrome`.
-        guard !host.isEmpty, !host.dropFirst().contains("*"), !host.hasPrefix("*") || host.hasPrefix("*.") else { return nil }
+        // ponytail: a dot after `*.` refuses `*.com`; a public-suffix list would also refuse `*.co.uk`.
+        guard !host.isEmpty, !host.dropFirst().contains("*"),
+              !host.hasPrefix("*") || (host.hasPrefix("*.") && host.dropFirst(2).contains(".")) else { return nil }
         let escape = NSRegularExpression.escapedPattern(for:)
         let hostRegex = host.hasPrefix("*.") ? "([^/:]+\\.)?" + escape(String(host.dropFirst(2))) : escape(host)
         let pathRegex = path.split(separator: "*", omittingEmptySubsequences: false).map { escape(String($0)) }.joined(separator: ".*")

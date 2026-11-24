@@ -56,7 +56,7 @@ import XCTest
         XCTAssertFalse(try matches("https://claude.ai/*", "https://claude.ai.evil.test/"))
         XCTAssertFalse(try matches("https://claude.ai/*", "http://claude.ai/"))
         XCTAssertFalse(try matches("https://example.com/app*", "https://example.com/other"))
-        for invalid in ["<all_urls>", "ftp://a.example/*", "https://a.*.example/*", "https://", "https://*/*", "*://*/*"] {
+        for invalid in ["<all_urls>", "ftp://a.example/*", "https://a.*.example/*", "https://", "https://*/*", "*://*/*", "*://*.com/*"] {
             XCTAssertNil(ExtensionChromiumGaps.pageRegex(invalid), invalid)
         }
     }
