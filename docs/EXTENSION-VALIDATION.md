@@ -4,6 +4,16 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Tab groups as Today folders (`chrome.tabGroups`) — 2026-11-23
+
+Vane now provides `chrome.tabGroups` and `tabs.group`/`tabs.ungroup`, mapped onto folders in Today. The rules are in [Tab groups](INTEGRATIONS.md#compatibility-and-validation). The user approved that extensions, notably Claude, may create and delete sidebar folders this way, limited to folders an extension made.
+
+**What Claude's code calls** (read from version **1.0.109** of the package): `tabs.group` (with `createProperties.windowId` set to the tab's own window, or with a `groupId`), `tabs.ungroup`, `tabs.get(…).groupId`, `tabs.query({groupId})` including `TAB_GROUP_ID_NONE`, `tabGroups.get`, `tabGroups.update` (title, `Color.ORANGE`/`YELLOW`, `collapsed`), `tabGroups.query({})` for colours in use, and the `Color` constants. It adds no `tabGroups.on*` listeners.
+
+**Automated regression** (`ExtensionTabGroupsTests`, CI): a synthetic MV3 extension with `tabGroups` groups two Today tabs into a new folder it owns; updates title, colour and collapsed state and reads them back with the window id; queries by `groupId`, `TAB_GROUP_ID_NONE`, title pattern and colour; is refused on the user's folder (update, group into, group out of, ungroup) and on a pinned tab; adds a tab, moves the group to the end of Today and ungroups every tab, after which its folder is gone and the user's folder remains; receives `onCreated`, `onUpdated`, `onMoved` and `onRemoved` in order. A private tab is refused. An extension listing `tabGroups` only as optional gets no namespace and its bridge call fails.
+
+**Not tested:** Claude itself creating its group (no account was used), and groups across several windows of one Space.
+
 ## Page control for Claude in Chrome (`chrome.debugger`) — 2026-11-23
 
 Vane now answers the part of `chrome.debugger` that the official **Claude** extension uses to act on pages, and `runtime.getContexts`. With the unmodified extension installed and signed out, calls made through its own side panel's `chrome.debugger` attached to a page, evaluated script, took a screenshot, clicked a button and typed into a field. **No Claude account was used, so Claude itself never drove a page:** its agent loop, permission prompts and tools past the Log in screen are untested.
@@ -23,7 +33,7 @@ Vane now answers the part of `chrome.debugger` that the official **Claude** exte
 | `Page.javascriptDialogOpening`/`Closed`, `Page.handleJavaScriptDialog` | **Not sent; the command fails.** Vane shows its own dialog and Claude cannot answer it. |
 | `Page.frameNavigated`, `Page.frameStartedNavigating` | **Not sent.** Claude also follows navigation through `webNavigation`, which WebKit has. |
 | `runtime.getContexts` | Lists the background and open side panels. Claude's own check (`documentUrls: [location.href]`, every result a `SIDE_PANEL`) passes. |
-| `tabGroups`, `tabs.group`/`ungroup` | Still absent, on purpose. Claude creates, renames, recolours and removes groups on its own; mapped to Vane's folders that would let an extension create and delete folders in the user's sidebar, which needs a design decision rather than a stand-in. |
+| `tabGroups`, `tabs.group`/`ungroup` | Absent at the time; since provided over Today's folders (see the tab groups section). |
 | `identity` | See the identity section below. |
 | `notifications`, `offscreen`, `downloads`, `favicon`, `runtime.connectNative` | Unchanged from the sections below. |
 

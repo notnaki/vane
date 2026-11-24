@@ -313,6 +313,8 @@ import WebKit
         ExtensionMV2Compatibility.configure(webConfiguration)
         ExtensionIdentityAPI.configure(webConfiguration)
         ExtensionDebuggerAPI.configure(webConfiguration)
+        // Ahead of the stand-ins, which leave a namespace that is already there alone.
+        ExtensionTabGroupsAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
@@ -1971,6 +1973,7 @@ import WebKit
         }
         syncSidePanels()
         debugger.sync()
+        tabGroups.sync(contexts: installed)
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -2086,6 +2089,12 @@ import WebKit
             try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
                         store: (configuration.window as? ExtWindow)?.store, for: context)
             return nil
+        }
+        if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL,
+                                                      path: ExtensionTabGroupsAPI.bridgePath) {
+            return try await tabGroups.handle(request, tab: configuration.parentTab as? ExtTab,
+                                              window: configuration.window as? ExtWindow, contexts: installed,
+                                              for: context) { [debugger] in debugger.reply($0, for: context) }
         }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
             return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
@@ -2277,6 +2286,8 @@ import WebKit
     @Published private(set) var sidePanels: [ExtensionSidePanel] = []
     /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
     private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
+    /// `chrome.tabGroups` over Today's folders; see ExtensionTabGroups.swift.
+    private(set) lazy var tabGroups = ExtensionTabGroups(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.
     @Published private var sidePanelOptions: [ActionKey: ExtensionSidePanelAPI.Options] = [:]
     private var sidePanelsOnAction: Set<ObjectIdentifier> = []
@@ -2569,6 +2580,7 @@ import WebKit
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
         debugger.forget(context)
+        tabGroups.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()

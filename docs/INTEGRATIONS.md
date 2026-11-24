@@ -283,8 +283,41 @@ inside a cross-origin frame can still start one. In callback style
 The last-expression rewrite is a tokenizer, not a parser: code it misreads still runs,
 and returns no value; so does code over 512 KB or nested more than 32 blocks deep.
 
-**Chromium-only namespaces.** When an MV3 extension requests `downloads`,
-`identity`, `notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
+**Tab groups.** An MV3 extension that lists `tabGroups` in `permissions` gets
+`chrome.tabGroups` (`get`, `query`, `update`, `move`, the four events,
+`TAB_GROUP_ID_NONE` and `Color`) and `tabs.group`/`tabs.ungroup`. A group is a
+folder in Today, in the Space the window is showing. Tabs from `tabs.get` and
+`tabs.query` carry `groupId` (the folder the tab sits in directly, or -1), and
+`tabs.query({groupId})` filters on it. Rules:
+
+- Only Today tabs can be grouped. Pinned tabs and Favourites are refused and stay put.
+- `tabs.group` without `groupId` makes a new folder beside the tab, named after the
+  extension until it sets a title. Vane records which extension made it.
+- Extensions may read every Today folder as a group, but may rename, recolour, fold,
+  move, fill or empty only folders an extension made. A folder the user made is
+  refused with an error and never changes.
+- An extension-made folder whose last tab leaves goes, as Chrome removes an empty
+  group. Today removes empty folders anyway, so a change that would leave a user's
+  folder empty — moving an extension's folder out of it, say — is refused.
+- `tabs.group` and `tabs.ungroup` change all the named tabs or none. Ungrouping a tab
+  in no group, or a pinned tab or Favourite, does nothing. A failed call made with a
+  callback sets `runtime.lastError` for that callback, with WebKit's prefix
+  (`Invalid call to tabs.create(). …`).
+- `tabGroups.move` puts the group's first tab at `index`, as in Chrome.
+- Tabs stay in their own window: joining a group in another window, or moving a group
+  to another window, fails. `createProperties.windowId` is ignored.
+- Colours are kept and read back; Vane folders do not show them.
+- Locked and live folders are not groups. Private windows run no extensions in Vane;
+  the host also refuses a private tab outright.
+- Group ids are integers stable for the session. Events fire for changes made by any
+  extension and for folders appearing or going as tabs change; a user's rename or fold
+  is announced at the next tab change. While a context listens, it keeps one call open.
+- Gaps: WebKit's `tabs` events cannot be replaced, so `tabs.onUpdated` never reports a
+  `groupId` change and tabs in `tabs.onCreated`/`onUpdated` have no `groupId`. Nor do
+  tabs from `tabs.create`, `update`, `move`, `duplicate`, or `windows.get`/`getAll`
+  with `populate`: read it with `tabs.get` or `tabs.query`.
+- Changes animate like any other sidebar move, and are instant with Reduce Motion or
+  Battery Saver.
 
 **Web sign-in (`chrome.identity`).** For extensions that request `identity`, Vane
 supplies `getRedirectURL()` (`https://<Chrome ID>.chromiumapp.org/`, using the Web Store
@@ -301,7 +334,7 @@ extension's redirect URL, as an unpacked extension does in Chrome; Vane refuses 
 when the other extension is installed in the same profile, so load folders you trust.
 
 **Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
-`notifications`, `offscreen` or `tabGroups` in `permissions`, WebKit leaves
+`notifications` or `offscreen` in `permissions`, WebKit leaves
 the namespace out and the extension's background would stop at its first
 `chrome.notifications.onClicked.addListener(…)`. Vane defines each one with its events,
 which never fire, and its constants. Methods stay undefined, so a check such as
@@ -309,7 +342,7 @@ which never fire, and its constants. Methods stay undefined, so a check such as
 fall back; calling one anyway throws as it would in any browser without it. Names listed
 only in `optional_permissions` get nothing. This lets the rest of the extension start;
 the features behind these namespaces do not work. The manager still lists each one as
-unrecognized. `debugger` is the exception: see Page control above. `storage.managed` reads as empty, because Vane has no administrator policy.
+unrecognized. `debugger` is the exception: see Page control above. `tabGroups` is covered under Tab groups. `storage.managed` reads as empty, because Vane has no administrator policy.
 The namespaces exist in the worker and extension pages only. Content scripts declared in
 the manifest of an MV3 worker extension get the `chrome.runtime` constants alone
 (`OnInstalledReason`, `ContextType`), from a generated script that runs ahead of the

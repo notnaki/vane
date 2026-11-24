@@ -28,7 +28,8 @@ import WebKit
         // The stand-ins are MV3-only, so MV2 extensions still hear these are unrecognized.
         let mv3 = manifest["manifest_version"] as? Int == 3
         let required = mv3 ? Set(manifest["permissions"] as? [String] ?? []) : []
-        var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission] + (mv3 ? ["management"] : []))
+        var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission,
+                                          ExtensionTabGroupsAPI.permission] + (mv3 ? ["management"] : []))
             .subtracting(required.intersection(["idle"])).sorted().map {
             "\($0): \(unrecognized)"
         }
@@ -45,6 +46,9 @@ import WebKit
         } else if declared.contains(ExtensionIdentityAPI.permission) {
             // WebKit cannot grant a permission it does not know, so there is no grant to honour.
             issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
+        }
+        if declared.contains(ExtensionTabGroupsAPI.permission) {
+            issues.append("tabGroups: Vane's groups are folders in Today. Pinned tabs and Favourites cannot be grouped, tabs stay in their own window, colours are kept but not shown, and extensions change only the folders extensions made.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
