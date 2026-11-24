@@ -137,6 +137,13 @@ private actor QueuedFaviconPublicationRequests {
         let directory = ProfileManager.faviconDir(for: profile, in: Store.directory)
         let file = directory.appendingPathComponent(url.host!)
         let admission = AsyncStream<Void>.makeStream()
+        let tab = Tab(profileID: profile)
+        defer { tab.tearDown() }
+        tab.park(url: url, Parked(title: "Publication fixture"))
+        // Parking also loads the profile's shared cache. Drain it before the FIFO exists:
+        // its disk read would otherwise open the FIFO as a second reader, consume the
+        // authorized write and give the tab a different image than the cache under test.
+        await Favicons.forget(profile).value
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         var cache: Favicons? = Favicons(profileID: profile, fetch: { _ in
@@ -147,9 +154,6 @@ private actor QueuedFaviconPublicationRequests {
             admission.continuation.yield(())
             return data
         })
-        let tab = Tab(profileID: profile)
-        defer { tab.tearDown() }
-        tab.park(url: url, Parked(title: "Publication fixture"))
         cache?.load(for: tab)
         var admitted = admission.stream.makeAsyncIterator()
         let began: Void? = await admitted.next()

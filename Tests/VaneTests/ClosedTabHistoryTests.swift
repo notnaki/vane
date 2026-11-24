@@ -176,6 +176,26 @@ import XCTest
         XCTAssertNil(retired.value, "An unfinished document probe cannot retain a closed tab")
     }
 
+    func testPendingTranslationOfferDoesNotRetainClosedTab() async throws {
+        let store = store()
+        var original: Tab? = store.newBlankTab()
+        let retired = WeakTab(original)
+        // Busy the page right after its load event, so the offer's language sample, sent
+        // from didFinish, is still waiting for the page when the tab closes.
+        original!.web.configuration.userContentController.addUserScript(WKUserScript(source: """
+            addEventListener('load', () => setTimeout(() => {
+                const end = Date.now() + 3000; while (Date.now() < end) {}
+            }, 0));
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let url = try server.url("/pending-translation")
+        original!.navigate(to: url)
+        try await compatibilityWait { !original!.loading && original!.web.url == url }
+        store.close(original!.id)
+        XCTAssertNil(original?.existingWeb, "Closing must release the live page")
+        original = nil
+        XCTAssertNil(retired.value, "An unanswered translation sample cannot retain a closed tab")
+    }
+
     func testClosingSuspendedTabPreservesHistoryWithoutWakingIt() async throws {
         let store = store(), original = store.newBlankTab()
         for path in ["/a", "/b", "/c"] { try await load(path, in: original) }
