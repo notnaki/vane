@@ -2431,6 +2431,20 @@ struct TitleReveal: Equatable, Sendable {
         if navigationResponse.isForMainFrame { dismissDownloadTabIfBlank(w) }
     }
 
+    /// WebKit delivers native context-menu downloads through this delegate selector
+    /// because choosing Download Image does not start a navigation.
+    @objc(_webView:contextMenuDidCreateDownload:)
+    func contextMenuDidCreateDownload(_ w: WKWebView, download: WKDownload) {
+        guard w === existingWeb, !tornDown, !suspended,
+              let url = download.originalRequest?.url,
+              !HTTPSOnly.blocksDownload(url, profileID: profileID) else {
+            download.cancel { _ in }
+            return
+        }
+        TidyDownloads.remember(download, pageTitle: w.title)
+        Downloads.manager(for: profileID).attach(download, from: w)
+    }
+
     /// A new tab whose first navigation became a download has no document to keep.
     /// The URL can already name the provisional download, so use committed history
     /// rather than `url` or `hasEverLoaded` (which is set at provisional start).

@@ -13,6 +13,9 @@ import subprocess
 import sys
 
 
+PASSKEYS = "com.apple.developer.web-browser.public-key-credential"
+
+
 def generate(profile, base, container, identity, available_identities, now=None, environment=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     expiry = profile.get("ExpirationDate")
@@ -75,6 +78,11 @@ def generate(profile, base, container, identity, available_identities, now=None,
         "com.apple.developer.aps-environment": push,
         "keychain-access-groups": [app],
     })
+    # Apple's managed browser passkey grant: WebKit answers WebAuthn with the system
+    # passkey sheet only when it is signed in. Copied only when the profile carries it,
+    # since a signature claiming it without the profile is killed at launch.
+    if grants.get(PASSKEYS) is True:
+        result[PASSKEYS] = True
     # Development profiles can authorize a debugger. That privilege is never copied.
     result.pop("get-task-allow", None)
     result.pop("com.apple.security.get-task-allow", None)

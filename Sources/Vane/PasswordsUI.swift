@@ -1,4 +1,5 @@
 import AppKit
+import Security
 import SwiftUI
 
 /// Settings ▸ Passwords: the saved logins, grouped by site, searchable, editable.
@@ -305,10 +306,17 @@ import SwiftUI
             : "\(logins.count) \(logins.count == 1 ? "password" : "passwords") · \(groups.count) \(groups.count == 1 ? "site" : "sites") in this Mac’s Keychain"
     }
 
+    /// Apple's managed browser grant; WebKit only offers passkeys when the signature has it.
+    private static let passkeysSigned = SecTaskCreateFromSelf(nil).flatMap {
+        SecTaskCopyValueForEntitlement($0, "com.apple.developer.web-browser.public-key-credential" as CFString, nil)
+    } as? Bool == true
+
     private var about: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
             Text("Optional password sync is managed in Settings → iCloud. Local saved logins remain available when sync is off.")
-            Text("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
+            Text(Self.passkeysSigned
+                 ? "Passkeys use macOS’s passkey sheet, with Touch ID and Apple Passwords or another passkey app you’ve turned on."
+                 : "This build isn’t signed for passkeys, so websites can’t use them here.")
         }
         .font(Look.caption).foregroundStyle(Look.inkSecondary)
         .fixedSize(horizontal: false, vertical: true)

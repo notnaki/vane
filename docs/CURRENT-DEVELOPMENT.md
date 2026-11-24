@@ -37,7 +37,8 @@ announced here.
   Dolby Vision, Spotify local music playback, and Disney+ protected video at 720p
   on one signed, notarized nightly on macOS 27.0.1. These are dated observations,
   not fresh tests of this source snapshot or a general compatibility guarantee.
-- Passkeys still require Apple's managed entitlement and provisioning. Directory
+- Apple approved the passkey entitlement; releases signed with the updated profile
+  carry it, and real-site passkey sign-in is not yet verified. Directory
   uploads remain blocked on the documented macOS 27.0.x setup. See the
   [compatibility evidence](REAL-SITE-COMPATIBILITY.md) and
   [readiness tracker](BROWSER-READINESS-TODO.md).
