@@ -124,11 +124,20 @@ import WebKit
               // Vane lists every extension with an action in its toolbar menu.
               if (api.action) define(api.action, 'getUserSettings', callback => reply(callback, {isOnToolbar: true}));
               // Workers, side panels, offscreen documents, popups and extension tabs. Tab and
-              // window IDs are WebKit's to give, which the host cannot name: -1.
-              define(api.runtime, 'getContexts', (filter, callback) => answer(ask('contexts').then(list => list.filter(context =>
+              // window IDs are WebKit's to give, which the host cannot name: -1. Some WebKit
+              // versions answer natively for the contexts they know; Vane adds the rest.
+              const nativeContexts = typeof api.runtime.getContexts === 'function' ? api.runtime.getContexts.bind(api.runtime) : null;
+              const contexts = async () => {
+                const own = await ask('contexts');
+                if (!nativeContexts) return own;
+                const known = await nativeContexts({}).catch(() => []);
+                const urls = new Set(known.map(context => context.documentUrl)), types = new Set(known.map(context => context.contextType));
+                return [...known, ...own.filter(context => !urls.has(context.documentUrl) && !(context.contextType === 'BACKGROUND' && types.has('BACKGROUND')))];
+              };
+              Object.defineProperty(api.runtime, 'getContexts', {configurable: true, value: (filter, callback) => answer(contexts().then(list => list.filter(context =>
                 ['contextTypes', 'contextIds', 'documentUrls', 'documentOrigins', 'tabIds', 'windowIds', 'frameIds'].every(key =>
                   !Array.isArray(filter?.[key]) || filter[key].includes(context[key.slice(0, -1)]))
-                && (typeof filter?.incognito !== 'boolean' || filter.incognito === context.incognito))), callback));
+                && (typeof filter?.incognito !== 'boolean' || filter.incognito === context.incognito))), callback)});
               if (declared.has('offscreen')) {
                 constants(api.offscreen, 'Reason', Object.fromEntries(['TESTING', 'AUDIO_PLAYBACK', 'IFRAME_SCRIPTING', 'DOM_SCRAPING', 'BLOBS', 'DOM_PARSER',
                   'USER_MEDIA', 'DISPLAY_MEDIA', 'WEB_RTC', 'CLIPBOARD', 'LOCAL_STORAGE', 'WORKERS', 'BATTERY_STATUS', 'MATCH_MEDIA', 'GEOLOCATION'].map(key => [key, key])));

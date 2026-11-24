@@ -142,7 +142,7 @@ import XCTest
             let host = ExtensionHost.host(for: profile)
             _ = try await host.load(folder, installing: true) { _ in true }
             let context = try XCTUnwrap(host.installed.first)
-            let sidePanelNotes = (host.entries.first?.compatibility ?? []).filter { $0.localizedCaseInsensitiveContains("side") }
+            let sidePanelNotes = (host.entries.first?.compatibility ?? []).filter { $0.hasPrefix("sidePanel") }
             XCTAssertEqual(sidePanelNotes.count, 1, "\(sidePanelNotes)")
             XCTAssertFalse(sidePanelNotes.contains(where: ExtensionDiagnostics.isUnsupported), "Provided, not missing")
             host.sync()
@@ -202,14 +202,14 @@ import XCTest
 
             // What WebKit lacks keeps its events and constants and no methods, so feature
             // detection still finds it missing. Optional permissions get no stand-in.
-            // `debugger` is Vane's own (ExtensionDebuggerTests), so its methods exist.
+            // `debugger` and tab groups are Vane's own, so their methods exist.
             let gaps = try await run("""
                 const managed = JSON.stringify(await chrome.storage.managed.get(null));
                 return [typeof chrome.debugger.onEvent.addListener, typeof chrome.debugger?.attach,
                         chrome.notifications?.create ? 'chromium' : 'fallback', typeof chrome.tabs.group, managed,
                         chrome.tabGroups.TAB_GROUP_ID_NONE, typeof chrome.downloads, chrome.runtime.ContextType.SIDE_PANEL].join('|');
                 """, in: panel.web)
-            XCTAssertEqual(gaps, "function|function|fallback|undefined|{}|-1|undefined|SIDE_PANEL")
+            XCTAssertEqual(gaps, "function|function|fallback|function|{}|-1|undefined|SIDE_PANEL")
 
             // A tab's own panel belongs to that tab alone.
             let other = store.newBlankTab()
