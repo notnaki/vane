@@ -397,9 +397,17 @@ import XCTest
             + "&method=Runtime.evaluate&params=%7B%22expression%22%3A%22window.ranAfterStop%3D1%22%7D", relativeTo: context.baseURL)?.absoluteURL,
             base: context.baseURL))
         let shim = host.adapter(for: tab, in: store)
+        // Stop is queued on the main queue behind the command's first step, which runs up to
+        // its page probe: it lands while the probe is out, however late the test itself resumes.
         let pending = Task { try await host.debugger.handle(late, tab: shim, panels: [], for: context) }
-        await Task.yield()
-        host.debugger.stop(try XCTUnwrap(host.debugger.session(on: tab.id)))
+        let stoppedInTime: Bool = await withCheckedContinuation { done in
+            DispatchQueue.main.async {
+                guard let session = host.debugger.session(on: tab.id) else { return done.resume(returning: false) }
+                host.debugger.stop(session)
+                done.resume(returning: true)
+            }
+        }
+        XCTAssertTrue(stoppedInTime, "Stop found the session")
         do {
             _ = try await pending.value
             XCTFail("A command answered after Stop")
