@@ -1,1 +1,1 @@
-^VaneTests[.](FaviconPublicationTests/(testFetchedIconPublishesToTabsAndCacheBeforeBlockedPersistenceFinishes|testDemoLateSharedReadStealsFIFO)|SettingsPresentationTests/testNativeDisclosureExpandsAndCollapsesItsControls)$
+^VaneTests[.]SettingsPresentationTests/testNativeDisclosureExpandsAndCollapsesItsControls$

@@ -223,7 +223,7 @@ jobs:
               pass=$((pass+1)); echo "iteration $i PASS"; grep -aE "Test Case .*(passed|failed)|FAVICON_DEMO" "$RUNNER_TEMP/iter-$i.log"
             else
               fail=$((fail+1)); echo "iteration $i FAIL"
-              grep -aE "Test Case .*(passed|failed)|error:|SETTINGS_DISCLOSURE| key=|FAVICON|FAVICON_DEMO" "$RUNNER_TEMP/iter-$i.log" | head -60
+              grep -aE "Test Case .*(passed|failed)|error:|SETTINGS_DISCLOSURE|expand t=|collapse t=|FAVICON|FAVICON_DEMO" "$RUNNER_TEMP/iter-$i.log" | head -60
               cat "$RUNNER_TEMP/iter-$i.log" >> "$RUNNER_TEMP/vane-swift-tests.log"
             fi
           done
