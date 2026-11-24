@@ -36,7 +36,7 @@ import XCTest
             let changed = (new.subtracting(old).map { "+" + $0 } + old.subtracting(new).map { "-" + $0 })
                 .prefix(12).map { String($0.prefix(240)) }
             var line = "change=\(controls.environmentChanges.count) \(changed.joined(separator: " | "))"
-            if controls.environmentChanges.isEmpty {
+            if controls.environmentChanges.count < 3 {
                 line += "\n  stack: " + Thread.callStackSymbols.prefix(40).joined(separator: "\n  ")
             }
             controls.environmentChanges.append(line)
@@ -202,6 +202,7 @@ import XCTest
         let admittedRootUpdates = report.batchCounts.rootUpdates
         let admittedActivationUpdates = controls.activationUpdates
         let admittedConfigures = report.batchCounts.configures
+        let admittedEnvironmentConfigures = report.batchCounts.environmentConfigures
         print("RESIDENT_BATCH_ADMISSION count=\(count) rootUpdates=\(admittedRootUpdates)")
         controls.tracing = true
         controls.storeObservation = store.objectWillChange.sink { [controls] in controls.storeChanges += 1 }
@@ -210,6 +211,8 @@ import XCTest
         func mark(_ phase: String) {
             trace.append("\(phase) rootUpdates=\(report.batchCounts.rootUpdates - admittedRootUpdates)"
                 + " configures=\(report.batchCounts.configures - admittedConfigures)"
+                + " environmentConfigures=\(report.batchCounts.environmentConfigures - admittedEnvironmentConfigures)"
+                + " cachedGraphs=\(report.cachedGraphCount) disclosureUpdates=\(report.batchCounts.disclosureUpdates)"
                 + " environmentChanges=\(controls.environmentChanges.count) storeChanges=\(controls.storeChanges)"
                 + " activationUpdates=\(controls.activationUpdates - admittedActivationUpdates)")
         }

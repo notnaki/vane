@@ -26,9 +26,11 @@ struct NativeCachedSidebarBatchCounts: Sendable {
     var graphDetaches = 0
     var graphEvictions = 0
     var rootUpdates = 0
-    /// Section updates SwiftUI delivered, structural or environment-only; each one
-    /// resubmits every owner's root as it is next mounted.
+    /// Section updates SwiftUI delivered; each one resubmits every cached owner's root.
     var configures = 0
+    /// Of those, updates with the same structural revision and disclosure sample:
+    /// only the environment changed.
+    var environmentConfigures = 0
     var rangeChanges = 0
     var protectionOwnerTreeScans = 0
     var detachedProtectionOwnerTreeScans = 0
@@ -1152,7 +1154,7 @@ private final class NativeBatchMouseObservation {
     private var scheduled = false
     private var disposed = false
     private(set) var accessibilityRowsExpanded = false
-    private(set) var batchCounts = NativeCachedSidebarBatchCounts()
+    fileprivate(set) var batchCounts = NativeCachedSidebarBatchCounts()
     // Opt-in owner-level diagnostics; no per-node instrumentation in shipping.
     var recordsProtectionTreeScans = false
     var usesThreeBatchBudget: Bool { rowWindow.usesThreeBatchBudget }
@@ -2058,6 +2060,9 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
             context.coordinator.sample = sample
             view.presentDisclosure(sample)
             return
+        }
+        if context.coordinator.revision == revision && context.coordinator.sample == sample {
+            view.batchCounts.environmentConfigures += 1
         }
         context.coordinator.revision = revision
         context.coordinator.sample = sample
