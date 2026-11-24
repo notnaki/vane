@@ -214,12 +214,16 @@ jobs:
           FILTER=$(cat scripts/repro-filter.txt)
           COUNT=$(cat scripts/repro-count.txt)
           pass=0; fail=0
+          if [ -f scripts/repro-stress.txt ]; then
+            for c in $(seq 1 "$(cat scripts/repro-stress.txt)"); do (while :; do :; done) & done
+            echo "CPU stress: $(cat scripts/repro-stress.txt) busy loops"
+          fi
           for i in $(seq 1 "$COUNT"); do
             if python3 scripts/run-native-tests.py --skip-build --jobs 1 --filter "$FILTER" > "$RUNNER_TEMP/iter-$i.log" 2>&1; then
               pass=$((pass+1)); echo "iteration $i PASS"
             else
               fail=$((fail+1)); echo "iteration $i FAIL"
-              grep -E "error:|failed|FAIL|XCTAssert" "$RUNNER_TEMP/iter-$i.log" | head -40
+              grep -E "error:|failed|FAIL|XCTAssert|SETTINGS_DISCLOSURE|key=|FAVICON" "$RUNNER_TEMP/iter-$i.log" | head -40
               cat "$RUNNER_TEMP/iter-$i.log" >> "$RUNNER_TEMP/vane-swift-tests.log"
             fi
           done

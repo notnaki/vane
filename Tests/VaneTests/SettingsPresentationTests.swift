@@ -142,10 +142,27 @@ import XCTest
             let y = host.bounds.midY + (host.isFlipped ? -offset : offset)
             return host.convert(NSPoint(x: 25, y: y), to: nil)
         }
-        try click(trianglePoint(), in: window)
-        try await compatibilityWait { host.fittingSize.height > collapsedHeight + 30 }
-        try click(trianglePoint(), in: window)
-        try await compatibilityWait { abs(host.fittingSize.height - collapsedHeight) < 1 }
+        var trace: [String] = []
+        func note(_ label: String, _ point: NSPoint? = nil) {
+            let hit = point.flatMap { host.superview?.hitTest(host.superview!.convert($0, from: nil)) }
+            trace.append("\(label) t=\(ProcessInfo.processInfo.systemUptime) key=\(window.isKeyWindow) main=\(window.isMainWindow) active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) occl=\(window.occlusionState.rawValue) frame=\(window.frame) screen=\(String(describing: window.screen?.visibleFrame)) bounds=\(host.bounds) fitting=\(host.fittingSize) needsLayout=\(host.needsLayout) point=\(String(describing: point)) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil") reduce=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)")
+        }
+        do {
+            note("ready")
+            let first = trianglePoint(); note("click1", first)
+            try click(first, in: window)
+            note("after1")
+            try await compatibilityWait { host.fittingSize.height > collapsedHeight + 30 }
+            note("expanded")
+            let second = trianglePoint(); note("click2", second)
+            try click(second, in: window)
+            note("after2")
+            try await compatibilityWait { abs(host.fittingSize.height - collapsedHeight) < 1 }
+        } catch {
+            note("failed")
+            print("SETTINGS_DISCLOSURE_TRACE collapsed=\(collapsedHeight)\n" + trace.joined(separator: "\n"))
+            throw error
+        }
     }
 
     private func click(_ point: NSPoint, in window: NSWindow) throws {
