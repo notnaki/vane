@@ -395,10 +395,11 @@ import XCTest
             } catch {
                 // Which half never held: the page's own call report (isolated world, so the
                 // page cannot fake it) or the browser's presentation of the tab.
+                let hadWeb = tab.existingWeb != nil
                 let page = try? await tab.web.callAsyncJavaScript(
                     "return JSON.stringify({state: window.__vaneMeetCallState ? window.__vaneMeetCallState() : null, href: location.href, ready: document.readyState, visibility: document.visibilityState, buttons: document.querySelectorAll('button').length})",
                     arguments: [:], in: nil, contentWorld: MeetCall.world)
-                print("MEET_SPACE_ADMISSION inMeetCall=\(tab.inMeetCall) currentURL=\(String(describing: tab.currentURL)) webURL=\(String(describing: tab.web.url)) loading=\(tab.web.isLoading) title=\(String(describing: tab.web.title)) suspended=\(tab.suspended) tornDown=\(tab.tornDown) current=\(store.current == tab.id) pageOwned=\(tab.web.window === window) pageWindow=\(String(describing: tab.web.window)) superview=\(String(describing: tab.web.superview.map { type(of: $0) })) hidden=\(tab.web.isHidden) hiddenAncestor=\(tab.web.isHiddenOrHasHiddenAncestor) frame=\(tab.web.frame) appHidden=\(NSApp.isHidden) active=\(NSApp.isActive) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) policy=\(NSApp.activationPolicy().rawValue) page=\(String(describing: page))")
+                print("MEET_SPACE_ADMISSION hadWeb=\(hadWeb) inMeetCall=\(tab.inMeetCall) poppedOut=\(CallPopout.window(for: tab) != nil) profileVisible=\(store.profileVisible) onScreen=\(store.onScreenTabs.contains { $0 === tab }) activeProfile=\(manager.active.id == profile.id) currentURL=\(String(describing: tab.currentURL)) webURL=\(String(describing: tab.web.url)) loading=\(tab.web.isLoading) title=\(String(describing: tab.web.title)) suspended=\(tab.suspended) tornDown=\(tab.tornDown) current=\(store.current == tab.id) pageOwned=\(tab.web.window === window) pageWindow=\(String(describing: tab.web.window)) superview=\(String(describing: tab.web.superview.map { type(of: $0) })) hidden=\(tab.web.isHidden) hiddenAncestor=\(tab.web.isHiddenOrHasHiddenAncestor) frame=\(tab.web.frame) appHidden=\(NSApp.isHidden) active=\(NSApp.isActive) visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) policy=\(NSApp.activationPolicy().rawValue) page=\(String(describing: page))")
                 throw error
             }
             store.switchTo(space: second)
