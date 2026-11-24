@@ -158,15 +158,13 @@ import WebKit
                   if (typeof callback !== 'function') return query(rest).then(list => state().then(s => filtered(list, s.members)));
                   query(rest, list => list ? state().then(s => callback(filtered(list, s.members)), () => callback(list)) : callback(list));
                 }});
-                let watching = false;
+                // A closed tab leaves its group, and an emptied group ends, as in Chrome. At the
+                // top level so a restarted worker listens again.
+                tabs.onRemoved.addListener(id => { ask('ungroup', {tabIds: [id]}).catch(() => {}); });
                 define(tabs, 'group', (options, callback) => answer((async () => {
                   const tabIds = [options?.tabIds].flat();
                   if (!tabIds.length || !tabIds.every(Number.isInteger)) throw new Error('No tab IDs given.');
                   const found = await Promise.all(tabIds.map(id => get(id)));
-                  if (!watching) {
-                    watching = true;
-                    tabs.onRemoved.addListener(id => { ask('ungroup', {tabIds: [id]}).catch(() => {}); });
-                  }
                   return ask('group', {tabIds, groupId: options?.groupId, windowId: options?.createProperties?.windowId ?? found[0].windowId});
                 })(), callback));
                 define(tabs, 'ungroup', (tabIds, callback) => answer(ask('ungroup', {tabIds: [tabIds].flat()}), callback));
@@ -280,9 +278,10 @@ import WebKit
         let scheme = pattern[..<range.lowerBound], rest = pattern[range.upperBound...]
         guard ["*", "http", "https"].contains(scheme), let slash = rest.firstIndex(of: "/") else { return nil }
         let host = String(rest[..<slash]), path = String(rest[slash...])
-        guard !host.isEmpty, !host.dropFirst().contains("*"), host == "*" || !host.hasPrefix("*") || host.hasPrefix("*.") else { return nil }
+        // Chrome refuses a wildcard for every host here; so does Vane, or every site would get `chrome`.
+        guard !host.isEmpty, !host.dropFirst().contains("*"), !host.hasPrefix("*") || host.hasPrefix("*.") else { return nil }
         let escape = NSRegularExpression.escapedPattern(for:)
-        let hostRegex = host == "*" ? "[^/:]+" : host.hasPrefix("*.") ? "([^/:]+\\.)?" + escape(String(host.dropFirst(2))) : escape(host)
+        let hostRegex = host.hasPrefix("*.") ? "([^/:]+\\.)?" + escape(String(host.dropFirst(2))) : escape(host)
         let pathRegex = path.split(separator: "*", omittingEmptySubsequences: false).map { escape(String($0)) }.joined(separator: ".*")
         return "^" + (scheme == "*" ? "https?" : String(scheme)) + "://" + hostRegex + "(:\\d+)?" + pathRegex + "$"
     }

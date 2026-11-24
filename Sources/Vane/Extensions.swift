@@ -2088,7 +2088,9 @@ import WebKit
             return nil
         }
         if let request = ExtensionChromiumGaps.Request(configuration.url, base: context.baseURL) {
-            throw Failure(ExtensionChromiumGaps.reply(Result { try answer(request, for: context) }))
+            let result: Result<Any, any Error>
+            do { result = .success(try await answer(request, for: context)) } catch { result = .failure(error) }
+            throw Failure(ExtensionChromiumGaps.reply(result))
         }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
             return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
@@ -2237,7 +2239,7 @@ import WebKit
     /// `offscreen`: one hidden extension page per extension, as in Chrome.
     private var offscreenDocuments: [ObjectIdentifier: WKWebView] = [:]
 
-    private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) throws -> Any {
+    private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) async throws -> Any {
         let key = ObjectIdentifier(context), arguments = request.arguments
         let declared = Set(context.webExtension.manifest["permissions"] as? [String] ?? [])
         func integers(_ name: String) -> [Int] { (arguments[name] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue } }
@@ -2280,7 +2282,14 @@ import WebKit
                 userAgent.track(web)
                 web.isInspectable = Settings.inspectorEnabled
                 offscreenDocuments[key] = web
-                web.load(URLRequest(url: url))
+                // Chrome resolves once the document has loaded, so its listeners are there for
+                // the extension's next message.
+                let loaded = await OffscreenLoad.run(web, url: url)
+                guard loaded, offscreenDocuments[key] === web else {
+                    if offscreenDocuments[key] === web { offscreenDocuments[key] = nil }
+                    web.stopLoading()
+                    throw Failure("The offscreen document could not be loaded.")
+                }
                 return NSNull()
             }
         default:
@@ -3237,4 +3246,32 @@ extension View {
         store?.window?.performClose(nil)
         store.map { ExtensionHost.host(for: $0.profileID).sync() }
     }
+}
+
+/// One offscreen document's first load: finished, failed, or out of time.
+@MainActor private final class OffscreenLoad: NSObject, WKNavigationDelegate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    static func run(_ web: WKWebView, url: URL) async -> Bool {
+        let load = OffscreenLoad()
+        web.navigationDelegate = load
+        defer { web.navigationDelegate = nil }
+        return await withCheckedContinuation { continuation in
+            load.continuation = continuation
+            web.load(URLRequest(url: url))
+            Task { [weak load] in
+                try? await Task.sleep(for: .seconds(10))
+                load?.finish(false)
+            }
+        }
+    }
+
+    private func finish(_ loaded: Bool) {
+        continuation?.resume(returning: loaded)
+        continuation = nil
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish(true) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) { finish(false) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) { finish(false) }
 }

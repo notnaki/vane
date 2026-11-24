@@ -51,11 +51,12 @@ import XCTest
         XCTAssertTrue(try matches("https://*.claude.ai/*", "https://claude.ai/new"))
         XCTAssertTrue(try matches("https://*.claude.ai/*", "https://a.b.claude.ai/"))
         XCTAssertTrue(try matches("*://example.com/app*", "http://example.com:8080/app/1"))
+        XCTAssertNil(ExtensionChromiumGaps.webPageScript([["externally_connectable": ["matches": ["*://*/*"]]]]), "never every site")
         XCTAssertFalse(try matches("https://*.claude.ai/*", "https://evilclaude.ai/"))
         XCTAssertFalse(try matches("https://claude.ai/*", "https://claude.ai.evil.test/"))
         XCTAssertFalse(try matches("https://claude.ai/*", "http://claude.ai/"))
         XCTAssertFalse(try matches("https://example.com/app*", "https://example.com/other"))
-        for invalid in ["<all_urls>", "ftp://a.example/*", "https://a.*.example/*", "https://"] {
+        for invalid in ["<all_urls>", "ftp://a.example/*", "https://a.*.example/*", "https://", "https://*/*", "*://*/*"] {
             XCTAssertNil(ExtensionChromiumGaps.pageRegex(invalid), invalid)
         }
     }

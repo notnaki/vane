@@ -494,7 +494,9 @@ import XCTest
         // getContexts which panels are open and keeps an offscreen document.
         try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["alarms","tabs","tabGroups","offscreen","sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"}}"#.utf8)
             .write(to: folder.appendingPathComponent("manifest.json"))
-        try Data("<title>Offscreen</title>".utf8).write(to: folder.appendingPathComponent("off.html"))
+        try Data("<title>Offscreen</title><script src='off.js'></script>".utf8).write(to: folder.appendingPathComponent("off.html"))
+        try Data("chrome.runtime.onMessage.addListener((message, sender, respond) => { if (message.target === 'off') respond('ready'); });".utf8)
+            .write(to: folder.appendingPathComponent("off.js"))
         try Data("""
             const created = chrome.alarms.create('refresh', {delayInMinutes: 1});
             const promised = typeof created?.then === 'function';
@@ -510,11 +512,13 @@ import XCTest
                     await chrome.tabs.ungroup(tab.id);
                     const gone = await chrome.tabGroups.get(group).then(() => 'kept', error => error.message);
                     await chrome.offscreen.createDocument({url: 'off.html', reasons: [chrome.offscreen.Reason.BLOBS], justification: 'Test'});
+                    // Chrome resolves once the document loaded: it answers at once.
+                    const ready = await chrome.runtime.sendMessage({target: 'off'});
                     const types = (await chrome.runtime.getContexts({})).map(context => context.contextType).sort();
                     const twice = await chrome.offscreen.createDocument({url: 'off.html', reasons: ['BLOBS'], justification: 'Test'}).then(() => 'twice', error => error.message);
                     await chrome.offscreen.closeDocument();
                     respond(JSON.stringify([promised, before, listed.length === 1 && listed[0] === tab.id, info.title, info.color, gone,
-                        types, twice, await chrome.offscreen.hasDocument(), (await chrome.action.getUserSettings()).isOnToolbar]));
+                        types, ready, twice, await chrome.offscreen.hasDocument(), (await chrome.action.getUserSettings()).isOnToolbar]));
                 })().catch(error => respond('failed: ' + error.message));
                 return true;
             });
@@ -533,7 +537,7 @@ import XCTest
             let page = try await page(context)
             defer { page.stopLoading() }
             let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)
-            XCTAssertEqual(answer, #"[true,-1,true,"Agent","orange","No group with id: 1.",["BACKGROUND","OFFSCREEN_DOCUMENT"],"Only a single offscreen document may be created.",false,true]"#)
+            XCTAssertEqual(answer, #"[true,-1,true,"Agent","orange","No group with id: 1.",["BACKGROUND","OFFSCREEN_DOCUMENT"],"ready","Only a single offscreen document may be created.",false,true]"#)
         }
     }
 }
