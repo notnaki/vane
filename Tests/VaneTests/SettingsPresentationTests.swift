@@ -94,7 +94,7 @@ import XCTest
 
     func testNativeDisclosureExpandsAndCollapsesItsControls() async throws {
         TestEnvironment.prepare()
-        // Run alone (a focused filter), nothing earlier has created the application.
+        // A focused filter runs this alone, before anything has created the application.
         _ = NSApplication.shared
         // Never inherit a pending or prohibited policy from an earlier fixture.
         let callerPolicy = NSApp.activationPolicy()
@@ -154,11 +154,16 @@ import XCTest
                 return ready
             }
             let point = trianglePoint()
+            let hit = window.contentView?.hitTest(window.contentView!.convert(point, from: nil))
             trace.append("\(label) t=\(ProcessInfo.processInfo.systemUptime) key=\(window.isKeyWindow) "
+                + "exactKey=\(NSApp.keyWindow === window) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil") "
                 + "active=\(NSApp.isActive) occlusion=\(window.occlusionState.rawValue) frame=\(window.frame) "
                 + "screen=\(String(describing: window.screen?.visibleFrame)) bounds=\(host.bounds) "
                 + "fitting=\(host.fittingSize) point=\(point)")
             try click(point, in: window)
+            // Separates a click that never toggled from one whose layout has not settled.
+            host.layoutSubtreeIfNeeded()
+            trace.append("\(label) after click fitting=\(host.fittingSize)")
         }
         do {
             try await clickTriangle("expand")
