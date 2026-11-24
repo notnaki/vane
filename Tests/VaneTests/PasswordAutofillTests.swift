@@ -1366,7 +1366,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         }
     }
 
-    private enum EmbeddedFillControl { case none, heldReply, domOnlyMutation }
+    func testDiscoveryFocusEchoCannotCancelHeldExplicitFill() async throws {
+        try await exerciseEmbeddedSelection(control: .focusEcho)
+    }
+
+    private enum EmbeddedFillControl { case none, heldReply, domOnlyMutation, focusEcho }
     private struct PrematureFillAdmission: Error {}
 
     @MainActor private final class FillHoldFrame: NSObject, WKScriptMessageHandler {
@@ -1589,6 +1593,20 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 if let hold, hold.isHoldingReply, domAndTarget {
                     observedHeldBoundary = true
                     guard !ready else { throw PrematureFillAdmission() }
+                    if control == .focusEcho {
+                        // The frame's paced discovery reports the still-focused field
+                        // again. The trailing round trip orders it before the reply.
+                        _ = try await js(web, """
+                            (() => {
+                                const anchor = JSON.parse(window.__vaneAnchor());
+                                anchor.focus = true;
+                                anchor.mainDocument = false;
+                                webkit.messageHandlers.vanepw.postMessage(anchor);
+                                return true;
+                            })()
+                            """, world: Autofill.world)
+                        _ = try await js(web, "true", world: Autofill.world)
+                    }
                     hold.release()
                     // Return the sampled predicate, not a forced false. A later
                     // sample must observe the actual native completion receipt.
