@@ -225,7 +225,7 @@ enum LinkTarget {
               pane: { _ in AnyView(UIAnimationsPane()) }),
         .init(id: "previews", title: "Previews", icon: "rectangle.on.rectangle", parent: "general",
               pane: { _ in AnyView(PreviewsPane()) }),
-        .init(id: "commandBar", title: "Command Bar", icon: "magnifyingglass", parent: "general",
+        .init(id: "commandBar", title: "Command Bar", icon: "magnifyingglass", parent: "advanced",
               pane: { _ in AnyView(Pane { CommandBarSettings() }) }),
     ]
 }
@@ -610,11 +610,6 @@ private struct GeneralPane: View {
             }
 
             SettingsCard(divided: false) {
-                // A detail page, like Previews: inline it would push General past the
-                // minimum window height.
-                DataRow(icon: "magnifyingglass", tint: .blue, title: "Command Bar") {
-                    selection.id = "commandBar"
-                }
                 DataRow(icon: "rectangle.on.rectangle", tint: .purple, title: "Previews") {
                     selection.id = "previews"
                 }
@@ -1556,9 +1551,13 @@ private struct AdvancedPane: View {
 
     var body: some View {
         Pane(spacing: Look.inset / 2) {
-            SettingsDisclosure("Interface", summary: "Animation speeds",
+            SettingsDisclosure("Interface", summary: "Command bar and animation speeds",
                                icon: "waveform.path", tint: .blue) {
                 SettingsCard {
+                    // Its own page: any row added to General pushes it past the minimum window.
+                    SettingsRow("Command Bar", icon: "magnifyingglass", tint: .blue) {
+                        Button("Command Bar Settings…") { selection.id = "commandBar" }
+                    }
                     SettingsRow("UI Animations", icon: "waveform.path", tint: .blue) {
                         Button("Animation Settings…") { selection.id = "animations" }
                     }
