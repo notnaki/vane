@@ -139,6 +139,7 @@ enum LinkTarget {
         // preferences. `UserDefaults.vane` *is* `.standard` in normal use; see Store.swift.
         let content = NSHostingView(rootView: SettingsView(selection: selection)
             .font(Look.text)
+            .disclosureGroupStyle(FullHeaderDisclosureStyle())
             .defaultAppStorage(.vane))
         // The window owns its bounds and minimum size. SwiftUI's unconstrained
         // intrinsic measurement can wrap a pane into thousands of points of height
@@ -460,6 +461,23 @@ struct SettingsSection<Content: View>: View {
                 .padding(.horizontal, Look.cardInset)
             content
         }
+    }
+}
+
+/// The native disclosure, but its whole header row toggles, not only the chevron.
+struct FullHeaderDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        DisclosureGroup(isExpanded: configuration.$isExpanded) {
+            // Undo the `.automatic` below for disclosures nested in this one's content.
+            configuration.content.disclosureGroupStyle(FullHeaderDisclosureStyle())
+        } label: {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+                .onTapGesture { Motion.animate(Look.quick) { configuration.isExpanded.toggle() } }
+        }
+        // The inner group must render natively, not re-enter this style.
+        .disclosureGroupStyle(.automatic)
     }
 }
 

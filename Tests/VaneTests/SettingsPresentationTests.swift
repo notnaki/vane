@@ -119,6 +119,7 @@ import XCTest
                 }
             }
             .padding(20).frame(width: 632)
+            .disclosureGroupStyle(FullHeaderDisclosureStyle())
             .transaction { $0.animation = nil; $0.disablesAnimations = true })
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 632, height: 200),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -142,7 +143,8 @@ import XCTest
             host.layoutSubtreeIfNeeded()
             let offset = host.fittingSize.height / 2 - 20 - Look.settingsRow / 2
             let y = host.bounds.midY + (host.isFlipped ? -offset : offset)
-            return host.convert(NSPoint(x: 25, y: y), to: nil)
+            // Well right of the triangle: the whole header row is the hitbox.
+            return host.convert(NSPoint(x: 320, y: y), to: nil)
         }
         // Each click needs the key window of the active app: a click on an inactive
         // window can be spent activating it instead of reaching the triangle.
