@@ -3681,6 +3681,14 @@ struct Stash {
     /// There is no new-tab page. ⌘T opens the search bar over whatever is showing, and the
     /// tab only comes into being when the user searches or opens something from it — a
     /// dismissed bar leaves nothing behind.
+    /// `newTab` for a url Vane itself saved (the Archive, the Library): an internal page
+    /// opens rather than being refused the way a link's would be. Returns the tab it used.
+    @discardableResult func newTabFromApp(_ url: URL) -> Tab? {
+        if let page = VanePage(url) { return VanePages.open(page, profileID: profileID, from: self) }
+        newTab(url)
+        return tabs.last
+    }
+
     func newTab(_ url: URL?) {
         guard !AppLifecycle.shared.persistenceExitInProgress else { return }
         // One page per Little Arc: ⌘T, the palette's New Tab and everything else that asks
@@ -3948,7 +3956,7 @@ struct Stash {
         let stashed = space(stashing: id)
         guard let tab = everyTab.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
-           TabAddress.archivable(u) {
+           TabAddress.restorable(u) {
             // The Space it was in and whether it was a Little Arc go down with it, so the
             // Library can put it back where it came from and filter on where it came from.
             Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
@@ -3975,12 +3983,12 @@ struct Stash {
         // A private window, a Little Arc, or a window that is in no Space has no Space to go
         // back to — and switching one that is in none would tear its Today tabs down without
         // anywhere to have saved them. The page simply opens here.
-        guard !isPrivate, !isLittle, currentSpaceID != nil else { newTab(u); return }
+        guard !isPrivate, !isLittle, currentSpaceID != nil else { newTabFromApp(u); return }
         if let target = Library.restoreTarget(entry, spaces: spaces.map(\.id), current: currentSpaceID),
            target != currentSpaceID, let space = spaces.first(where: { $0.id == target }) {
             switchTo(space: space)
         }
-        newTab(u)
+        newTabFromApp(u)
     }
 
     /// Whether a tab that is going leaves its url behind on the ⇧⌘T stack.

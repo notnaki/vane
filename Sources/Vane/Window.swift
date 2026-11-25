@@ -2754,6 +2754,8 @@ extension TabStore {
         @MainActor @discardableResult
         func reopen(in store: TabStore) -> Tab? {
             guard !AppLifecycle.shared.persistenceExitInProgress else { return nil }
+            // Private windows and Little Vane can't hold one; VanePages.open picks a window that can.
+            if let page = VanePage(url) { return VanePages.open(page, profileID: profileID, from: store) }
             let destination = store.isLittle ? LittleArc.open(nil, isPrivate: store.isPrivate) : store
             let tab = destination.newBlankTab(focus: false)
             let parked = !destination.isPrivate && destination.profileID == profileID ? snapshot : Parked()

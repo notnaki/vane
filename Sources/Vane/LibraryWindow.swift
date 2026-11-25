@@ -623,7 +623,7 @@ extension Library {
             target.current = tab.id
         } else {
             // Disclosure passed above; a pin that wandered off this page reopens it, as before.
-            target.newTab(url)
+            target.newTabFromApp(url)
         }
         close(store)
         if target !== store { close(target) }
@@ -744,8 +744,8 @@ extension Library {
         // The target is on screen: that window's strip is the truth, so the page has to open
         // there rather than only landing in a file the window is about to overwrite.
         if let into {
-            into.newTab(opens)
-            if pinned, let id = into.tabs.last?.id { into.move(id, to: .pinned) }
+            let opened = into.newTabFromApp(opens)
+            if pinned, let id = opened?.id { into.move(id, to: .pinned) }
         }
         // Every window of the profile draws these columns, and `spaces` is a file read.
         for store in TabStore.all where store.profileID == profile { store.spacesChanged() }
@@ -781,8 +781,8 @@ extension Library {
         let carried = parked[url.absoluteString]
         let into = owner(of: target)
         if let into {
-            into.newTab(url)
-            if pinned, let id = into.tabs.last?.id { into.move(id, to: .pinned) }
+            let opened = into.newTabFromApp(url)
+            if pinned, let id = opened?.id { into.move(id, to: .pinned) }
             guard into.saveCurrentSpace(), await SessionPersistence.shared.flush() else {
                 Toasts.show("Could not save Space", in: into); return
             }
@@ -1646,7 +1646,7 @@ private struct BoostsPane: View {
         guard let url = URL(string: entry.origin),
               let profile = profiles.profiles.first(where: { $0.id == entry.profileID }) else { return }
         let target = store.profileID == profile.id ? store : Windows.switchTo(profile: profile)
-        target.newTab(url)
+        target.newTabFromApp(url)
         Library.close(store)
         if target !== store { Library.close(target) }
     }

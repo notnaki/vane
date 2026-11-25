@@ -243,8 +243,6 @@ enum VanePage: Equatable, Sendable {
              VanePage(Search.url(for: "passwords")) == nil),
             ("internal pages restore after relaunch", TabAddress.restorable(settings)
                 && TabAddress.restorable(url("vane://settings/search")) && TabAddress.restorable(extensions)),
-            ("…and never into the Archive, whose restore would refuse them", !TabAddress.archivable(settings)
-                && !TabAddress.archivable(extensions) && TabAddress.archivable(url("https://example.com"))),
             ("…but not malformed ones", !TabAddress.restorable(url("vane://settings/passwords?x=1"))),
             ("search settings are app-wide; the rest follow the profile menu",
              !VaneSettingsSection.search.perProfile && VaneSettingsSection.passwords.perProfile

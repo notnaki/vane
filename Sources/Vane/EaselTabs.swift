@@ -25,10 +25,6 @@ enum TabAddress {
         return ["http", "https"].contains(url.scheme?.lowercased() ?? "")
             || EaselAddress.boardID(url) != nil || VanePage(url) != nil
     }
-
-    /// What the Archive may keep: an internal page is reopened from a menu, not the Archive,
-    /// whose restore path loads like a link and would refuse it (a blank tab, entry gone).
-    static func archivable(_ url: URL?) -> Bool { restorable(url) && url.flatMap(VanePage.init) == nil }
 }
 
 @MainActor private enum EaselOpening {

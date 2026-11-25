@@ -53,7 +53,7 @@ extension TabStore {
         if !isPrivate {
             let entries = doomed.compactMap { item -> Archive.Entry? in
                 let tab = item.tab
-                guard let url = tab.currentURL, TabAddress.archivable(url) else { return nil }
+                guard let url = tab.currentURL, TabAddress.restorable(url) else { return nil }
                 let title = TidyTitles.title(for: tab)
                 return Archive.Entry(url: url.absoluteString,
                     title: title.isEmpty ? url.absoluteString : title, at: .now,
