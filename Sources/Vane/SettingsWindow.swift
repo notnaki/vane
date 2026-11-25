@@ -1583,7 +1583,7 @@ private struct AdvancedPane: View {
                     Footnote("Adjust animation speeds for the sidebar, tabs, panels, and more.")
                 }
             }
-            SettingsDisclosure("Performance", summary: "Battery Saver, power status, and sites kept loaded",
+            SettingsDisclosure("Performance", summary: "Battery Saver, sites kept loaded, and diagnostics",
                                icon: "battery.100percent", tint: .green) {
                 SettingsCard {
                     SettingsRow("Battery Saver", icon: "battery.100percent", tint: .green) {
@@ -1605,6 +1605,7 @@ private struct AdvancedPane: View {
                     Footnote("While active, eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar motion is reduced. Active pages, pinned tabs, media, private tabs, and unfinished forms stay protected. Sleeping tabs reload when you return.")
                 }
                 KeepLoadedCard()
+                SettingsSection("Diagnostics") { PerformanceSettingsCard() }
             }
             SettingsDisclosure("Windows and Tabs", summary: "Startup, homepage, and Split View",
                                icon: "macwindow", tint: .green) {
@@ -1689,11 +1690,6 @@ private struct AdvancedPane: View {
                              + "page to apply it. The in-app inspector is unavailable on this "
                              + "macOS — right-click → Inspect Element still works.")
                 }
-            }
-
-            SettingsDisclosure("Diagnostics", summary: "Performance measured on this Mac, never sent",
-                               icon: "gauge.with.dots.needle.50percent", tint: .orange) {
-                PerformanceSettingsCard()
             }
 
             SettingsDisclosure("Backup and Restore", summary: "Export your library and recover saved data",

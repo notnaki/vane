@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// Local performance numbers: how long launch takes, how often the main thread stalls, what a
 /// Space switch costs. Each sample is a fixed metric name, a duration, the app version and the
 /// day. Nothing names a page, tab, Space or person, and nothing leaves the Mac: the user sees
-/// the numbers in Settings › Advanced › Diagnostics and can export them as a file.
+/// the numbers in Settings › Advanced › Performance › Diagnostics and can export them as a file.
 @MainActor final class PerformanceLog: ObservableObject {
     enum Metric: String, Codable, CaseIterable {
         case launch, hang, spaceSwitch
@@ -284,7 +284,7 @@ final class MetricKitInbox: NSObject, MXMetricManagerSubscriber, Sendable {
     }
 }
 
-/// Settings › Advanced › Diagnostics: the numbers, an export, and a way to throw them away.
+/// Settings › Advanced › Performance › Diagnostics: the numbers, an export, and a way to throw them away.
 struct PerformanceSettingsCard: View {
     @ObservedObject private var log = PerformanceLog.shared
     @AppStorage(PerformanceLog.includeMacKey) private var includeMac = false
