@@ -4205,9 +4205,8 @@ struct FolderDisclosure: View {
 /// A folder’s glyph in a favicon’s box, so its name lines up with the tab titles around it.
 /// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
 /// apart, and it does so by looking at the string rather than by a second stored field.
-/// The icon of the extension that made a folder, once that extension has loaded.
-/// Claude's status rides on it: the mark turns while it works, pulses when it needs you,
-/// and wears a green dot when it is done.
+/// What sits on an extension's folder: its icon, or, while it reports a status as Claude
+/// does, that status, with the icon small in the corner (`ExtensionFolderCorner`).
 private struct ExtensionFolderBadge: View {
     let owner: String
     let status: Folder.ExtensionStatus?
@@ -4215,22 +4214,37 @@ private struct ExtensionFolderBadge: View {
     @ObservedObject private var host = ExtensionHost.shared
 
     var body: some View {
+        Group {
+            switch status {
+            case .working:
+                Image(systemName: "hourglass").foregroundStyle(Look.inkSecondary)
+                    .symbolEffect(.rotate, options: .repeat(.continuous), isActive: !reduced)
+            case .attention:
+                Image(systemName: "bell.fill").foregroundStyle(Look.warning)
+                    .symbolEffect(.wiggle, options: .repeat(.continuous), isActive: !reduced)
+            case .done:
+                Image(systemName: "checkmark").foregroundStyle(Color.green)
+            case nil:
+                if let image = host.icon(owner: owner) { Image(nsImage: image).resizable().interpolation(.high) }
+            }
+        }
+        .font(.system(size: 8, weight: .bold))
+        .frame(width: Look.sourceBadge, height: Look.sourceBadge)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The extension's icon, small, in the folder's corner while its status has the face.
+private struct ExtensionFolderCorner: View {
+    let owner: String
+    @ObservedObject private var host = ExtensionHost.shared
+
+    var body: some View {
         if let image = host.icon(owner: owner) {
-            let moving = !reduced && (status == .working || status == .attention)
-            TimelineView(.animation(paused: !moving)) { timeline in
-                let t = moving ? timeline.date.timeIntervalSinceReferenceDate : 0
-                Image(nsImage: image).resizable().interpolation(.high)
-                    .rotationEffect(.degrees(status == .working ? (t * 120).truncatingRemainder(dividingBy: 360) : 0))
-                    .scaleEffect(status == .attention ? 1 + 0.18 * abs(sin(t * 3)) : 1)
-            }
-            .frame(width: Look.sourceBadge, height: Look.sourceBadge)
-            .overlay(alignment: .topTrailing) {
-                if status == .done || status == .attention {
-                    Circle().fill(status == .done ? Color.green : Look.warning)
-                        .frame(width: 4, height: 4).offset(x: 2, y: -2)
-                }
-            }
-            .accessibilityHidden(true)
+            Image(nsImage: image).resizable().interpolation(.high)
+                .frame(width: 7, height: 7)
+                .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                .accessibilityHidden(true)
         }
     }
 }
@@ -4303,6 +4317,11 @@ struct FolderGlyph: View {
                 } else {
                     badge.offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                 }
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let owner = folder.extensionOwner, folder.extensionStatus != nil, folder.icon == Folder.defaultIcon {
+                ExtensionFolderCorner(owner: owner)
             }
         }
         .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: arrivalMark)
