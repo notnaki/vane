@@ -1972,10 +1972,7 @@ private struct PillBody: View {
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
             // Arc's order: pinned extensions, Copy Link, Site Controls, all hidden until the
             // pointer is over the sidebar. Slots stay reserved so the reveal moves nothing.
-            PinnedExtensions(store: store, tab: tab)
-                .opacity(revealed ? 1 : 0)
-                .animation(reduced ? nil : Look.feedback, value: revealed)
-                .allowsHitTesting(revealed)
+            PinnedExtensions(store: store, tab: tab, revealed: revealed, reduced: reduced)
             if !address.isEmpty, let tab, tab.easelID == nil {
                 PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
                                 feedback: store.feedback, address: address,
@@ -2090,12 +2087,14 @@ private struct PillGlyphReveal: ViewModifier {
 ///
 /// ponytail: no reserved slot. An unpinned browser's pill is exactly the pill it was, and
 /// the width goes when the pin is made rather than being held empty against the chance of
-/// one — the pill's own glyphs (the lock, the chip) are the stable chrome here.
+/// one. In the sidebar pill they fade in with Copy Link and Site Controls, as in Arc.
 private struct PinnedExtensions: View {
     /// The window, not the tab, decides which extensions are pinned here: the pill keeps its
     /// glyphs with no tab open, the way the back and forward buttons keep theirs.
     let store: TabStore
     let tab: Tab?
+    var revealed = true
+    var reduced = false
     /// A badge is not on the tab: the extension sets it, and `ExtensionHost`'s
     /// `didUpdate` delegate bumps this. No timer.
     @ObservedObject private var changes = SiteChanges.shared
@@ -2103,7 +2102,7 @@ private struct PinnedExtensions: View {
     var body: some View {
         let host = ExtensionHost.host(for: store.profileID)
         ForEach(host.pinned(private: store.isPrivate), id: \.uniqueIdentifier) { context in
-            ExtensionGlyph(host: host, tab: tab, context: context)
+            ExtensionGlyph(host: host, tab: tab, context: context, revealed: revealed, reduced: reduced)
         }
     }
 }
@@ -2137,7 +2136,14 @@ private struct ExtensionGlyph: View {
     let host: ExtensionHost
     let tab: Tab?
     let context: WKWebExtensionContext
+    var revealed = true
+    var reduced = false
     @StateObject private var anchor = ActionAnchor()
+    @FocusState private var focused: Bool
+    /// Like Site Controls: keyboard focus or its own open popup keeps it up. The popup is
+    /// read on render, so it holds the glyph while the pointer moves into it.
+    /// ponytail: popup close isn't published; the glyph settles on the next hover change.
+    private var visible: Bool { revealed || focused || host.actionPopupWindow(context, for: tab) != nil }
 
     var body: some View {
         // Every string built before the chain: a modifier chain this long with the work
@@ -2160,6 +2166,10 @@ private struct ExtensionGlyph: View {
             .accessibilityHint(hint)
             .accessibilityAction { press() }
             .accessibilityAction(named: "Unpin from Address Bar") { host.togglePin(context) }
+            .opacity(visible ? 1 : 0)
+            .animation(reduced ? nil : Look.feedback, value: visible)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
     }
 
     /// A `Button`, which consumes its own click the way the pill's Copy Link glyph does —
@@ -2172,12 +2182,12 @@ private struct ExtensionGlyph: View {
             ActionIcon(host: host, context: context, tab: tab, badge: badge).contentShape(.rect)
         }
         .buttonStyle(TactileButtonStyle())
+        .focused($focused)
         .opacity(live ? 1 : Look.dimmed)
     }
 
     /// What the action says about itself right now. `note` is why it is not pressable, and
-    /// nil when it is: a pinned glyph is drawn whatever the window holds — the pill's chrome
-    /// does not come and go — but it only runs on a page, and only while its extension
+    /// nil when it is: a pinned glyph is drawn whatever the window holds, but it only runs on a page, and only while its extension
     /// leaves the action enabled.
     private var state: (badge: String?, note: String?) {
         let action = host.action(context, for: tab)
