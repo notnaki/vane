@@ -193,7 +193,7 @@ import WebKit
                       if (failed) fire('error');
                       fire('close', {code, reason, wasClean});
                     };
-                    ask('ws.open', {url: this.url, protocols: [protocols].flat().map(String)}).then(async ({id, protocol}) => {
+                    ask('ws.open', {url: this.url, protocols: [protocols].flat().map(String), worker: (globalThis.__vaneWorker ??= crypto.randomUUID())}).then(async ({id, protocol}) => {
                       this.#socket = id;
                       if (this.readyState !== 0) { ask('ws.close', {id}).catch(() => {}); return closed(); }
                       Object.assign(this, {readyState: 1, protocol});
@@ -435,6 +435,13 @@ import WebKit
     private let session = URLSession(configuration: .ephemeral)
     private var sockets: [Int: Socket] = [:]
     private var nextID = 0
+    /// Each extension's running worker, by the id it made up when it started. A worker WebKit
+    /// stopped leaves its sockets open and polled by no one; its successor's first open
+    /// closes them, so the server does not keep talking to the dead one.
+    // ponytail: a stopped worker's sockets stay until the next one opens a socket or the
+    // extension unloads; close sockets nobody polls if one that never reconnects matters.
+    private var workers: [ObjectIdentifier: String] = [:]
+    private static let perExtension = 32
 
     /// `ws.open` → `{id, protocol}` once connected; `ws.next` → `{data}` or, once, the close
     /// `{code, reason, clean}`; `ws.send` and `ws.close` → null.
@@ -443,6 +450,14 @@ import WebKit
         if operation == "ws.open" {
             guard let url = (arguments["url"] as? String).flatMap(URL.init(string:)), ["ws", "wss"].contains(url.scheme) else {
                 throw ExtensionHost.Failure("Invalid WebSocket URL.")
+            }
+            let worker = arguments["worker"] as? String ?? ""
+            if workers[owner] != worker {
+                close(owner: owner)
+                workers[owner] = worker
+            }
+            guard sockets.values.filter({ $0.owner == owner }).count < Self.perExtension else {
+                throw ExtensionHost.Failure("Too many WebSockets are open.")
             }
             var request = URLRequest(url: url)
             request.setValue(origin, forHTTPHeaderField: "Origin")
@@ -499,5 +514,6 @@ import WebKit
             socket.task.cancel(with: .goingAway, reason: nil)
             sockets[id] = nil
         }
+        workers[owner] = nil
     }
 }

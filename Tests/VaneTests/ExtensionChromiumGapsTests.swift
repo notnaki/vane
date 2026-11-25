@@ -22,6 +22,21 @@ import XCTest
         XCTAssertEqual(ExtensionChromiumGaps.reply(.failure(ExtensionHost.Failure("No."))), #"[vane-gaps] {"error":"No."}"#)
     }
 
+    func testACredentialedFetchCarriesOnlyItsOwnSitesCookies() throws {
+        func cookie(_ name: String, _ domain: String, _ path: String = "/", secure: Bool = false) -> HTTPCookie {
+            var fields: [HTTPCookiePropertyKey: Any] = [.name: name, .value: "1", .domain: domain, .path: path]
+            if secure { fields[.secure] = "TRUE" }
+            return HTTPCookie(properties: fields)!
+        }
+        let all = [cookie("site", ".claude.ai"), cookie("api", "claude.ai", "/api"), cookie("other", "evil.example"),
+                   cookie("safe", "claude.ai", secure: true)]
+        func names(_ url: String) -> Set<String> { Set(ExtensionHost.cookies(all, for: URL(string: url)!).map(\.name)) }
+        XCTAssertEqual(names("https://claude.ai/api/x"), ["site", "api", "safe"])
+        XCTAssertEqual(names("https://claude.ai/apix"), ["site", "safe"], "A path matches on a / boundary")
+        XCTAssertEqual(names("http://claude.ai/"), ["site"], "A secure cookie goes over https only")
+        XCTAssertEqual(names("https://evil.example/"), ["other"], "A redirect's next hop gets only its own cookies")
+    }
+
     func testChromeAliasOnlyOnPagesAnExtensionListsForMessaging() throws {
         XCTAssertNil(ExtensionChromiumGaps.webPageScript([("a", ["name": "No pages"])]))
         let script = try XCTUnwrap(ExtensionChromiumGaps.webPageScript([

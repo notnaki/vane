@@ -420,7 +420,9 @@ import WebKit
         for store in stores {
             store.syncShapes()
             var shape = store.todayShape
-            for folder in shape.entries.compactMap(\.folder) where !Self.isHome(folder) && !store.isFolderLocked(folder.id) {
+            // Not one the extension says it is working on or waiting on the user in.
+            for folder in shape.entries.compactMap(\.folder) where !Self.isHome(folder) && !store.isFolderLocked(folder.id)
+                && folder.extensionStatus != .working && folder.extensionStatus != .attention {
                 guard let owner = folder.extensionOwner, Self.dissolves(owner),
                       let last = shape.tabs(in: folder.id).compactMap({ UUID(uuidString: $0).flatMap { used[$0] } })
                           .filter({ $0.owner == owner }).map(\.at).max(),

@@ -446,9 +446,6 @@ import WebKit
         return (url.scheme ?? "") + "://" + (host.contains(":") ? "[\(host)]" : host) + (url.port.map { ":\($0)" } ?? "")
     }
 
-    /// Whether `web` is the page the user is looking at, under the pill that names its
-    /// driver and stops it. Nothing else is driven: not a page kept hidden behind the one
-    /// showing, not a tab in the background, not a Peek (which has no pill).
     nonisolated static let backgroundKey = "debuggerBackgroundTabs"
     /// Whether the user lets this extension script tabs that are not on screen, from its
     /// page in Extensions. Off unless they turn it on.
@@ -456,6 +453,9 @@ import WebKit
         UserDefaults.vane.bool(forKey: backgroundKey + "." + (context.baseURL.host ?? ""))
     }
 
+    /// Whether `web` is the page the user is looking at, under the pill that names its
+    /// driver and stops it. Nothing else is driven: not a page kept hidden behind the one
+    /// showing, not a tab in the background, not a Peek (which has no pill).
     static func isShowing(_ web: WKWebView) -> Bool {
         guard let host = web.superview as? WebHost, host.web === web, host.showsDebuggerPill else { return false }
         return web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor

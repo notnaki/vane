@@ -2276,37 +2276,72 @@ import WebKit
     /// A credentialed request from the extension to a site it may access, sent with the
     /// profile's cookies as Chrome sends them; cookies the reply sets land in the profile.
     /// Null when the extension may not access the site: the page then fetches as WebKit does.
-    // ponytail: the whole body arrives at once and redirects are always followed; stream
-    // over the bridge if an extension reads a credentialed event stream.
+    /// Redirects are followed here, one hop at a time, so each hop carries only its own
+    /// site's cookies and a hop to a site the extension may not access fails.
+    // ponytail: the whole body arrives at once; stream over the bridge if an extension
+    // reads a credentialed event stream.
     private func credentialedFetch(_ arguments: [String: Any], for context: WKWebExtensionContext) async throws -> Any {
-        guard let url = (arguments["url"] as? String).flatMap(URL.init(string:)), let host = url.host?.lowercased(),
-              ["http", "https"].contains(url.scheme?.lowercased()),
-              [.grantedExplicitly, .grantedImplicitly].contains(context.permissionStatus(for: url)),
-              let store = controller.configuration.defaultWebsiteDataStore else { return NSNull() }
-        var request = URLRequest(url: url)
-        request.httpMethod = arguments["method"] as? String ?? "GET"
-        for case let pair as [String] in arguments["headers"] as? [Any] ?? [] where pair.count == 2
-            && !["cookie", "host", "content-length", "origin"].contains(pair[0].lowercased()) {
-            request.setValue(pair[1], forHTTPHeaderField: pair[0])
+        func allowed(_ url: URL) -> Bool {
+            ["http", "https"].contains(url.scheme?.lowercased()) && url.host != nil
+                && [.grantedExplicitly, .grantedImplicitly].contains(context.permissionStatus(for: url))
         }
-        if let ua = arguments["ua"] as? String { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
-        request.setValue("chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id, forHTTPHeaderField: "Origin")
-        if let body = arguments["body"] as? String { request.httpBody = Data(base64Encoded: body) }
+        guard var url = (arguments["url"] as? String).flatMap(URL.init(string:)), allowed(url),
+              let store = controller.configuration.defaultWebsiteDataStore else { return NSNull() }
+        var method = arguments["method"] as? String ?? "GET"
+        var body = (arguments["body"] as? String).flatMap { Data(base64Encoded: $0) }
+        let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+        for _ in 0..<20 {
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            for case let pair as [String] in arguments["headers"] as? [Any] ?? [] where pair.count == 2
+                && !["cookie", "host", "content-length", "origin"].contains(pair[0].lowercased()) {
+                request.setValue(pair[1], forHTTPHeaderField: pair[0])
+            }
+            if let ua = arguments["ua"] as? String { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
+            request.setValue(origin, forHTTPHeaderField: "Origin")
+            request.httpBody = body
+            let cookies = Self.cookies(await store.httpCookieStore.allCookies(), for: url)
+            if !cookies.isEmpty { request.setValue(HTTPCookie.requestHeaderFields(with: cookies)["Cookie"], forHTTPHeaderField: "Cookie") }
+            let (data, response) = try await fetchSession.data(for: request, delegate: NoRedirects.shared)
+            guard let http = response as? HTTPURLResponse else { throw Failure("The site sent no HTTP response.") }
+            let fields = http.allHeaderFields.reduce(into: [String: String]()) { $0["\($1.key)"] = "\($1.value)" }
+            for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: url) { await store.httpCookieStore.setCookie(cookie) }
+            if [301, 302, 303, 307, 308].contains(http.statusCode),
+               let next = http.value(forHTTPHeaderField: "Location").flatMap({ URL(string: $0, relativeTo: url)?.absoluteURL }) {
+                guard allowed(next) else { throw Failure("Redirected to a site the extension may not access.") }
+                if http.statusCode == 303 || ([301, 302].contains(http.statusCode) && method.uppercased() == "POST") {
+                    method = "GET"
+                    body = nil
+                }
+                url = next
+                continue
+            }
+            return ["status": http.statusCode, "statusText": HTTPURLResponse.localizedString(forStatusCode: http.statusCode).capitalized,
+                    "headers": fields.filter { $0.key.lowercased() != "set-cookie" }.map { [$0.key, $0.value] },
+                    "body": data.base64EncodedString(), "url": url.absoluteString]
+        }
+        throw Failure("Too many redirects.")
+    }
+
+    /// The profile's cookies a request to `url` carries: domain, path (on a `/` boundary),
+    /// secure and expiry, as RFC 6265 matches them.
+    nonisolated static func cookies(_ all: [HTTPCookie], for url: URL) -> [HTTPCookie] {
+        guard let host = url.host?.lowercased() else { return [] }
         let secure = url.scheme?.lowercased() == "https", path = url.path.isEmpty ? "/" : url.path
-        let cookies = await store.httpCookieStore.allCookies().filter { cookie in
+        return all.filter { cookie in
             let domain = cookie.domain.lowercased()
             let hostMatches = domain.hasPrefix(".") ? host == domain.dropFirst() || host.hasSuffix(domain) : host == domain
-            return hostMatches && path.hasPrefix(cookie.path) && (!cookie.isSecure || secure) && (cookie.expiresDate ?? .distantFuture) > Date()
+            let pathMatches = path == cookie.path || (path.hasPrefix(cookie.path)
+                && (cookie.path.hasSuffix("/") || path.dropFirst(cookie.path.count).first == "/"))
+            return hostMatches && pathMatches && (!cookie.isSecure || secure) && (cookie.expiresDate ?? .distantFuture) > Date()
         }
-        if !cookies.isEmpty { request.setValue(HTTPCookie.requestHeaderFields(with: cookies)["Cookie"], forHTTPHeaderField: "Cookie") }
-        let (data, response) = try await fetchSession.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw Failure("The site sent no HTTP response.") }
-        let final = http.url ?? url
-        let fields = http.allHeaderFields.reduce(into: [String: String]()) { $0["\($1.key)"] = "\($1.value)" }
-        for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: final) { await store.httpCookieStore.setCookie(cookie) }
-        return ["status": http.statusCode, "statusText": HTTPURLResponse.localizedString(forStatusCode: http.statusCode).capitalized,
-                "headers": fields.filter { $0.key.lowercased() != "set-cookie" }.map { [$0.key, $0.value] },
-                "body": data.base64EncodedString(), "url": final.absoluteString]
+    }
+
+    /// Hands each redirect back to `credentialedFetch` instead of following it.
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        static let shared = NoRedirects()
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? { nil }
     }
 
     /// `runtime.getContexts`: what this host shows of the extension. Tab and window IDs are
