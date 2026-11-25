@@ -64,8 +64,9 @@ struct Wash: View {
             LinearGradient(colors: colors.count == 1 ? [colors[0], colors[0].mix(with: dark ? .black : .white, by: 0.12)] : colors,
                            startPoint: .topLeading, endPoint: .bottomTrailing)
                 .opacity(full ? Self.opacity(dark: dark, tint: tint) : dark ? 0.16 : 0.12)
-            if full, let grain = space?.grain, grain > 0 {
-                Image(uiImage: Grain.tile).resizable(resizingMode: .tile).opacity(grain * 0.35).blendMode(.overlay)
+            // The Mac's grain: white noise (stronger than the Mac's 0.05, as the phone's wash is lighter), plain blend (overlay vanished on dark grounds).
+            if let grain = space?.grain, grain > 0 {
+                Image(uiImage: Grain.tile).resizable(resizingMode: .tile).interpolation(.none).opacity(grain * 0.14)
             }
         }
         .ignoresSafeArea()
@@ -84,12 +85,14 @@ struct Wash: View {
 /// The Mac's film grain: one static tile of white noise, made once.
 enum Grain {
     @MainActor static let tile: UIImage = {
-        let size = 128
+        let size = 256
         var generator = SystemRandomNumberGenerator()
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+        // Scale 1: one noise pixel per point, as on the Mac.
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
         return renderer.image { context in
             for x in 0..<size { for y in 0..<size {
-                UIColor(white: 1, alpha: CGFloat.random(in: 0...0.5, using: &generator)).setFill()
+                UIColor(white: 1, alpha: CGFloat.random(in: 0...1, using: &generator)).setFill()
                 context.fill(CGRect(x: x, y: y, width: 1, height: 1))
             } }
         }
