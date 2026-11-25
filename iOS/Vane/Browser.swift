@@ -266,9 +266,11 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
         if selected == nil { select(nil) }
         save()
     }
+    /// On the Spaces home you stay on the home; on a page you land on that Space's last tab.
     func switchSpace(_ id: UUID) {
+        let home = selectedID == nil
         spaceID = id
-        select(spaceTabs.last)
+        select(home ? nil : spaceTabs.last)
     }
 
     /// Opens what was picked or typed in the address field, then closes it.

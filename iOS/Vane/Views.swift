@@ -82,16 +82,12 @@ struct RootView: View {
                 // tapping again undoes it.
                 let favourite = library.favourites(profile: space.profileID).first { $0.url == tab.url }
                 let pin = library.pinned(space: space.id).first { $0.url == tab.url }
-                let bookmark = library.bookmarked(tab.url, profile: space.profileID)
                 ControlGroup {
                     Button("Favourite", systemImage: favourite == nil ? "star" : "star.fill") {
                         if let favourite { library.remove(favourite.id) } else { library.addFavourite(tab.url, profile: space.profileID) }
                     }
                     Button("Pin Tab", systemImage: pin == nil ? "pin" : "pin.fill") {
                         if let pin { library.remove(pin.id) } else { library.addPinned(tab.url, title: tab.title, space: space) }
-                    }
-                    Button("Bookmark", systemImage: bookmark == nil ? "bookmark" : "bookmark.fill") {
-                        if let bookmark { library.remove(bookmark) } else { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
                     }
                 }
             }
@@ -102,11 +98,14 @@ struct RootView: View {
             if space?.isIncognito == true {
                 Button("Leave Incognito", systemImage: "eyeglasses") { leaveIncognito() }
             } else {
-                Button("New Incognito Tab", systemImage: "eyeglasses") { browser.switchSpace(SpaceRow.incognito.id); browser.select(nil) }
+                Button("New Incognito Tab", systemImage: "eyeglasses") { browser.select(nil); browser.switchSpace(SpaceRow.incognito.id); browser.editing = .newTab }
             }
         }
         Section {
-            Button("Bookmarks", systemImage: "book") { bookmarks = true }
+            // The bookmarks library synced from Vane on the Mac; only there when it has some.
+            if let space, !library.bookmarks(profile: space.profileID).isEmpty {
+                Button("Mac Bookmarks", systemImage: "book") { bookmarks = true }
+            }
             Button("Settings", systemImage: "gearshape") { settings = true }
         }
     }
@@ -501,10 +500,24 @@ struct SpaceColumn: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            if let space {
-                SpaceMark(space: space, size: 17).frame(width: 36, height: 36).background(GroundFill(), in: Circle())
+            // Tap the Space's icon or name to jump to another Space.
+            Menu {
+                Picker("Space", selection: Binding(get: { browser.spaceID }, set: { id in withAnimation(.smooth) { browser.switchSpace(id) } })) {
+                    ForEach(library.spaces + [.incognito]) { other in
+                        Label(other.name, systemImage: other.icon.flatMap { UIImage(systemName: $0) == nil ? nil : $0 } ?? "circle.fill").tag(other.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    if let space {
+                        SpaceMark(space: space, size: 17).frame(width: 36, height: 36).background(GroundFill(), in: Circle())
+                    }
+                    Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
             }
-            Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Space, \(space?.name ?? "")")
             if let space, !space.isLocal, !space.isIncognito, let profile = library.profileName(space.profileID) {
                 Text(profile).font(.footnote.weight(.medium)).foregroundStyle(.secondary)
             }
