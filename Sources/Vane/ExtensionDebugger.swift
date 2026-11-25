@@ -521,6 +521,9 @@ extension NSApplication {
     }
 
     @Published private(set) var sessions: [Session] = []
+    /// When each tab was last driven, and by which extension (its host): how
+    /// `ExtensionTabGroups.dissolveIdle` tells a finished session's group.
+    private(set) var used: [Tab.ID: (owner: String, at: Date)] = [:]
     private let profileID: UUID
     private var replies: [ObjectIdentifier: [ExtensionBridgeReply]] = [:]
     private var logs: [ObjectIdentifier: (next: Int, items: [(sequence: Int, item: [String: Any])])] = [:]
@@ -573,6 +576,7 @@ extension NSApplication {
             }
             let session = Session(context: context, tab: page.tab, label: label)
             sessions.append(session)
+            used[page.tab.id] = (context.baseURL.host ?? "", .now)
             return reply(["cursor": logs[key]?.next ?? 0], for: context)
         case "detach":
             guard let session = attached() else {
@@ -590,6 +594,7 @@ extension NSApplication {
             guard sessions.contains(where: { $0 === session }) else {
                 throw ExtensionHost.Failure("Debugger is not attached to the tab with id: \(label).")
             }
+            used[page.tab.id] = (context.baseURL.host ?? "", .now)
             let parameters = (try? JSONSerialization.jsonObject(with: Data((request.values["params"] ?? "{}").utf8))) as? [String: Any] ?? [:]
             let result = try await command(request.values["method"] ?? "", parameters, session: session, page: page,
                                            shim: shim, context: context)

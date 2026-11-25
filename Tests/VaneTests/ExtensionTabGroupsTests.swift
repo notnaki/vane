@@ -250,6 +250,18 @@ import XCTest
         XCTAssertEqual(tops(), 3)
         XCTAssertFalse(store.todayShape.entries.compactMap(\.folder).contains { ExtensionTabGroups.isHome($0) })
 
+        // A group whose tab the extension has not driven for a while is dissolved, unless the
+        // user said not to; a group it never drove is left alone.
+        let stale: [Tab.ID: (owner: String, at: Date)] = [a.id: (owner, .distantPast), b.id: (owner, .now)]
+        UserDefaults.vane.set(false, forKey: ExtensionTabGroups.dissolvesKey + "." + owner)
+        host.tabGroups.dissolveIdle(used: stale, after: 60, contexts: host.installed)
+        XCTAssertEqual(tops(), 3)
+        UserDefaults.vane.removeObject(forKey: ExtensionTabGroups.dissolvesKey + "." + owner)
+        host.tabGroups.dissolveIdle(used: stale, after: 60, contexts: host.installed)
+        XCTAssertEqual(tops(), 2)
+        XCTAssertNil(store.todayShape.folder(holding: a.id.uuidString))
+        XCTAssertNotNil(store.todayShape.folder(holding: b.id.uuidString))
+
         // Ungrouping every tab leaves no folder behind.
         _ = try await run("await chrome.tabs.ungroup([ids[\(ia)], ids[\(ib)], ids[\(ic)]]); return 'done'", in: page)
         XCTAssertTrue(store.todayShape.entries.allSatisfy { $0.folder == nil })

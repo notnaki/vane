@@ -191,6 +191,10 @@ import WebKit
     @Published private(set) var loaded: [(path: String, context: WKWebExtensionContext)] = []
 
     var installed: [WKWebExtensionContext] { loaded.map(\.context) }
+    /// The icon of the extension whose base URL's host is `owner`: what its folders wear.
+    func icon(owner: String) -> NSImage? {
+        loaded.first { $0.context.baseURL.host == owner }?.context.webExtension.icon(for: CGSize(width: 16, height: 16))
+    }
 
     struct Entry: Identifiable {
         let path: String
@@ -2103,6 +2107,7 @@ import WebKit
                                               for: context) { [debugger] in debugger.reply($0, for: context) }
         }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
+            defer { sweepIdleGroups() }
             return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
         }
         if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
@@ -2383,6 +2388,17 @@ import WebKit
     @Published private(set) var sidePanels: [ExtensionSidePanel] = []
     /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
     private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
+    /// How long an extension's group of driven tabs sits untouched before it is dissolved.
+    var groupIdle: TimeInterval = 10 * 60
+    private var idleSweep: Task<Void, Never>?
+    /// Checks for finished sessions' groups once the debugger has been quiet for `groupIdle`.
+    func sweepIdleGroups() {
+        idleSweep?.cancel()
+        idleSweep = Task { @MainActor [weak self] in
+            guard let idle = self?.groupIdle, (try? await Task.sleep(for: .seconds(idle + 1))) != nil, let self else { return }
+            tabGroups.dissolveIdle(used: debugger.used, after: groupIdle, contexts: installed)
+        }
+    }
     /// `chrome.tabGroups` over Today's folders; see ExtensionTabGroups.swift.
     private(set) lazy var tabGroups = ExtensionTabGroups(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.

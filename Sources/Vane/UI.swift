@@ -4251,6 +4251,20 @@ struct FolderGlyph: View {
                     LiveBadge(live: live, folder: folder.id)
                         .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                 }
+            } else if let owner = folder.extensionOwner, let image = ExtensionHost.shared.icon(owner: owner) {
+                // An extension's folder wears its icon, as a live folder wears GitHub's.
+                let badge = Image(nsImage: image).resizable().interpolation(.high)
+                    .frame(width: Look.sourceBadge, height: Look.sourceBadge).accessibilityHidden(true)
+                if folder.icon == Folder.defaultIcon {
+                    badge.opacity(arrivalMark ? 0 : 1)
+                        .offset(FolderFace.badgeOffset)
+                        .frame(width: Look.tileIcon, height: Look.tileIcon)
+                        .modifier(FolderFaceProjection(openness: openness))
+                        .id(reduced)
+                        .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: iconOpen)
+                } else {
+                    badge.offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                }
             }
         }
         .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: arrivalMark)

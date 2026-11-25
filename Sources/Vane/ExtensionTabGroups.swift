@@ -404,6 +404,45 @@ import WebKit
         }
     }
 
+    nonisolated static let dissolvesKey = "dissolveIdleExtensionGroups"
+    /// Whether `dissolveIdle` may take `owner`'s finished groups apart. On unless the user
+    /// turns it off, from the extension's page in Extensions.
+    static func dissolves(_ owner: String) -> Bool {
+        UserDefaults.vane.object(forKey: dissolvesKey + "." + owner) as? Bool ?? true
+    }
+
+    /// An extension's group whose tabs it has not driven for `idle` is a session it has
+    /// finished. Claude's own clean-up for that waits on a flag Anthropic sets per account,
+    /// so Vane does it too. The folder goes, its tabs stay, out of the shared folder too.
+    // ponytail: idle time is the only signal; an extension that says it is done would be better.
+    func dissolveIdle(used: [Tab.ID: (owner: String, at: Date)], after idle: TimeInterval, contexts: [WKWebExtensionContext]) {
+        let now = Date()
+        for store in stores {
+            store.syncShapes()
+            var shape = store.todayShape
+            for folder in shape.entries.compactMap(\.folder) where !Self.isHome(folder) && !store.isFolderLocked(folder.id) {
+                guard let owner = folder.extensionOwner, Self.dissolves(owner),
+                      let last = shape.tabs(in: folder.id).compactMap({ UUID(uuidString: $0).flatMap { used[$0] } })
+                          .filter({ $0.owner == owner }).map(\.at).max(),
+                      now.timeIntervalSince(last) >= idle, let i = shape.index(of: folder.id) else { continue }
+                let parent = shape.entries[i].parent
+                let rows = shape.entries.filter { $0.parent == folder.id }.map(\.id)
+                shape.remove(folder: folder.id)
+                if let parent, let home = shape.folder(parent), Self.isHome(home) {
+                    for row in rows.reversed() { shape.move(row, next: parent.uuidString, after: true) }
+                }
+            }
+            shape.removeEmptyFolders()
+            guard shape != store.todayShape else { continue }
+            Motion.list {
+                store.todayShape = shape
+                store.applyOrder(.today)
+            }
+            store.savePins()
+        }
+        sync(contexts: contexts)
+    }
+
     /// The folder `gather` keeps an extension's groups in: the extension's, with no colour.
     static func isHome(_ folder: Folder, owner: String? = nil) -> Bool {
         folder.extensionOwner != nil && folder.groupColor == nil && (owner == nil || folder.extensionOwner == owner)

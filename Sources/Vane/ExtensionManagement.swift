@@ -748,6 +748,13 @@ private struct ExtensionTabOptions: View {
                         set: { UserDefaults.vane.set($0, forKey: ExtensionDebuggerAPI.backgroundKey + "." + owner); changed += 1 }))
                     Text("It can read and change a tab you are not looking at, with no notice on that tab. Clicks, typing and screenshots still need the tab on screen.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if groups {
+                        Toggle("Dissolve its groups when it is done", isOn: Binding(
+                            get: { _ = changed; return ExtensionTabGroups.dissolves(owner) },
+                            set: { UserDefaults.vane.set($0, forKey: ExtensionTabGroups.dissolvesKey + "." + owner); changed += 1 }))
+                        Text("A group whose tabs it has not controlled for 10 minutes goes; its tabs stay as ordinary tabs.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
