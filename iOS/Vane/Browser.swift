@@ -15,6 +15,8 @@ import WebKit
     var canGoForward = false
     /// The bar shrinks while the page scrolls down, and returns when it scrolls back up.
     var collapsed = false
+    /// How the page last looked, for its card in the Space. Memory only.
+    var snapshot: UIImage?
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -70,6 +72,16 @@ import WebKit
     /// The page's article as plain text blocks, or nil when there isn't one. The script runs
     /// in its own content world, so the page's scripts can't tamper with it, and only text
     /// comes back: the reader view renders it natively, never as the page's markup.
+    /// Keeps a picture of the page for its card; called as the tab goes out of view.
+    func takeSnapshot() {
+        guard let view, view.window != nil else { return }
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = 360
+        view.takeSnapshot(with: config) { [weak self] image, _ in
+            MainActor.assumeIsolated { if let image { self?.snapshot = image } }
+        }
+    }
+
     func article() async -> Article? {
         guard let view else { return nil }
         let result = try? await view.callAsyncJavaScript(Article.script, contentWorld: .world(name: "vane-reader"))
@@ -158,6 +170,7 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     var spaceTabs: [Tab] { tabs.filter { $0.spaceID == spaceID } }
 
     func select(_ tab: Tab?) {
+        if tab?.id != selectedID { selected?.takeSnapshot() }
         selectedID = tab?.id
         UserDefaults.standard.set(tab?.id.uuidString, forKey: "tab")
     }

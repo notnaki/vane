@@ -203,3 +203,15 @@ struct PressFill: ButtonStyle {
             .animation(configuration.isPressed ? nil : .easeOut(duration: 0.25), value: configuration.isPressed)
     }
 }
+
+/// While a sheet is up, what's behind it frosts over, so the sheet reads as the one thing
+/// in front. Sheets opt in with `.frostsBehind()`; the root view reads the count.
+@MainActor @Observable final class Frost {
+    static let shared = Frost()
+    var sheets = 0
+}
+extension View {
+    func frostsBehind() -> some View {
+        onAppear { Frost.shared.sheets += 1 }.onDisappear { Frost.shared.sheets = max(0, Frost.shared.sheets - 1) }
+    }
+}

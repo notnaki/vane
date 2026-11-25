@@ -32,14 +32,16 @@ struct RootView: View {
             BottomBar(space: space, spaces: $spaces, address: $address, menu: menu)
         }
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
+        .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
+        .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
         .sheet(isPresented: $spaces) {
             SpacesPanel(close: { spaces = false }, openSettings: { spaces = false; settings = true })
         }
         .sheet(isPresented: $address) { AddressSheet(space: space, dismiss: { address = false }) }
-        .sheet(isPresented: $settings) { SettingsView().presentationBackground { Wash(space: space) } }
+        .sheet(isPresented: $settings) { SettingsView().frostsBehind().presentationBackground { Wash(space: space) } }
         .sheet(item: $reader) { ReaderView(article: $0) }
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
-        .sheet(isPresented: $bookmarks) { BookmarksView().presentationBackground { Wash(space: space) } }
+        .sheet(isPresented: $bookmarks) { BookmarksView().frostsBehind().presentationBackground { Wash(space: space) } }
         .alert("Reader isn't available for this page", isPresented: $noArticle) {}
         .fullScreenCover(isPresented: Binding(get: { !onboarded }, set: { onboarded = !$0 })) { Onboarding { onboarded = true } }
         .preferredColorScheme(space?.appearance == "dark" ? .dark : space?.appearance == "light" ? .light : nil)
@@ -151,15 +153,21 @@ struct BottomBar<Menu: View>: View {
 
     private var bar: some View {
         let tab = browser.selected
-        return HStack(spacing: 6) {
-            Button { spaces = true } label: {
+        let last = browser.spaceTabs.last
+        // A capsule inside a capsule, so both ends sit concentric with the screen's corners.
+        return HStack(spacing: 4) {
+            // On a page: the Space and its tabs. On the Space itself (which already shows them):
+            // back to the last tab, or nothing to do when there isn't one.
+            Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); spaces = true } } label: {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 22, height: 22)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
                     Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: 44).contentShape(Circle())
             }
-            .accessibilityLabel("Spaces and tabs, \(browser.spaceTabs.count) open")
+            .disabled(tab == nil && last == nil)
+            .opacity(tab == nil && last == nil ? 0.35 : 1)
+            .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
 
             Button { address = true } label: {
                 HStack(spacing: 8) {
@@ -172,34 +180,36 @@ struct BottomBar<Menu: View>: View {
                     }
                 }
                 .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity).frame(height: 40)
-                .background(GroundFill(strength: 1.4), in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous))
-                .overlay(alignment: .bottom) {
-                    if let tab, tab.progress > 0, tab.progress < 1 {
-                        GeometryReader { geo in
-                            Capsule().fill(.primary.opacity(0.55)).frame(width: geo.size.width * tab.progress, height: 2)
-                        }
-                        .frame(height: 2).padding(.horizontal, Look.pillRadius).padding(.bottom, 3)
-                        .animation(.easeOut(duration: 0.2), value: tab.progress)
+                .background {
+                    // Loading fills the pill from the left, then fades.
+                    GeometryReader { geo in
+                        let loading = (tab?.progress ?? 1) < 1
+                        Capsule().fill(.primary.opacity(0.08))
+                            .frame(width: geo.size.width * (tab?.progress ?? 0))
+                            .opacity(loading ? 1 : 0)
+                            .animation(.easeOut(duration: loading ? 0.2 : 0.4), value: tab?.progress)
                     }
                 }
+                .background(GroundFill(strength: 1.4), in: Capsule())
+                .clipShape(Capsule())
             }
             .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
 
             SwiftUI.Menu { menu } label: {
-                Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
+                Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Circle())
             }
             .accessibilityLabel("More")
         }
         .buttonStyle(.plain)
         .padding(4)
-        .background {
-            Wash(space: space).clipShape(RoundedRectangle(cornerRadius: Look.pillRadius + 4, style: .continuous))
-        }
+        .background { Wash(space: space).clipShape(Capsule()) }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 3)
-        .padding(.horizontal, 10).padding(.bottom, -8)
+        .frame(maxWidth: 560)
+        .padding(.horizontal, 14).padding(.bottom, 2)
         .offset(x: nudge)
-        .gesture(DragGesture(minimumDistance: 24).onChanged { value in
+        .simultaneousGesture(DragGesture(minimumDistance: 24).onChanged { value in
             nudge = value.translation.width * 0.12
         }.onEnded { value in
             let ids = library.spaces.map(\.id)
@@ -235,28 +245,39 @@ struct SpacesPanel: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            HStack(spacing: 4) {
-                ForEach(pages) { space in
-                    Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
-                        SpaceMark(space: space, size: 17)
-                            .opacity(space.id == browser.spaceID ? 1 : 0.45)
-                            .frame(width: 40, height: 40)
+            // The same capsule as the page bar, so the panel ends where the bar was.
+            HStack(spacing: 2) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 2) {
+                        ForEach(pages) { space in
+                            let current = space.id == browser.spaceID
+                            Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
+                                SpaceMark(space: space, size: 17)
+                                    .opacity(current ? 1 : 0.5)
+                                    .frame(width: 44, height: 44)
+                                    .background(current ? AnyShapeStyle(GroundFill(strength: 2)) : AnyShapeStyle(.clear), in: Circle())
+                            }
+                            .accessibilityLabel(space.name)
+                            .accessibilityAddTraits(current ? .isSelected : [])
+                        }
                     }
-                    .accessibilityLabel(space.name)
                 }
-                Spacer()
-                Button { name = ""; creating = true } label: { Image(systemName: "plus").frame(width: 40, height: 40) }
+                .scrollIndicators(.hidden)
+                Button { name = ""; creating = true } label: { Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Circle()) }
                     .accessibilityLabel("New Space")
-                Button(action: openSettings) { Image(systemName: "gearshape").frame(width: 40, height: 40) }
+                Button(action: openSettings) { Image(systemName: "gearshape").frame(width: 44, height: 44).contentShape(Circle()) }
                     .accessibilityLabel("Settings")
             }
             .font(.system(size: 17, weight: .medium))
             .buttonStyle(.plain)
-            .padding(.horizontal, Look.inset).padding(.bottom, 6)
+            .padding(4)
+            .background(GroundFill(), in: Capsule())
+            .padding(.horizontal, 14).padding(.bottom, -6)
         }
         .padding(.top, 8)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .frostsBehind()
         .presentationBackground { Wash(space: current) }
         .alert("New Space", isPresented: $creating) {
             TextField("Name", text: $name)
@@ -290,7 +311,7 @@ struct SpaceColumn: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                if !favourites.isEmpty {
+                if !favourites.isEmpty || (canKeep && !tabs.isEmpty) {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
                         ForEach(favourites) { link in
                             Button { open(link) } label: {
@@ -307,25 +328,53 @@ struct SpaceColumn: View {
                                 Button("Remove Favourite", systemImage: "star.slash", role: .destructive) { library.remove(link.id) }
                             }
                         }
+                        if favourites.isEmpty {
+                            // Somewhere to drop the first one.
+                            Image(systemName: "star").font(.system(size: 16, weight: .medium)).opacity(0.4)
+                                .frame(maxWidth: .infinity).frame(height: Look.tileHeight)
+                                .overlay(RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous)
+                                    .strokeBorder(.primary.opacity(0.2), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4])))
+                                .accessibilityLabel("Drag a tab here to make it a favourite")
+                        }
+                    }
+                    // Drag a tab up here to make it a favourite, as on the Mac.
+                    .dropDestination(for: URL.self) { urls, _ in
+                        guard let space, canKeep else { return false }
+                        urls.forEach { library.addFavourite($0, profile: space.profileID) }
+                        return !urls.isEmpty
                     }
                 }
                 if let space {
                     VStack(spacing: 2) { PinnedRows(space: space.id, open: open) }
+                        .frame(minHeight: 12)
+                        .contentShape(Rectangle())
+                        .dropDestination(for: URL.self) { urls, _ in
+                            guard canKeep else { return false }
+                            for url in urls { library.addPinned(url, title: browser.tabs.first { $0.url == url }?.title ?? url.host() ?? "", space: space) }
+                            return !urls.isEmpty
+                        }
                 }
                 Rectangle().fill(.primary.opacity(0.14)).frame(height: 1).padding(.horizontal, 12)
                 VStack(spacing: 2) {
                     Row(title: "New Tab", icon: AnyView(Image(systemName: "plus").fontWeight(.medium))) {
                         browser.select(nil); close()
                     }
+                }
+                // Open tabs as cards, newest first, like Arc on iPhone.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
                     ForEach(tabs.reversed()) { tab in
-                        Row(title: tab.title, selected: tab.id == browser.selectedID, icon: AnyView(SiteIcon(url: tab.url, size: 18))) {
+                        TabCard(tab: tab, selected: tab.id == browser.selectedID) {
                             browser.select(tab); close()
-                        } trailing: {
-                            Button { withAnimation(.smooth(duration: 0.25)) { browser.close(tab) } } label: {
-                                Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).frame(width: 32, height: 32)
+                        } close: {
+                            withAnimation(.smooth(duration: 0.25)) { browser.close(tab) }
+                        }
+                        .draggable(tab.url) { SiteIcon(url: tab.url, size: 28).padding(10).background(GroundFill(strength: 2), in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous)) }
+                        .contextMenu {
+                            if let space, canKeep {
+                                Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
+                                Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
                             }
-                            .buttonStyle(.plain).opacity(0.6)
-                            .accessibilityLabel("Close \(tab.title)")
+                            Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
                         }
                     }
                 }
@@ -341,13 +390,15 @@ struct SpaceColumn: View {
                     }
                 }
                 if space?.isIncognito == true {
-                    Text("Incognito pages aren't saved to history or synced, and their cookies and website data are erased when you close the last Incognito tab.")
+                    Text("Nothing here is saved or synced. Close the last tab and it's gone.")
                         .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.top, 6)
                 } else if favourites.isEmpty && tabs.isEmpty && library.pinned(space: space?.id ?? Local.space).isEmpty {
                     emptyHint
                 }
             }
             .padding(.horizontal, Look.inset).padding(.vertical, 12)
+            .frame(maxWidth: 520)
+            .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
         .refreshable { await sync.run() }
@@ -377,7 +428,9 @@ struct SpaceColumn: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            if let space { SpaceMark(space: space, size: 20) }
+            if let space {
+                SpaceMark(space: space, size: 17).frame(width: 36, height: 36).background(GroundFill(), in: Circle())
+            }
             Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
             if let space, !space.isLocal, !space.isIncognito, let profile = library.profileName(space.profileID) {
                 Text(profile).font(.footnote.weight(.medium)).foregroundStyle(.secondary)
@@ -396,20 +449,22 @@ struct SpaceColumn: View {
                 .accessibilityLabel("Space options")
             }
         }
-        .padding(.horizontal, 4).padding(.top, 8)
+        .padding(.top, 12)
     }
 
     private var emptyHint: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Keep what you come back to here. Open a page, then add it to Favourites or pin it to this Space from the ••• menu.")
+            Text("Drag tabs here to keep them.")
             if !sync.enabled {
-                Button("Bring in your Spaces from Vane on your Mac", action: openSettings)
-                    .fontWeight(.medium)
+                Button("Sync with your Mac", action: openSettings).fontWeight(.medium)
             }
         }
         .font(.subheadline).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.top, 6)
     }
+
+    /// Incognito keeps nothing, so nothing can be favourited or pinned from it.
+    private var canKeep: Bool { space.map { !$0.isIncognito } ?? false }
 
     private func open(_ link: LinkRow) { browser.open(link.url, home: link.url); close() }
 }
@@ -588,6 +643,7 @@ struct AddressSheet: View {
         }
         .padding(.horizontal, Look.inset).padding(.top, 18)
         .presentationDetents([.large])
+        .frostsBehind()
         .presentationBackground { Wash(space: space) }
         .onAppear { text = browser.selected?.url.absoluteString ?? ""; focused = true }
     }
@@ -677,5 +733,51 @@ struct HistoryView: View {
         .searchable(text: $query)
         .overlay { if browser.allHistory.isEmpty { ContentUnavailableView("No History", systemImage: "clock") } }
         .navigationTitle("History")
+    }
+}
+
+/// An open tab as Arc shows it on iPhone: the page as it last looked, its site and title
+/// above, and a close button in the corner.
+struct TabCard: View {
+    let tab: Tab
+    let selected: Bool
+    let open: () -> Void
+    let close: () -> Void
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    SiteIcon(url: tab.url, size: 14)
+                    Text(tab.title).font(.caption.weight(.medium)).lineLimit(1)
+                    Spacer(minLength: 22)
+                }
+                .padding(.horizontal, 4)
+                Group {
+                    if let snapshot = tab.snapshot {
+                        Image(uiImage: snapshot).resizable().scaledToFill()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    } else {
+                        SiteIcon(url: tab.url, size: 34).frame(maxWidth: .infinity, maxHeight: .infinity).background(GroundFill(strength: 1.2))
+                    }
+                }
+                .frame(height: 190)
+                .background(Color(.systemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(selected ? Color.primary : .primary.opacity(0.08), lineWidth: selected ? 2 : 1))
+                .shadow(color: .black.opacity(0.1), radius: 6, y: 2)
+            }
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            Button(action: close) {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).frame(width: 22, height: 22)
+                    .background(GroundFill(strength: 1.6), in: Circle())
+                    .frame(width: 36, height: 36, alignment: .topTrailing).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).offset(x: 4, y: -6)
+            .accessibilityLabel("Close \(tab.title)")
+        }
+        .accessibilityLabel(tab.title)
     }
 }

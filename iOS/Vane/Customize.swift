@@ -11,7 +11,8 @@ struct ThemeEditor: View {
 
     init(space: SpaceRow) {
         var space = space
-        if space.palette.isEmpty { space.colors = ["#666789"] }
+        // The colour the Space already shows: Vane's own when it has none.
+        if space.palette.isEmpty { space.colors = ["#6E7DD2"] }
         _draft = State(initialValue: space)
     }
 
@@ -34,6 +35,7 @@ struct ThemeEditor: View {
             }
         }
         .tint(.primary)
+        .frostsBehind()
         .presentationBackground { Wash(space: draft) }
         .preferredColorScheme(draft.appearance == "dark" ? .dark : draft.appearance == "light" ? .light : nil)
     }
@@ -41,7 +43,7 @@ struct ThemeEditor: View {
     /// The Space as it will look: its mark and name on its own ground, with a page card.
     private var preview: some View {
         ZStack(alignment: .topLeading) {
-            Wash(space: draft).clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(GroundFill(strength: 0.7))
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     SpaceMark(space: draft, size: 18)
@@ -58,7 +60,6 @@ struct ThemeEditor: View {
             .padding(14)
         }
         .frame(height: 190)
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.4), lineWidth: 1))
     }
 
     private var colours: some View {
@@ -185,8 +186,9 @@ struct AppIconPicker: View {
     ]
     @State private var current = UIApplication.shared.alternateIconName
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
+        // Every icon at once, in rows, rather than a strip cut off at the card's edge.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 10)], spacing: 14) {
+            Group {
                 ForEach(Self.icons, id: \.title) { icon in
                     Button {
                         UIApplication.shared.setAlternateIconName(icon.name) { error in
@@ -194,11 +196,12 @@ struct AppIconPicker: View {
                         }
                     } label: {
                         VStack(spacing: 6) {
-                            Image("Preview-" + (icon.name ?? "AppIcon")).resizable().scaledToFit().frame(width: 60, height: 60)
-                                .overlay { if current == icon.name { RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(.tint, lineWidth: 2.5).padding(-4) } }
-                            Text(icon.title).font(.caption2).lineLimit(1)
+                            Image("Preview-" + (icon.name ?? "AppIcon")).resizable().scaledToFit().frame(width: 56, height: 56)
+                                .overlay { if current == icon.name { RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(.primary, lineWidth: 2).padding(-4) } }
+                            Text(icon.title).font(.caption2).lineLimit(2).multilineTextAlignment(.center)
+                                .frame(height: 26, alignment: .top)
                         }
-                        .frame(width: 76)
+                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(icon.title)
