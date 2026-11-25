@@ -21,7 +21,7 @@ import WebKit
     var reading: Article?
     /// Pulling down past the top of the page, Chrome-style: how far (0…1, armed at 1) and which
     /// action the finger is over: new tab on the left, reload in the middle, close on the right.
-    struct Pull: Equatable { var progress: CGFloat; var choice: PullChoice }
+    struct Pull: Equatable { var progress: CGFloat; var choice: PullChoice; var dx: CGFloat; var depth: CGFloat = 100 }
     enum PullChoice: Int { case newTab = -1, reload = 0, close = 1 }
     var pull: Pull?
     var onPull: (PullChoice) -> Void = { _ in }
@@ -84,7 +84,7 @@ import WebKit
         case .began, .changed:
             guard depth > 0, reading == nil else { if pull != nil { pull = nil }; return }
             let dx = pan.translation(in: scroll).x
-            let next = Pull(progress: min(depth / 100, 1), choice: dx < -45 ? .newTab : dx > 45 ? .close : .reload)
+            let next = Pull(progress: min(depth / 100, 1), choice: dx < -45 ? .newTab : dx > 45 ? .close : .reload, dx: dx, depth: depth)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
                 UISelectionFeedbackGenerator().selectionChanged()
             }

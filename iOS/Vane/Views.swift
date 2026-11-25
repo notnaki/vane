@@ -133,6 +133,9 @@ struct RootView: View {
         }
         if defaults.bool(forKey: "demoIncognito") { browser.switchSpace(SpaceRow.incognito.id) }
         if let raw = defaults.string(forKey: "demoOpen"), let url = URL(string: raw) { browser.open(url) }
+        if let dx = defaults.object(forKey: "demoPull") as? String, let value = Double(dx) {
+            Task { try? await Task.sleep(for: .seconds(5)); browser.selected?.pull = .init(progress: 1, choice: value < -45 ? .newTab : value > 45 ? .close : .reload, dx: value) }
+        }
         if defaults.bool(forKey: "demoCollapsed") {
             Task { try? await Task.sleep(for: .seconds(5)); withAnimation { browser.selected?.collapsed = true } }
         }
@@ -912,33 +915,51 @@ struct TabCard: View {
     }
 }
 
-/// Chrome's pull-down actions over the top of the page: slide sideways to choose, let go to do it.
+/// Chrome's pull-down actions over the top of the page: three icons in a row; a filled circle
+/// follows the finger sideways, stretching toward it like a drop, and snaps to the nearest
+/// action with its name underneath. Let go to do it.
 struct PullActions: View {
     let pull: Tab.Pull
+    private let spacing: CGFloat = 96
+    private let choices: [(Tab.PullChoice, String, String)] = [
+        (.newTab, "plus", "New Tab"), (.reload, "arrow.clockwise", "Reload"), (.close, "xmark", "Close Tab"),
+    ]
     var body: some View {
         let armed = pull.progress >= 1
-        HStack(spacing: 0) {
-            item("plus", "New Tab", .newTab)
-            item("arrow.clockwise", "Reload", .reload)
-            item("xmark", "Close Tab", .close)
+        let snapped = CGFloat(pull.choice.rawValue) * spacing
+        // The drop leans from its action toward the finger, a little, then lets go.
+        let lean = max(-36, min(36, (max(-spacing, min(spacing, pull.dx)) - snapped) * 0.5))
+        ZStack(alignment: .top) {
+            Capsule().fill(.regularMaterial)
+                .frame(width: 52 + abs(lean), height: 52 - abs(lean) * 0.12)
+                .offset(x: snapped + lean / 2)
+                .opacity(armed ? 1 : 0)
+                .scaleEffect(armed ? 1 : 0.5)
+            HStack(spacing: 0) {
+                ForEach(choices, id: \.0) { choice, symbol, title in
+                    let on = pull.choice == choice
+                    VStack(spacing: 6) {
+                        Image(systemName: symbol)
+                            .font(.system(size: 18, weight: .semibold))
+                            .rotationEffect(.degrees(choice == .reload ? Double(pull.progress) * 200 : 0))
+                            .frame(width: 52, height: 52)
+                        Text(title).font(.caption2.weight(.medium))
+                            .opacity(on && armed ? 1 : 0)
+                    }
+                    .frame(width: spacing)
+                    .opacity(on && armed ? 1 : 0.6)
+                    .accessibilityLabel(title)
+                }
+            }
         }
-        .frame(maxWidth: 320)
-        .padding(.top, 6)
-        .opacity(Double(pull.progress))
-        .scaleEffect(0.85 + 0.15 * pull.progress)
-        .animation(.spring(duration: 0.25, bounce: 0.3), value: pull.choice)
-        .animation(.easeOut(duration: 0.15), value: armed)
+        .padding(.top, 4)
+        .opacity(Double(min(1, pull.progress * 1.6)))
+        .offset(y: -20 * (1 - pull.progress))
+        // The browser's own strip over the gap the page leaves as it's pulled down.
+        .frame(maxWidth: .infinity, minHeight: pull.depth, alignment: .top)
+        .background(Color(.systemBackground).ignoresSafeArea(edges: .top))
+        .animation(.spring(duration: 0.3, bounce: 0.35), value: pull.choice)
+        .animation(.spring(duration: 0.3, bounce: 0.35), value: armed)
         .allowsHitTesting(false)
-    }
-    private func item(_ symbol: String, _ title: String, _ choice: Tab.PullChoice) -> some View {
-        let on = pull.choice == choice
-        return Image(systemName: symbol)
-            .font(.system(size: 17, weight: .semibold))
-            .rotationEffect(.degrees(choice == .reload ? Double(pull.progress) * 270 : 0))
-            .frame(width: 48, height: 48)
-            .background(on && pull.progress >= 1 ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: Circle())
-            .opacity(on ? 1 : 0.45)
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel(title)
     }
 }
