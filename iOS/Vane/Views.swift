@@ -511,13 +511,14 @@ struct SpaceColumn: View {
                     }
                 }
             } label: {
-                HStack(spacing: 10) {
-                    if let space {
-                        SpaceMark(space: space, size: 17).frame(width: 36, height: 36).background(GroundFill(), in: Circle())
-                    }
+                // Same columns as a row: 12 in, a 22-wide icon, 12 to the title.
+                HStack(spacing: 12) {
+                    if let space { SpaceMark(space: space, size: 18).frame(width: 22) }
                     Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.leading, -6)
                 }
+                .padding(.leading, 12)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Space, \(space?.name ?? "")")
@@ -876,42 +877,43 @@ struct TabCard: View {
     let open: () -> Void
     let close: () -> Void
     var body: some View {
-        Button(action: open) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    SiteIcon(url: tab.url, size: 14)
-                    Text(tab.title).font(.caption.weight(.medium)).lineLimit(1)
-                    Spacer(minLength: 22)
+        // One card: a title bar inside it, then the page. Its edges line up with the
+        // favourite tiles, its icon and title with the rows' icons and titles.
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                SiteIcon(url: tab.url, size: 16)
+                Text(tab.title).font(.caption.weight(.medium)).lineLimit(1)
+                Spacer(minLength: 0)
+                Button(action: close) {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).opacity(0.6)
+                        .frame(width: 32, height: 32).contentShape(Rectangle())
                 }
-                .padding(.horizontal, 4)
-                Group {
-                    if let snapshot = tab.snapshot {
-                        Image(uiImage: snapshot).resizable().scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                            .background(Color(.systemBackground))
-                    } else {
-                        // Not seen since launch: the site's icon on the Space's own fill, not a blank page.
-                        SiteIcon(url: tab.url, size: 30).frame(maxWidth: .infinity, maxHeight: .infinity).background(GroundFill(strength: 1.3))
-                    }
+                .buttonStyle(.plain)
+                .padding(.trailing, -8)
+                .accessibilityLabel("Close \(tab.title)")
+            }
+            .padding(.horizontal, 12).frame(height: 36)
+            Group {
+                if let snapshot = tab.snapshot {
+                    Image(uiImage: snapshot).resizable().scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .background(Color(.systemBackground))
+                } else {
+                    // Not seen since launch: the site's icon, not a blank page.
+                    SiteIcon(url: tab.url, size: 30).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(height: 190)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(selected ? Color.primary : .primary.opacity(0.08), lineWidth: selected ? 2 : 1))
-                .shadow(color: .black.opacity(0.1), radius: 6, y: 2)
             }
+            .frame(height: 170)
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 16, bottomTrailingRadius: 16, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .overlay(alignment: .topTrailing) {
-            Button(action: close) {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).frame(width: 22, height: 22)
-                    .background(GroundFill(strength: 1.6), in: Circle())
-                    .frame(width: 36, height: 36, alignment: .topTrailing).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).offset(x: 4, y: -6)
-            .accessibilityLabel("Close \(tab.title)")
-        }
+        .background(GroundFill(strength: 1.3), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(selected ? Color.primary : .clear, lineWidth: 2))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .onTapGesture(perform: open)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
