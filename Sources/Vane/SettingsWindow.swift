@@ -607,6 +607,8 @@ private struct GeneralPane: View {
                 }
             }
 
+            SettingsSection("Command Bar") { CommandBarSettings() }
+
             SettingsCard(divided: false) {
                 DataRow(icon: "rectangle.on.rectangle", tint: .purple, title: "Previews") {
                     selection.id = "previews"
@@ -627,6 +629,47 @@ private struct GeneralPane: View {
             }
         }
         .onAppear { isDefault = URLHandling.isDefaultBrowser }
+    }
+}
+
+/// The command bar's assistant and appearance, in General: vane://settings' Search engine
+/// section is search engines only, as Arc's is.
+private struct CommandBarSettings: View {
+    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
+    @AppStorage(Look.barVisibleRowsKey) private var visibleRows = Look.barVisibleRows
+    @AppStorage(Look.barTopKey) private var barTop = Look.barTop
+    @AppStorage(Look.barAnimationsKey) private var barAnimations = true
+
+    var body: some View {
+        SettingsCard {
+            SettingsRow("AI assistant", icon: "sparkles", tint: .purple) {
+                Picker("AI assistant", selection: $assistantID) {
+                    ForEach(AIChat.all) { Text($0.name).tag($0.id) }
+                }
+                .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
+            }
+            SettingsRow("Results shown", icon: "list.bullet", tint: .blue) {
+                Stepper("\(Look.clampedVisibleRows(visibleRows))", value: $visibleRows,
+                        in: Look.barVisibleRowsRange)
+                Button("Reset") { visibleRows = Look.barVisibleRows }
+                    .controlSize(.small)
+                    .disabled(Look.clampedVisibleRows(visibleRows) == Look.barVisibleRows)
+                    .accessibilityLabel("Reset results shown")
+            }
+            SettingsRow("Bar position", icon: "rectangle.topthird.inset.filled", tint: .blue) {
+                Slider(value: $barTop, in: Look.barTopRange) { Text("Bar position") }
+                    minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Middle") }
+                    .labelsHidden().frame(width: 220)
+                Button("Reset") { barTop = Look.barTop }
+                    .controlSize(.small)
+                    .disabled(barTop == Look.barTop)
+                    .accessibilityLabel("Reset bar position")
+            }
+            SettingsRow("Animate results", icon: "waveform.path", tint: .blue) {
+                Toggle("", isOn: $barAnimations).labelsHidden()
+            }
+            Footnote("Press Tab in the address bar to ask the assistant instead of searching.")
+        }
     }
 }
 
@@ -1124,13 +1167,9 @@ private struct LinksPane: View {
 struct SearchPane: View {
     // The key `Search.current` reads. AppStorage so the picker redraws itself.
     @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
-    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
     // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
     // the search engine before you press Return.
     @AppStorage("searchSuggestions") private var suggestions = false
-    @AppStorage(Look.barVisibleRowsKey) private var visibleRows = Look.barVisibleRows
-    @AppStorage(Look.barTopKey) private var barTop = Look.barTop
-    @AppStorage(Look.barAnimationsKey) private var barAnimations = true
     // Neither list is @Published, so the views mirror them and refresh on every mutation.
     @State private var engines = Search.all
     @State private var newName = ""
@@ -1148,20 +1187,6 @@ struct SearchPane: View {
 
     var body: some View {
         Pane {
-            SettingsCard {
-                SettingsRow("AI assistant", icon: "sparkles", tint: .purple) {
-                    Picker("AI assistant", selection: $assistantID) {
-                        ForEach(AIChat.all) { Text($0.name).tag($0.id) }
-                    }
-                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
-                }
-                Footnote("Press Tab in the address bar to ask this assistant instead of "
-                         + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
-                         + "\u{201C}chatgpt …\u{201D} — overrides it for that one query. Vane opens the "
-                         + "assistant's own site with the question; ChatGPT and Perplexity send "
-                         + "it automatically, Claude fills it in for you to send.")
-            }
-
             SettingsCard {
                 SettingsRow("Search engine", icon: "magnifyingglass", tint: .blue) {
                     Picker("Search engine", selection: $engineID) {
@@ -1202,29 +1227,8 @@ struct SearchPane: View {
                     }
                     .disabled(!engineIsValid)
                 }
-                Footnote("Search suggestions send what you type in the address bar to your "
-                         + "search engine as you type it. Never in a private window, and never "
-                         + "for anything that looks like an address. A custom engine's address "
-                         + "needs an http or https address with a host, no credentials, and one %s where the search words go.")
-            }
-
-            SettingsCard {
-                SettingsRow("Results shown", icon: "list.bullet", tint: .blue) {
-                    Stepper("\(Look.clampedVisibleRows(visibleRows))", value: $visibleRows,
-                            in: Look.barVisibleRowsRange)
-                }
-                SettingsRow("Bar position", icon: "rectangle.topthird.inset.filled", tint: .blue) {
-                    Slider(value: $barTop, in: Look.barTopRange) { Text("Bar position") }
-                        minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Middle") }
-                        .labelsHidden().frame(width: 220)
-                }
-                SettingsRow("Animate results", icon: "waveform.path", tint: .blue) {
-                    Toggle("", isOn: $barAnimations).labelsHidden()
-                }
-                Footnote("The search bar keeps its place as results come and go. Results past "
-                         + "the count shown are a scroll away. With animation off, results "
-                         + "change at once as you type; Battery Saver and Reduce Motion also "
-                         + "turn it off.")
+                Footnote("Suggestions send what you type to your search engine. A custom engine's "
+                         + "address needs one %s where the search words go.")
             }
 
             SettingsCard {
@@ -1259,9 +1263,7 @@ struct SearchPane: View {
                         .padding(.horizontal, Look.cardInset)
                         .padding(.vertical, Look.inset + 2)
                 }
-                Footnote("A bang jumps straight to a site's own search: !gh swift searches "
-                         + "GitHub. Type a keyword or site name and press Tab for a search chip. "
-                         + "\(Bangs.builtIn.count) sites are built in; yours win over those.")
+                Footnote("!gh swift searches GitHub. Yours win over the \(Bangs.builtIn.count) built in.")
             }
         }
     }
@@ -1696,7 +1698,6 @@ struct PrivacyPane: View {
     @ObservedObject var selection: SettingsSelection
     @AppStorage("httpsOnly") private var httpsOnly = true
     @State private var blocking = true
-    @AppStorage("searchSuggestions") private var suggestions = false
     @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     @ObservedObject private var manager = ProfileManager.shared
     /// Read once per appearance: they come out of UserDefaults, not out of a publisher.
@@ -1719,14 +1720,7 @@ struct PrivacyPane: View {
                     Toggle("", isOn: $blocking).labelsHidden()
                         .onChange(of: blocking) { Blocker.setEnabled(blocking, for: profile.id); rebuild() }
                 }
-                SettingsRow("Search suggestions", icon: "text.bubble.fill", tint: .blue) {
-                    Toggle("", isOn: $suggestions).labelsHidden()
-                }
-                Footnote("Pages load over an encrypted connection or stop on a warning. Ads and "
-                         + "trackers are blocked from a filter list on device — nothing about "
-                         + "what you visit leaves the machine. Search suggestions are the one "
-                         + "exception: they send what you type to your search engine before you "
-                         + "press Return, and they are off unless you turn them on.")
+                Footnote("Ads and trackers are blocked on device.")
             }
 
             BlockerSettingsSection(profileID: profile.id)

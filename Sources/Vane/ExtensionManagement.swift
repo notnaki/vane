@@ -84,6 +84,8 @@ struct ExtensionManagementView: View {
     var inTab = false
     /// The tab's profile menu, in place of the window's fixed profile label.
     var profileMenu: AnyView? = nil
+    /// The tab's "← Settings": the same tab becomes vane://settings.
+    var openSettings: (() -> Void)? = nil
     @State private var query = ""
     @State private var filter = ExtensionManagerModel.Filter.all
     @State private var selected: String?
@@ -138,8 +140,32 @@ struct ExtensionManagementView: View {
     private var selectedEntry: ExtensionHost.Entry? { entries.first { $0.path == selected } }
 
     var body: some View {
+        Group {
+            if inTab { tabPage } else { windowPage }
+        }
+        .onAppear { refreshCatalog() }
+        .onDisappear { catalogRefresh?.cancel(); catalogRefresh = nil }
+        .onReceive(host.objectWillChange) { _ in refreshCatalog() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshCatalog()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ExtensionManagement.presentationRequest)) { note in
+            if note.object as? UUID == host.profileID { refreshCatalog() }
+        }
+        .onChange(of: visible.map(\.id)) { _, _ in
+            selected = ExtensionManagerModel.selection(selected, in: visible)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ExtensionManagement.searchRequest)) { note in
+            if note.object as? UUID == host.profileID {
+                selected = nil
+                Task { await Task.yield(); searchFocused = true }
+            }
+        }
+    }
+
+    private var windowPage: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
+            installDrop(VStack(spacing: 0) {
                 header
                 Divider()
                 if isPrivate {
@@ -161,7 +187,17 @@ struct ExtensionManagementView: View {
                     }.padding(14).background(.quaternary.opacity(0.4))
                     .accessibilityElement(children: .contain)
                 }
-            }
+            })
+            .animation(Motion.reduced ? nil : Look.list, value: selected)
+            .animation(Motion.reduced ? nil : Look.list, value: filter)
+            .animation(Motion.reduced ? nil : Look.list, value: busy)
+            .vaneMotionPolicy()
+        }
+    }
+
+    /// A dropped extension folder installs, in the window and in the tab alike.
+    private func installDrop(_ content: some View) -> some View {
+        content
             .overlay {
                 if dropTargeted && !isPrivate {
                     RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 3)
@@ -178,29 +214,112 @@ struct ExtensionManagementView: View {
                 importFolder(folder)
                 return true
             } isTargeted: { dropTargeted = $0 }
-            .animation(Motion.reduced ? nil : Look.list, value: selected)
-            .animation(Motion.reduced ? nil : Look.list, value: filter)
-            .animation(Motion.reduced ? nil : Look.list, value: busy)
-            .vaneMotionPolicy()
+    }
+
+    // MARK: vane://extensions
+
+    /// arc://extensions: the page's header and nav around a grid of extension cards, each
+    /// with Details, Remove and its switch. Details opens the same detail view the window
+    /// shows, in place of the grid.
+    private var tabPage: some View {
+        installDrop(VanePageShell(title: "Extensions",
+                                  search: ("Search extensions", $query, $searchFocused, "extension-manager.search")) {
+            Feel06ActivityLine(busy: busy, text: "Checking…")
+        } nav: {
+            ExtensionsPageNav(openSettings: { openSettings?() },
+                              showList: { Motion.list { selected = nil } },
+                              storeInstall: isPrivate ? nil : { host.chooseStoreInstall() },
+                              folderInstall: isPrivate ? nil : { host.chooseAndInstall() },
+                              installDisabled: busy)
+        } content: {
+            VStack(alignment: .leading, spacing: 0) {
+                if let importError {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            .accessibilityHidden(true)
+                        Text(importError).font(.callout).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button { self.importError = nil } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain).accessibilityLabel("Dismiss installation error")
+                    }
+                    .padding(VanePageLayout.cardPadding)
+                    .background(Color.orange.opacity(0.08), in: .rect(cornerRadius: Look.pageRadius - 2))
+                    .accessibilityElement(children: .contain)
+                    .vanePageColumn()
+                    .padding(.top, Look.inset)
+                }
+                tabContent.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        })
+        .animation(Motion.reduced ? nil : Look.list, value: selected)
+        .animation(Motion.reduced ? nil : Look.list, value: busy)
+        .animation(Motion.reduced ? nil : Look.list, value: importError)
+        .vaneMotionPolicy()
+    }
+
+    @ViewBuilder private var tabContent: some View {
+        if isPrivate {
+            emptyState(icon: "eyeglasses", title: "Extensions stay out of private browsing",
+                       detail: "Extensions cannot be installed in the Private profile. Open a regular profile to manage its extensions.")
+        } else if let entry = selectedEntry {
+            VStack(alignment: .leading, spacing: 0) {
+                Button { Motion.list { selected = nil }; searchFocused = true } label: {
+                    Label("All extensions", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                .accessibilityLabel("Back to extension list")
+                .keyboardShortcut(.escape, modifiers: [])
+                .vanePageColumn()
+                .padding(.vertical, 10)
+                ExtensionDetailView(host: host, entry: entry, inColumn: true).id(entry.path)
+            }
+            .transition(.opacity)
+        } else {
+            ScrollView { cards }.transition(.opacity)
         }
-        .onAppear { refreshCatalog() }
-        .onDisappear { catalogRefresh?.cancel(); catalogRefresh = nil }
-        .onReceive(host.objectWillChange) { _ in refreshCatalog() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            refreshCatalog()
+    }
+
+    private func tabHeading(_ title: String) -> some View {
+        HStack(spacing: Look.inset) {
+            Text(title).font(VanePageLayout.sectionFont).foregroundStyle(Look.inkPrimary)
+                .accessibilityAddTraits(.isHeader)
+            if let profileMenu { profileMenu } else {
+                Text(profileName).foregroundStyle(Look.inkSecondary)
+            }
+            Spacer(minLength: 0)
         }
-        .onReceive(NotificationCenter.default.publisher(for: ExtensionManagement.presentationRequest)) { note in
-            if note.object as? UUID == host.profileID { refreshCatalog() }
-        }
-        .onChange(of: visible.map(\.id)) { _, _ in
-            selected = ExtensionManagerModel.selection(selected, in: visible)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: ExtensionManagement.searchRequest)) { note in
-            if note.object as? UUID == host.profileID {
-                selected = nil
-                Task { await Task.yield(); searchFocused = true }
+        .frame(minHeight: VanePageLayout.chipHeight)
+    }
+
+    private var cards: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            tabHeading("All extensions")
+            if catalog.isEmpty {
+                VanePageCard { firstInstall }
+            } else if entries.isEmpty {
+                VanePageCard {
+                    VStack(spacing: 10) {
+                        Text("No matching extensions").font(Look.heading).foregroundStyle(Look.inkPrimary)
+                        Button("Clear Search") { query = ""; searchFocused = true }
+                    }
+                    .padding(24).frame(maxWidth: .infinity)
+                }
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 12, alignment: .top)],
+                          alignment: .leading, spacing: 12) {
+                    ForEach(entries) { entry in
+                        ExtensionCard(host: host, entry: entry) { Motion.list { selected = entry.path } }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Installed extensions")
+                .accessibilityIdentifier("extension-manager.list")
             }
         }
+        .vanePageColumn()
+        .padding(.top, Look.inset)
+        .padding(.bottom, 24)
     }
 
     private var header: some View {
@@ -428,9 +547,79 @@ private struct ExtensionListRow: View {
     }
 }
 
+/// One extension on vane://extensions, as Chromium draws it: icon, name and description,
+/// Details and Remove, and its switch.
+private struct ExtensionCard: View {
+    @ObservedObject var host: ExtensionHost
+    let entry: ExtensionHost.Entry
+    let details: () -> Void
+    @State private var error: String?
+    @State private var confirmingRemoval = false
+
+    private var attention: Bool { entry.failure != nil || !entry.sourceAvailable }
+
+    var body: some View {
+        VanePageCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 14) {
+                    ExtensionIcon(image: entry.icon, size: 34)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.name).font(Look.heading).foregroundStyle(Look.inkPrimary).lineLimit(1)
+                        if !entry.summary.isEmpty {
+                            Text(entry.summary).font(Look.small).foregroundStyle(Look.inkSecondary).lineLimit(2)
+                        }
+                        if attention {
+                            Label(entry.status, systemImage: "exclamationmark.circle")
+                                .font(Look.caption).foregroundStyle(.orange).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if entry.busy { ProgressView().controlSize(.small).accessibilityLabel("Checking " + entry.name) }
+                }
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    Button("Details", action: details).buttonStyle(VanePageOutlineButtonStyle())
+                        .accessibilityLabel("Details for " + entry.name)
+                    Button("Remove") { confirmingRemoval = true }.buttonStyle(VanePageOutlineButtonStyle())
+                        .disabled(entry.busy)
+                        .accessibilityLabel("Remove " + entry.name)
+                    Spacer(minLength: 0)
+                    Toggle("Enable " + entry.name, isOn: Binding(get: { entry.enabled }, set: { value in
+                        Task {
+                            do { try await host.setEnabled(value, for: entry.path) }
+                            catch is CancellationError { }
+                            catch { self.error = error.localizedDescription }
+                        }
+                    })).labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(entry.busy)
+                        .accessibilityLabel("Enable " + entry.name)
+                }
+            }
+            .padding(VanePageLayout.cardPadding)
+            .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(entry.name)
+        .animation(Motion.reduced ? nil : Look.list, value: entry.enabled)
+        .alert("Could not change extension", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+        .alert("Remove “\(entry.name)” from this profile?", isPresented: $confirmingRemoval) {
+            Button("Remove Extension", role: .destructive) {
+                do { try host.remove(folder: entry.path) }
+                catch { self.error = error.localizedDescription }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes the installation, its approval, and toolbar pin. Your original source folder is kept. Reinstalling creates a new extension identity and cannot restore its old settings.")
+        }
+    }
+}
+
 private struct ExtensionDetailView: View {
     @ObservedObject var host: ExtensionHost
     let entry: ExtensionHost.Entry
+    /// In vane://extensions: in the page's content column rather than centred.
+    var inColumn = false
     @State private var error: String?
     @State private var confirmingRemoval = false
     @State private var confirmingRevocation = false
@@ -485,7 +674,9 @@ private struct ExtensionDetailView: View {
                 }.controlSize(.small)
                 Text("Copied diagnostics exclude website targets, personal paths, browsing content, credentials, and extension storage.")
                     .font(.caption).foregroundStyle(.secondary)
-            }.padding(24).frame(maxWidth: 720, alignment: .leading).frame(maxWidth: .infinity)
+            }.padding(24).frame(maxWidth: 720, alignment: .leading)
+                .padding(.leading, inColumn ? VanePageLayout.contentInset - 24 : 0)
+                .frame(maxWidth: .infinity, alignment: inColumn ? .leading : .center)
         }
         .accessibilityLabel(entry.name + " details")
         .animation(Motion.reduced ? nil : Look.list, value: entry.runtimeDiagnostics != nil)

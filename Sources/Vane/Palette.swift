@@ -2001,7 +2001,7 @@ private struct PaletteSuggestionWatch: View, Equatable {
     private func vanePageRows() -> [PaletteRow] {
         guard mode != .tabs, !typed.isEmpty else { return [] }
         let open = Set(store.tabs.compactMap { $0.vanePage?.url })
-        return Palette.rankPages(typed, VanePage.catalog, title: \.title, url: \.page.url.absoluteString)
+        return Palette.rankPages(typed, VanePage.catalog(for: typed), title: \.title, url: \.page.url.absoluteString)
             .map { entry in
                 PaletteRow(id: "vane:" + entry.page.url.absoluteString, icon: entry.page.kind == .settings
                                ? VaneSettingsSection.navigable.first { .settings($0) == entry.page }?.icon ?? "gearshape"
