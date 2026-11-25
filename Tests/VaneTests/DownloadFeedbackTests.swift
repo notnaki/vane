@@ -79,7 +79,7 @@ import XCTest
         XCTAssertNotEqual(try SidebarSnapshot.pixels(in: host), before,
                           "A download must visibly appear even without a sidebar bucket anchor")
         XCTAssertFalse(store.sidebarShown)
-        try await Task.sleep(for: .milliseconds(2100))
+        try await Task.sleep(for: .seconds(DownloadFeedback.flightSeconds + 2.2))
         host.layoutSubtreeIfNeeded()
         XCTAssertEqual(try SidebarSnapshot.pixels(in: host), before,
                        "The temporary download control must disappear after feedback ends")
@@ -91,9 +91,25 @@ import XCTest
         let target = try XCTUnwrap(DownloadFeedbackBounds.destination(
             page: page, bucket: hiddenBucket, chrome: false))
         XCTAssertTrue(page.contains(target))
-        XCTAssertEqual(target.minX, page.minX + 16)
-        XCTAssertEqual(target.maxY, page.maxY - 16)
+        XCTAssertEqual(target.minX, page.minX + 20)
+        XCTAssertEqual(target.maxY, page.maxY - 20)
         XCTAssertEqual(DownloadFeedbackBounds.destination(page: page, bucket: nil, chrome: false), target)
+        // The flight leaves from the clicked link, or the page's centre when the pointer is off it.
+        XCTAssertEqual(DownloadFeedbackBounds.source(page: page, click: CGPoint(x: 300, y: 400)), CGPoint(x: 300, y: 400))
+        XCTAssertEqual(DownloadFeedbackBounds.source(page: page, click: CGPoint(x: 2, y: 2)), CGPoint(x: 458, y: 308))
+        XCTAssertEqual(DownloadFeedbackBounds.source(page: page, click: nil), CGPoint(x: 458, y: 308))
+    }
+
+    func testFlightIsAThrowFromTheClickIntoTheTarget() {
+        let from = CGPoint(x: 300, y: 560), to = CGPoint(x: 120, y: 890)
+        XCTAssertEqual(DownloadFlight.point(0, from: from, to: to).y, from.y, accuracy: 0.001)
+        XCTAssertEqual(DownloadFlight.point(1, from: from, to: to).y, to.y, accuracy: 0.001)
+        XCTAssertEqual(DownloadFlight.point(0.5, from: from, to: to).x, 210, accuracy: 0.001)
+        let top = stride(from: 0.0, through: 1, by: 0.01).map { DownloadFlight.point($0, from: from, to: to).y }.min()!
+        XCTAssertEqual(top, from.y - DownloadFlight.rise, accuracy: 1, "rises above the click before falling")
+        // Near the window's top the apex is held inside it.
+        XCTAssertGreaterThanOrEqual(stride(from: 0.0, through: 1, by: 0.01)
+            .map { DownloadFlight.point($0, from: CGPoint(x: 300, y: 60), to: to).y }.min()!, 23.9)
     }
 
     func testVisibleSidebarUsesActualLibraryTarget() {

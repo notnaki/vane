@@ -601,7 +601,7 @@ struct LittleArcView: View {
                     // Over the page it needs a ground of its own; above it, the window's shows.
                     .background { if autoHide { ZStack { WindowGlass(); SpaceGround() } } }
             } page: {
-                WebCard(topGap: 0, edgeToEdge: true)
+                WebCard(topGap: 0, edgeToEdge: true).modifier(DownloadFeedbackAnchor(target: .page))
             }
             // Last, so ⌘L's bar composites over the bar as well as the page.
             if let mode = store.palette {
@@ -612,6 +612,8 @@ struct LittleArcView: View {
         // `.fullSizeContentView` still leaves SwiftUI a titlebar-sized safe area, which
         // would push the bar below the traffic lights instead of around them.
         .ignoresSafeArea()
+        // No sidebar here, so the download lands where a hidden sidebar's would.
+        .modifier(DownloadFeedbackPresentation(store: store, chrome: false))
         .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
         .onAppear { LittleArc.refreshDestination(for: store) }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
