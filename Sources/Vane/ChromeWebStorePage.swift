@@ -48,9 +48,10 @@ import WebKit
         }
     }
 
-    /// DOM nodes are shared with the store; the bridge and closures are not. Creating
-    /// our own button avoids Google's delegated install handlers. A trusted click in
-    /// this isolated world is required before any native message is sent.
+    /// DOM nodes are shared with the store; the bridge and closures are not. Our own
+    /// button, in the store's place and never floating over the page, avoids Google's
+    /// delegated install handlers. A trusted click in this isolated world is required
+    /// before any native message is sent.
     static var script: String { #"""
     (() => {
       if (location.origin !== 'https://chromewebstore.google.com' || window !== top) return;
@@ -71,22 +72,19 @@ import WebKit
         if (id !== currentID) reset();
         if (!id || button?.isConnected) return;
         currentID = id;
+        // The store's own install button, in any language. Without one there is nothing
+        // to replace yet; the observer retries as the page renders.
         const native = document.querySelector('button[jsname="wQO0od"]') ||
+          document.querySelector('[jsaction*="(wQO0od)"] button') ||
           [...document.querySelectorAll('button')].find(e => /^Add to Chrome$/i.test(e.textContent.trim()));
+        if (!native) { currentID = null; return; }
         button = document.createElement('button');
         button.type = 'button'; button.dataset.vaneStoreInstall = '';
         button.textContent = 'Add to Vane';
         button.title = 'Download this extension and review its access in Vane';
-        if (native) {
-          original = native; originalHidden = native.hidden;
-          button.className = native.className;
-          const label = document.createElement('span');
-          label.textContent = 'Add to Vane'; button.replaceChildren(label);
-          native.before(button); native.hidden = true;
-        } else {
-          Object.assign(button.style, {position:'fixed',right:'24px',top:'112px',zIndex:'2147483647'});
-          document.body.append(button);
-        }
+        original = native; originalHidden = native.hidden;
+        button.className = native.className;
+        native.before(button); native.hidden = true;
         Object.assign(button.style, {padding:'12px 24px',minHeight:'44px',border:'0',borderRadius:'24px',transition:'__VANE_TRANSITION__',
           background:'#0b57d0',color:'#fff',font:'600 14px system-ui',cursor:'pointer'});
         button.addEventListener('click', event => {

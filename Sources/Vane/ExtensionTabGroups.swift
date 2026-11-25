@@ -225,7 +225,7 @@ import WebKit
 
     /// The folders that are groups: Today's, unlocked, and not filled by a live source.
     private func groups(in store: TabStore) -> [Folder] {
-        store.todayShape.entries.compactMap(\.folder).filter { $0.live == nil && !store.isFolderLocked($0.id) }
+        store.todayShape.entries.compactMap(\.folder).filter { $0.live == nil && !store.isFolderLocked($0.id) && !Self.isHome($0) }
     }
 
     func number(for folder: UUID) -> Int {
@@ -339,6 +339,7 @@ import WebKit
             else { throw Failure("Folders nest \(Pins.maxDepth + 1) deep at most.") }
             let owner = context.baseURL.host ?? ""
             shape.edit(folder: made.id) { $0.extensionOwner = owner; $0.groupColor = "grey" }
+            if Self.gathers(owner) { Self.gather(made.id, owner: owner, name: made.name, in: &shape) }
             target = made.id
         }
         for key in keys {
@@ -349,6 +350,104 @@ import WebKit
         }
         try commit(shape, to: store, check: false)
         return number(for: target)
+    }
+
+    /// An extension that groups each of its sessions apart, as Claude does, would fill
+    /// Today with folders of one name. Its top-level groups share one folder instead, named
+    /// for it, from the second on. That folder is no group (`isHome`): the extension never
+    /// sees it, and it goes once its groups have.
+    private static func gather(_ group: UUID, owner: String, name: String, in shape: inout Pins) {
+        let tops = Set(shape.entries.filter { $0.parent == nil }.compactMap(\.folder?.id))
+        let top = { (id: UUID) in tops.contains(id) }
+        guard top(group) else { return }
+        let folders = shape.entries.compactMap(\.folder)
+        if let home = folders.first(where: { Self.isHome($0, owner: owner) && top($0.id) }) {
+            shape.move(group.uuidString, into: home.id)
+            return
+        }
+        let siblings = folders.filter { $0.id != group && $0.extensionOwner == owner && !Self.isHome($0, owner: owner) && top($0.id) }
+        guard let first = siblings.first, let home = shape.newFolder(named: name, next: first.id.uuidString) else { return }
+        shape.edit(folder: home.id) { $0.extensionOwner = owner }
+        for folder in siblings + [shape.folder(group)].compactMap({ $0 }) { shape.move(folder.id.uuidString, into: home.id) }
+    }
+
+    nonisolated static let gathersKey = "gatherExtensionGroups"
+    /// Whether `gather` runs for the extension `owner`. Off unless the user turns it on, from
+    /// one of its folders' menus or its page in Extensions.
+    static func gathers(_ owner: String) -> Bool { UserDefaults.vane.bool(forKey: gathersKey + "." + owner) }
+
+    /// Turns `gather` on or off for `owner`, and rearranges Today in every window to match
+    /// now: its groups into one folder named `name`, or that folder emptied out where it stood.
+    static func setGathers(_ on: Bool, owner: String, name: String) {
+        UserDefaults.vane.set(on, forKey: gathersKey + "." + owner)
+        for store in TabStore.all where !store.isLittle {
+            store.syncShapes()
+            var shape = store.todayShape
+            let folders = shape.entries.compactMap(\.folder).filter { $0.extensionOwner == owner }
+            if on {
+                for folder in folders where !isHome(folder) { gather(folder.id, owner: owner, name: name, in: &shape) }
+            } else {
+                for home in folders where isHome(home) {
+                    // Last first, so the groups keep their order where the folder was.
+                    for child in shape.entries.filter({ $0.parent == home.id }).map(\.id).reversed() {
+                        shape.move(child, next: home.id.uuidString, after: true)
+                    }
+                    shape.remove(folder: home.id)
+                }
+            }
+            guard shape != store.todayShape else { continue }
+            Motion.list {
+                store.todayShape = shape
+                store.applyOrder(.today)
+            }
+            store.savePins()
+        }
+    }
+
+    nonisolated static let dissolvesKey = "dissolveIdleExtensionGroups"
+    /// Whether `dissolveIdle` may take `owner`'s finished groups apart. On unless the user
+    /// turns it off, from the extension's page in Extensions.
+    static func dissolves(_ owner: String) -> Bool {
+        UserDefaults.vane.object(forKey: dissolvesKey + "." + owner) as? Bool ?? true
+    }
+
+    /// An extension's group whose tabs it has not driven for `idle` is a session it has
+    /// finished. Claude's own clean-up for that waits on a flag Anthropic sets per account,
+    /// so Vane does it too. The folder goes, its tabs stay, out of the shared folder too.
+    // ponytail: idle time is the only signal; an extension that says it is done would be better.
+    func dissolveIdle(used: [Tab.ID: (owner: String, at: Date)], after idle: TimeInterval, contexts: [WKWebExtensionContext]) {
+        let now = Date()
+        for store in stores {
+            store.syncShapes()
+            var shape = store.todayShape
+            // Not one the extension says it is working on or waiting on the user in.
+            for folder in shape.entries.compactMap(\.folder) where !Self.isHome(folder) && !store.isFolderLocked(folder.id)
+                && folder.extensionStatus != .working && folder.extensionStatus != .attention {
+                guard let owner = folder.extensionOwner, Self.dissolves(owner),
+                      let last = shape.tabs(in: folder.id).compactMap({ UUID(uuidString: $0).flatMap { used[$0] } })
+                          .filter({ $0.owner == owner }).map(\.at).max(),
+                      now.timeIntervalSince(last) >= idle, let i = shape.index(of: folder.id) else { continue }
+                let parent = shape.entries[i].parent
+                let rows = shape.entries.filter { $0.parent == folder.id }.map(\.id)
+                shape.remove(folder: folder.id)
+                if let parent, let home = shape.folder(parent), Self.isHome(home) {
+                    for row in rows.reversed() { shape.move(row, next: parent.uuidString, after: true) }
+                }
+            }
+            shape.removeEmptyFolders()
+            guard shape != store.todayShape else { continue }
+            Motion.list {
+                store.todayShape = shape
+                store.applyOrder(.today)
+            }
+            store.savePins()
+        }
+        sync(contexts: contexts)
+    }
+
+    /// The folder `gather` keeps an extension's groups in: the extension's, with no colour.
+    static func isHome(_ folder: Folder, owner: String? = nil) -> Bool {
+        folder.extensionOwner != nil && folder.groupColor == nil && (owner == nil || folder.extensionOwner == owner)
     }
 
     /// `tabs.ungroup`: each tab out of its folder, to just after it. A tab in no group, or

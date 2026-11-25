@@ -5,11 +5,22 @@ import WebKit
 /// throws and its whole background fails to load. Each stands in with its events, which
 /// never fire, and its constants. Its methods stay undefined, so `chrome.downloads?.download`
 /// still tells the extension the feature is missing. The exceptions answer truthfully
-/// enough to be cheap: `management.getSelf` (from the manifest) and `idle.queryState`
-/// (always active). Vendor resources remain unchanged.
+/// enough to be cheap: `management.getSelf` (from the manifest), `idle.queryState`
+/// (always active) and `action.getUserSettings`; and, from the host over `bridgePath`,
+/// `runtime.getContexts`. `offscreen` stays absent: WebKit runs an extension page in its
+/// worker's process, and suspends that process, worker included, once a hidden page has
+/// loaded. A hidden offscreen document froze Claude's worker two seconds after start.
+/// A worker's `WebSocket` is Vane's too (`ExtensionWebSockets`): WebKit's own never connects there.
+/// So is a credentialed request to a site the extension may access (`ExtensionHost.credentialedFetch`).
+/// Vendor resources remain unchanged.
 @MainActor enum ExtensionChromiumGaps {
     /// Permission names whose namespace WebKit omits entirely.
-    nonisolated static let namespaces = ["debugger", "downloads", "notifications", "offscreen", "tabGroups"]
+    nonisolated static let namespaces = ["debugger", "downloads", "notifications", "tabGroups"]
+    /// Never a resource: the host consumes this URL before anything can load it.
+    nonisolated static let bridgePath = "/__vane_gaps__"
+    /// The answer travels back as `tabs.create`'s rejection, as for `identity`; the
+    /// marker tells it from WebKit's own errors. JSON: `{value}` or `{error}`.
+    nonisolated static let marker = "[vane-gaps] "
 
     private nonisolated static let runtimeConstants = """
         {OnInstalledReason: {INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update'}, \
@@ -52,6 +63,14 @@ import WebKit
             if (typeof callback !== 'function') return Promise.resolve(value);
             queueMicrotask(() => callback(value));
           };
+          const answer = (promise, callback) => {
+            if (typeof callback !== 'function') return promise;
+            promise.then(callback, error => { console.error(error); callback(); });
+          };
+          const constants = (owner, key, value) => {
+            // Not `define`: the stand-in answers every capitalised key with an empty enum.
+            if (owner && !Object.keys(owner[key] ?? {}).length) Object.defineProperty(owner, key, {configurable: true, value: Object.freeze(value)});
+          };
           const localized = text => typeof text === 'string'
             ? text.replace(/^__MSG_(\w+)__$/, (match, key) => globalThis.chrome?.i18n?.getMessage(key) || match) : text;
           const targets = tabs => {
@@ -85,8 +104,161 @@ import WebKit
               for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace());
               // WebKit weakly caches nested API wrappers. Keep the real ones alive so
               // the members added below survive garbage collection.
-              const owners = ['runtime', 'storage', 'tabs', 'declarativeNetRequest', 'webRequest', 'scripting', 'webNavigation']
+              const owners = ['runtime', 'storage', 'tabs', 'declarativeNetRequest', 'webRequest', 'scripting', 'webNavigation', 'alarms', 'action']
                 .map(key => api[key]).filter(Boolean);
+              const marker = '\#(marker)';
+              const ask = (op, args = {}) => api.tabs.create({url: api.runtime.getURL('\#(bridgePath)?' + new URLSearchParams({op, args: JSON.stringify(args)})), active: false}).then(
+                () => { throw new Error('Vane could not answer ' + op + '.'); },
+                error => {
+                  const message = String(error?.message ?? error), at = message.indexOf(marker);
+                  if (at < 0) throw error;
+                  const reply = JSON.parse(message.slice(at + marker.length, message.lastIndexOf('}') + 1));
+                  if ('error' in reply) throw new Error(reply.error);
+                  return reply.value;
+                });
+              // Claude's side panel frames claude.ai, whose frame-ancestors admits only Chrome's
+              // extension origin, so WebKit blanks the frame and the panel waits on it for
+              // ever. Tell the panel what the frame would have: its framed chat is unavailable.
+              // Claude then shows its own built-in chat.
+              if (globalThis.document && !globalThis.document.vaneClaudeFrame) {
+                globalThis.document.vaneClaudeFrame = true;
+                const origin = 'https://claude.ai';
+                const watch = frame => {
+                  if (!(frame instanceof HTMLIFrameElement) || !frame.src.startsWith(origin + '/cic/') || frame.vaneWatched) return;
+                  frame.vaneWatched = true;
+                  // A framed claude.ai says it is there by message; a blocked frame never speaks.
+                  // Its blank stand-in is sandboxed and cross-origin either way, so silence is
+                  // the only sign.
+                  let heard = false;
+                  globalThis.addEventListener('message', event => { if (event.origin === origin && event.isTrusted) heard = true; });
+                  frame.addEventListener('load', () => setTimeout(() => {
+                    if (!heard && frame.isConnected)
+                      globalThis.dispatchEvent(new MessageEvent('message', {data: {type: 'cic_sidepanel_cowork_unavailable'}, origin}));
+                  }, 3000), {once: true});
+                };
+                new MutationObserver(records => { for (const record of records) for (const node of record.addedNodes) {
+                  watch(node); node.querySelectorAll?.('iframe').forEach(watch);
+                } }).observe(globalThis.document, {childList: true, subtree: true});
+              }
+              // Chrome sends a site's cookies, SameSite ones included, with an extension's own
+              // credentialed requests to a site it may access; WebKit treats them as
+              // cross-site and sends none, so a signed-in user looks signed out. Vane makes
+              // those requests with the profile's cookies; everything else stays WebKit's.
+              const nativeFetch = typeof globalThis.fetch === 'function' && !globalThis.fetch.vane ? globalThis.fetch.bind(globalThis) : null;
+              if (nativeFetch) {
+                const encode = buffer => { const bytes = new Uint8Array(buffer); let text = ''; for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000)); return btoa(text); };
+                const decode = text => Uint8Array.from(atob(text), character => character.charCodeAt(0));
+                const fetch = async (input, init) => {
+                  const request = new Request(input, init), target = new URL(request.url);
+                  if (request.credentials !== 'include' || !/^https?:$/.test(target.protocol) || target.origin === globalThis.location?.origin) return nativeFetch(input, init);
+                  request.signal.throwIfAborted();
+                  const body = ['GET', 'HEAD'].includes(request.method) ? null : encode(await request.clone().arrayBuffer());
+                  const aborted = new Promise((resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), {once: true}));
+                  const reply = await Promise.race([ask('fetch', {url: request.url, method: request.method, headers: [...request.headers], body, ua: navigator.userAgent}), aborted]);
+                  // Not a site the extension may access: WebKit's answer, as before.
+                  if (reply === null) return nativeFetch(input, init);
+                  const response = new Response([101, 103, 204, 205, 304].includes(reply.status) || request.method === 'HEAD' ? null : decode(reply.body),
+                                                {status: reply.status, statusText: reply.statusText, headers: reply.headers});
+                  Object.defineProperties(response, {url: {value: reply.url}, redirected: {value: reply.url !== request.url}});
+                  return response;
+                };
+                fetch.vane = true;
+                globalThis.fetch = fetch;
+              }
+              // WebKit runs an extension's service worker on its process's main thread, and
+              // its worker WebSocket waits on that same thread to connect: `new WebSocket`
+              // never returns and the worker stops for good. Vane holds the socket instead.
+              if (typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope
+                  && !globalThis.WebSocket?.vane) {
+                const states = {CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3};
+                class WebSocket extends EventTarget {
+                  static vane = true;
+                  #socket; #sending = Promise.resolve();
+                  constructor(url, protocols = []) {
+                    super();
+                    const target = new URL(url, globalThis.location?.href);
+                    if (target.protocol === 'http:' || target.protocol === 'https:') target.protocol = target.protocol === 'http:' ? 'ws:' : 'wss:';
+                    if (!['ws:', 'wss:'].includes(target.protocol) || target.hash) throw new DOMException('Invalid WebSocket URL ' + url, 'SyntaxError');
+                    Object.assign(this, {url: target.href, readyState: 0, protocol: '', extensions: '', bufferedAmount: 0, binaryType: 'blob',
+                                         onopen: null, onmessage: null, onerror: null, onclose: null});
+                    const fire = (type, fields = {}) => {
+                      const event = type === 'message' ? new MessageEvent('message', {data: fields.data, origin: new URL(this.url).origin}) : Object.assign(new Event(type), fields);
+                      this.dispatchEvent(event);
+                      try { this['on' + type]?.call(this, event); } catch (error) { console.error(error); }
+                    };
+                    const closed = (code = 1006, reason = '', wasClean = false) => {
+                      if (this.readyState === 3) return;
+                      const failed = !wasClean && this.readyState !== 2;
+                      this.readyState = 3;
+                      if (failed) fire('error');
+                      fire('close', {code, reason, wasClean});
+                    };
+                    ask('ws.open', {url: this.url, protocols: [protocols].flat().map(String), worker: (globalThis.__vaneWorker ??= crypto.randomUUID())}).then(async ({id, protocol}) => {
+                      this.#socket = id;
+                      if (this.readyState !== 0) { ask('ws.close', {id}).catch(() => {}); return closed(); }
+                      Object.assign(this, {readyState: 1, protocol});
+                      fire('open');
+                      for (;;) {
+                        const next = await ask('ws.next', {id});
+                        if (!('data' in next)) return closed(next.code, next.reason, next.clean);
+                        if (this.readyState === 1) fire('message', {data: next.data});
+                      }
+                    }).catch(() => closed());
+                  }
+                  send(data) {
+                    if (this.readyState === 0) throw new DOMException('WebSocket is still connecting.', 'InvalidStateError');
+                    if (this.readyState !== 1) return;
+                    // ponytail: text frames only; binary data is sent as its string form.
+                    // Carry bytes as base64 over the bridge if an extension ever sends them.
+                    const text = String(data), id = this.#socket;
+                    this.bufferedAmount += text.length;
+                    this.#sending = this.#sending.then(() => ask('ws.send', {id, data: text})).catch(() => {})
+                      .finally(() => { this.bufferedAmount -= text.length; });
+                  }
+                  close(code, reason = '') {
+                    if (this.readyState >= 2) return;
+                    if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) throw new DOMException('Invalid close code ' + code, 'InvalidAccessError');
+                    this.readyState = 2;
+                    const id = this.#socket;
+                    if (id !== undefined) this.#sending.then(() => ask('ws.close', {id, code: code ?? 1000, reason: String(reason)})).catch(() => {});
+                  }
+                }
+                for (const [key, value] of Object.entries(states)) { Object.defineProperty(WebSocket, key, {value}); Object.defineProperty(WebSocket.prototype, key, {value}); }
+                Object.defineProperty(globalThis, 'WebSocket', {configurable: true, writable: true, value: WebSocket});
+              }
+              // Outside a tab WebKit answers getCurrent with null; Chrome with undefined, which
+              // extensions test for (`getCurrent() === undefined` means a side panel or popup).
+              if (typeof api.tabs?.getCurrent === 'function') {
+                const getCurrent = api.tabs.getCurrent.bind(api.tabs);
+                Object.defineProperty(api.tabs, 'getCurrent', {configurable: true, value: callback =>
+                  answer(Promise.resolve(getCurrent()).then(tab => tab ?? undefined), callback)});
+              }
+              // WebKit's alarms.create returns nothing; Chrome's returns a promise, which
+              // extensions chain on (`create(…).catch(…)`). Keep the native write.
+              if (typeof api.alarms?.create === 'function') {
+                const create = api.alarms.create.bind(api.alarms);
+                Object.defineProperty(api.alarms, 'create', {configurable: true, value: (...args) => {
+                  const callback = typeof args.at(-1) === 'function' ? args.pop() : null;
+                  return answer(Promise.resolve(create(...args)), callback && (() => callback()));
+                }});
+              }
+              // Vane lists every extension with an action in its toolbar menu.
+              if (api.action) define(api.action, 'getUserSettings', callback => reply(callback, {isOnToolbar: true}));
+              // Workers, side panels, offscreen documents, popups and extension tabs. Tab and
+              // window IDs are WebKit's to give, which the host cannot name: -1. Some WebKit
+              // versions answer natively for the contexts they know; Vane adds the rest.
+              const nativeContexts = typeof api.runtime.getContexts === 'function' ? api.runtime.getContexts.bind(api.runtime) : null;
+              const contexts = async () => {
+                const own = await ask('contexts');
+                if (!nativeContexts) return own;
+                const known = await nativeContexts({}).catch(() => []);
+                const urls = new Set(known.map(context => context.documentUrl)), types = new Set(known.map(context => context.contextType));
+                return [...known, ...own.filter(context => !urls.has(context.documentUrl) && !(context.contextType === 'BACKGROUND' && types.has('BACKGROUND')))];
+              };
+              Object.defineProperty(api.runtime, 'getContexts', {configurable: true, value: (filter, callback) => answer(contexts().then(list => list.filter(context =>
+                ['contextTypes', 'contextIds', 'documentUrls', 'documentOrigins', 'tabIds', 'windowIds', 'frameIds'].every(key =>
+                  !Array.isArray(filter?.[key]) || filter[key].includes(context[key.slice(0, -1)]))
+                && (typeof filter?.incognito !== 'boolean' || filter.incognito === context.incognito))), callback)});
               Object.defineProperty(api, Symbol('Vane Chromium API owners'), {value: owners});
               // Vane replaces accepted code at once; no update ever waits for a reload.
               define(api.runtime, 'onUpdateAvailable', event());
@@ -158,8 +330,192 @@ import WebKit
         })();
         """#
 
+    /// Websites an extension lists in `externally_connectable` message it as Chrome has
+    /// them: `chrome.runtime.sendMessage(id, …)`. WebKit offers the same calls on every
+    /// page as `browser` only, so sign-ins such as claude.ai's never reach the extension.
+    /// Only matching pages get `chrome`; elsewhere `window.chrome` stays undefined.
+    /// WebKit also answers a message to an extension that isn't installed with
+    /// `undefined`, which claude.ai takes for success from Anthropic's internal build
+    /// before ever trying the store one. Chrome fails it, and so does this `chrome`.
+    // ponytail: patterns are read when a tab's web view is made; a tab open before an
+    // install gets them from its next web view.
+    nonisolated static func webPageScript(_ extensions: [(id: String, manifest: [String: Any])]) -> String? {
+        let entries: [[Any]] = extensions.compactMap { id, manifest in
+            let patterns = ((manifest["externally_connectable"] as? [String: Any])?["matches"] as? [String] ?? [])
+                .compactMap(pageRegex).sorted()
+            return patterns.isEmpty ? nil : [id, patterns]
+        }
+        guard !entries.isEmpty, let json = try? JSONSerialization.data(withJSONObject: entries, options: .sortedKeys) else { return nil }
+        return """
+            ;(() => {
+              const native = globalThis.browser?.runtime;
+              if (globalThis.chrome !== undefined || typeof native?.sendMessage !== 'function') return;
+              const ids = \(String(decoding: json, as: UTF8.self))
+                .filter(([, patterns]) => patterns.some(pattern => new RegExp(pattern).test(location.href))).map(([id]) => id);
+              if (!ids.length) return;
+              let lastError;
+              const settle = (promise, callback) => {
+                if (typeof callback !== 'function') return promise;
+                promise.then(value => callback(value), error => {
+                  lastError = {message: error?.message ?? String(error)};
+                  try { callback(); } finally { lastError = undefined; }
+                });
+              };
+              const runtime = Object.freeze({
+                sendMessage(id, message, ...rest) {
+                  const callback = typeof rest.at(-1) === 'function' ? rest.pop() : undefined;
+                  return settle(ids.includes(id) ? native.sendMessage(id, message, ...rest)
+                    : Promise.reject(new Error('Could not establish connection. Receiving end does not exist.')), callback);
+                },
+                connect: (...args) => native.connect(...args),
+                get lastError() { return lastError; }
+              });
+              Object.defineProperty(globalThis, 'chrome', {configurable: true, writable: true, value: Object.freeze({runtime})});
+            })();
+            """
+    }
+
+    /// A match pattern (`https://*.claude.ai/*`) as a regular expression over a page URL.
+    nonisolated static func pageRegex(_ pattern: String) -> String? {
+        guard let range = pattern.range(of: "://") else { return nil }
+        let scheme = pattern[..<range.lowerBound], rest = pattern[range.upperBound...]
+        guard ["*", "http", "https"].contains(scheme), let slash = rest.firstIndex(of: "/") else { return nil }
+        let host = String(rest[..<slash]), path = String(rest[slash...])
+        // Chrome refuses a wildcard for every host here; so does Vane, or every site would get `chrome`.
+        // ponytail: a dot after `*.` refuses `*.com`; a public-suffix list would also refuse `*.co.uk`.
+        guard !host.isEmpty, !host.dropFirst().contains("*"),
+              !host.hasPrefix("*") || (host.hasPrefix("*.") && host.dropFirst(2).contains(".")) else { return nil }
+        let escape = NSRegularExpression.escapedPattern(for:)
+        let hostRegex = host.hasPrefix("*.") ? "([^/:]+\\.)?" + escape(String(host.dropFirst(2))) : escape(host)
+        let pathRegex = path.split(separator: "*", omittingEmptySubsequences: false).map { escape(String($0)) }.joined(separator: ".*")
+        return "^" + (scheme == "*" ? "https?" : String(scheme)) + "://" + hostRegex + "(:\\d+)?" + pathRegex + "$"
+    }
+
+    /// One question the stand-ins ask the host over `bridgePath`.
+    struct Request {
+        let operation: String
+        let arguments: [String: Any]
+
+        /// Only the owning extension's bridge URL is a request; anything else is a tab.
+        nonisolated init?(_ url: URL?, base: URL) {
+            guard let url, url.scheme == base.scheme, url.host == base.host, url.port == base.port,
+                  url.path == bridgePath,
+                  let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQueryItems else { return nil }
+            // `URLSearchParams` writes a space as `+`, which Foundation leaves alone.
+            func value(_ name: String) -> String? {
+                items.first { $0.name == name }?.value?.replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+            }
+            guard let operation = value("op") else { return nil }
+            self.operation = operation
+            arguments = value("args").flatMap {
+                try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+            } ?? [:]
+        }
+    }
+
+    /// The bridge's reply: `{value}`, or `{error}` for the stand-in to throw.
+    nonisolated static func reply(_ result: Result<Any, any Error>) -> String {
+        let object: [String: Any] = switch result {
+        case .success(let value): ["value": value]
+        case .failure(let error): ["error": error.localizedDescription]
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed])) ?? Data(#"{"error":"Vane could not encode its answer."}"#.utf8)
+        return marker + String(decoding: data, as: UTF8.self)
+    }
+
     static func configure(_ configuration: WKWebViewConfiguration) {
         configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart,
             forMainFrameOnly: true, in: .page))
+    }
+}
+
+/// The sockets extension workers open through the gaps' `WebSocket`, one table per host.
+@MainActor final class ExtensionWebSockets {
+    private struct Socket { let owner: ObjectIdentifier; let task: URLSessionWebSocketTask }
+    private let session = URLSession(configuration: .ephemeral)
+    private var sockets: [Int: Socket] = [:]
+    private var nextID = 0
+    /// Each extension's running worker, by the id it made up when it started. A worker WebKit
+    /// stopped leaves its sockets open and polled by no one; its successor's first open
+    /// closes them, so the server does not keep talking to the dead one.
+    // ponytail: a stopped worker's sockets stay until the next one opens a socket or the
+    // extension unloads; close sockets nobody polls if one that never reconnects matters.
+    private var workers: [ObjectIdentifier: String] = [:]
+    private static let perExtension = 32
+
+    /// `ws.open` → `{id, protocol}` once connected; `ws.next` → `{data}` or, once, the close
+    /// `{code, reason, clean}`; `ws.send` and `ws.close` → null.
+    // ponytail: the extension's cookies stay behind; its own token travels in its messages.
+    func answer(_ operation: String, _ arguments: [String: Any], origin: String, owner: ObjectIdentifier) async throws -> Any? {
+        if operation == "ws.open" {
+            guard let url = (arguments["url"] as? String).flatMap(URL.init(string:)), ["ws", "wss"].contains(url.scheme) else {
+                throw ExtensionHost.Failure("Invalid WebSocket URL.")
+            }
+            let worker = arguments["worker"] as? String ?? ""
+            if workers[owner] != worker {
+                close(owner: owner)
+                workers[owner] = worker
+            }
+            guard sockets.values.filter({ $0.owner == owner }).count < Self.perExtension else {
+                throw ExtensionHost.Failure("Too many WebSockets are open.")
+            }
+            var request = URLRequest(url: url)
+            request.setValue(origin, forHTTPHeaderField: "Origin")
+            if let protocols = arguments["protocols"] as? [String], !protocols.isEmpty {
+                request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
+            }
+            let task = session.webSocketTask(with: request)
+            task.maximumMessageSize = 64 << 20
+            nextID += 1
+            let id = nextID
+            sockets[id] = Socket(owner: owner, task: task)
+            task.resume()
+            // The first pong proves the handshake is done: the open event.
+            do {
+                try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, any Error>) in
+                    task.sendPing { error in if let error { done.resume(throwing: error) } else { done.resume() } }
+                }
+            } catch { sockets[id] = nil; task.cancel(); throw error }
+            let accepted = (task.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Sec-WebSocket-Protocol") ?? ""
+            return ["id": id, "protocol": accepted]
+        }
+        guard let id = (arguments["id"] as? NSNumber)?.intValue, let socket = sockets[id], socket.owner == owner else {
+            throw ExtensionHost.Failure("The WebSocket is closed.")
+        }
+        switch operation {
+        case "ws.send":
+            try await socket.task.send(.string(arguments["data"] as? String ?? ""))
+            return NSNull()
+        case "ws.close":
+            let code = URLSessionWebSocketTask.CloseCode(rawValue: (arguments["code"] as? NSNumber)?.intValue ?? 1000) ?? .normalClosure
+            socket.task.cancel(with: code, reason: (arguments["reason"] as? String).map { Data($0.utf8) })
+            // A `ws.next` in flight keeps its own copy and still reports the close.
+            sockets[id] = nil
+            return NSNull()
+        case "ws.next":
+            do {
+                switch try await socket.task.receive() {
+                case .string(let text): return ["data": text]
+                case .data(let data): return ["data": String(decoding: data, as: UTF8.self)]
+                @unknown default: return ["data": ""]
+                }
+            } catch {
+                sockets[id] = nil
+                let code = socket.task.closeCode
+                return ["code": code == .invalid ? 1006 : code.rawValue, "clean": code != .invalid,
+                        "reason": String(decoding: socket.task.closeReason ?? Data(), as: UTF8.self)]
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// An unloaded extension's sockets close with it.
+    func close(owner: ObjectIdentifier) {
+        for (id, socket) in sockets where socket.owner == owner {
+            socket.task.cancel(with: .goingAway, reason: nil)
+            sockets[id] = nil
+        }
+        workers[owner] = nil
     }
 }

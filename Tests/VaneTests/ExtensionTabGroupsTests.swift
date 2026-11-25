@@ -206,6 +206,71 @@ import XCTest
         XCTAssertTrue(privateStore.todayShape.entries.compactMap(\.folder).isEmpty)
     }
 
+    func testAnExtensionsGroupsShareOneFolderOnlyWhenAsked() async throws {
+        let store = browser()
+        let a = store.newBlankTab(), b = store.newBlankTab(), c = store.newBlankTab()
+        let host = ExtensionHost.host(for: profile)
+        _ = try await host.load(folder, installing: true) { _ in true }
+        let context = try XCTUnwrap(host.installed.first)
+        host.sync()
+        let page = try await page(context)
+        defer { page.stopLoading() }
+        _ = try await run("window.ids = (await chrome.tabs.query({})).sort((x, y) => x.index - y.index).map(tab => tab.id); return 'ready'", in: page)
+        func index(_ tab: Tab) throws -> Int { try XCTUnwrap(store.accessibleTabs.firstIndex { $0 === tab }) }
+        let (ia, ib, ic) = (try index(a), try index(b), try index(c))
+
+        // One session: one folder, at the top level.
+        _ = try await run("return String(await chrome.tabs.group({tabIds: [ids[\(ia)]]}))", in: page)
+        XCTAssertEqual(store.todayShape.entries.compactMap(\.folder).count, 1)
+
+        // Each further session is a group of its own, and by default a folder of its own.
+        let groups = try await run("""
+            await chrome.tabs.group({tabIds: [ids[\(ib)]]});
+            await chrome.tabs.group({tabIds: [ids[\(ic)]]});
+            return JSON.stringify((await chrome.tabGroups.query({})).length);
+            """, in: page)
+        XCTAssertEqual(groups, "3")
+        func tops() -> Int { store.todayShape.entries.filter { $0.folder != nil && $0.parent == nil }.count }
+        XCTAssertEqual(tops(), 3)
+
+        // Kept in one folder, they go inside one named for the extension, which is no group.
+        let owner = try XCTUnwrap(context.baseURL.host)
+        defer { UserDefaults.vane.removeObject(forKey: ExtensionTabGroups.gathersKey + "." + owner) }
+        ExtensionTabGroups.setGathers(true, owner: owner, name: "Group Fixture")
+        let kept = try await run("return JSON.stringify((await chrome.tabGroups.query({})).length)", in: page)
+        XCTAssertEqual(kept, "3", "The shared folder is no group")
+        let folders = store.todayShape.entries.filter { $0.folder != nil }
+        let home = try XCTUnwrap(folders.first { $0.parent == nil })
+        XCTAssertEqual(tops(), 1)
+        XCTAssertEqual(home.folder?.name, "Group Fixture")
+        XCTAssertEqual(folders.filter { $0.parent == home.folder?.id }.count, 3)
+
+        // Turned off again, the groups stand apart where the folder was.
+        ExtensionTabGroups.setGathers(false, owner: owner, name: "Group Fixture")
+        XCTAssertEqual(tops(), 3)
+        XCTAssertFalse(store.todayShape.entries.compactMap(\.folder).contains { ExtensionTabGroups.isHome($0) })
+
+        // A group whose tab the extension has not driven for a while is dissolved, unless the
+        // user said not to; a group it never drove is left alone.
+        // c's group says Claude is still working in it, so it stays however long that takes.
+        let working = try XCTUnwrap(store.todayShape.folder(holding: c.id.uuidString))
+        store.todayShape.edit(folder: working.id) { $0.name = "\u{231B} " + $0.name }
+        let stale: [Tab.ID: (owner: String, at: Date)] = [a.id: (owner, .distantPast), b.id: (owner, .now), c.id: (owner, .distantPast)]
+        UserDefaults.vane.set(false, forKey: ExtensionTabGroups.dissolvesKey + "." + owner)
+        host.tabGroups.dissolveIdle(used: stale, after: 60, contexts: host.installed)
+        XCTAssertEqual(tops(), 3)
+        UserDefaults.vane.removeObject(forKey: ExtensionTabGroups.dissolvesKey + "." + owner)
+        host.tabGroups.dissolveIdle(used: stale, after: 60, contexts: host.installed)
+        XCTAssertEqual(tops(), 2)
+        XCTAssertNil(store.todayShape.folder(holding: a.id.uuidString))
+        XCTAssertNotNil(store.todayShape.folder(holding: b.id.uuidString))
+        XCTAssertNotNil(store.todayShape.folder(holding: c.id.uuidString))
+
+        // Ungrouping every tab leaves no folder behind.
+        _ = try await run("await chrome.tabs.ungroup([ids[\(ia)], ids[\(ib)], ids[\(ic)]]); return 'done'", in: page)
+        XCTAssertTrue(store.todayShape.entries.allSatisfy { $0.folder == nil })
+    }
+
     func testAnExtensionNeverEmptiesTheUsersFolderAndMovesLikeChrome() async throws {
         let store = browser()
         let pinned = store.newBlankTab(as: .pinned)

@@ -4051,6 +4051,15 @@ private struct FolderRow: View {
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
+    /// An extension's status, for VoiceOver: the sidebar shows it only on the icon.
+    static func status(_ folder: Folder) -> String {
+        switch folder.extensionStatus {
+        case .working: ", working"
+        case .attention: ", needs you"
+        case .done: ", done"
+        case nil: ""
+        }
+    }
     private var showsArrivals: Bool {
         !locked && folder.collapsed && folder.live != nil
             && store[keyPath: shape].entries.contains {
@@ -4077,7 +4086,7 @@ private struct FolderRow: View {
                 .environment(\.bufferedSidebarFocus, nil)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(folder.name)
+        .accessibilityLabel(folder.shownName + Self.status(folder))
         .accessibilityValue(state)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint(locked ? "Unlocks with Touch ID or your Mac password." : "Activate to expand or collapse this folder.")
@@ -4090,7 +4099,7 @@ private struct FolderRow: View {
         .accessibilityAction(named: "Archive All Tabs in Folder") {
             store.archiveFolder(folder.id, in: shape)
         }
-        .accessibilityAction(named: "Delete Folder") { store.deleteFolder(folder.id, in: shape) }
+        .accessibilityAction(named: "Dissolve Folder") { store.deleteFolder(folder.id, in: shape) }
         // The live commands reach the keyboard and VoiceOver the same way every other folder
         // command does — and only on a live folder, as in the menu above.
         .modifier(LiveFolderActions(store: store, folder: folder, editing: $editing))
@@ -4116,7 +4125,7 @@ private struct FolderRow: View {
             DropLine(on: zone == .before || zone == .after, axis: .vertical, target: folder.id.uuidString)
                 .offset(y: zone == .after ? Look.rowGap / 2 : -Look.rowGap / 2)
         }
-        .vaneTooltip(folder.name, hint: locked ? "Unlock with Touch ID or your Mac password" : "Click to expand or collapse")
+        .vaneTooltip(folder.shownName, hint: locked ? "Unlock with Touch ID or your Mac password" : "Click to expand or collapse")
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { dragWidth = $0 }
         .onDrag { folderDragPayload(folder) } preview: {
             labelRow(held: true)
@@ -4141,7 +4150,7 @@ private struct FolderRow: View {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
             } else {
-                Text(folder.name).font(Look.folderTitle)
+                Text(folder.shownName).font(Look.folderTitle)
             }
         } trailing: {
             FolderDisclosure(folder: folder, locked: locked)
@@ -4171,6 +4180,9 @@ struct FolderDisclosure: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            if let status = folder.extensionStatus {
+                ExtensionFolderStatus(status: status, reduced: reduced).font(Look.rowGlyph.weight(.bold))
+            }
             if folder.requiresAuthentication == true {
                 Image(systemName: locked ? "lock.fill" : "lock.open.fill")
                     .font(Look.rowGlyph)
@@ -4196,6 +4208,38 @@ struct FolderDisclosure: View {
 /// A folder’s glyph in a favicon’s box, so its name lines up with the tab titles around it.
 /// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
 /// apart, and it does so by looking at the string rather than by a second stored field.
+/// The icon of the extension that made a folder, once that extension has loaded.
+private struct ExtensionFolderBadge: View {
+    let owner: String
+    @ObservedObject private var host = ExtensionHost.shared
+
+    var body: some View {
+        if let image = host.icon(owner: owner) {
+            Image(nsImage: image).resizable().interpolation(.high)
+                .frame(width: Look.sourceBadge, height: Look.sourceBadge).accessibilityHidden(true)
+        }
+    }
+}
+
+/// An extension's status at the end of its folder's row, as Claude reports it: a spinner
+/// while it works, a bell when it needs you, a check when it is done.
+private struct ExtensionFolderStatus: View {
+    let status: Folder.ExtensionStatus
+    let reduced: Bool
+
+    var body: some View {
+        switch status {
+        case .working:
+            ProgressView().controlSize(.small).scaleEffect(0.8).frame(width: 14, height: 14)
+        case .attention:
+            Image(systemName: "bell.fill").foregroundStyle(Look.warning)
+                .symbolEffect(.wiggle, options: .repeat(.continuous), isActive: !reduced)
+        case .done:
+            Image(systemName: "checkmark").foregroundStyle(Color.green)
+        }
+    }
+}
+
 struct FolderGlyph: View {
     let folder: Folder
     @Environment(\.rowHovering) private var hovering
@@ -4251,6 +4295,19 @@ struct FolderGlyph: View {
                     LiveBadge(live: live, folder: folder.id)
                         .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                 }
+            } else if let owner = folder.extensionOwner {
+                // An extension's folder wears its icon, as a live folder wears GitHub's.
+                let badge = ExtensionFolderBadge(owner: owner)
+                if folder.icon == Folder.defaultIcon {
+                    badge.opacity(arrivalMark ? 0 : 1)
+                        .offset(FolderFace.badgeOffset)
+                        .frame(width: Look.tileIcon, height: Look.tileIcon)
+                        .modifier(FolderFaceProjection(openness: openness))
+                        .id(reduced)
+                        .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: iconOpen)
+                } else {
+                    badge.offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                }
             }
         }
         .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: arrivalMark)
@@ -4301,10 +4358,19 @@ private struct FolderMenu: View {
         if shape == \TabStore.pins {
             Button("New Folder") { store.newFolder(beside: folder.id, in: shape) }
         }
+        // An extension's folders: whether its groups share one folder (`gather`).
+        if shape == \TabStore.todayShape, let owner = folder.extensionOwner {
+            let name = ExtensionHost.host(for: store.profileID).loaded
+                .first { $0.context.baseURL.host == owner }?.context.webExtension.displayName ?? folder.name
+            Toggle("Keep \(name) Groups in One Folder", isOn: Binding(
+                get: { ExtensionTabGroups.gathers(owner) },
+                set: { ExtensionTabGroups.setGathers($0, owner: owner, name: name) }))
+        }
         Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id, in: shape) }
             .disabled(store.isFolderLocked(folder.id) || store[keyPath: shape].tabs(in: folder.id).isEmpty)
         Divider()
-        Button("Delete Folder") { store.deleteFolder(folder.id, in: shape) }
+        // Arc calls this Delete Folder; Dissolve says the tabs stay.
+        Button("Dissolve Folder") { store.deleteFolder(folder.id, in: shape) }
             .disabled(store.isFolderLocked(folder.id))
     }
 }

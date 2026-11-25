@@ -446,6 +446,13 @@ import WebKit
         return (url.scheme ?? "") + "://" + (host.contains(":") ? "[\(host)]" : host) + (url.port.map { ":\($0)" } ?? "")
     }
 
+    nonisolated static let backgroundKey = "debuggerBackgroundTabs"
+    /// Whether the user lets this extension script tabs that are not on screen, from its
+    /// page in Extensions. Off unless they turn it on.
+    static func reachesBackground(_ context: WKWebExtensionContext) -> Bool {
+        UserDefaults.vane.bool(forKey: backgroundKey + "." + (context.baseURL.host ?? ""))
+    }
+
     /// Whether `web` is the page the user is looking at, under the pill that names its
     /// driver and stops it. Nothing else is driven: not a page kept hidden behind the one
     /// showing, not a tab in the background, not a Peek (which has no pill).
@@ -514,6 +521,9 @@ extension NSApplication {
     }
 
     @Published private(set) var sessions: [Session] = []
+    /// When each tab was last driven, and by which extension (its host): how
+    /// `ExtensionTabGroups.dissolveIdle` tells a finished session's group.
+    private(set) var used: [Tab.ID: (owner: String, at: Date)] = [:]
     private let profileID: UUID
     private var replies: [ObjectIdentifier: [ExtensionBridgeReply]] = [:]
     private var logs: [ObjectIdentifier: (next: Int, items: [(sequence: Int, item: [String: Any])])] = [:]
@@ -566,6 +576,7 @@ extension NSApplication {
             }
             let session = Session(context: context, tab: page.tab, label: label)
             sessions.append(session)
+            used[page.tab.id] = (context.baseURL.host ?? "", .now)
             return reply(["cursor": logs[key]?.next ?? 0], for: context)
         case "detach":
             guard let session = attached() else {
@@ -583,6 +594,7 @@ extension NSApplication {
             guard sessions.contains(where: { $0 === session }) else {
                 throw ExtensionHost.Failure("Debugger is not attached to the tab with id: \(label).")
             }
+            used[page.tab.id] = (context.baseURL.host ?? "", .now)
             let parameters = (try? JSONSerialization.jsonObject(with: Data((request.values["params"] ?? "{}").utf8))) as? [String: Any] ?? [:]
             let result = try await command(request.values["method"] ?? "", parameters, session: session, page: page,
                                            shim: shim, context: context)
@@ -742,7 +754,9 @@ extension NSApplication {
               !tab.isPrivate || context.hasAccessToPrivateData else {
             throw ExtensionHost.Failure("No tab with given id \(label).")
         }
-        guard ExtensionDebuggerAPI.isShowing(web) else { throw ExtensionHost.Failure(Self.offScreen) }
+        guard ExtensionDebuggerAPI.isShowing(web) || ExtensionDebuggerAPI.reachesBackground(context) else {
+            throw ExtensionHost.Failure(Self.offScreen)
+        }
         let probe = try await probe(web)
         guard probe.count == 4, let href = probe[0] as? String, let url = URL(string: href),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
@@ -833,7 +847,9 @@ extension NSApplication {
         }
         // The compile awaited: the user may have switched tabs, or pressed Stop, since the page was checked.
         guard sessions.contains(where: { $0 === session }) else { throw ExtensionHost.Failure("Detached while handling command.") }
-        guard ExtensionDebuggerAPI.isShowing(page.web) else { throw ExtensionHost.Failure(Self.offScreen) }
+        guard ExtensionDebuggerAPI.isShowing(page.web) || ExtensionDebuggerAPI.reachesBackground(session.context) else {
+            throw ExtensionHost.Failure(Self.offScreen)
+        }
         let outcome: Result<Any, any Error> = try await bounded { finish in
             page.web.callAsyncJavaScript(ExtensionDebuggerAPI.evaluation(body, token: token),
                                          arguments: [token + "_options": options], in: nil, in: .page) { finish(.success($0)) }
@@ -900,8 +916,10 @@ extension NSApplication {
     // treats them as the user's, so the page sees trusted events. Nothing is posted to
     // the system and the pointer never moves.
     // ponytail: a view outside a window takes no events, and a tab off screen has no
-    // pill, so only the page that is showing is driven. Hosting background tabs in an
-    // offscreen window, with an indicator of their own, is the upgrade.
+    // pill, so only the page that is showing is driven. An extension the user lets reach
+    // background tabs (`reachesBackground`) may still attach to and script one; clicks,
+    // keys and screenshots stay on screen. Hosting background tabs in an offscreen window,
+    // with an indicator of their own, is the upgrade.
 
     private static let offScreen = "Vane can only control a tab that is on screen."
 

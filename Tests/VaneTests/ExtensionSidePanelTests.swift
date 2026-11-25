@@ -142,7 +142,7 @@ import XCTest
             let host = ExtensionHost.host(for: profile)
             _ = try await host.load(folder, installing: true) { _ in true }
             let context = try XCTUnwrap(host.installed.first)
-            let sidePanelNotes = (host.entries.first?.compatibility ?? []).filter { $0.localizedCaseInsensitiveContains("side") }
+            let sidePanelNotes = (host.entries.first?.compatibility ?? []).filter { $0.hasPrefix("sidePanel") }
             XCTAssertEqual(sidePanelNotes.count, 1, "\(sidePanelNotes)")
             XCTAssertFalse(sidePanelNotes.contains(where: ExtensionDiagnostics.isUnsupported), "Provided, not missing")
             host.sync()
@@ -487,6 +487,42 @@ import XCTest
                 answer = try await run(ask, in: page)
             }
             XCTAssertEqual(answer, "13|false|true|locked|active|active|Gaps Fixture|true|2.5|normal|30000|[[\(tabIDs[0]),\(tabIDs[1])]]")
+        }
+    }
+
+    func testWorkerGetsPromisedAlarmsAndContextsFromTheHost() async throws {
+        // Claude's worker chains `alarms.create(…).catch` and asks getContexts which panels
+        // are open. `offscreen` stays absent: a hidden extension page gets the worker's
+        // process suspended, so Claude, which checks `chrome.offscreen &&`, goes without.
+        try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["alarms","tabs","offscreen","sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"}}"#.utf8)
+            .write(to: folder.appendingPathComponent("manifest.json"))
+        try Data("""
+            const created = chrome.alarms.create('refresh', {delayInMinutes: 1});
+            const promised = typeof created?.then === 'function';
+            created.catch(() => {});
+            chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                (async () => {
+                    const types = (await chrome.runtime.getContexts({})).map(context => context.contextType).sort();
+                    respond(JSON.stringify([promised, types, typeof chrome.offscreen, (await chrome.action.getUserSettings()).isOnToolbar]));
+                })().catch(error => respond('failed: ' + error.message));
+                return true;
+            });
+            """.utf8).write(to: folder.appendingPathComponent("worker.js"))
+
+        try await withNativeWindowLoop {
+            let store = TabStore(profileID: profile, session: [])
+            _ = open(store)
+            let host = ExtensionHost.host(for: profile)
+            _ = try await host.load(folder, installing: true) { _ in true }
+            let context = try XCTUnwrap(host.installed.first)
+            XCTAssertTrue(ExtensionDiagnostics.runtimeErrors(context.errors, manifest: context.webExtension.manifest).isEmpty, "\(context.errors)")
+            let notes = host.entries.first?.compatibility ?? []
+            XCTAssertTrue(notes.contains(where: { $0.hasPrefix("offscreen") && ExtensionDiagnostics.isUnsupported($0) }), "\(notes)")
+            host.sync()
+            let page = try await page(context)
+            defer { page.stopLoading() }
+            let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)
+            XCTAssertEqual(answer, #"[true,["BACKGROUND"],"undefined",true]"#)
         }
     }
 }

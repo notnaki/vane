@@ -439,6 +439,7 @@ private struct ExtensionDetailView: View {
                 accessSection("Optional capabilities", access: entry.optionalAccess,
                               explanation: "Declared by the extension, but not automatically approved. It must request additional access when needed.")
                 runtimeAccess
+                if let context = entry.context { ExtensionTabOptions(context: context, name: entry.name) }
                 if let context = entry.context { commands(context) }
                 compatibility
                 if let diagnostics = entry.runtimeDiagnostics {
@@ -709,6 +710,53 @@ private struct ExtensionDetailView: View {
             do { try await host.retry(entry.path) }
             catch is CancellationError { }
             catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+/// The two choices about tabs Vane leaves to the user, for an extension that can use them.
+private struct ExtensionTabOptions: View {
+    let context: WKWebExtensionContext
+    let name: String
+    /// Bumped to redraw: the choices live in `UserDefaults.vane` under keys per extension.
+    @State private var changed = 0
+
+    private var owner: String { context.baseURL.host ?? "" }
+    private var groups: Bool { ExtensionTabGroupsAPI.declared(context.webExtension.manifest) }
+    /// Any extension that asks for `debugger`, now or later: it is the only way in that
+    /// Vane keeps to the tab on screen.
+    private var debugger: Bool {
+        let manifest = context.webExtension.manifest
+        return ExtensionDebuggerAPI.declared(manifest)
+            || (manifest["optional_permissions"] as? [String])?.contains(ExtensionDebuggerAPI.permission) == true
+    }
+
+    var body: some View {
+        if groups || debugger {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("Tabs").font(.headline)
+                if groups {
+                    Toggle("Keep its tab groups in one folder", isOn: Binding(
+                        get: { _ = changed; return ExtensionTabGroups.gathers(owner) },
+                        set: { ExtensionTabGroups.setGathers($0, owner: owner, name: name); changed += 1 }))
+                    Text("Each group stays a folder of its own, inside one folder named \(name).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if debugger {
+                    Toggle("Let it run scripts in background tabs", isOn: Binding(
+                        get: { _ = changed; return ExtensionDebuggerAPI.reachesBackground(context) },
+                        set: { UserDefaults.vane.set($0, forKey: ExtensionDebuggerAPI.backgroundKey + "." + owner); changed += 1 }))
+                    Text("It can read and change a tab you are not looking at, with no notice on that tab. Clicks, typing and screenshots still need the tab on screen.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if groups {
+                        Toggle("Dissolve its groups when it is done", isOn: Binding(
+                            get: { _ = changed; return ExtensionTabGroups.dissolves(owner) },
+                            set: { UserDefaults.vane.set($0, forKey: ExtensionTabGroups.dissolvesKey + "." + owner); changed += 1 }))
+                        Text("A group whose tabs it has not controlled for 10 minutes goes; its tabs stay as ordinary tabs.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 }

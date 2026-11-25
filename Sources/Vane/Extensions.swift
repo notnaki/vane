@@ -191,6 +191,10 @@ import WebKit
     @Published private(set) var loaded: [(path: String, context: WKWebExtensionContext)] = []
 
     var installed: [WKWebExtensionContext] { loaded.map(\.context) }
+    /// The icon of the extension whose base URL's host is `owner`: what its folders wear.
+    func icon(owner: String) -> NSImage? {
+        loaded.first { $0.context.baseURL.host == owner }?.context.webExtension.icon(for: CGSize(width: 16, height: 16))
+    }
 
     struct Entry: Identifiable {
         let path: String
@@ -693,6 +697,7 @@ import WebKit
     private func unloadContext(_ context: WKWebExtensionContext) throws {
         if let path = loaded.first(where: { $0.context === context })?.path { revokeICloudStorageLeases(path) }
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
+        webSockets.close(owner: ObjectIdentifier(context))
         try controller.unload(context)
         filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
         backgroundViews.removeObject(forKey: context)
@@ -2090,6 +2095,11 @@ import WebKit
                         store: (configuration.window as? ExtWindow)?.store, for: context)
             return nil
         }
+        if let request = ExtensionChromiumGaps.Request(configuration.url, base: context.baseURL) {
+            let result: Result<Any, any Error>
+            do { result = .success(try await answer(request, for: context)) } catch { result = .failure(error) }
+            throw Failure(ExtensionChromiumGaps.reply(result))
+        }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL,
                                                       path: ExtensionTabGroupsAPI.bridgePath) {
             return try await tabGroups.handle(request, tab: configuration.parentTab as? ExtTab,
@@ -2097,6 +2107,7 @@ import WebKit
                                               for: context) { [debugger] in debugger.reply($0, for: context) }
         }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
+            defer { sweepIdleGroups() }
             return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
         }
         if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
@@ -2236,7 +2247,140 @@ import WebKit
         presentation.show()
     }
 
+    // MARK: Chromium stand-ins
+
+    private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) async throws -> Any {
+        let arguments = request.arguments
+        switch request.operation {
+        case "contexts":
+            return extensionContexts(context)
+        case "fetch":
+            return try await credentialedFetch(arguments, for: context)
+        case let operation where operation.hasPrefix("ws."):
+            let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+            if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
+            throw Failure("Vane does not answer \(operation).")
+        default:
+            throw Failure("Vane does not answer \(request.operation).")
+        }
+    }
+
+    private let fetchSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
+
+    /// A credentialed request from the extension to a site it may access, sent with the
+    /// profile's cookies as Chrome sends them; cookies the reply sets land in the profile.
+    /// Null when the extension may not access the site: the page then fetches as WebKit does.
+    /// Redirects are followed here, one hop at a time, so each hop carries only its own
+    /// site's cookies and a hop to a site the extension may not access fails.
+    // ponytail: the whole body arrives at once; stream over the bridge if an extension
+    // reads a credentialed event stream.
+    private func credentialedFetch(_ arguments: [String: Any], for context: WKWebExtensionContext) async throws -> Any {
+        func allowed(_ url: URL) -> Bool {
+            ["http", "https"].contains(url.scheme?.lowercased()) && url.host != nil
+                && [.grantedExplicitly, .grantedImplicitly].contains(context.permissionStatus(for: url))
+        }
+        guard var url = (arguments["url"] as? String).flatMap(URL.init(string:)), allowed(url),
+              let store = controller.configuration.defaultWebsiteDataStore else { return NSNull() }
+        var method = arguments["method"] as? String ?? "GET"
+        var body = (arguments["body"] as? String).flatMap { Data(base64Encoded: $0) }
+        let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+        let first = ExtensionDebuggerAPI.origin(of: url)
+        // As the Fetch spec drops them: body headers once the body is, credentials off-origin.
+        var dropped: Set<String> = ["cookie", "host", "content-length", "origin"]
+        for _ in 0..<20 {
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            for case let pair as [String] in arguments["headers"] as? [Any] ?? [] where pair.count == 2
+                && !dropped.contains(pair[0].lowercased()) {
+                request.setValue(pair[1], forHTTPHeaderField: pair[0])
+            }
+            if let ua = arguments["ua"] as? String { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
+            request.setValue(origin, forHTTPHeaderField: "Origin")
+            request.httpBody = body
+            let cookies = Self.cookies(await store.httpCookieStore.allCookies(), for: url)
+            if !cookies.isEmpty { request.setValue(HTTPCookie.requestHeaderFields(with: cookies)["Cookie"], forHTTPHeaderField: "Cookie") }
+            let (data, response) = try await fetchSession.data(for: request, delegate: NoRedirects.shared)
+            guard let http = response as? HTTPURLResponse else { throw Failure("The site sent no HTTP response.") }
+            let fields = http.allHeaderFields.reduce(into: [String: String]()) { $0["\($1.key)"] = "\($1.value)" }
+            for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: url) { await store.httpCookieStore.setCookie(cookie) }
+            if [301, 302, 303, 307, 308].contains(http.statusCode),
+               let next = http.value(forHTTPHeaderField: "Location").flatMap({ URL(string: $0, relativeTo: url)?.absoluteURL }) {
+                guard allowed(next) else { throw Failure("Redirected to a site the extension may not access.") }
+                if (http.statusCode == 303 && method.uppercased() != "HEAD")
+                    || ([301, 302].contains(http.statusCode) && method.uppercased() == "POST") {
+                    method = "GET"
+                    body = nil
+                    dropped.formUnion(["content-type", "content-encoding", "content-language", "content-location"])
+                }
+                if ExtensionDebuggerAPI.origin(of: next) != first { dropped.insert("authorization") }
+                url = next
+                continue
+            }
+            return ["status": http.statusCode, "statusText": HTTPURLResponse.localizedString(forStatusCode: http.statusCode).capitalized,
+                    "headers": fields.filter { $0.key.lowercased() != "set-cookie" }.map { [$0.key, $0.value] },
+                    "body": data.base64EncodedString(), "url": url.absoluteString]
+        }
+        throw Failure("Too many redirects.")
+    }
+
+    /// The profile's cookies a request to `url` carries: domain, path (on a `/` boundary),
+    /// secure and expiry, as RFC 6265 matches them.
+    nonisolated static func cookies(_ all: [HTTPCookie], for url: URL) -> [HTTPCookie] {
+        guard let host = url.host?.lowercased() else { return [] }
+        let raw = url.path(percentEncoded: true)
+        let secure = url.scheme?.lowercased() == "https", path = raw.isEmpty ? "/" : raw
+        return all.filter { cookie in
+            let domain = cookie.domain.lowercased()
+            let hostMatches = domain.hasPrefix(".") ? host == domain.dropFirst() || host.hasSuffix(domain) : host == domain
+            let pathMatches = path == cookie.path || (path.hasPrefix(cookie.path)
+                && (cookie.path.hasSuffix("/") || path.dropFirst(cookie.path.count).first == "/"))
+            return hostMatches && pathMatches && (!cookie.isSecure || secure) && (cookie.expiresDate ?? .distantFuture) > Date()
+        }
+    }
+
+    /// Hands each redirect back to `credentialedFetch` instead of following it.
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        static let shared = NoRedirects()
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? { nil }
+    }
+
+    /// `runtime.getContexts`: what this host shows of the extension. Tab and window IDs are
+    /// WebKit's to give and unknown here: -1, as Chrome reports for windowless contexts.
+    private func extensionContexts(_ context: WKWebExtensionContext) -> [[String: Any]] {
+        let origin = context.baseURL.absoluteString.hasSuffix("/") ? String(context.baseURL.absoluteString.dropLast()) : context.baseURL.absoluteString
+        var list: [[String: Any]] = []
+        func add(_ type: String, _ url: URL?, _ owner: AnyObject, frameId: Int = 0) {
+            var entry: [String: Any] = ["contextType": type, "contextId": String(UInt(bitPattern: ObjectIdentifier(owner).hashValue), radix: 16),
+                                        "tabId": -1, "windowId": -1, "frameId": frameId, "incognito": false, "documentOrigin": origin]
+            if let url { entry["documentUrl"] = url.absoluteString }
+            list.append(entry)
+        }
+        if context.webExtension.hasBackgroundContent {
+            let background = context.webExtension.manifest["background"] as? [String: Any]
+            let path = (background?["service_worker"] ?? background?["page"]) as? String
+            add("BACKGROUND", path.flatMap { URL(string: $0, relativeTo: context.baseURL)?.absoluteURL }, context, frameId: background?["service_worker"] != nil ? -1 : 0)
+        }
+        for panel in sidePanels where panel.context === context { add("SIDE_PANEL", panel.web.url ?? panel.page, panel) }
+        for presentation in actionWindows.values where presentation.context === context { add("POPUP", presentation.web.url, presentation) }
+        for adapter in requestedWindows.values where adapter.presentation.context === context {
+            add("TAB", adapter.presentation.web.url, adapter.presentation)
+        }
+        for tab in myStores.flatMap(\.tabs) {
+            if let url = tab.existingWeb?.url, url.scheme == context.baseURL.scheme, url.host == context.baseURL.host { add("TAB", url, tab) }
+        }
+        return list
+    }
+
     // MARK: Web sign-in
+
+    private let webSockets = ExtensionWebSockets()
 
     /// By flow: an extension may run several at once, as in Chrome.
     private var authFlows: [ObjectIdentifier: (context: WKWebExtensionContext, flow: ExtensionAuthFlow)] = [:]
@@ -2286,6 +2430,17 @@ import WebKit
     @Published private(set) var sidePanels: [ExtensionSidePanel] = []
     /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
     private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
+    /// How long an extension's group of driven tabs sits untouched before it is dissolved.
+    var groupIdle: TimeInterval = 10 * 60
+    private var idleSweep: Task<Void, Never>?
+    /// Checks for finished sessions' groups once the debugger has been quiet for `groupIdle`.
+    func sweepIdleGroups() {
+        idleSweep?.cancel()
+        idleSweep = Task { @MainActor [weak self] in
+            guard let idle = self?.groupIdle, (try? await Task.sleep(for: .seconds(idle + 1))) != nil, let self else { return }
+            tabGroups.dissolveIdle(used: debugger.used, after: groupIdle, contexts: installed)
+        }
+    }
     /// `chrome.tabGroups` over Today's folders; see ExtensionTabGroups.swift.
     private(set) lazy var tabGroups = ExtensionTabGroups(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.

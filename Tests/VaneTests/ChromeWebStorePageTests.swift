@@ -62,7 +62,8 @@ import XCTest
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600), configuration: config)
         defer { web.stopLoading(); config.userContentController.removeScriptMessageHandler(forName: ChromeWebStorePage.messageName, contentWorld: ChromeWebStorePage.world) }
         let url = URL(string: "https://chromewebstore.google.com/detail/dark-reader/\(id)")!
-        web.loadHTMLString("<html><head><title>Store fixture</title></head><body><button jsname='wQO0od'>Add to Chrome</button></body></html>", baseURL: url)
+        // The store's markup in Turkish: its button found by its place, not its English label.
+        web.loadHTMLString("<html><head><title>Store fixture</title></head><body><div jsaction='JIbuQc:IkY2J(wQO0od)'><button disabled>Chrome'a ekle</button></div></body></html>", baseURL: url)
         let deadline = ContinuousClock.now + .seconds(5)
         while web.isLoading || web.title != "Store fixture" {
             guard ContinuousClock.now < deadline else { XCTFail("Store fixture did not load"); return }
@@ -71,14 +72,40 @@ import XCTest
         web.evaluateJavaScript(ChromeWebStorePage.script, in: nil, in: ChromeWebStorePage.world, completionHandler: nil)
         let label = try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]')?.textContent")
         XCTAssertEqual(label as? String, "Add to Vane")
+        // In the store's place, never floating over the page.
+        let placed = try await web.evaluateJavaScript("""
+            const ours = document.querySelector('[data-vane-store-install]');
+            ours.nextElementSibling.hidden && ours.style.position === '' && ours.parentElement.matches('[jsaction]')
+            """)
+        XCTAssertEqual(placed as? Bool, true)
         try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]').click()")
         XCTAssertEqual(messages.count, 0)
         try await web.evaluateJavaScript("history.pushState({}, '', '/category/extensions'); document.body.append(document.createElement('div'))")
         // MutationObserver and its microtask settle before the next WebKit evaluation.
         let removed = try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]') === null")
         XCTAssertEqual(removed as? Bool, true)
-        let originalVisible = try await web.evaluateJavaScript("!document.querySelector('[jsname=wQO0od]').hidden")
+        let originalVisible = try await web.evaluateJavaScript("!document.querySelector('[jsaction] button').hidden")
         XCTAssertEqual(originalVisible as? Bool, true)
+    }
+
+    func testNoStoreButtonMeansNothingFloatsOverThePage() async throws {
+        _ = NSApplication.shared
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600), configuration: WKWebViewConfiguration())
+        defer { web.stopLoading() }
+        let url = URL(string: "https://chromewebstore.google.com/detail/dark-reader/\(id)")!
+        web.loadHTMLString("<html><head><title>Store fixture</title></head><body><p>Loading</p></body></html>", baseURL: url)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while web.isLoading || web.title != "Store fixture" {
+            guard ContinuousClock.now < deadline else { XCTFail("Store fixture did not load"); return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        web.evaluateJavaScript(ChromeWebStorePage.script, in: nil, in: ChromeWebStorePage.world, completionHandler: nil)
+        let none = try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]') === null")
+        XCTAssertEqual(none as? Bool, true)
+        // The store renders its button later; the observer puts ours in its place.
+        try await web.evaluateJavaScript("document.body.innerHTML = \"<div jsaction='x:IkY2J(wQO0od)'><button>Add to Chrome</button></div>\"")
+        let placed = try await web.evaluateJavaScript("document.querySelector('[data-vane-store-install]')?.parentElement?.matches('[jsaction]') === true")
+        XCTAssertEqual(placed as? Bool, true)
     }
 
     private final class Messages: NSObject, WKScriptMessageHandler {

@@ -63,6 +63,7 @@ import WebKit
                 launchWebAuthFlow(details, callback) {
                   const values = {url: String(details?.url ?? ''), interactive: String(details?.interactive === true)};
                   if (Number.isFinite(details?.timeoutMsForNonInteractive)) values.timeout = String(details.timeoutMsForNonInteractive);
+                  if (details?.abortOnLoadForNonInteractive === false) values.abortOnLoad = 'false';
                   const promise = tabs.create({url: runtime.getURL('/__vane_identity__?' + new URLSearchParams(values)), active: false}).then(
                     () => { throw new Error('Authorization page could not be loaded.'); },
                     error => {
@@ -116,6 +117,9 @@ import WebKit
         let url: URL
         let interactive: Bool
         let timeout: Duration
+        /// Chrome's `abortOnLoadForNonInteractive`: false waits out the timeout for a page
+        /// that redirects from script after it loads.
+        let abortOnLoad: Bool
 
         /// Only the owning extension's bridge URL is a request; anything else is a tab.
         /// `nil` url: the request is the extension's, its page is not one to load.
@@ -128,6 +132,7 @@ import WebKit
                   page.host?.isEmpty == false else { throw ExtensionHost.Failure(marker + "reject Authorization page could not be loaded.") }
             self.url = page
             interactive = value("interactive") == "true"
+            abortOnLoad = value("abortOnLoad") != "false"
             let milliseconds = value("timeout").flatMap(Double.init).map { max(0, $0) } ?? .infinity
             timeout = milliseconds < 60_000 ? .milliseconds(milliseconds) : nonInteractiveTimeout
         }
@@ -142,6 +147,7 @@ import WebKit
     private let url: URL
     private let redirectHost: String
     private let interactive: Bool
+    private let abortOnLoad: Bool
     private let title: String
     private(set) var window: NSWindow?
     /// Windows the sign-in page opened, which keep their opener.
@@ -157,6 +163,7 @@ import WebKit
         self.redirectHost = redirectHost
         self.title = title
         interactive = request.interactive
+        abortOnLoad = request.abortOnLoad
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 480, height: 640), configuration: configuration)
         super.init()
         web.navigationDelegate = self
@@ -242,10 +249,10 @@ import WebKit
     }
 
     /// Chrome's default for a flow without a window: the first load that does not
-    /// redirect needs the user.
-    // ponytail: no `abortOnLoadForNonInteractive: false`; `timeoutMsForNonInteractive` caps at Chrome's minute.
+    /// redirect needs the user, unless the extension asked to wait for the timeout.
+    // ponytail: `timeoutMsForNonInteractive` caps at Chrome's minute.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if !interactive { cancel("User interaction required.") }
+        if !interactive, abortOnLoad { cancel("User interaction required.") }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
