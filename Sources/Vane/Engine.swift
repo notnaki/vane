@@ -4990,8 +4990,11 @@ struct Stash {
         // Native row hosts can flush synchronously during restoration. Publish
         // their rendering bridge only after the destination's entire outline and
         // selection are assigned; snapshot/protection revocation stays immediate.
-        sidebarObservation.withCompletedChanges {
-            switchSpace(to: requested)
+        let leaving = currentSpaceID
+        PerformanceLog.measure(.spaceSwitch, if: { currentSpaceID != leaving }) {
+            sidebarObservation.withCompletedChanges {
+                switchSpace(to: requested)
+            }
         }
     }
 

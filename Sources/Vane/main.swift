@@ -42,6 +42,7 @@ if args.first == "import" {
 // remains ordered behind it. Slow bundle verification cannot monopolize AppKit.
 @MainActor func launchBrowser() async {
     DiagnosticLog.shared.record(.launched)
+    PerformanceLog.start()
     defer { AppLifecycle.shared.completeBootstrap() }
     // A replacement that failed before its first healthy launch restores the prior app and
     // relaunches it. This must happen before any browser window or storage migration begins.
@@ -141,6 +142,9 @@ if args.first == "import" {
             || Keybindings.handle($0) || ExtensionCommands.handle($0) ? nil : $0
     }
     app.activate(ignoringOtherApps: true)
+    // Before the default-browser prompt, which waits on the user. A launch that recovered from
+    // a crash or a backup may already have; it is not a timing.
+    if !Crash.didCrashLastLaunch, backupLaunchResult != .restored { PerformanceLog.recordLaunch() }
     if !FirstLaunch.presentIfNeeded() { URLHandling.promptIfNotDefaultOnce() }
 
 }

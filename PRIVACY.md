@@ -85,7 +85,7 @@ AI credentials must be removed separately. **Before erasing**, select each saved
 
 The project website uses same-site assets and has no added analytics, advertising trackers, or tracking cookies. It is hosted on GitHub Pages. GitHub receives visitor requests and handles hosting and GitHub account information under its [privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). Following external links contacts the destination service.
 
-Vane keeps local recovery information and can write diagnostic messages to macOS logs. macOS may separately collect or share system diagnostics according to your Apple settings. Diagnostics or screenshots you choose to share can contain sensitive information; review them first.
+Vane keeps local recovery information and can write diagnostic messages to macOS logs. It also records local performance timings (launch time, main-thread hangs, Space switch time) and Apple's MetricKit hang and crash reports for this app. Vane removes exception messages, termination reasons, memory maps and region format from Apple's reports before saving them, so what it keeps is durations, counts, call stacks and the Vane version, never sites, tabs, Spaces or names. It all stays on your Mac unless you export it from Settings › Advanced › Performance › Diagnostics. Exports cut times to the day and leave out your Mac model, macOS version, memory, core count and binary identifiers unless you turn on Include Mac details. Clear removes them. macOS may separately collect or share system diagnostics according to your Apple settings. Diagnostics or screenshots you choose to share can contain sensitive information; review them first.
 
 ## Security, changes, and contact
 
