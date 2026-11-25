@@ -35,4 +35,21 @@ import XCTest
         XCTAssertNil(library.spaces.first { $0.id == space })
         library.remove(favourite.key)
     }
+
+    /// Incognito tabs never reach iCloud, history or the saved session.
+    func testIncognitoLeavesNothing() async throws {
+        let library = Library(deviceID: "device-\(UUID())")
+        XCTAssertNil(library.publishingProfile(for: SpaceRow.incognito.id), "Incognito tabs must not be published as open tabs")
+        let browser = Browser()
+        let before = browser.history.count
+        browser.switchSpace(SpaceRow.incognito.id)
+        browser.open(URL(string: "https://example.com/secret")!)
+        let tab = try XCTUnwrap(browser.selected)
+        XCTAssertTrue(tab.isPrivate)
+        tab.onChange(); tab.onLoaded()
+        XCTAssertEqual(browser.history.count, before)
+        let saved = try JSONDecoder().decode([Tab.Saved].self, from: Data(contentsOf: Store.directory.appending(path: "tabs.json")))
+        XCTAssertFalse(saved.contains { $0.id == tab.id })
+        browser.close(tab)
+    }
 }

@@ -23,6 +23,10 @@ struct SpaceRow: Identifiable, Hashable {
     /// 0.8), film grain (0…1), and "light"/"dark" or nil to follow the system.
     var colors: [String]? = nil, tint: Double? = nil, grain: Double? = nil, appearance: String? = nil
     var isLocal: Bool { profileID == Local.profile }
+    var isIncognito: Bool { id == Self.incognito.id }
+    /// Incognito, as on the Mac: black, never saved, never synced.
+    static let incognito = SpaceRow(id: Profile.incognito.id, profileID: Profile.incognito.id, name: "Incognito",
+                                    icon: "eyeglasses", colorHex: "#000000", appearance: "dark")
     var palette: [String] { colors ?? colorHex.map { [$0] } ?? [] }
 }
 struct LinkRow: Identifiable, Hashable {
@@ -164,7 +168,11 @@ struct RemoteTab: Codable, Equatable, Identifiable {
     }
     var hasSyncedProfiles: Bool { !all(.profiles).isEmpty }
     /// Where this phone's tabs are filed on other devices: the Space's profile, else the first synced one.
+    /// The Space with this id, Incognito included.
+    func space(_ id: UUID) -> SpaceRow? { id == SpaceRow.incognito.id ? .incognito : spaces.first { $0.id == id } }
+
     func publishingProfile(for space: UUID) -> UUID? {
+        guard space != SpaceRow.incognito.id else { return nil }
         if let row = spaces.first(where: { $0.id == space }), !row.isLocal { return row.profileID }
         return all(.profiles).first?.profileID
     }

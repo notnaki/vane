@@ -11,8 +11,9 @@ struct RootView: View {
     @State private var noArticle = false
     @State private var bookmarks = false
     @State private var themeDemo = false
+    @AppStorage("onboarded") private var onboarded = false
 
-    private var space: SpaceRow? { library.spaces.first { $0.id == browser.spaceID } }
+    private var space: SpaceRow? { library.space(browser.spaceID) }
 
     var body: some View {
         // The page takes the whole screen; the controls float over its foot in the Space's
@@ -40,6 +41,7 @@ struct RootView: View {
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
         .sheet(isPresented: $bookmarks) { BookmarksView().presentationBackground { Wash(space: space) } }
         .alert("Reader isn't available for this page", isPresented: $noArticle) {}
+        .fullScreenCover(isPresented: Binding(get: { !onboarded }, set: { onboarded = !$0 })) { Onboarding { onboarded = true } }
         .preferredColorScheme(space?.appearance == "dark" ? .dark : space?.appearance == "light" ? .light : nil)
         .tint(.primary)
         .task { demo() }
@@ -55,7 +57,7 @@ struct RootView: View {
             }
             Button("Reader", systemImage: "doc.plaintext") { Task { reader = await tab.article(); noArticle = reader == nil } }
             Button("Find on Page", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
-            Section {
+            if !space.isIncognito { Section {
                 Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
                 Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
                 if let key = library.bookmarked(tab.url, profile: space.profileID) {
@@ -63,13 +65,22 @@ struct RootView: View {
                 } else {
                     Button("Bookmark", systemImage: "bookmark") { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
                 }
-            }
+            } }
             Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
         }
         Section {
+            if space?.isIncognito == true {
+                Button("Leave Incognito", systemImage: "eyeglasses") { leaveIncognito() }
+            } else {
+                Button("New Incognito Tab", systemImage: "eyeglasses") { browser.switchSpace(SpaceRow.incognito.id); browser.select(nil) }
+            }
             Button("Bookmarks", systemImage: "book") { bookmarks = true }
             Button("Settings", systemImage: "gearshape") { settings = true }
         }
+    }
+
+    private func leaveIncognito() {
+        browser.switchSpace(library.spaces.first?.id ?? Local.space)
     }
 
     /// Debug-only launch arguments for screenshots, e.g. `-demoPanel spaces -demoOpen https://…`.
@@ -89,6 +100,7 @@ struct RootView: View {
             browser.open(URL(string: "https://www.swift.org/about/")!)
             browser.select(nil)
         }
+        if defaults.bool(forKey: "demoIncognito") { browser.switchSpace(SpaceRow.incognito.id) }
         if let raw = defaults.string(forKey: "demoOpen"), let url = URL(string: raw) { browser.open(url) }
         if defaults.bool(forKey: "demoCollapsed") {
             Task { try? await Task.sleep(for: .seconds(5)); withAnimation { browser.selected?.collapsed = true } }
@@ -214,16 +226,17 @@ struct SpacesPanel: View {
     @State private var name = ""
 
     var body: some View {
-        let current = library.spaces.first { $0.id == browser.spaceID }
+        let current = library.space(browser.spaceID)
+        let pages = library.spaces + [.incognito]
         VStack(spacing: 0) {
             TabView(selection: Binding(get: { browser.spaceID }, set: { browser.switchSpace($0) })) {
-                ForEach(library.spaces) { space in
+                ForEach(pages) { space in
                     SpaceColumn(space: space, close: close, openSettings: openSettings).tag(space.id)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             HStack(spacing: 4) {
-                ForEach(library.spaces) { space in
+                ForEach(pages) { space in
                     Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
                         SpaceMark(space: space, size: 17)
                             .opacity(space.id == browser.spaceID ? 1 : 0.45)
@@ -249,7 +262,7 @@ struct SpacesPanel: View {
             TextField("Name", text: $name)
             Button("Create") {
                 guard !name.isEmpty else { return }
-                browser.switchSpace(library.addSpace(name, profile: current?.profileID ?? Local.profile))
+                browser.switchSpace(library.addSpace(name, profile: current.flatMap { $0.isIncognito ? nil : $0.profileID } ?? Local.profile))
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -316,7 +329,7 @@ struct SpaceColumn: View {
                         }
                     }
                 }
-                ForEach(library.remoteTabs, id: \.device) { group in
+                ForEach(space?.isIncognito == true ? [] : library.remoteTabs, id: \.device) { group in
                     VStack(alignment: .leading, spacing: 2) {
                         Label(group.device, systemImage: "laptopcomputer")
                             .font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 4)
@@ -327,7 +340,10 @@ struct SpaceColumn: View {
                         }
                     }
                 }
-                if favourites.isEmpty && tabs.isEmpty && library.pinned(space: space?.id ?? Local.space).isEmpty {
+                if space?.isIncognito == true {
+                    Text("Incognito pages aren't saved to history or synced, and their cookies and website data are erased when you close the last Incognito tab.")
+                        .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.top, 6)
+                } else if favourites.isEmpty && tabs.isEmpty && library.pinned(space: space?.id ?? Local.space).isEmpty {
                     emptyHint
                 }
             }
@@ -363,14 +379,14 @@ struct SpaceColumn: View {
         HStack(spacing: 10) {
             if let space { SpaceMark(space: space, size: 20) }
             Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
-            if let space, !space.isLocal, let profile = library.profileName(space.profileID) {
+            if let space, !space.isLocal, !space.isIncognito, let profile = library.profileName(space.profileID) {
                 Text(profile).font(.footnote.weight(.medium)).foregroundStyle(.secondary)
             }
             Spacer()
-            if space != nil {
+            if let space, !space.isIncognito {
                 Menu {
                     Button("Edit Theme and Icon", systemImage: "paintpalette") { theming = true }
-                    Button("Rename", systemImage: "pencil") { name = space?.name ?? ""; renaming = true }
+                    Button("Rename", systemImage: "pencil") { name = space.name; renaming = true }
                     Button("Delete Space", systemImage: "trash", role: .destructive) { deleting = true }
                 } label: {
                     Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).frame(width: 36, height: 36)
@@ -611,6 +627,11 @@ struct SettingsView: View {
                         set: { UserDefaults.standard.set($0 ? "streamlined" : nil, forKey: "interfaceStyle"); styleChanged = true }))
                 } header: { Text("Look") } footer: {
                     Text(styleChanged ? "Streamlined applies the next time Vane opens." : "Streamlined uses denser rows and tiles, as on the Mac. Each Space's colours and icon are set from its ••• menu.")
+                }
+                Section {
+                    Button("Make Vane Your Default Browser") {
+                        if let url = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) { UIApplication.shared.open(url) }
+                    }
                 }
                 Section("Search") {
                     Picker("Search engine", selection: $browser.engine) { ForEach(SearchEngine.allCases) { Text($0.name).tag($0) } }

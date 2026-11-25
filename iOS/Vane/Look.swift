@@ -126,7 +126,9 @@ struct SiteIcon: View {
 }
 
 @MainActor enum SiteIcons {
-    // ponytail: in-memory only, refetched each launch through URLCache; persist if it shows.
+    // ponytail: in-memory only, refetched each launch; persist (outside Incognito) if it shows.
+    /// Ephemeral, so an Incognito page's icon never reaches the disk cache.
+    private static let session = URLSession(configuration: .ephemeral)
     private static var cache: [String: UIImage] = [:]
     private static var missing: Set<String> = []
     static func icon(for host: String) async -> UIImage? {
@@ -134,7 +136,7 @@ struct SiteIcon: View {
         guard !host.isEmpty, !missing.contains(host) else { return nil }
         for path in ["/apple-touch-icon.png", "/favicon.ico"] {
             guard let url = URL(string: "https://\(host)\(path)"),
-                  let (data, response) = try? await URLSession.shared.data(from: url),
+                  let (data, response) = try? await session.data(from: url),
                   (response as? HTTPURLResponse)?.statusCode == 200,
                   let image = UIImage(data: data), image.size.width >= 16 else { continue }
             cache[host] = image

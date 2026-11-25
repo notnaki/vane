@@ -24,6 +24,10 @@ import WebKit
     /// The last URL reported as a visit, so reloads and subresource loads don't repeat it.
     var visited: URL?
 
+    /// Incognito tabs keep nothing: no history, not saved or synced, and their cookies and
+    /// website data live in memory until the last one closes.
+    var isPrivate: Bool { spaceID == SpaceRow.incognito.id }
+
     init(_ saved: Saved) { id = saved.id; spaceID = saved.spaceID; url = saved.url; title = saved.title; home = saved.home }
     var saved: Saved { Saved(id: id, spaceID: spaceID, url: url, title: title, home: home) }
 
@@ -31,6 +35,7 @@ import WebKit
         if let view { return view }
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
+        if isPrivate { configuration.websiteDataStore = Browser.privateStore }
         let web = WKWebView(frame: .zero, configuration: configuration)
         web.allowsBackForwardNavigationGestures = true
         web.isFindInteractionEnabled = true
@@ -130,14 +135,19 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     /// History from other devices, when history sync is on.
     var syncedHistory: () -> [Visit] = { [] }
     var allHistory: [Visit] { (history + syncedHistory()).sorted { $0.at > $1.at } }
+    /// One in-memory store shared by Incognito tabs (so a sign-in carries across them),
+    /// replaced with a fresh one when the last Incognito tab closes.
+    static var privateStore = WKWebsiteDataStore.nonPersistent()
     private let tabsFile = Store.directory.appending(path: "tabs.json")
     private let historyFile = Store.directory.appending(path: "history.json")
 
     init() {
-        spaceID = UserDefaults.standard.string(forKey: "space").flatMap(UUID.init(uuidString:)) ?? Local.space
+        // Incognito never outlives the app, so a relaunch starts back in a Space.
+        let space = UserDefaults.standard.string(forKey: "space").flatMap(UUID.init(uuidString:))
+        spaceID = space == SpaceRow.incognito.id ? Local.space : space ?? Local.space
         engine = UserDefaults.standard.string(forKey: "engine").flatMap(SearchEngine.init(rawValue:)) ?? .google
         if let data = try? Data(contentsOf: tabsFile), let saved = try? JSONDecoder().decode([Tab.Saved].self, from: data) {
-            tabs = saved.map(Tab.init); tabs.forEach(watch)
+            tabs = saved.map(Tab.init).filter { !$0.isPrivate }; tabs.forEach(watch)
         }
         if let data = try? Data(contentsOf: historyFile) { history = (try? JSONDecoder().decode([Visit].self, from: data)) ?? [] }
         selectedID = UserDefaults.standard.string(forKey: "tab").flatMap(UUID.init(uuidString:))
@@ -167,11 +177,13 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     }
     func close(_ tab: Tab) {
         tabs.removeAll { $0.id == tab.id }
+        forgetPrivateData()
         if selectedID == tab.id { select(spaceTabs.last) }
         save()
     }
     func closeTabs(in space: UUID) {
         tabs.removeAll { $0.spaceID == space }
+        forgetPrivateData()
         if selected == nil { select(nil) }
         save()
     }
@@ -199,14 +211,21 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
         WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
     }
 
+    /// The last Incognito tab closed: drop its cookies and website data with the store.
+    private func forgetPrivateData() {
+        guard !tabs.contains(where: \.isPrivate) else { return }
+        Browser.privateStore = .nonPersistent()
+    }
+
     private func watch(_ tab: Tab) {
         tab.onLoaded = { [weak self, weak tab] in
-            guard let self, let tab, ["http", "https"].contains(tab.url.scheme ?? ""), tab.visited != tab.url else { return }
+            guard let self, let tab, !tab.isPrivate, ["http", "https"].contains(tab.url.scheme ?? ""), tab.visited != tab.url else { return }
             tab.visited = tab.url
             self.onVisit(tab)
         }
         tab.onChange = { [weak self, weak tab] in
             guard let self, let tab else { return }
+            guard !tab.isPrivate else { return }
             if ["http", "https"].contains(tab.url.scheme ?? ""), self.history.first?.url != tab.url || self.history.first?.title != tab.title {
                 if self.history.first?.url == tab.url { self.history.removeFirst() }
                 self.history.insert(Visit(url: tab.url, title: tab.title, at: .now), at: 0)
@@ -219,7 +238,7 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     }
     private func save() {
         try? FileManager.default.createDirectory(at: Store.directory, withIntermediateDirectories: true)
-        try? JSONEncoder().encode(tabs.map(\.saved)).write(to: tabsFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try? JSONEncoder().encode(tabs.filter { !$0.isPrivate }.map(\.saved)).write(to: tabsFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         onTabsChanged()
     }
     private func saveHistory() {
