@@ -4141,7 +4141,7 @@ private struct FolderRow: View {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
             } else {
-                Text(folder.name).font(Look.folderTitle)
+                Text(ExtensionTabGroups.shownName(folder, in: store[keyPath: shape], store: store)).font(Look.folderTitle)
             }
         } trailing: {
             FolderDisclosure(folder: folder, locked: locked)
@@ -4300,6 +4300,12 @@ private struct FolderMenu: View {
         // worse than one that is not there.
         if shape == \TabStore.pins {
             Button("New Folder") { store.newFolder(beside: folder.id, in: shape) }
+        }
+        // An extension's folders: whether its sessions share one folder (`gather`).
+        if shape == \TabStore.todayShape, folder.extensionOwner != nil {
+            Toggle("Keep Extension Sessions Together", isOn: Binding(
+                get: { ExtensionTabGroups.gathers },
+                set: { ExtensionTabGroups.setGathers($0, in: store) }))
         }
         Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id, in: shape) }
             .disabled(store.isFolderLocked(folder.id) || store[keyPath: shape].tabs(in: folder.id).isEmpty)
