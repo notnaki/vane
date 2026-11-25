@@ -355,7 +355,8 @@ extension SiteControlModel {
             let excepted = Blocker.siteExceptions(for: tab.profileID).contains(host.lowercased())
             Blocker.setSiteException(host, allowed: !excepted, profileID: tab.profileID, recompile: false)
             Blocker.refresh(completion: { [weak tab] in tab?.reload() })
-        case .blockerSettings: SettingsWindow.show(tab: "privacy", profileID: tab.profileID)
+        case .blockerSettings:
+            VanePages.open(.settings(.privacy), profileID: tab.profileID, from: VanePages.store(of: tab))
         case .reader: Reader.toggle(tab)
         case .translate: PageTranslation.toggle(tab, in: PageTranslation.store(of: tab) ?? Windows.current)
         case .translateOffers:

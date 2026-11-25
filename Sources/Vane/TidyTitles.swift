@@ -487,7 +487,7 @@ import Foundation
     /// is not us, and Arc keeps it across an unpin too.
     static func title(for tab: Tab) -> String {
         if let name = tab.workspaceName { return name.isEmpty ? tab.title : name }
-        if tab.easelID != nil { return tab.title }
+        if tab.easelID != nil || tab.vanePage != nil { return tab.title }
         guard let url = key(for: tab) else { return tab.title }
         return rowName(for: url, in: tab.profileID, raw: tab.title, stays: tab.stays)
     }

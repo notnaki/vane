@@ -59,8 +59,11 @@ struct BlockerSettingsSection: View {
                 if let failure = localSources.storageError { Footnote(failure) }
                 Footnote("Disk imports are local snapshots and never update over the network. Existing file references are retained (\((UserDefaults.vane.array(forKey: "blockerLists") ?? []).count) legacy references). URL subscriptions below update daily while Vane is running, including after startup and wake.")
                 SettingsRow("Subscribe by URL") {
+                    // Bounded: with layoutPriority the field would squeeze the row's title to
+                    // nothing, and the title then wraps a letter per line into a tall row.
                     TextField("https://example.com/filters.txt", text: $url)
                         .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 160, maxWidth: 320)
                     Button(adding ? "Adding…" : "Add") { add() }
                         .disabled(adding || url.isEmpty)
                 }

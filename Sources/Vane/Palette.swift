@@ -1693,13 +1693,18 @@ private struct PaletteSuggestionWatch: View, Equatable {
                 // Nothing past the lead and the 24-row tail is ever shown.
                 let ordered = (strong + weak).prefix(lead + 24).map(tabRow)
                 let commands = Palette.commandSections(typed, commands: commandRows(), title: \.title)
+                // Vane's own pages: `vane://` lists them all, a section's name finds it.
+                let pages = vanePageRows()
+                let strongPages = pages.filter { isStrong($0.title, $0.matchURL) }
+                let weakPages = pages.filter { !isStrong($0.title, $0.matchURL) }
                 // "chatgpt news" names an assistant, so asking it is what Return does — but as
                 // its own "Ask ChatGPT" row, with a real "Search" row right under it.
                 let ai = aiRow()
                 let asked = AIChat.match(query) != nil ? ai : nil
                 fresh.leading = Array(ordered.prefix(lead)) + (asked.map { [$0] } ?? []) + [typedRow]
-                    + commands.leading
-                fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commands.trailing).prefix(24))
+                    + commands.leading + strongPages
+                fresh.trailing = Array((weakPages + Array(ordered.dropFirst(lead)) + places
+                    + commands.trailing).prefix(24))
                 fresh.assistant = asked == nil ? ai : nil
                 fresh.acceptsSuggestions = true
             } else {
@@ -1786,6 +1791,13 @@ private struct PaletteSuggestionWatch: View, Equatable {
             return PaletteRow(id: "typed", icon: "exclamationmark.triangle", title: typed,
                               trailing: "Blocked", kind: "JavaScript URL blocked") { _ in
                 axAnnounce("JavaScript URLs cannot be opened from the address bar.")
+            }
+        }
+        // vane://settings (and its vane://extensions alias) open (or focus) Vane's own page in an
+        // ordinary window — never by loading the address in the target tab.
+        if let url = Search.url(for: typed), case .page(let page) = VanePage.route(url, from: .app) {
+            return PaletteRow(id: "typed", icon: page.icon, title: typed, trailing: "Open", kind: "Open") { _ in
+                VanePages.open(page, from: store)
             }
         }
         // An inline completion is what the field shows, so it is what Return opens — its
@@ -1983,6 +1995,22 @@ private struct PaletteSuggestionWatch: View, Equatable {
                 c.run()
             }
         }
+    }
+
+    /// A private window lists them too; opening one goes to an ordinary window.
+    private func vanePageRows() -> [PaletteRow] {
+        guard mode != .tabs, !typed.isEmpty else { return [] }
+        let open = Set(store.tabs.compactMap { $0.vanePage?.url })
+        return Palette.rankPages(typed, VanePage.catalog(for: typed), title: \.title, url: \.page.url.absoluteString)
+            .map { entry in
+                PaletteRow(id: "vane:" + entry.page.url.absoluteString, icon: entry.page.section.icon,
+                           title: entry.title, detail: entry.page.url.absoluteString,
+                           matchURL: entry.page.url.absoluteString,
+                           trailing: open.contains(entry.page.url) ? "Switch to Tab" : "Open",
+                           kind: "Vane page") { _ in
+                    VanePages.open(entry.page, from: store)
+                }
+            }
     }
 
     private func aiRow() -> PaletteRow? {

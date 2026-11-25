@@ -286,6 +286,7 @@ final class FaviconRequestPolicy: NSObject, URLSessionTaskDelegate, Sendable {
     func load(for tab: Tab) {
         guard !retired else { return }
         tabs.add(tab)
+        if tab.vanePage != nil { return }   // its symbol is set by `routeVanePage`
         if let url = tab.currentURL, url.isFileURL { tab.favicon = Files.icon(for: url); return }
         guard let url = tab.currentURL, let key = Favicons.key(for: url),
               let page = Favicons.pageKey(for: url) else { tab.favicon = nil; return }

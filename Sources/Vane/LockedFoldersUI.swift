@@ -186,15 +186,12 @@ struct InlineUnlockButton: View {
             HStack(spacing: 10) {
                 if inline {
                     ZStack {
-                        EmbeddedFolderAuthentication(context: context)
+                        EmbeddedFolderAuthentication(context: context, attached: attached)
                             .id(ObjectIdentifier(context))
-                            .task {
-                                guard !Task.isCancelled else { return }
-                                attached()
-                            }
+                        // Apple's Touch ID red, as in the system's own prompt.
                         Image(systemName: "touchid")
                             .font(.system(size: 25, weight: .light))
-                            .foregroundStyle(Look.inkSecondary)
+                            .foregroundStyle(Color(nsColor: .systemRed))
                             .opacity(authenticating ? 0 : 1)
                     }
                     .frame(width: 28, height: 28)
@@ -218,18 +215,48 @@ struct InlineUnlockButton: View {
     }
 }
 
-/// The context is attached before the appearance task evaluates it, keeping biometric UI inline.
+/// The context is attached before `attached` evaluates it, keeping biometric UI inline.
+/// The LAAuthenticationView is only made while the control is in a window: a copy SwiftUI
+/// keeps alive off screen would otherwise take the shared context, and LocalAuthentication
+/// pauses a scan whose view is not visible — Touch ID then never answers.
 private struct EmbeddedFolderAuthentication: NSViewRepresentable {
     let context: LAContext
-    func makeNSView(context: Context) -> LAAuthenticationView {
-        let view = LAAuthenticationView(context: self.context, controlSize: .small)
-        view.wantsLayer = true
-        let neutral = CIFilter.colorControls()
-        neutral.saturation = 0
-        view.layer?.filters = [neutral]
-        return view
+    let attached: () -> Void
+    func makeNSView(context: Context) -> Host { Host(context: self.context, attached: attached) }
+    func updateNSView(_ view: Host, context: Context) { view.attached = attached }
+
+    final class Host: NSView {
+        let laContext: LAContext
+        var attached: () -> Void
+        private var auth: LAAuthenticationView?
+        private var didAttach = false
+        init(context: LAContext, attached: @escaping () -> Void) {
+            laContext = context
+            self.attached = attached
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil, !didAttach else { return }
+            if auth == nil {
+                let view = LAAuthenticationView(context: laContext, controlSize: .small)
+                view.frame = bounds
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+                auth = view
+            }
+            // After the view holds the context, as the old appearance task did; a turn later
+            // so SwiftUI is not mid-update when the evaluation publishes.
+            DispatchQueue.main.async { [weak self] in
+                // Detached before this turn: the next window attach tries again.
+                guard let self, self.window != nil, !self.didAttach else { return }
+                self.didAttach = true
+                self.attached()
+            }
+        }
     }
-    func updateNSView(_ view: LAAuthenticationView, context: Context) {}
 }
 
 @MainActor enum LockedFolderBackdrop {

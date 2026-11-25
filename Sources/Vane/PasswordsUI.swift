@@ -204,7 +204,10 @@ import SwiftUI
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             // Shown while Vane was in the background: start once Settings comes forward.
-            if SettingsWindow.holds(note.object as? NSWindow) { lock.beginAutomaticUnlock(profileID) }
+            let window = note.object as? NSWindow
+            if SettingsWindow.holds(window) || VanePages.showsPasswords(in: window) {
+                lock.beginAutomaticUnlock(profileID)
+            }
         }
         .onChange(of: logins) {
             // Reloads finish asynchronously; reconcile the detail destination only
@@ -1094,7 +1097,8 @@ struct PasswordChooser: View {
                         fill: { tab.fillChosen(host: choice.host, account: $0, port: choice.port, target: choice.target) },
                         manage: {
                             tab.closeChooser(.escape)
-                            SettingsWindow.show(tab: "passwords", profileID: tab.profileID)
+                            VanePages.open(.settings(.passwords), profileID: tab.profileID,
+                                           from: VanePages.store(of: tab))
                         })
                         .offset(x: at.x, y: at.y)
                         .onHover { tab.chooserHovered = $0 }

@@ -156,12 +156,9 @@ enum LinkTarget {
 
     /// Open straight at one pane — Help ▸ Keyboard Shortcuts, and anything else that means
     /// "the setting you are after is over there".
-    static func show(tab: String, profileID: UUID? = nil) {
-        // Select before installing or revealing the hosting view. A direct link should
-        // not briefly construct the previous pane (notably the Keychain-backed list).
-        if ["passwords", "privacy"].contains(tab) {
-            selection.profileID = profileID ?? ProfileManager.shared.active.id
-        }
+    /// Passwords, Privacy and Search live in a vane://settings tab — see VanePages.swift.
+    static func show(tab: String) {
+        // Select before installing or revealing the hosting view.
         selection.id = tab
         show()
     }
@@ -227,14 +224,10 @@ enum LinkTarget {
               pane: { AnyView(AdvancedPane(selection: $0)) }),
         .init(id: "animations", title: "UI Animations", icon: "waveform.path", parent: "advanced",
               pane: { _ in AnyView(UIAnimationsPane()) }),
-        .init(id: "passwords", title: "Passwords", icon: "key", parent: "profiles",
-              pane: { AnyView(PasswordsPane(settingsProfileID: $0.profileID)) }),
-        .init(id: "privacy", title: "Privacy and Security", icon: "lock", parent: "profiles",
-              pane: { AnyView(PrivacyPane(selection: $0)) }),
-        .init(id: "search", title: "Search Settings", icon: "magnifyingglass", parent: "profiles",
-              pane: { _ in AnyView(SearchPane()) }),
         .init(id: "previews", title: "Previews", icon: "rectangle.on.rectangle", parent: "general",
               pane: { _ in AnyView(PreviewsPane()) }),
+        .init(id: "commandBar", title: "Command Bar", icon: "magnifyingglass", parent: "advanced",
+              pane: { _ in AnyView(Pane { CommandBarSettings() }) }),
     ]
 }
 
@@ -249,6 +242,9 @@ enum LinkTarget {
         }
     }
     @Published var profileID: UUID?
+    /// A dialog Privacy and Security opens on arrival (vane://settings/clearBrowserData).
+    enum PrivacyRequest: Sendable { case clearData, websiteData }
+    @Published var privacyRequest: PrivacyRequest?
     weak var toolbar: NSToolbar?
 }
 
@@ -287,7 +283,7 @@ private struct SettingsView: View {
 
     var body: some View {
         Group {
-            if ["shortcuts", "passwords", "animations"].contains(current.id) {
+            if ["shortcuts", "animations"].contains(current.id) {
                 // This pane owns a bounded scrolling list, so its search and guidance
                 // stay in place while the rows scroll.
                 pane
@@ -314,11 +310,6 @@ private struct SettingsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
                 .padding(.top, 20)
-                if ["passwords", "privacy"].contains(current.id),
-                   let profile = ProfileManager.shared.profiles.first(where: { $0.id == selection.profileID }) {
-                    Text(profile.name).font(Look.caption).foregroundStyle(.secondary)
-                        .padding(.top, 8)
-                }
             }
             current.pane(selection)
         }
@@ -330,7 +321,7 @@ private struct SettingsView: View {
 
 }
 
-private struct SettingsToggleStyle: ToggleStyle {
+struct SettingsToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Toggle(configuration).toggleStyle(.switch).controlSize(.small)
     }
@@ -659,6 +650,47 @@ private struct GeneralPane: View {
     }
 }
 
+/// The command bar's assistant and appearance, in General: vane://settings' Search engine
+/// section is search engines only, as Arc's is.
+private struct CommandBarSettings: View {
+    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
+    @AppStorage(Look.barVisibleRowsKey) private var visibleRows = Look.barVisibleRows
+    @AppStorage(Look.barTopKey) private var barTop = Look.barTop
+    @AppStorage(Look.barAnimationsKey) private var barAnimations = true
+
+    var body: some View {
+        SettingsCard {
+            SettingsRow("AI assistant", icon: "sparkles", tint: .purple) {
+                Picker("AI assistant", selection: $assistantID) {
+                    ForEach(AIChat.all) { Text($0.name).tag($0.id) }
+                }
+                .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
+            }
+            SettingsRow("Results shown", icon: "list.bullet", tint: .blue) {
+                Stepper("\(Look.clampedVisibleRows(visibleRows))", value: $visibleRows,
+                        in: Look.barVisibleRowsRange)
+                Button("Reset") { visibleRows = Look.barVisibleRows }
+                    .controlSize(.small)
+                    .disabled(Look.clampedVisibleRows(visibleRows) == Look.barVisibleRows)
+                    .accessibilityLabel("Reset results shown")
+            }
+            SettingsRow("Bar position", icon: "rectangle.topthird.inset.filled", tint: .blue) {
+                Slider(value: $barTop, in: Look.barTopRange) { Text("Bar position") }
+                    minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Middle") }
+                    .labelsHidden().frame(width: 220)
+                Button("Reset") { barTop = Look.barTop }
+                    .controlSize(.small)
+                    .disabled(barTop == Look.barTop)
+                    .accessibilityLabel("Reset bar position")
+            }
+            SettingsRow("Animate results", icon: "waveform.path", tint: .blue) {
+                Toggle("", isOn: $barAnimations).labelsHidden()
+            }
+            Footnote("Press Tab in the address bar to ask the assistant instead of searching.")
+        }
+    }
+}
+
 /// Native controls keep channel choice beside the existing automatic-check preference.
 struct UpdateChannelSettings: View {
     @Binding var selection: String
@@ -750,10 +782,6 @@ private struct ProfilesPane: View {
     @State private var archiveAfter = Prefs.archiveAfter
     /// Non-nil while a profile row is an editable field rather than a label.
     @State private var renaming: UUID?
-    /// The Clear Browsing Data dialog, which is a sheet rather than an alert: it has four
-    /// controls and a sentence, and an NSAlert accessory view is a worse way to draw those.
-    @State private var clearing: Profile?
-    @State private var managingData: Profile?
     @State private var draft = ""
     /// The right-hand name field. Separate from `draft` on purpose: focusing a TextField
     /// writes through its binding, so sharing one would put the list row into rename mode
@@ -806,12 +834,6 @@ private struct ProfilesPane: View {
             }
         }
         .onAppear { reload() }
-        .sheet(item: $clearing) { captured in
-            ClearDataSheet(profileID: captured.id, profileName: captured.name)
-        }
-        .sheet(item: $managingData) { captured in
-            WebsiteDataSheet(profileID: captured.id, profileName: captured.name)
-        }
         // Not `renaming = nil` here: creating a profile selects it *and* opens its row for
         // renaming, and this fires after both.
         .onChange(of: selected) { reload() }
@@ -986,7 +1008,7 @@ private struct ProfilesPane: View {
                 .labelsHidden().frame(width: 145, alignment: .trailing)
             }
             SettingsRow("Manage search", icon: "slider.horizontal.3", tint: .blue) {
-                Button("Search Settings…") { selection.id = "search" }
+                Button("Search Settings…") { open(.search) }
             }
             SettingsRow("Include search engine suggestions", icon: "text.bubble.fill", tint: .blue) {
                 Toggle("Include search engine suggestions", isOn: $suggestions).labelsHidden()
@@ -1031,24 +1053,20 @@ private struct ProfilesPane: View {
     private var data: some View {
         SettingsCard(divided: false) {
             VStack(spacing: 0) {
-                DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") {
-                    selection.profileID = profile.id
-                    selection.id = "privacy"
-                }
-                DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
-                    // The same place Menu.swift's Manage Saved Passwords… goes.
-                    selection.profileID = profile.id
-                    selection.id = "passwords"
-                }
-                DataRow(icon: "externaldrive.fill", tint: .blue, title: "Website Data") {
-                    managingData = profile
-                }
-                DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
-                    clearing = profile
-                }
+                // Arc's arrow rows open Chromium's pages in a tab; these open Vane's, for
+                // this profile even when no Space uses it (Arc's rows do nothing then).
+                DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") { open(.privacy) }
+                // The same place Menu.swift's Manage Saved Passwords… goes.
+                DataRow(icon: "key.fill", tint: .green, title: "Passwords") { open(.passwords) }
+                DataRow(icon: "externaldrive.fill", tint: .blue, title: "Website Data") { open(.siteData) }
+                DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") { open(.clearBrowserData) }
             }
             .padding(.vertical, Look.inset / 2)
         }
+    }
+
+    private func open(_ section: VaneSettingsSection) {
+        VanePages.open(.settings(section), profileID: profile.id)
     }
 
     private func reload() {
@@ -1164,16 +1182,12 @@ private struct LinksPane: View {
 
 // MARK: - Search Settings
 
-private struct SearchPane: View {
+struct SearchPane: View {
     // The key `Search.current` reads. AppStorage so the picker redraws itself.
     @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
-    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
     // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
     // the search engine before you press Return.
     @AppStorage("searchSuggestions") private var suggestions = false
-    @AppStorage(Look.barVisibleRowsKey) private var visibleRows = Look.barVisibleRows
-    @AppStorage(Look.barTopKey) private var barTop = Look.barTop
-    @AppStorage(Look.barAnimationsKey) private var barAnimations = true
     // Neither list is @Published, so the views mirror them and refresh on every mutation.
     @State private var engines = Search.all
     @State private var newName = ""
@@ -1191,20 +1205,6 @@ private struct SearchPane: View {
 
     var body: some View {
         Pane {
-            SettingsCard {
-                SettingsRow("AI assistant", icon: "sparkles", tint: .purple) {
-                    Picker("AI assistant", selection: $assistantID) {
-                        ForEach(AIChat.all) { Text($0.name).tag($0.id) }
-                    }
-                    .labelsHidden().frame(width: Look.settingsPicker, alignment: .trailing)
-                }
-                Footnote("Press Tab in the address bar to ask this assistant instead of "
-                         + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
-                         + "\u{201C}chatgpt …\u{201D} — overrides it for that one query. Vane opens the "
-                         + "assistant's own site with the question; ChatGPT and Perplexity send "
-                         + "it automatically, Claude fills it in for you to send.")
-            }
-
             SettingsCard {
                 SettingsRow("Search engine", icon: "magnifyingglass", tint: .blue) {
                     Picker("Search engine", selection: $engineID) {
@@ -1245,29 +1245,8 @@ private struct SearchPane: View {
                     }
                     .disabled(!engineIsValid)
                 }
-                Footnote("Search suggestions send what you type in the address bar to your "
-                         + "search engine as you type it. Never in a private window, and never "
-                         + "for anything that looks like an address. A custom engine's address "
-                         + "needs an http or https address with a host, no credentials, and one %s where the search words go.")
-            }
-
-            SettingsCard {
-                SettingsRow("Results shown", icon: "list.bullet", tint: .blue) {
-                    Stepper("\(Look.clampedVisibleRows(visibleRows))", value: $visibleRows,
-                            in: Look.barVisibleRowsRange)
-                }
-                SettingsRow("Bar position", icon: "rectangle.topthird.inset.filled", tint: .blue) {
-                    Slider(value: $barTop, in: Look.barTopRange) { Text("Bar position") }
-                        minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Middle") }
-                        .labelsHidden().frame(width: 220)
-                }
-                SettingsRow("Animate results", icon: "waveform.path", tint: .blue) {
-                    Toggle("", isOn: $barAnimations).labelsHidden()
-                }
-                Footnote("The search bar keeps its place as results come and go. Results past "
-                         + "the count shown are a scroll away. With animation off, results "
-                         + "change at once as you type; Battery Saver and Reduce Motion also "
-                         + "turn it off.")
+                Footnote("Suggestions send what you type to your search engine. A custom engine's "
+                         + "address needs one %s where the search words go.")
             }
 
             SettingsCard {
@@ -1302,9 +1281,7 @@ private struct SearchPane: View {
                         .padding(.horizontal, Look.cardInset)
                         .padding(.vertical, Look.inset + 2)
                 }
-                Footnote("A bang jumps straight to a site's own search: !gh swift searches "
-                         + "GitHub. Type a keyword or site name and press Tab for a search chip. "
-                         + "\(Bangs.builtIn.count) sites are built in; yours win over those.")
+                Footnote("!gh swift searches GitHub. Yours win over the \(Bangs.builtIn.count) built in.")
             }
         }
     }
@@ -1592,9 +1569,13 @@ private struct AdvancedPane: View {
 
     var body: some View {
         Pane(spacing: Look.inset / 2) {
-            SettingsDisclosure("Interface", summary: "Animation speeds",
+            SettingsDisclosure("Interface", summary: "Command bar and animation speeds",
                                icon: "waveform.path", tint: .blue) {
                 SettingsCard {
+                    // Its own page: any row added to General pushes it past the minimum window.
+                    SettingsRow("Command Bar", icon: "magnifyingglass", tint: .blue) {
+                        Button("Command Bar Settings…") { selection.id = "commandBar" }
+                    }
                     SettingsRow("UI Animations", icon: "waveform.path", tint: .blue) {
                         Button("Animation Settings…") { selection.id = "animations" }
                     }
@@ -1695,7 +1676,9 @@ private struct AdvancedPane: View {
                             .onChange(of: inspector) { Settings.apply(); rebuild() }
                     }
                     SettingsRow("Extensions", icon: "puzzlepiece.extension.fill", tint: .blue) {
-                        Button("Manage Extensions…") { ExtensionManagement.show() }
+                        Button("Manage Extensions…") {
+                            VanePages.open(.extensions, profileID: ProfileManager.shared.active.id)
+                        }
                         Button("Install from Chrome Web Store…") { ExtensionHost.shared.chooseStoreInstall(); rebuild() }
                         Button("Install Extension…") {
                             ExtensionHost.shared.chooseAndInstall(); rebuild()
@@ -1734,11 +1717,10 @@ private struct AdvancedPane: View {
 /// Arc's "Privacy and Security" row opens Chromium's privacy page. Vane has no Chromium, so
 /// this is the pane that row means: what is switched on to protect you, what has been
 /// answered on your behalf per site, and the one button that takes it all back.
-private struct PrivacyPane: View {
+struct PrivacyPane: View {
     @ObservedObject var selection: SettingsSelection
     @AppStorage("httpsOnly") private var httpsOnly = true
     @State private var blocking = true
-    @AppStorage("searchSuggestions") private var suggestions = false
     @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     @ObservedObject private var manager = ProfileManager.shared
     /// Read once per appearance: they come out of UserDefaults, not out of a publisher.
@@ -1761,14 +1743,7 @@ private struct PrivacyPane: View {
                     Toggle("", isOn: $blocking).labelsHidden()
                         .onChange(of: blocking) { Blocker.setEnabled(blocking, for: profile.id); rebuild() }
                 }
-                SettingsRow("Search suggestions", icon: "text.bubble.fill", tint: .blue) {
-                    Toggle("", isOn: $suggestions).labelsHidden()
-                }
-                Footnote("Pages load over an encrypted connection or stop on a warning. Ads and "
-                         + "trackers are blocked from a filter list on device — nothing about "
-                         + "what you visit leaves the machine. Search suggestions are the one "
-                         + "exception: they send what you type to your search engine before you "
-                         + "press Return, and they are off unless you turn them on.")
+                Footnote("Ads and trackers are blocked on device.")
             }
 
             BlockerSettingsSection(profileID: profile.id)
@@ -1865,6 +1840,15 @@ private struct PrivacyPane: View {
         }
         .onAppear { reload() }
         .onChange(of: profile.id) { reload() }
+        // vane://settings/clearBrowserData and …/siteData arrive with their dialog asked for.
+        .onReceive(selection.$privacyRequest) { request in
+            guard let request else { return }
+            switch request {
+            case .clearData: clearing = profile
+            case .websiteData: managingData = profile
+            }
+            DispatchQueue.main.async { selection.privacyRequest = nil }
+        }
         .sheet(item: $clearing) { captured in
             ClearDataSheet(profileID: captured.id, profileName: captured.name)
         }

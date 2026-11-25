@@ -240,6 +240,13 @@ extension Tab {
     /// ponytail ceiling: an .html file's siblings — its stylesheet, its images — are outside
     /// that root and do not load. Upgrade path is `NSOpenPanel` on the folder, which is the
     /// only way the sandbox hands one over.
+    /// `go` for a URL Vane itself already holds — a tab's own address being duplicated or
+    /// split off — so an internal page opens instead of being refused as web-supplied.
+    func goFromApp(_ url: URL) {
+        if case let .page(page) = VanePage.route(url, from: .app), routeVanePage(page) { return }
+        go(url)
+    }
+
     func go(_ url: URL) {
         // WebKit can execute these without asking the navigation delegate. Guard before
         // recovery, page-state changes, or creating/loading the web view.
@@ -249,7 +256,11 @@ extension Tab {
         if needsRecovery { navigate(to: url); return }
         if routeEasel(url) { return }
         if url.scheme?.lowercased() == "vane", url.host?.lowercased() == "easel" { return }
+        // Reachable from links and page-supplied URLs, so never an internal page — see
+        // `VanePage.route(_:from:)` and `Tab.routeVanePage`.
+        if VanePage.route(url, from: .web) == .refuse { return }
         leaveEasel()
+        leaveVanePage()
         // Before the load, not after it: `didStartProvisionalNavigation` is a runloop turn
         // away and `WKWebView.url` is further still, and the width of that gap is the whole
         // point of the flag. See `Tab.hasEverLoaded`.

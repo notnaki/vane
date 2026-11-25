@@ -23,7 +23,7 @@ enum TabAddress {
     static func restorable(_ url: URL?) -> Bool {
         guard let url else { return false }
         return ["http", "https"].contains(url.scheme?.lowercased() ?? "")
-            || EaselAddress.boardID(url) != nil
+            || EaselAddress.boardID(url) != nil || VanePage(url) != nil
     }
 }
 
@@ -99,6 +99,7 @@ extension TabStore {
     /// Local canvases use AppKit's native responder chain, not a dummy WKWebView.
     var activePageResponder: NSView? {
         guard let tab = active, ownsPage(tab), !tab.needsRecovery else { return nil }
+        if tab.vanePage != nil { return nil }
         if let session = tab.easelSession {
             return EaselHostingView.find(session, in: window?.contentView)
         }

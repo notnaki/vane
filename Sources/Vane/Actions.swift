@@ -92,7 +92,7 @@ extension PaletteCommand {
 
         // The page in front of you. Everything here needs somewhere to act, and a window
         // showing nothing has nowhere.
-        if let tab = active, tab.easelID == nil {
+        if let tab = active, tab.easelID == nil, tab.vanePage == nil {
             out += [
                 PaletteCommand(.copyPageURL, icon: "link", title: "Copy URL"),
                 PaletteCommand("Copy URL as Markdown", icon: "doc.on.clipboard") {
@@ -156,6 +156,12 @@ extension PaletteCommand {
                     EaselWindow.capture(in: store)
                 })
             }
+        }
+        if let tab = active, tab.vanePage != nil {
+            out += [
+                PaletteCommand(.copyPageURL, icon: "link", title: "Copy URL"),
+                PaletteCommand(.closeTab, icon: "archivebox"),
+            ]
         }
         if let tab = active, tab.easelID != nil {
             out += [
@@ -246,7 +252,7 @@ extension PaletteCommand {
             PaletteCommand(.showDownloads, icon: "arrow.down.circle"),
             PaletteCommand(.settings, icon: "gearshape"),
             PaletteCommand("Manage Extensions", icon: "puzzlepiece.extension", id: "manageExtensions") {
-                ExtensionManagement.show(for: store.extensions)
+                VanePages.open(.extensions, profileID: store.profileID, from: store)
             },
             PaletteCommand(.keyboardShortcutsHelp, icon: "keyboard", title: "Shortcuts Settings"),
             PaletteCommand("Link Preferences", icon: "link.circle") {

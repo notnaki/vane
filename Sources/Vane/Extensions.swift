@@ -96,6 +96,9 @@ import WebKit
     // host replacement so no successor loads that identity before deletion finishes.
     private static var dataPurges: [DataPurgeKey: DataPurge] = [:]
 
+    /// The host a window has already started, without starting one.
+    static func running(for profileID: UUID) -> ExtensionHost? { hosts[profileID] }
+
     static func host(for profileID: UUID) -> ExtensionHost {
         if let hit = hosts[profileID] { return hit }
         let fresh = ExtensionHost(profileID: profileID)

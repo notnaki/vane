@@ -220,7 +220,7 @@ import XCTest
     }
 
     func testClosingSettingsClearsSecretsAndInvalidatesPendingAuthentication() throws {
-        SettingsWindow.show(tab: "passwords")
+        SettingsWindow.show(tab: "general")
         let window = try XCTUnwrap(NSApp.windows.first(where: { SettingsWindow.holds($0) }))
         window.setFrameOrigin(CGPoint(x: -10000, y: -10000))
         let secrets = PasswordManagerSecrets()

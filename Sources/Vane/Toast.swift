@@ -554,7 +554,7 @@ extension TabStore {
                     .first(where: { $0.url == url.absoluteString }) {
                     unarchive(entry)
                 } else {
-                    newTab(url)
+                    newTabFromApp(url)
                 }
             })
         }
