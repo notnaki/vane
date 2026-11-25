@@ -8,6 +8,7 @@ struct RootView: View {
     @State private var noArticle = false
     @State private var bookmarks = false
     @State private var themeDemo = false
+    @State private var switcherDemo = false
     @AppStorage("onboarded") private var onboarded = false
 
     private var space: SpaceRow? { library.space(browser.spaceID) }
@@ -18,10 +19,13 @@ struct RootView: View {
         ZStack(alignment: .bottom) {
             Wash(space: space)
             if let tab = browser.selected {
-                Color(tab.pageColor ?? .systemBackground).ignoresSafeArea()
+                // Under the bar: the colour of the page's own last row, so it reads as one surface.
+                Color(tab.footColor ?? .systemBackground).ignoresSafeArea()
+                    .animation(.easeOut(duration: 0.2), value: tab.footColor)
                 WebContainer(tab: tab).id(tab.id)
                     .ignoresSafeArea(edges: .top)
-                    .padding(.bottom, tab.collapsed && browser.editing == nil ? 0 : Look.barHeight + 8)
+                    // Ends above the bar (or the small capsule while reading) so nothing on the page hides behind it.
+                    .padding(.bottom, tab.collapsed && browser.editing == nil ? 12 : Look.barHeight + 8)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 if let pull = tab.pull {
@@ -55,6 +59,7 @@ struct RootView: View {
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
         .sheet(isPresented: $settings) { SettingsView().frostsBehind() }
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
+        .sheet(isPresented: $switcherDemo) { SpaceSwitcher() }
         .sheet(isPresented: $bookmarks) { BookmarksView().frostsBehind() }
         .alert("Reader isn't available for this page", isPresented: $noArticle) {}
         .fullScreenCover(isPresented: Binding(get: { !onboarded }, set: { onboarded = !$0 })) { Onboarding { onboarded = true } }
@@ -147,6 +152,7 @@ struct RootView: View {
         case "settings": settings = true
         case "address": browser.editing = .current
         case "theme": themeDemo = true
+        case "switcher": browser.select(nil); switcherDemo = true
         default: break
         }
         #endif
@@ -197,44 +203,40 @@ struct BottomBar<Menu: View>: View {
         }
     }
 
-    /// Safari's bar: Back, the address in a glass capsule (page menu at its left, reload at its
-    /// right), and the tabs button, each its own piece of glass.
+    /// One glass capsule: tabs on the left, the address in the middle, the page menu on the right.
     private var bar: some View {
         let tab = browser.selected
         let last = browser.spaceTabs.last
-        return GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 10) {
-                if !editing {
-                    Button { tab?.webView.goBack() } label: {
-                        Image(systemName: "chevron.backward").font(.system(size: 19, weight: .semibold)).frame(width: 48, height: 48)
+        return HStack(spacing: 4) {
+            if !editing {
+                // On a page: the Space and its tabs. On the Space itself: back to the last tab.
+                Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
+                        Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
                     }
-                    .disabled(!(tab?.canGoBack ?? false))
-                    .glassEffect(.regular.interactive(), in: Circle())
-                    .accessibilityLabel("Back")
-                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                    .frame(width: 44, height: 44).contentShape(Circle())
                 }
-                pill(tab: tab)
-                    .glassEffect(.regular.interactive(), in: Capsule())
-                if editing {
-                    Button { browser.editing = nil } label: {
-                        Image(systemName: "xmark").font(.system(size: 17, weight: .semibold)).frame(width: 48, height: 48)
-                    }
-                    .glassEffect(.regular.interactive(), in: Circle())
-                    .accessibilityLabel("Cancel")
-                    .transition(.scale(scale: 0.5).combined(with: .opacity))
-                } else {
-                    // On a page: the Space and its tabs. On the Space itself: back to the last tab.
-                    Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
-                        Image(systemName: "square.on.square").font(.system(size: 18, weight: .medium)).frame(width: 48, height: 48)
-                    }
-                    .disabled(tab == nil && last == nil)
-                    .glassEffect(.regular.interactive(), in: Circle())
-                    .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
-                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                .disabled(tab == nil && last == nil)
+                .opacity(tab == nil && last == nil ? 0.35 : 1)
+                .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
+            pill(tab: tab)
+            if editing {
+                Button("Cancel") { browser.editing = nil }.fontWeight(.medium).padding(.horizontal, 10).frame(height: 44)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                SwiftUI.Menu { menu } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Circle())
                 }
+                .accessibilityLabel("More")
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
         }
         .buttonStyle(.plain)
+        .padding(4)
+        .glassEffect(.regular.interactive(), in: Capsule())
         .frame(maxWidth: 560)
         .padding(.horizontal, 14).padding(.bottom, 2)
         .offset(x: nudge)
@@ -253,56 +255,51 @@ struct BottomBar<Menu: View>: View {
         })
     }
 
-    /// The address capsule; while editing, the same capsule holds the text field.
+    /// The address pill; while editing, the same pill holds the text field.
     private func pill(tab: Tab?) -> some View {
-        HStack(spacing: 4) {
+        ZStack {
             if editing {
-                Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6).padding(.leading, 14)
-                TextField("Search or enter address", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
-                    .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
-                if !browser.query.isEmpty {
-                    Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45).frame(width: 40, height: 48) }
-                        .accessibilityLabel("Clear")
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
+                    TextField("Search or enter address", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
+                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
+                    if !browser.query.isEmpty {
+                        Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
+                            .accessibilityLabel("Clear")
+                    }
                 }
+                .font(.subheadline)
+                .padding(.horizontal, 14)
             } else {
-                SwiftUI.Menu { menu } label: {
-                    Image(systemName: tab?.reading == nil ? "line.3.horizontal" : "doc.plaintext.fill")
-                        .font(.system(size: 17, weight: .medium)).frame(width: 44, height: 48).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Page menu")
                 Button { browser.editing = .current } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         if let tab {
+                            if tab.reading != nil { Image(systemName: "doc.plaintext.fill").font(.subheadline).accessibilityLabel("Reader") }
+                            SiteIcon(url: tab.url, size: 16)
                             Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
                         } else {
-                            Text("Search or enter address").foregroundStyle(.secondary).lineLimit(1)
+                            Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium))
+                            Text("Search or enter address").foregroundStyle(.secondary)
                         }
                     }
-                    .font(.body.weight(.medium))
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 14)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
+                    .contentShape(Capsule())
                 }
                 .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
-                if let tab {
-                    Button { if (tab.progress) < 1 && tab.progress > 0 { tab.webView.stopLoading() } else { tab.webView.reload() } } label: {
-                        Image(systemName: tab.progress > 0 && tab.progress < 1 ? "xmark" : "arrow.clockwise")
-                            .font(.system(size: 16, weight: .medium)).frame(width: 44, height: 48).contentShape(Rectangle())
-                    }
-                    .accessibilityLabel(tab.progress > 0 && tab.progress < 1 ? "Stop" : "Reload")
-                } else {
-                    Color.clear.frame(width: 44, height: 48)
-                }
             }
         }
-        .frame(maxWidth: .infinity).frame(height: 48)
+        .frame(maxWidth: .infinity).frame(height: 40)
+        .background(GroundFill(strength: editing ? 1.8 : 1.2), in: Capsule())
         .overlay(alignment: .bottom) {
-            // Loading: a thin line along the capsule's foot, as in Safari.
+            // Loading: a thin line along the pill's foot.
             if let tab, tab.progress > 0, tab.progress < 1, !editing {
                 GeometryReader { geo in
-                    Capsule().fill(Color.accentColor).frame(width: geo.size.width * tab.progress, height: 2.5)
+                    Capsule().fill(.primary.opacity(0.6)).frame(width: geo.size.width * tab.progress, height: 2)
                 }
-                .frame(height: 2.5).padding(.horizontal, 22).padding(.bottom, 1)
+                .frame(height: 2).padding(.horizontal, 18).padding(.bottom, 2)
                 .animation(.easeOut(duration: 0.2), value: tab.progress)
             }
         }
@@ -382,6 +379,7 @@ struct SpaceColumn: View {
     @State private var theming = false
     @State private var name = ""
     @State private var naming: LinkRow?
+    @State private var switching = false
 
     var body: some View {
         let favourites = space.map { library.favourites(profile: $0.profileID) } ?? []
@@ -481,6 +479,7 @@ struct SpaceColumn: View {
         .scrollIndicators(.hidden)
         .refreshable { await sync.run() }
         .sheet(isPresented: $theming) { if let space { ThemeEditor(space: space) } }
+        .sheet(isPresented: $switching) { SpaceSwitcher() }
         .alert("Rename", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField(naming?.url.host() ?? "Name", text: $name)
             Button("Rename") { if let naming { library.setCustomName(naming.id, to: name) } }
@@ -507,13 +506,7 @@ struct SpaceColumn: View {
     private var header: some View {
         HStack(spacing: 10) {
             // Tap the Space's icon or name to jump to another Space.
-            Menu {
-                Picker("Space", selection: Binding(get: { browser.spaceID }, set: { id in withAnimation(.smooth) { browser.switchSpace(id) } })) {
-                    ForEach(library.spaces + [.incognito]) { other in
-                        Label(other.name, systemImage: other.icon.flatMap { UIImage(systemName: $0) == nil ? nil : $0 } ?? "circle.fill").tag(other.id)
-                    }
-                }
-            } label: {
+            Button { switching = true } label: {
                 // Same columns as a row: 12 in, a 22-wide icon, 12 to the title.
                 HStack(spacing: 12) {
                     if let space { SpaceMark(space: space, size: 18).frame(width: 22) }
@@ -524,10 +517,7 @@ struct SpaceColumn: View {
                 .padding(.leading, 12)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Space, \(space?.name ?? "")")
-            if let space, !space.isLocal, !space.isIncognito, let profile = library.profileName(space.profileID) {
-                Text(profile).font(.footnote.weight(.medium)).foregroundStyle(.secondary)
-            }
+            .accessibilityLabel("Space, \(space?.name ?? ""). Switch Space")
             Spacer()
             if let space, !space.isIncognito {
                 Menu {
@@ -543,6 +533,13 @@ struct SpaceColumn: View {
             }
         }
         .padding(.top, 12)
+        .overlay(alignment: .bottomLeading) {
+            if let space, !space.isIncognito, let profile = library.profileName(space.profileID) {
+                Text(profile).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .padding(.leading, 12 + 22 + 12).offset(y: 16)
+            }
+        }
+        .padding(.bottom, library.profileName(space?.profileID ?? Local.profile) == nil || space?.isIncognito == true ? 0 : 14)
     }
 
     private var emptyHint: some View {
@@ -943,11 +940,12 @@ struct PullActions: View {
         // The drop leans from its action toward the finger, a little, then lets go.
         let lean = max(-36, min(36, (max(-spacing, min(spacing, pull.dx)) - snapped) * 0.5))
         ZStack(alignment: .top) {
-            Capsule().fill(.regularMaterial)
+            Capsule().fill(.primary.opacity(0.26))
                 .frame(width: 52 + abs(lean), height: 52 - abs(lean) * 0.12)
                 .offset(x: snapped + lean / 2)
-                .opacity(armed ? 1 : 0)
-                .scaleEffect(armed ? 1 : 0.5)
+                // Shows the choice from early in the pull, faint until it's armed.
+                .opacity(armed ? 1 : Double(pull.progress) * 0.45)
+                .scaleEffect(armed ? 1 : 0.6 + 0.3 * pull.progress)
             HStack(spacing: 0) {
                 ForEach(choices, id: \.0) { choice, symbol, title in
                     let on = pull.choice == choice
@@ -960,7 +958,7 @@ struct PullActions: View {
                             .opacity(on && armed ? 1 : 0)
                     }
                     .frame(width: spacing)
-                    .opacity(on && armed ? 1 : 0.6)
+                    .opacity(on ? 1 : 0.4)
                     .accessibilityLabel(title)
                 }
             }
@@ -979,5 +977,57 @@ struct PullActions: View {
         .animation(.spring(duration: 0.3, bounce: 0.35), value: pull.choice)
         .animation(.spring(duration: 0.3, bounce: 0.35), value: armed)
         .allowsHitTesting(false)
+    }
+}
+
+/// Every Space, grouped under its profile as on the Mac, with Incognito and New Space below.
+struct SpaceSwitcher: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    @Environment(\.dismiss) private var dismiss
+    @State private var creating = false
+    @State private var name = ""
+    var body: some View {
+        let groups = Dictionary(grouping: library.spaces, by: \.profileID)
+        let order = library.spaces.map(\.profileID).reduce(into: [UUID]()) { if !$0.contains($1) { $0.append($1) } }
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(order, id: \.self) { profile in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile == Local.profile ? "On This iPhone" : library.profileName(profile) ?? "Profile")
+                                .font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 4)
+                            ForEach(groups[profile] ?? []) { space in row(space) }
+                        }
+                    }
+                    VStack(spacing: 2) {
+                        row(.incognito)
+                        Row(title: "New Space", icon: AnyView(Image(systemName: "plus").fontWeight(.medium))) { name = ""; creating = true }
+                    }
+                }
+                .padding(Look.inset)
+            }
+            .navigationTitle("Spaces").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() }.fontWeight(.semibold) }
+        }
+        .presentationDetents([.medium, .large])
+        .frostsBehind()
+        .alert("New Space", isPresented: $creating) {
+            TextField("Name", text: $name)
+            Button("Create") {
+                guard !name.isEmpty else { return }
+                let profile = library.space(browser.spaceID).flatMap { $0.isIncognito ? nil : $0.profileID } ?? Local.profile
+                browser.switchSpace(library.addSpace(name, profile: profile)); dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+    private func row(_ space: SpaceRow) -> some View {
+        Row(title: space.name, selected: space.id == browser.spaceID, icon: AnyView(SpaceMark(space: space, size: 17))) {
+            withAnimation(.smooth) { browser.switchSpace(space.id) }
+            dismiss()
+        } trailing: {
+            if space.id == browser.spaceID { Image(systemName: "checkmark").font(.footnote.weight(.semibold)) }
+        }
     }
 }

@@ -52,4 +52,16 @@ import XCTest
         XCTAssertFalse(saved.contains { $0.id == tab.id })
         browser.close(tab)
     }
+
+    /// The strip colour is the row's background, not text mixed into it.
+    func testEdgeColourIgnoresText() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 2)).image { context in
+            UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 100, height: 2))
+            UIColor.black.setFill(); context.fill(CGRect(x: 30, y: 0, width: 25, height: 2))
+        }
+        let color = try XCTUnwrap(Tab.average(image))
+        var white: CGFloat = 0
+        color.getWhite(&white, alpha: nil)
+        XCTAssertEqual(white, 1, accuracy: 0.01)
+    }
 }

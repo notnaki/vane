@@ -14,7 +14,10 @@ import WebKit
     var canGoBack = false
     var canGoForward = false
     /// The bar shrinks while the page scrolls down, and returns when it scrolls back up.
-    var collapsed = false
+    var collapsed = false {
+        // The page's foot changes as the page resizes under the bar; read it again once it settles.
+        didSet { if oldValue != collapsed { sampleSoon() } }
+    }
     /// How the page last looked, for its card in the Space. Memory only.
     var snapshot: UIImage?
     /// Reader is on: the article shown in place of the page.
@@ -29,8 +32,11 @@ import WebKit
     /// Where the finger was, on screen, when the page first passed its top: sideways movement
     /// counts from here, not from wherever the scroll began.
     private var pullStart: (finger: CGFloat, travel: CGFloat)?
-    /// The page's own colour (its theme colour, else what's behind its content), for the pull strip.
-    var pageColor: UIColor?
+    /// The colours actually drawn along the page's top and bottom edges, so the pull strip and
+    /// the strip under the bar continue the page exactly.
+    /// Also paints the overscroll and the status-bar area, so the top reads as one surface with the page's top element.
+    var pageColor: UIColor? { didSet { if let pageColor { view?.underPageBackgroundColor = pageColor } } }
+    var footColor: UIColor?
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -72,9 +78,7 @@ import WebKit
             web.observe(\.canGoBack) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoBack = web.canGoBack } },
             web.observe(\.canGoForward) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoForward = web.canGoForward } },
             web.scrollView.observe(\.contentOffset) { [weak self] scroll, _ in MainActor.assumeIsolated { self?.scrolled(scroll) } },
-            web.observe(\.themeColor) { [weak self] web, _ in MainActor.assumeIsolated { self?.pageColor = web.themeColor ?? web.underPageBackgroundColor } },
-            web.observe(\.underPageBackgroundColor) { [weak self] web, _ in MainActor.assumeIsolated { self?.pageColor = web.themeColor ?? web.underPageBackgroundColor } },
-            web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded() } } },
+            web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded(); self?.sampleEdges(); self?.sampleSoon(after: 1.2) } } },
         ]
         web.load(URLRequest(url: url))
         view = web
@@ -86,6 +90,7 @@ import WebKit
         let depth = -(scroll.contentOffset.y + scroll.adjustedContentInset.top)
         switch pan.state {
         case .began, .changed:
+            if pan.state == .began { sampleEdges() }
             guard depth > 0, reading == nil else { if pull != nil { pull = nil }; pullStart = nil; return }
             // A finger moves the touch point; a trackpad or mouse wheel (the Simulator, iPad)
             // moves only the pan's travel. Count whichever went further sideways.
@@ -94,7 +99,7 @@ import WebKit
             pullStart = start
             let moved = (finger - start.finger, travel - start.travel)
             let dx = abs(moved.0) >= abs(moved.1) ? moved.0 : moved.1
-            let next = Pull(progress: min(depth / 100, 1), choice: dx < -32 ? .newTab : dx > 32 ? .close : .reload, dx: dx, depth: depth)
+            let next = Pull(progress: min(depth / 100, 1), choice: dx < -24 ? .newTab : dx > 24 ? .close : .reload, dx: dx, depth: depth)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
                 UISelectionFeedbackGenerator().selectionChanged()
             }
@@ -109,9 +114,22 @@ import WebKit
         }
     }
 
+    /// Reads the edges again shortly, once whatever's moving has settled; repeated calls coalesce.
+    private var sampleTask: Task<Void, Never>?
+    func sampleSoon(after delay: Double = 0.4) {
+        sampleTask?.cancel()
+        sampleTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.sampleEdges()
+        }
+    }
+
     private func scrolled(_ scroll: UIScrollView) {
         let y = scroll.contentOffset.y + scroll.adjustedContentInset.top
         defer { lastOffset = y }
+        // Pages change colour as they scroll (headers, banners): keep the strips matching.
+        sampleSoon(after: 0.25)
         guard scroll.isTracking || scroll.isDecelerating else { return }
         let atEnd = y + scroll.bounds.height >= scroll.contentSize.height + scroll.adjustedContentInset.bottom - 4
         let next = y < 40 || atEnd ? false : y - lastOffset > 6 ? true : y - lastOffset < -6 ? false : collapsed
@@ -121,6 +139,42 @@ import WebKit
     /// The page's article as plain text blocks, or nil when there isn't one. The script runs
     /// in its own content world, so the page's scripts can't tamper with it, and only text
     /// comes back: the reader view renders it natively, never as the page's markup.
+    /// Reads the colour of the page's top and bottom rows of pixels.
+    func sampleEdges() {
+        guard let view, view.bounds.height > 4 else { return }
+        let top = view.safeAreaInsets.top
+        for (y, foot) in [(top, false), (view.bounds.height - 2, true)] {
+            let config = WKSnapshotConfiguration()
+            // A 2-point strip a little inside the edge, at full size (a scaled-down strip this thin comes back empty).
+            config.rect = CGRect(x: 0, y: foot ? y - 2 : y + 2, width: view.bounds.width, height: 2)
+            view.takeSnapshot(with: config) { [weak self] image, _ in
+                MainActor.assumeIsolated {
+                    guard let color = image.flatMap(Self.average) else { return }
+                    if foot { self?.footColor = color } else { self?.pageColor = color }
+                }
+            }
+        }
+    }
+
+    /// The page's background along a strip: the commonest colour across it, so text and
+    /// pictures in the row don't tint the result (an average would turn white-with-text grey).
+    nonisolated static func average(_ image: UIImage) -> UIColor? {
+        guard let cg = image.cgImage else { return nil }
+        let width = 24
+        var pixels = [UInt8](repeating: 0, count: width * 4)
+        guard let context = CGContext(data: &pixels, width: width, height: 1, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.interpolationQuality = .none
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: 1))
+        var counts: [UInt32: Int] = [:]
+        for x in 0..<width {
+            let key = UInt32(pixels[x * 4]) << 16 | UInt32(pixels[x * 4 + 1]) << 8 | UInt32(pixels[x * 4 + 2])
+            counts[key, default: 0] += 1
+        }
+        guard let key = counts.max(by: { $0.value < $1.value })?.key else { return nil }
+        return UIColor(red: CGFloat(key >> 16 & 0xFF) / 255, green: CGFloat(key >> 8 & 0xFF) / 255, blue: CGFloat(key & 0xFF) / 255, alpha: 1)
+    }
+
     /// Keeps a picture of the page for its card; called as the tab goes out of view.
     func takeSnapshot() {
         guard let view, view.window != nil else { return }
