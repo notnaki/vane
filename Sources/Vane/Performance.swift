@@ -44,6 +44,7 @@ import UniformTypeIdentifiers
 
     let directory: URL
     @Published private(set) var samples: [Sample]
+    @Published private(set) var reportCount = 0
     private var saveScheduled = false
 
     var file: URL { directory.appendingPathComponent("performance.json") }
@@ -53,7 +54,10 @@ import UniformTypeIdentifiers
         self.directory = directory
         samples = (try? Data(contentsOf: directory.appendingPathComponent("performance.json")))
             .flatMap { try? JSONDecoder().decode([Sample].self, from: $0) } ?? []
+        refreshReports()
     }
+
+    func refreshReports() { reportCount = metricKitReports.count }
 
     func record(_ metric: Metric, ms: Int, at date: Date = .now) {
         samples.append(.init(metric: metric, ms: max(0, ms), day: Self.day(date), version: Self.version))
@@ -74,6 +78,7 @@ import UniformTypeIdentifiers
 
     func clear() {
         samples = []
+        reportCount = 0
         saveScheduled = false
         let (file, reports) = (file, metricKitDirectory)
         // Behind any write already queued, so a save in flight cannot bring them back.
@@ -90,17 +95,17 @@ import UniformTypeIdentifiers
 
     /// Never exported. The region format and pid say nothing about speed; an exception's
     /// message, a termination reason and the memory map can quote a URL, title or file path.
-    static let alwaysStripped: Set<String> = [
+    nonisolated static let alwaysStripped: Set<String> = [
         "regionFormat", "pid", "composedMessage", "formatString", "arguments",
         "terminationReason", "virtualMemoryRegionInfo",
     ]
-    /// What "Include Mac model and macOS version" adds back. A system framework's binary UUID
+    /// What "Include Mac details" adds back. A system framework's binary UUID
     /// names the exact macOS build, and a source build's own UUID is unique to that Mac.
     static let macDetailKeys: Set<String> = ["deviceType", "osVersion", "platformArchitecture", "binaryUUID"]
-    /// Cut to the day when anonymous, like the samples.
+    /// Always cut to the day, like the samples.
     nonisolated static let timestampKeys: Set<String> = ["timeStampBegin", "timeStampEnd"]
 
-    var metricKitReports: [URL] {
+    nonisolated var metricKitReports: [URL] {
         ((try? FileManager.default.contentsOfDirectory(at: metricKitDirectory, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
@@ -114,7 +119,7 @@ import UniformTypeIdentifiers
         let stripped = includeMac ? Self.alwaysStripped : Self.alwaysStripped.union(Self.macDetailKeys)
         let reports: [Any] = metricKitReports.compactMap { url in
             (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) }
-                .map { Self.scrub($0, removing: stripped, dayOnly: !includeMac) }
+                .map { Self.scrub($0, removing: stripped) }
         }
         var root: [String: Any] = [
             "vane": Self.version,
@@ -127,19 +132,19 @@ import UniformTypeIdentifiers
         return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
     }
 
-    nonisolated static func scrub(_ value: Any, removing keys: Set<String>, dayOnly: Bool) -> Any {
+    nonisolated static func scrub(_ value: Any, removing keys: Set<String>) -> Any {
         if let dict = value as? [String: Any] {
             var out: [String: Any] = [:]
             for (key, value) in dict where !keys.contains(key) {
-                if dayOnly, timestampKeys.contains(key), let text = value as? String {
+                if timestampKeys.contains(key), let text = value as? String {
                     out[key] = String(text.prefix(10))
                 } else {
-                    out[key] = scrub(value, removing: keys, dayOnly: dayOnly)
+                    out[key] = scrub(value, removing: keys)
                 }
             }
             return out
         }
-        if let array = value as? [Any] { return array.map { scrub($0, removing: keys, dayOnly: dayOnly) } }
+        if let array = value as? [Any] { return array.map { scrub($0, removing: keys) } }
         return value
     }
 
@@ -261,13 +266,20 @@ final class MetricKitInbox: NSObject, MXMetricManagerSubscriber, Sendable {
             try? fm.createDirectory(at: directory, withIntermediateDirectories: false)
             let stamp = Int(Date().timeIntervalSince1970)
             for (i, data) in reports.enumerated() {
-                try? data.write(to: directory.appendingPathComponent("\(stamp)-\(i)-\(kind).json"), options: .atomic)
+                // Scrubbed before it touches disk, so the kept copy is no richer than an export.
+                guard let json = try? JSONSerialization.jsonObject(with: data),
+                      let clean = try? JSONSerialization.data(withJSONObject: PerformanceLog.scrub(
+                          json, removing: PerformanceLog.alwaysStripped))
+                else { continue }
+                let name = String(format: "%d-%04d-%@.json", stamp, i, kind)
+                try? clean.write(to: directory.appendingPathComponent(name), options: .atomic)
             }
             // Per kind, so a month of daily metrics cannot push out the crash reports.
             let mine = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.lastPathComponent.hasSuffix("-\(kind).json") }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
             for old in mine.dropLast(Self.keep) { try? fm.removeItem(at: old) }
+            Task { @MainActor in PerformanceLog.shared.refreshReports() }
         }
     }
 }
@@ -287,17 +299,17 @@ struct PerformanceSettingsCard: View {
                 }
             }
             SettingsRow("Apple reports") {
-                Text(log.metricKitReports.isEmpty ? "None yet" : "\(log.metricKitReports.count) saved")
+                Text(log.reportCount == 0 ? "None yet" : "\(log.reportCount) saved")
                     .foregroundStyle(.secondary)
             }
-            SettingsRow("Include Mac model and macOS version in exports") {
-                Toggle("Include Mac model and macOS version in exports", isOn: $includeMac).labelsHidden()
+            SettingsRow("Include Mac details in exports") {
+                Toggle("Include Mac details in exports", isOn: $includeMac).labelsHidden()
             }
             SettingsRow("Performance data") {
                 Button("Clear") { log.clear(); status = "" }
                 Button("Export…") { export() }
             }
-            Footnote("Measured on this Mac and never sent. Exports contain timings, counts, the Vane version and Apple’s crash and hang reports with their messages and file paths removed — not sites, tabs, Spaces or names."
+            Footnote("Measured on this Mac and never sent. Exports contain timings, counts, the Vane version and Apple’s crash and hang reports with their messages and file paths removed — not sites, tabs, Spaces or names. Mac details add the model, macOS version, memory, core count and binary identifiers."
                      + (status.isEmpty ? "" : " " + status))
         }
     }

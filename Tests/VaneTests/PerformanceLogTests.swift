@@ -63,6 +63,7 @@ import XCTest
         XCTAssertTrue(detailed.contains("Mac15,3"))
         XCTAssertTrue(detailed.contains("AAAA-1111"))
         XCTAssertFalse(detailed.contains("secret.example"))
+        XCTAssertFalse(detailed.contains("13:37"))
         XCTAssertTrue(detailed.contains("\"mac\""))
         XCTAssertFalse(detailed.contains("regionFormat"))
     }
