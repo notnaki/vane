@@ -65,6 +65,7 @@ import Foundation
         let e = error as NSError
         let shown = url?.absoluteString ?? ""
         let code = "\(e.domain) \(e.code)"
+        let offline = e.domain == NSURLErrorDomain && e.code == NSURLErrorNotConnectedToInternet
         return """
         <!doctype html>
         <html><head>
@@ -76,13 +77,13 @@ import Foundation
             color-scheme: light dark;
             --bg: #ffffff; --fg: #1c1c1e; --dim: #6b6b70;
             --line: #e3e3e6; --card: #f7f7f8;
-            --accent: #0a6cff; --accent-fg: #ffffff;
+            --accent: #0a6cff; --accent-fg: #ffffff; --food: #ff6a3d;
           }
           @media (prefers-color-scheme: dark) {
             :root {
               --bg: #16171a; --fg: #ececf0; --dim: #9a9aa2;
               --line: #2c2d32; --card: #1e1f23;
-              --accent: #3b86ff; --accent-fg: #08131f;
+              --accent: #3b86ff; --accent-fg: #08131f; --food: #ff7d55;
             }
           }
           html, body { height: 100%; }
@@ -107,6 +108,7 @@ import Foundation
             padding: .5rem 1.1rem; cursor: pointer;
           }
           button:active { opacity: .8; }
+          \(offline ? snakeStyle : "")
           .code { margin-top: 1.75rem; font-size: 11px; color: var(--dim);
                   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
         </style>
@@ -115,10 +117,101 @@ import Foundation
           <p>\(escape(detail))</p>
           \(shown.isEmpty ? "" : "<code class=\"url\">\(escape(shown))</code>")
           <button onclick="location.reload()">Try Again</button>
+          \(offline ? snakeGame : "")
           <div class="code">\(escape(code))</div>
         </main></body></html>
         """
     }
+
+    /// Snake, for the offline page only: something to do while the Wi-Fi comes back, the way
+    /// Chrome has its dinosaur. Space starts, arrows or WASD steer, walls and your own tail end
+    /// it. The best score lives in this page's localStorage. When the connection comes back
+    /// the page reloads itself, unless a game is in progress.
+    ///
+    /// ponytail: inline canvas, setInterval tick, no assets. No backslashes below: this is a
+    /// Swift literal.
+    private static let snakeStyle = """
+          .board { position: relative; margin-top: 2rem; }
+          #snake { display: block; width: 100%; height: auto; background: var(--card);
+                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+          .msg { position: absolute; inset: 0; display: flex; align-items: center;
+                 justify-content: center; color: var(--dim); font-size: 13px; pointer-events: none; }
+          .hud { display: flex; justify-content: space-between; margin-top: .5rem; font-size: 11px;
+                 color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    """
+
+    private static let snakeGame = """
+          <div class="board">
+            <canvas id="snake" aria-label="Snake game"></canvas>
+            <div class="msg" id="msg">Press Space to play Snake</div>
+          </div>
+          <div class="hud"><span id="score">Score 0</span><span id="best"></span></div>
+          <script>
+          (() => {
+            const c = document.getElementById('snake'), g = c.getContext('2d');
+            const msg = document.getElementById('msg'), scoreEl = document.getElementById('score'),
+                  bestEl = document.getElementById('best');
+            const S = 16, W = 30, H = 12, r = devicePixelRatio || 1;
+            c.width = W * S * r; c.height = H * S * r; g.scale(r, r);
+            const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+            let best = 0; try { best = +localStorage.snakeBest || 0; } catch (e) {}
+            let snake, dir, next, food, score = 0, timer, state = 'idle';
+            const hud = () => { scoreEl.textContent = 'Score ' + score;
+                                bestEl.textContent = best ? 'Best ' + best : ''; };
+            const hit = (p, list) => list.some(q => q.x === p.x && q.y === p.y);
+            const place = () => { do food = { x: Math.random() * W | 0, y: Math.random() * H | 0 };
+                                  while (hit(food, snake)); };
+            const say = t => { msg.textContent = t; msg.style.display = t ? '' : 'none'; };
+            const run = () => { clearInterval(timer); state = 'play'; say(''); timer = setInterval(step, 110); };
+            const reset = () => {
+              snake = [{ x: 6, y: 6 }, { x: 5, y: 6 }, { x: 4, y: 6 }];
+              dir = next = { x: 1, y: 0 }; score = 0; place();
+            };
+            const start = () => { reset(); hud(); run(); draw(); };
+            const step = () => {
+              dir = next;
+              const h = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+              const eat = h.x === food.x && h.y === food.y;
+              if (h.x < 0 || h.y < 0 || h.x >= W || h.y >= H || hit(h, eat ? snake : snake.slice(0, -1))) {
+                clearInterval(timer); state = 'over';
+                if (score > best) { best = score; try { localStorage.snakeBest = best; } catch (e) {} }
+                hud(); say('Game over · Space to play again'); return;
+              }
+              snake.unshift(h);
+              if (eat) { score++; hud(); place(); } else snake.pop();
+              draw();
+            };
+            const cell = (p, inset, rad) => { g.beginPath();
+              g.roundRect(p.x * S + inset, p.y * S + inset, S - 2 * inset, S - 2 * inset, rad); g.fill(); };
+            const draw = () => {
+              g.clearRect(0, 0, W * S, H * S);
+              g.fillStyle = css('--food'); cell(food, 3, 5);
+              g.fillStyle = css('--accent');
+              snake.forEach((p, i) => { g.globalAlpha = i ? 0.85 : 1; cell(p, 1, 4); });
+              g.globalAlpha = 1;
+            };
+            const keys = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+                           w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0] };
+            addEventListener('keydown', e => {
+              if (e.metaKey || e.ctrlKey || e.altKey) return;
+              if (e.key === ' ') { e.preventDefault();
+                if (state === 'paused') run(); else if (state !== 'play') start(); return; }
+              const k = keys[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+              if (!k || state !== 'play') return;
+              e.preventDefault();
+              if (k[0] !== -dir.x || k[1] !== -dir.y) next = { x: k[0], y: k[1] };
+            });
+            c.addEventListener('click', () => { if (state === 'paused') run(); else if (state !== 'play') start(); });
+            addEventListener('blur', () => { if (state === 'play') {
+              clearInterval(timer); state = 'paused'; say('Paused · Space to continue'); } });
+            addEventListener('online', () => {
+              if (state === 'play' || state === 'paused') document.querySelector('h1').textContent = 'You’re back online';
+              else location.reload();
+            });
+            reset(); food = { x: 24, y: 6 }; hud(); draw(); // idle frame: keep the food clear of the message
+          })();
+          </script>
+    """
 
     /// Enough escaping for text dropped into element content. The inputs are a url and a
     /// system error string, never markup.
@@ -168,6 +261,9 @@ import Foundation
             ("the url is html-escaped", page.contains("a&amp;b") && !page.contains("a&b")),
             ("the page offers a reload", page.contains("location.reload()")),
             ("the page adapts to dark mode", page.contains("prefers-color-scheme: dark")),
+            ("the offline page has snake",
+             html(for: err(NSURLErrorNotConnectedToInternet), url: nil).contains("id=\"snake\"")),
+            ("other failures don’t", !page.contains("id=\"snake\"")),
         ]
     }
 }
