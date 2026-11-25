@@ -1,6 +1,6 @@
 # Vane Privacy Policy
 
-Effective and last updated: **10 November 2026**
+Effective and last updated: **26 November 2026**
 
 This policy covers the Vane macOS browser and its [project website](https://vane.so/), maintained by [notnaki](https://github.com/notnaki). It describes the current implementation in this repository. Older releases and third-party builds may behave differently.
 
