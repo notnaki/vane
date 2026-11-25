@@ -85,6 +85,8 @@ import UniformTypeIdentifiers
         Self.disk.async {
             try? FileManager.default.removeItem(at: file)
             try? FileManager.default.removeItem(at: reports)
+            // After the delete, so a recount posted by an earlier report write cannot stick.
+            Task { @MainActor [weak self] in self?.refreshReports() }
         }
     }
 
