@@ -243,6 +243,8 @@ enum VanePage: Equatable, Sendable {
              VanePage(Search.url(for: "passwords")) == nil),
             ("internal pages restore after relaunch", TabAddress.restorable(settings)
                 && TabAddress.restorable(url("vane://settings/search")) && TabAddress.restorable(extensions)),
+            ("…and never into the Archive, whose restore would refuse them", !TabAddress.archivable(settings)
+                && !TabAddress.archivable(extensions) && TabAddress.archivable(url("https://example.com"))),
             ("…but not malformed ones", !TabAddress.restorable(url("vane://settings/passwords?x=1"))),
             ("search settings are app-wide; the rest follow the profile menu",
              !VaneSettingsSection.search.perProfile && VaneSettingsSection.passwords.perProfile
@@ -373,6 +375,9 @@ struct VanePageView: View {
             default: PrivacyPane(selection: selection)
             }
         }
+        // PrivacyPane falls back to the active profile for an unknown id, the header to this
+        // window's: keep them on the same, resolved profile (e.g. after a profile is deleted).
+        .task(id: profile.id) { if selection.profileID != profile.id { selection.profileID = profile.id } }
         .frame(maxWidth: 760, alignment: .leading)
         .padding(.horizontal, 64)
         .padding(.bottom, 24)
@@ -395,10 +400,28 @@ struct VanePageView: View {
 
     // MARK: extensions
 
-    private var extensions: some View {
-        ExtensionManagementView(host: ExtensionHost.host(for: profile.id), inTab: true,
-                                profileMenu: AnyView(profileMenu))
-            .id(profile.id)
+    /// Only a profile whose extensions are already running is managed here: creating a host
+    /// starts every enabled extension against that profile's data, which picking a name in
+    /// a menu must not do.
+    @ViewBuilder private var extensions: some View {
+        if let host = ExtensionHost.running(for: profile.id) {
+            ExtensionManagementView(host: host, inTab: true, profileMenu: AnyView(profileMenu))
+                .id(profile.id)
+        } else {
+            VStack(alignment: .leading, spacing: Look.inset) {
+                HStack(spacing: Look.inset) {
+                    Text("Extensions").font(Look.heading).foregroundStyle(Look.inkPrimary)
+                    Text("·").foregroundStyle(Look.inkSecondary).accessibilityHidden(true)
+                    profileMenu
+                }
+                Text("Extensions for \(profile.name) start when a window uses this profile. Open one of its Spaces to manage them.")
+                    .foregroundStyle(Look.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(32)
+        }
     }
 
     // MARK: the profile menu

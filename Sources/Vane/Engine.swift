@@ -3948,7 +3948,7 @@ struct Stash {
         let stashed = space(stashing: id)
         guard let tab = everyTab.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
-           TabAddress.restorable(u) {
+           TabAddress.archivable(u) {
             // The Space it was in and whether it was a Little Arc go down with it, so the
             // Library can put it back where it came from and filter on where it came from.
             Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
