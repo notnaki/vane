@@ -82,15 +82,23 @@ final class ExtensionManagerModelTests: XCTestCase {
         let profile = manager.create(name: "Extension Palette Fixture")
         XCTAssertNotEqual(manager.active.id, profile.id)
         let store = TabStore(profileID: profile.id, session: [])
+        // The page opens in the originating window, so give the store one; without it the page
+        // would go to (or open) another window and leak into later tests.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        store.window = window
         defer {
-            ExtensionManagement.close(for: profile.id)
+            store.window = nil
+            window.close()
             store.everyTab.forEach { $0.tearDown() }
             TabStore.all.removeAll { $0 === store }
             _ = manager.delete(profile.id)
         }
         let command = try XCTUnwrap(PaletteCommand.all(for: store).first { $0.id == "manageExtensions" })
         command.run()
-        XCTAssertTrue(NSApp.windows.contains { $0.title == "Extensions — Extension Palette Fixture" && $0.isVisible },
-                      "The action must retain its originating store rather than resolve the active profile when invoked")
+        let page = store.tabs.compactMap(\.vanePage).first { $0.kind == .extensions }
+        XCTAssertEqual(page?.selection.profileID, profile.id,
+                       "The action must retain its originating store rather than resolve the active profile when invoked")
     }
 }
