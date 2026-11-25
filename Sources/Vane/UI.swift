@@ -1853,7 +1853,7 @@ private struct PillBody: View {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
                     Text("Search").font(Look.heading).lineLimit(1).accessibilityHidden(true)
                 } else {
-                    Text(host).font(Look.text).lineLimit(1).truncationMode(.head)
+                    FadingHost(host: host)
                     .accessibilityHidden(true)
                     .vaneTooltip(address)
                 }
@@ -1963,7 +1963,7 @@ private struct PillBody: View {
                     }
                     .transition(.offset(x: -Look.pillPromptTravel).combined(with: .opacity))
                 } else {
-                    Text(host).font(Look.text).lineLimit(1).truncationMode(.head)
+                    FadingHost(host: host)
                         .vaneTooltip(address)
                         .transition(.opacity)
                 }
@@ -1977,7 +1977,7 @@ private struct PillBody: View {
         }
         // Arc's order: pinned extensions, Copy Link, Site Controls, all hidden until the
         // pointer is over the sidebar. Hidden, they lend their width to the host, as in Arc.
-        .padding(.trailing, glyphsShown && glyphsWidth > 0 ? glyphsWidth + 4 : 0)
+        .padding(.trailing, glyphsShown && glyphsWidth > 0 ? glyphsWidth + Look.pillGlyphGap : 0)
         .overlay(alignment: .trailing) {
             HStack(spacing: Look.pillGlyphGap) {
                 PinnedExtensions(store: store, tab: tab, revealed: revealed, reduced: reduced)
@@ -1989,7 +1989,10 @@ private struct PillBody: View {
                 }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { glyphsWidth = $0 }
-            .onPreferenceChange(PillGlyphsShown.self) { glyphsShown = $0 }
+            .onPreferenceChange(PillGlyphsShown.self) { shown in
+                // Paced with the glyphs' own fade, so the host never slides under one still fading.
+                withAnimation(reduced ? nil : Look.feedback) { glyphsShown = shown }
+            }
         }
         .animation(reduced ? nil : Look.pillChange, value: address.isEmpty)
     }
@@ -2079,6 +2082,24 @@ private struct PillHoverGlyphs: View {
         .allowsHitTesting(visible)
         .accessibilityHidden(!visible)
         .preference(key: PillGlyphsShown.self, value: visible)
+    }
+}
+
+/// Arc's overlong host: no ellipsis; the end of the host stays put and its start fades out.
+private struct FadingHost: View {
+    let host: String
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(host).lineLimit(1)
+            Text(host).lineLimit(1).fixedSize()
+                // Ideal 0: otherwise `ViewThatFits` finds no fit and lets the text spill out.
+                .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .trailing)
+                .clipped()
+                .mask(LinearGradient(stops: [.init(color: .clear, location: 0),
+                                             .init(color: .black, location: 1)],
+                                     startPoint: .leading, endPoint: .init(x: 0.12, y: 0.5)))
+        }
+        .font(Look.text)
     }
 }
 
