@@ -73,6 +73,12 @@ import SwiftUI
     }
 }
 
+extension TabStore {
+    /// Where the address pill is on screen: Little Vane's bar, the sidebar, or the main
+    /// window's View › Show Toolbar row, which keeps it with the sidebar hidden.
+    var addressChromeShown: Bool { isLittle || sidebarShown || sidebarPeeking || MainToolbar.shown }
+}
+
 /// One exact native keyboard/AX endpoint for the address surface. It never
 /// discovers a SwiftUI responder or borrows the surrounding browser's host.
 @MainActor final class MountedAddressButton: NSButton {
@@ -81,6 +87,9 @@ import SwiftUI
     var perform: (() -> Void)?
     var focusChanged: ((Bool) -> Void)?
     var addressValue = ""
+    /// Split View mounts one toolbar host per pane; only the active pane's is the
+    /// window's address endpoint, so F6, Tab and VoiceOver reach the page in use.
+    var claims = true
     private var focusDeliveryScheduled = false
 
     override init(frame: NSRect) {
@@ -113,7 +122,7 @@ import SwiftUI
 
     private var available: Bool {
         guard isEnabled, let store, let window, store.window === window,
-              store.profileVisible, (store.isLittle || store.sidebarShown || store.sidebarPeeking), !store.libraryOpen,
+              store.profileVisible, store.addressChromeShown, !store.libraryOpen,
               !isHiddenOrHasHiddenAncestor, bounds.width > 0, bounds.height > 0 else { return false }
         return store.mountedAddressEndpoint === self
     }
@@ -161,6 +170,10 @@ import SwiftUI
     }
     func registerOwner() {
         guard let store else { return }
+        guard claims else {
+            if store.mountedAddressEndpoint === self { store.mountedAddressEndpoint = nil }
+            return
+        }
         // Mounting can precede TabStore.window installation. Remember the weak
         // candidate now; available still requires exact store/window ownership.
         if let window, store.profileVisible, store.window == nil || store.window === window {
@@ -189,7 +202,7 @@ import SwiftUI
         guard let store, store.chromeFocusRequested, store.mountedAddressEndpoint === self,
               let window, store.window === window else { return }
         guard store.profileVisible, store.palette == nil, !store.libraryOpen,
-              store.isLittle || store.sidebarShown || store.sidebarPeeking,
+              store.addressChromeShown,
               isEnabled, !isHiddenOrHasHiddenAncestor,
               window.attachedSheet == nil, NSApp.modalWindow == nil,
               store.addressFocusRequest?.isCurrent(in: window) == true else {
@@ -248,12 +261,14 @@ private struct MountedAddressSurface: NSViewRepresentable {
     let action: () -> Void
     let customActions: [(String, () -> Void)]
     let focusChanged: (Bool) -> Void
+    let claims: Bool
     func makeNSView(context: Context) -> MountedAddressButton { MountedAddressButton(frame: .zero) }
     func updateNSView(_ view: MountedAddressButton, context: Context) {
         if view.store !== store || view.token != token { view.retire() }
         view.store = store; view.token = token; view.isEnabled = enabled
         view.perform = action; view.focusChanged = focusChanged
         view.addressValue = value
+        view.claims = claims
         view.setAccessibilityCustomActions(customActions.map { name, action in
             NSAccessibilityCustomAction(name: name) { [weak view] in
                 view?.performAccessibilityAction(action) ?? false
@@ -271,6 +286,7 @@ private struct AddressKeyboardAction: ViewModifier {
     let action: () -> Void
     let customActions: [(String, () -> Void)]
     let focusChanged: (Bool) -> Void
+    let claims: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var token = UUID()
@@ -280,9 +296,9 @@ private struct AddressKeyboardAction: ViewModifier {
         content
             .background {
                 MountedAddressSurface(store: store, token: token, enabled: enabled, value: value,
-                                      action: action, customActions: customActions) { value in
+                                      action: action, customActions: customActions, focusChanged: { value in
                     if focused != value { focused = value; focusChanged(value) }
-                }
+                }, claims: claims)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background {
@@ -310,9 +326,10 @@ extension View {
     func addressKeyboardAction(store: TabStore, value: String,
                                customActions: [(String, () -> Void)],
                                focusChanged: @escaping (Bool) -> Void,
+                               claims: Bool = true,
                                action: @escaping () -> Void) -> some View {
         modifier(AddressKeyboardAction(store: store, value: value, action: action,
-                                       customActions: customActions, focusChanged: focusChanged))
+                                       customActions: customActions, focusChanged: focusChanged, claims: claims))
     }
 }
 

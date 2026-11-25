@@ -104,10 +104,14 @@ import XCTest
         // Saved records hold these lines verbatim, so the wording must not drift.
         let tabCapture = try await limitations(["permissions": ["tabCapture"]])
         XCTAssertEqual(tabCapture, ["tabCapture: this WebKit version does not recognize this capability."])
-        for extra: [String: Any] in [["permissions": ["tabCapture"]], ["permissions": ["nativeMessaging"]], ["side_panel": [:]]] {
+        for extra: [String: Any] in [["permissions": ["tabCapture"]], ["permissions": ["nativeMessaging"]], ["omnibox": [:]]] {
             let missing = try await limitations(extra)
             XCTAssertTrue(missing.contains(where: ExtensionDiagnostics.isUnsupported), "\(extra): \(missing)")
         }
+        // Vane provides side panels itself, though WebKit does not know the permission.
+        let sidePanel = try await limitations(["permissions": ["sidePanel"], "side_panel": ["default_path": "panel.html"]])
+        XCTAssertEqual(sidePanel.count, 1, "\(sidePanel)")
+        XCTAssertFalse(sidePanel.contains(where: ExtensionDiagnostics.isUnsupported), "\(sidePanel)")
     }
 
     private func options(_ context: WKWebExtensionContext) async throws -> WKWebView {

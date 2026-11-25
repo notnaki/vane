@@ -47,7 +47,7 @@ private struct SidebarSlideFixture: View {
         SidebarSlideLayout(counts: state.counts) { SidebarSlideMarker(state: state) }
             .frame(width: 230, height: 400)
             .modifier(SidebarTrafficLightMotion(store: store, slide: state.visible ? 0 : -240,
-                inset: 5, visibility: state.visible ? 1 : 0, libraryOpen: false, peeking: state.visible))
+                inset: 5, lightsInset: 5, visibility: state.visible ? 1 : 0, libraryOpen: false, peeking: state.visible))
             .frame(width: 600, height: 500, alignment: .leading)
             .animation(.linear(duration: 0.4), value: state.visible)
     }

@@ -63,7 +63,7 @@ import XCTest
         }
         let (window, root, store, tab) = browser(width: 900)
         let host = try XCTUnwrap(tab.web.superview as? WebHost)
-        XCTAssertEqual(host.bounds.width, 661, accuracy: 0.001)
+        XCTAssertEqual(host.bounds.width, 900 - 228 - Look.cardGap, accuracy: 0.001)
         for body in ["browser", "sidebar", "strip", "libraryHead", "header", "pill", "favorites"] {
             XCTAssertGreaterThan(bodies.counts["sidebar.body." + body, default: 0], 0,
                                  "The real \(body) must be mounted before checking invalidation")
@@ -82,7 +82,7 @@ import XCTest
             presentation.didPublishWidth(from: before, to: width)
             presentation.presentFrame()
             XCTAssertTrue(tab.web.superview === host, "Width updates preserve the native page owner")
-            XCTAssertEqual(host.bounds.width, 889 - width, accuracy: 0.001)
+            XCTAssertEqual(host.bounds.width, 900 - Look.cardGap - width, accuracy: 0.001)
             XCTAssertTrue(store.spaceGesture.stripView === strip)
             XCTAssertTrue(store.spaceGesture.sectionsView === sections)
             XCTAssertEqual(strip.bounds.width, width - 16, accuracy: 0.001,
@@ -121,15 +121,16 @@ import XCTest
         SidebarWidth.shared.setLiveWidth(500)
         wideRoot.layoutSubtreeIfNeeded()
         narrowRoot.layoutSubtreeIfNeeded()
-        XCTAssertEqual(widePage.bounds.width, 389, accuracy: 0.001)
-        XCTAssertEqual(narrowPage.bounds.width, 189, accuracy: 0.001)
+        // The narrow window fits the sidebar to leave its 200pt minimum page.
+        XCTAssertEqual(widePage.bounds.width, 900 - 500 - Look.cardGap, accuracy: 0.001)
+        XCTAssertEqual(narrowPage.bounds.width, 200 - Look.cardGap, accuracy: 0.001)
         XCTAssertEqual(widePage.resizeLayout.sidebarWidth, 500)
         XCTAssertEqual(narrowPage.resizeLayout.sidebarWidth, 500)
         narrowWindow.setContentSize(NSSize(width: 550, height: 600))
         narrowRoot.layoutSubtreeIfNeeded()
         narrowRoot.layoutSubtreeIfNeeded()
-        XCTAssertEqual(narrowPage.bounds.width, 189, accuracy: 0.001)
-        XCTAssertEqual(widePage.bounds.width, 389, accuracy: 0.001)
+        XCTAssertEqual(narrowPage.bounds.width, 200 - Look.cardGap, accuracy: 0.001)
+        XCTAssertEqual(widePage.bounds.width, 900 - 500 - Look.cardGap, accuracy: 0.001)
         XCTAssertTrue(wideTab.web.superview === widePage)
         XCTAssertTrue(narrowTab.web.superview === narrowPage)
         XCTAssertFalse(wideWindow.isVisible)
@@ -160,7 +161,9 @@ import XCTest
         XCTAssertFalse(hiddenHost === firstHost || hiddenHost === secondHost)
         XCTAssertTrue(hiddenHost.offscreen, "The separate offscreen media branch must actually be mounted")
         let presentation = SidebarResizeFrameLayout(window: window, root: root)
-        for (width, paneWidth): (CGFloat, CGFloat) in [(300, 290), (500, 190)] {
+        for width: CGFloat in [300, 500] {
+            // Two panes split what the card leaves; a 1x screen rounds the half point.
+            let paneWidth = (900 - width - Look.cardGap - Look.splitGap) / 2
             let before = SidebarWidth.shared.width
             SidebarWidth.shared.setLiveWidth(width)
             presentation.didPublishWidth(from: before, to: width)
@@ -172,8 +175,8 @@ import XCTest
             }
             XCTAssertEqual(firstHost.resizeFraction.width, 0.5)
             XCTAssertEqual(secondHost.resizeFraction.width, 0.5)
-            XCTAssertEqual(firstHost.bounds.width, paneWidth, accuracy: 0.001)
-            XCTAssertEqual(secondHost.bounds.width, paneWidth, accuracy: 0.001)
+            XCTAssertEqual(firstHost.bounds.width, paneWidth, accuracy: 0.5)
+            XCTAssertEqual(secondHost.bounds.width, paneWidth, accuracy: 0.5)
             XCTAssertTrue(first.web.superview === firstHost)
             XCTAssertTrue(second.web.superview === secondHost)
             XCTAssertTrue(hidden.web.superview === hiddenHost)

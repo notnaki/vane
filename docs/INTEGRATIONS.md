@@ -206,8 +206,173 @@ Popup/options behavior still depends on the extension and WebKit.
 Tab selection returns a clear error for rows hidden by folded folders, a collapsed
 Pinned section, or a non-leading Split View pane. Activating those tabs remains supported.
 
-Vane does not provide native messaging hosts, replacement browser pages, extension side
-panels, developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
+**Side panels.** WebKit has no `chrome.sidePanel`, so Vane supplies it for extensions
+that request the `sidePanel` permission. The panel is docked on the right of the page as
+a second card, 360 points wide, and shows the extension's own page in its extension
+context. It narrows to as little as 280 points so the page keeps 420, and is hidden,
+still open, in a window too narrow for both. It honours `side_panel.default_path`,
+`setOptions` (per tab or for the whole extension, including a per-tab `enabled: false`),
+`open`, `close`, `getOptions`, `getLayout` and `setPanelBehavior({openPanelOnActionClick})`.
+A panel opened for one tab shows only while that tab is selected. It stays with its tab:
+switching to another Space hides it and coming back shows it again, it follows the tab to
+another window, and it closes when the tab or window closes. A window's panel also
+survives a hop to another profile's Space and back. Every panel has a header with the
+extension's icon and name and a ✕ that closes it, whatever the extension does. With
+`openPanelOnActionClick` the extension's button and its `_execute_action` shortcut open
+and close its panel; without it they reach the popup or `action.onClicked` as usual. The
+page's own `window.close()` closes the panel too. `open` expects a user gesture: the
+extension's button or shortcut within the last five seconds, a click in the extension
+page that calls it, or a mouse click within the last five seconds while the target
+window is key (a button in a web page that messages the worker, which then opens the
+panel for `sender.tab.id`). This gate is advisory, not a security boundary: any context
+of the extension can forge the page-reported click, a click anywhere in the window counts
+for every extension, and WebKit's own record of a gesture on a tab lasts until that tab
+navigates. It keeps panels from opening unprompted; a forged call can only show the
+extension's own page, which the ✕ closes. Limits: options and behaviour are forgotten when the extension reloads or Vane
+restarts, `getOptions` answers from the calling context's own writes, and
+`sidePanel.onOpened`/`onClosed` are not available. `runtime.getContexts` lists the
+background and each open side panel (with its `documentUrl`); popups and options pages
+are not listed, and `tabId` and `windowId` are always `-1`.
+
+**Page control (`chrome.debugger`).** WebKit has no `chrome.debugger`. For an extension
+that lists `debugger` in `permissions`, Vane supplies `attach`, `detach`, `sendCommand`,
+`getTargets`, `onDetach` and `onEvent`, and answers part of the Chrome DevTools Protocol
+with public WebKit calls. The install review names the capability (“Control pages you
+allow it on: read them, click, type and take screenshots”). An extension accepted before
+this existed is not loaded until the user approves a “Review new support for…” prompt
+that names the capability. Only the extension's
+own worker and pages can reach it. A page, a content script, and an extension without
+the permission cannot. Every command is checked against the document actually loaded:
+it must be `http` or `https`, on a host the extension has access to, and in a private
+window only with private access. This is stricter than Chrome, where `debugger` alone
+reaches every site. One debugger per tab.
+
+Only the page on screen is driven: `attach` and every command fail with “Vane can only
+control a tab that is on screen.” for a tab in the background, a page kept hidden behind
+the one showing, a Peek, and a window that is not visible. Chrome drives background tabs;
+Vane does not, so that a driven page is always under its pill. A session stays attached
+while its tab is in the background and answers again when the tab is shown.
+
+While a tab is attached, a pill at the foot of its page says “*Extension* is controlling
+this tab” with **Stop**; in Split View each attached pane has its own. The tab's sidebar
+row carries a small pointer glyph, whether or not the tab is on screen (a split's row
+shows it when any of its panes is attached). Stop detaches and tells the extension (`canceled_by_user`),
+and a command already on its way to the page is not run;
+closing the tab does too (`target_closed`). As in Chrome, the extension may attach again.
+
+| Command | In Vane |
+| --- | --- |
+| `Runtime.evaluate` | Runs in the page's own world, without `eval`, so a page's Content Security Policy does not block it. The code must compile as one whole function body, checked by Vane before any page sees it, so it cannot close the wrapper it runs in; otherwise the answer is a `SyntaxError`. The page's origin is checked again inside the page before any of the code runs, so a navigation to another site in between fails the command; a single-page app changing its own address does not. Evaluation and screenshots also check again that the page is still the one showing. Top-level `await` works and the last expression's value is returned (`replMode`). `returnByValue`, `awaitPromise`, `timeout` and `exceptionDetails` are honoured. No object handles: without `returnByValue` only the description comes back. |
+| `Page.captureScreenshot` | `png` or `jpeg` with `quality`; `clip` with `scale`. No `webp`, nothing beyond the viewport. The image is discarded, and the command fails, if the document or its address changed while it was taken. |
+| `Input.dispatchMouseEvent` | Move, press, release and drag with the left or right button, and the wheel. The page sees trusted events. The pointer on screen does not move. A click focuses the page only when nothing else in the window holds the keyboard: the address bar, a side panel or another pane keeps it. Between a press and its release, a drag the main frame would start is cancelled (it would follow the real pointer); the page's own listeners cannot prevent that, and its drags are its own again after the release. |
+| `Input.dispatchKeyEvent`, `Input.insertText` | Keys by DOM `code`, with modifiers; text goes to the focused field. They reach the page whether or not it holds the keyboard. With ⌘, the editing `commands` Chrome's caller names are performed, once each, from a fixed list (`selectAll`, `copy`, `cut`, `paste`, `undo`, `redo`, and the `move…` and `delete…` caret commands); no other selector is. A key the page leaves alone goes no further: it is dropped as it returns to the application, before any key monitor, so it never reaches Vane's shortcuts, the tab switcher, another extension's commands or the main menu. |
+| `Page.navigate`, `Page.reload`, `Page.getFrameTree`, `Page.bringToFront` | `http` and `https` only; the main frame only. `Page.navigate` also requires host access to the destination (stricter than Chrome). |
+| `Page.enable`, `Runtime.enable`, `Network.enable`/`disable`, `Network.setBypassServiceWorker`, `Emulation.setFocusEmulationEnabled`, `Page.startScreencast`/`stopScreencast`, `Input.cancelDragging` | Accepted and ignored, so an attach sequence completes. Their events are never sent. |
+| Anything else | Fails at once with a protocol error such as `{"code":-32601,"message":"'DOM.getDocument' wasn't found"}`. |
+
+Limits: input reaches only a tab that is on screen in its window; a background tab's
+input commands fail. Console, network, navigation and JavaScript-dialog events are not
+sent, so an extension's console and network readers stay empty and it cannot answer an
+`alert`. The middle mouse button, `webp`, object handles, frames other than the main
+one, and `var`/function declarations that outlive one evaluation are not provided.
+Once an extension has pressed the mouse in a page, drags of links and images in that
+document's main frame are cancelled until the session ends, so no real drag session
+follows the pointer; HTML drag and drop cannot be driven, and a draggable element
+inside a cross-origin frame can still start one. In callback style
+`runtime.lastError.message` carries WebKit's prefix (`Invalid call to tabs.create(). …`).
+The last-expression rewrite is a tokenizer, not a parser: code it misreads still runs,
+and returns no value; so does code over 512 KB or nested more than 32 blocks deep.
+
+**Tab groups.** An MV3 extension that lists `tabGroups` in `permissions` gets
+`chrome.tabGroups` (`get`, `query`, `update`, `move`, the four events,
+`TAB_GROUP_ID_NONE` and `Color`) and `tabs.group`/`tabs.ungroup`. A group is a
+folder in Today, in the Space the window is showing. Tabs from `tabs.get` and
+`tabs.query` carry `groupId` (the folder the tab sits in directly, or -1), and
+`tabs.query({groupId})` filters on it. Rules:
+
+- Only Today tabs can be grouped. Pinned tabs and Favourites are refused and stay put.
+- `tabs.group` without `groupId` makes a new folder beside the tab, named after the
+  extension until it sets a title. Vane records which extension made it.
+- Extensions may read every Today folder as a group, but may rename, recolour, fold,
+  move, fill or empty only folders an extension made. A folder the user made is
+  refused with an error and never changes.
+- An extension-made folder whose last tab leaves goes, as Chrome removes an empty
+  group. Today removes empty folders anyway, so a change that would leave a user's
+  folder empty — moving an extension's folder out of it, say — is refused.
+- `tabs.group` and `tabs.ungroup` change all the named tabs or none. Ungrouping a tab
+  in no group, or a pinned tab or Favourite, does nothing. A failed call made with a
+  callback sets `runtime.lastError` for that callback, with WebKit's prefix
+  (`Invalid call to tabs.create(). …`).
+- `tabGroups.move` puts the group's first tab at `index`, as in Chrome.
+- Tabs stay in their own window: joining a group in another window, or moving a group
+  to another window, fails. `createProperties.windowId` is ignored.
+- Colours are kept and read back; Vane folders do not show them.
+- Locked and live folders are not groups. Private windows run no extensions in Vane;
+  the host also refuses a private tab outright.
+- Group ids are integers stable for the session. Events fire for changes made by any
+  extension and for folders appearing or going as tabs change; a user's rename or fold
+  is announced at the next tab change. While a context listens, it keeps one call open.
+- Gaps: WebKit's `tabs` events cannot be replaced, so `tabs.onUpdated` never reports a
+  `groupId` change and tabs in `tabs.onCreated`/`onUpdated` have no `groupId`. Nor do
+  tabs from `tabs.create`, `update`, `move`, `duplicate`, or `windows.get`/`getAll`
+  with `populate`: read it with `tabs.get` or `tabs.query`.
+- Changes animate like any other sidebar move, and are instant with Reduce Motion or
+  Battery Saver.
+
+**Web sign-in (`chrome.identity`).** For extensions that request `identity`, Vane
+supplies `getRedirectURL()` (`https://<Chrome ID>.chromiumapp.org/`, using the Web Store
+ID or the manifest `key`'s ID, for every extension kind) and `launchWebAuthFlow()`. An interactive flow opens the
+sign-in page in a Vane window titled with the extension's name and the page's host, on
+the profile's own cookies. It ends when the page navigates to the redirect URL, which
+never loads, or rejects when the window is closed. Non-interactive flows have no window
+and need the page to redirect without loading, within `timeoutMsForNonInteractive`
+(one minute at most). Several flows may run at once. `identity` in `optional_permissions`
+only gets no API. `getAuthToken` and the manifest's
+`oauth2` (Google account sign-in) are not available. Callbacks cannot receive
+`runtime.lastError`. A folder extension whose `key` copies another extension's gets that
+extension's redirect URL, as an unpacked extension does in Chrome; Vane refuses it only
+when the other extension is installed in the same profile, so load folders you trust.
+
+**Chromium-only namespaces.** When an MV3 extension requests `debugger`, `downloads`,
+`notifications` or `offscreen` in `permissions`, WebKit leaves
+the namespace out and the extension's background would stop at its first
+`chrome.notifications.onClicked.addListener(…)`. Vane defines each one with its events,
+which never fire, and its constants. Methods stay undefined, so a check such as
+`chrome.downloads?.download` still reports the feature as missing and the extension can
+fall back; calling one anyway throws as it would in any browser without it. Names listed
+only in `optional_permissions` get nothing. This lets the rest of the extension start;
+the features behind these namespaces do not work. The manager still lists each one as
+unrecognized. `debugger` is the exception: see Page control above. `tabGroups` is covered under Tab groups. `storage.managed` reads as empty, because Vane has no administrator policy.
+The namespaces exist in the worker and extension pages only. Content scripts declared in
+the manifest of an MV3 worker extension get the `chrome.runtime` constants alone
+(`OnInstalledReason`, `ContextType`), from a generated script that runs ahead of the
+extension's own; scripts injected with `scripting.registerContentScripts` or
+`executeScript` do not.
+
+**Other Chromium-only members.** MV3 workers and extension pages also get what ad
+blockers read at their top level: `webRequest.ResourceType` (only the types WebKit accepts
+in a listener filter, so no `webtransport` or `webbundle`), `scripting.ExecutionWorld`,
+`declarativeNetRequest.getAvailableStaticRuleCount` (always 30,000, Chrome's guaranteed
+minimum; WebKit itself limits only the number of enabled rulesets, to 50), and stand-in
+`webNavigation.onHistoryStateUpdated`, `onReferenceFragmentUpdated` and `onTabReplaced`
+events that never fire. `webNavigation.onCreatedNavigationTarget` fires when a tab opened
+by another tab appears, with the opener as `sourceTabId` and `sourceFrameId` 0.
+`management.getSelf()` answers from the manifest (install type `normal`) without the
+`management` permission, as in Chrome; no other `management` method exists. With the
+`idle` permission, `idle.queryState()` always answers `active` and `onStateChanged`
+never fires. A `webRequest` listener filter with `ws://` or `wss://` URL patterns, which
+WebKit refuses as a whole, is registered without those patterns.
+
+**Large rule sets take a while to start blocking.** WebKit compiles every enabled
+declarative rule of an extension into one content-blocker list, in the background, after
+activation and again after each rule change. It caps that list at 150,000 entries after
+its own translation, which can expand a rule with N `requestDomains` into N. AdBlock's
+default lists (EasyList, Acceptable Ads and ABP anti-circumvention, 59,072 rules)
+took about one to one and a half minutes on first install; until then pages load
+unfiltered. The compiled list is reused on later launches.
+
+Vane does not provide native messaging hosts, replacement browser pages,
+developer-tools panels, omnibox keywords, or Chrome's Google-account OAuth (`oauth2`). Native
 messaging has public WebKit hooks, but Vane has no approved host-execution mechanism.
 ZIP/native-host feasibility, exact upstream package provenance, regression scope, and
 assembled-app results are in [Extension validation](EXTENSION-VALIDATION.md). No Vane

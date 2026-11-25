@@ -114,6 +114,7 @@ extension PaletteCommand {
             if tab.canGoForward { out.append(PaletteCommand(.forward, icon: "chevron.right")) }
             out += [
                 PaletteCommand(.showReader, icon: "doc.plaintext", title: "Reader Mode"),
+                PaletteCommand(.translatePage, icon: "translate", title: PageTranslation.title(for: tab)),
                 PaletteCommand(.pictureInPicture, icon: "pip"),
                 PaletteCommand(.muteTab, icon: TabAudio.isMuted(tab) ? "speaker.wave.2" : "speaker.slash",
                                title: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab"),
@@ -174,6 +175,8 @@ extension PaletteCommand {
         // and a private window has no Spaces — neither has anything for these to act on.
         if !store.isLittle {
             out.append(PaletteCommand(.toggleSidebar, icon: "sidebar.left"))
+            out.append(PaletteCommand(MainToolbar.shown ? "Hide Toolbar" : "Show Toolbar",
+                                      icon: "menubar.rectangle", command: .toggleToolbar))
             if active != nil {
                 out += [
                     PaletteCommand(active?.kind == .pinned ? "Unpin Tab" : "Pin Tab",
@@ -303,9 +306,9 @@ extension PaletteCommand {
         .newEasel, .showEasels, .captureToEasel,
         .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
-        .showReader, .pictureInPicture, .muteTab, .pauseAllMedia, .zoomIn, .zoomOut, .actualSize,
+        .showReader, .translatePage, .pictureInPicture, .muteTab, .pauseAllMedia, .zoomIn, .zoomOut, .actualSize,
         .sharePage, .savePageAs, .capturePage, .captureFullPage, .showWebInspector,
-        .toggleSidebar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
+        .toggleSidebar, .toggleToolbar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
         .tidyTabs, .clearTabs, .newSpace, .nextSpace, .previousSpace,
         .showLibrary, .viewArchive, .viewHistory, .showDownloads,
         .settings, .keyboardShortcutsHelp, .vaneHelp,

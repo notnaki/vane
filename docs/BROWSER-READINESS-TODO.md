@@ -134,9 +134,9 @@ Remaining:
   relaunch, subscription streaming, and cross-network calls with appropriate test
   accounts/devices. Local challenge/call fixtures and public FairPlay demos do not
   establish those flows.
-- Obtain Apple's managed browser passkey entitlement approval and matching embedded
-  provisioning, then verify registration/sign-in and user authorization. The
-  recorded request submission and Developer ID certificate do not grant access.
+- Verify passkey registration/sign-in and user authorization in a release signed with
+  the 2026-11-23 Developer ID profile. Apple approved the managed browser passkey
+  entitlement on 2026-10-06; earlier profiles predate enabling it and lack the grant.
 - Complete pending physical printing, large/frame uploads, native media/caption,
   extension, minimum-macOS, and unchanged notarized-release checks in the matrix.
 - Keep release notes, guides, and support claims aligned with new evidence. The

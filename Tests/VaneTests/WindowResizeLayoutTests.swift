@@ -488,6 +488,18 @@ import XCTest
             let baseline = try XCTUnwrap(sampler.frames.last)
             guard baseline.isPaintedBaseline else { throw NSError(domain: "ResizePaintBaselineReadiness", code: 1) }
             let reducedMotion = Motion.reduced
+#if DEBUG
+            // Shows whether WebKit's paint or the stall-tolerant deadline released the close.
+            let trace = ResizePaintTrace(label: "sidebar-close")
+            trace.install()
+            defer {
+                trace.stop()
+                let steps = trace.snapshot().entries.filter { $0.event.hasPrefix("sidebar.prepare.") }
+                print("SIDEBAR_PREPARATION " + steps.map {
+                    "\($0.event.dropFirst(16))=\(Int((($0.time - steps[0].time) * 1000).rounded()))ms"
+                }.joined(separator: " "))
+            }
+#endif
             let began = CACurrentMediaTime()
             owner.stage = "sidebar transition"
             store.toggleSidebar()
@@ -687,7 +699,7 @@ import XCTest
                 XCTAssertGreaterThanOrEqual(owner.maxWidth, 1100, "The window must actually grow during capture")
             } else {
                 XCTAssertEqual(SidebarWidth.shared.width, 228)
-                XCTAssertEqual(web.frame.width, 661, accuracy: 1)
+                XCTAssertEqual(web.frame.width, 900 - 228 - Look.cardGap, accuracy: 1)
             }
             XCTAssertEqual(window.frame.width, 900, accuracy: 1, "Commit the latest queued request")
             XCTAssertEqual(window.frame.height, frameHeight, accuracy: 1,

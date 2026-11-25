@@ -658,6 +658,44 @@ private struct DisabledKeyboardSurface: View {
         }
     }
 
+    func testToolbarAddressEndpointWorksWithTheSidebarHidden() async throws {
+        try await withNativePageFixture { store, window, web in
+            let was = MainToolbar.shown
+            UserDefaults.vane.set(true, forKey: MainToolbar.prefKey)
+            defer { UserDefaults.vane.set(was, forKey: MainToolbar.prefKey) }
+            store.sidebarShown = false
+            store.sidebarPeeking = false
+            // View › Show Toolbar's host field: the same AddressPill, in its plain face.
+            let host = NSHostingView(rootView: AddressPill(tab: store.active, plain: true)
+                .environmentObject(store))
+            let container = NSView(frame: window.contentView!.frame)
+            host.frame = NSRect(x: 100, y: 560, width: 400, height: 40)
+            web.frame = NSRect(x: 0, y: 0, width: 800, height: 550)
+            container.addSubview(host)
+            container.addSubview(web)
+            window.contentView = container
+            try await compatibilityWait {
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                CATransaction.flush()
+                return store.mountedAddressEndpoint?.window === window
+                    && (store.mountedAddressEndpoint?.bounds.width ?? 0) > 0
+                    && web.window === window && NSApp.isActive && window.isKeyWindow
+            }
+            let endpoint = try XCTUnwrap(store.mountedAddressEndpoint)
+            XCTAssertTrue(endpoint.acceptsFirstResponder, "Tab reaches the toolbar's pill")
+            XCTAssertTrue(window.makeFirstResponder(web))
+            // F6 goes to the toolbar's pill; the hidden sidebar stays hidden.
+            store.focusNextArea()
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertTrue(window.firstResponder === endpoint)
+            XCTAssertFalse(store.sidebarShown, "F6 must not open the sidebar to reach a pill already on screen")
+            XCTAssertTrue(endpoint.accessibilityPerformPress(), "VoiceOver can press the toolbar's pill")
+            XCTAssertTrue(store.palette == .address)
+            store.palette = nil
+        }
+    }
+
     func testF6SharedBrowserHostCommitsExactAddressAndNativeActions() async throws {
         try await withNativePageFixture(isPrivate: false) { store, window, _ in
             let opened = await store.openEaselAsync(create: true)

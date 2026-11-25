@@ -151,13 +151,13 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case printPage, settings
     case openFile, savePageAs, sharePage, capturePage, captureFullPage
     // View
-    case reload, hardReload, openLocation, find, toggleSidebar
+    case reload, hardReload, openLocation, find, toggleSidebar, toggleToolbar
     case nextFocusArea
     case findNext, findPrevious
     case actualSize, zoomIn, zoomOut, fullScreen
     case copyPageURL, showLibrary
     case showReader, biggerReaderText, smallerReaderText, readerSerif
-    case saveForOffline, readingQueue
+    case saveForOffline, readingQueue, translatePage
     // History / Archive
     case back, forward, clearHistory
     case viewArchive, viewHistory, showDownloads, clearArchive
@@ -227,6 +227,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext: "Find Next"
         case .findPrevious: "Find Previous"
         case .toggleSidebar: "Toggle Sidebar"
+        case .toggleToolbar: "Show Toolbar"
         case .nextFocusArea: "Next Focus Area"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
@@ -236,6 +237,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .showLibrary: "Show Library"
         case .showReader: "Show Reader"
         case .saveForOffline: "Save for Offline"
+        case .translatePage: "Translate Page"
         case .readingQueue: "Reading Queue"
         case .biggerReaderText: "Bigger Reader Text"
         case .smallerReaderText: "Smaller Reader Text"
@@ -317,9 +319,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
              .sharePage, .capturePage, .captureFullPage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
-             .toggleSidebar, .actualSize,
+             .toggleSidebar, .toggleToolbar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
-             .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .copyPageURL, .showLibrary: .view
+             .smallerReaderText, .readerSerif, .saveForOffline, .readingQueue, .translatePage, .copyPageURL, .showLibrary: .view
         case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
              .clearArchive: .history
         case .bookmarkPage: .bookmarks
@@ -369,6 +371,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext:         Keybinding("g", .command)
         case .findPrevious:     Keybinding("g", [.command, .shift])
         case .toggleSidebar:    Keybinding("s", .command)
+        case .toggleToolbar:    Keybinding("d", [.command, .shift])
         case .nextFocusArea:    Keybinding("\u{F709}") // F6, like other browsers
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)
@@ -379,8 +382,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .forward:          Keybinding("]", .command)
         // Arc's ⌘D pins the tab. Bookmarking keeps the adjacent ⌥⌘D it already had, and
         // Favourite ships unbound — Arc gives it no default either, it is a menu item and
-        // a right-click. ⇧⌘D is left free (Arc spends it on the toolbar, which Vane has
-        // no equivalent of).
+        // a right-click. ⇧⌘D is Arc's View › Show Toolbar, and Vane's too.
         case .bookmarkPage:     Keybinding("d", [.command, .option])
         case .pinTab:           Keybinding("d", .command)
         case .clearTabs:        Keybinding("k", [.command, .shift])
@@ -481,7 +483,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// A future move is a *new* step, never an edit to an old one: bump this and add a
     /// matching `from < N` block to `migrate`, leaving the blocks already there as they are —
     /// they belong to the tables that were saved before them.
-    nonisolated static let migration = 2
+    nonisolated static let migration = 3
 
     /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite. `from` is the
     /// version the table was saved at: each step runs only for a table old enough to need it,
@@ -504,6 +506,17 @@ enum Command: String, CaseIterable, Codable, Sendable {
         if from < 2 {
             for (id, binding) in out where reserved(binding) != nil {
                 out[id] = nil
+            }
+        }
+        // Show Toolbar arrived on ⇧⌘D, which was free. Somebody who had already put another
+        // command there chose it; the new default must not take it, and `command(for:)` would
+        // hand it to whichever comes first. Show Toolbar steps aside, unbound. Runs after
+        // step 1, so Pin Tab's old ⇧⌘D default — dropped there — is no claim.
+        if from < 3 {
+            let toolbar = Command.toggleToolbar.rawValue
+            let keys = Keybinding("d", [.command, .shift])
+            if out[toolbar] == nil, out.contains(where: { $0.key != toolbar && $0.value == keys }) {
+                out[toolbar] = .unassigned
             }
         }
         return out
@@ -1031,7 +1044,9 @@ extension Keybindings {
              binding(for: .pinTab).display == "⌘D"),
             ("Favourite Tab ships unbound, as Arc does",
              binding(for: .favouriteTab).display == "---"),
-            ("⇧⌘D is left free", conflicts(Keybinding("d", [.command, .shift])).isEmpty),
+            ("Show Toolbar defaults to ⇧⌘D, the way Arc binds it",
+             binding(for: .toggleToolbar).display == "⇧⌘D"
+                && conflicts(Keybinding("d", [.command, .shift])) == [.toggleToolbar]),
             ("Bookmark This Page keeps ⌥⌘D",
              binding(for: .bookmarkPage).display == "⌥⌘D"),
             ("Clear Tabs defaults to ⇧⌘K", binding(for: .clearTabs).display == "⇧⌘K"),
@@ -1157,14 +1172,33 @@ extension Keybindings {
              from1[Command.favouriteTab.rawValue] == Keybinding("d", .command)
                 && from1[Command.searchTabs.rawValue] == nil),
             ("a table at the current version is handed back untouched",
-             migrate(both, moved: movedDefaults, from: 2) == both),
-            ("whatever ran, the table is stamped at 2 and has nothing left to run",
-             migration == 2 && migrate(both, moved: movedDefaults, from: migration) == both),
+             migrate(both, moved: movedDefaults, from: migration) == both),
+            ("whatever ran, the table is stamped at 3 and has nothing left to run",
+             migration == 3 && migrate(both, moved: movedDefaults, from: migration) == both),
+        ]
+        // Step 3: ⇧⌘D became Show Toolbar's default; a binding already there keeps it.
+        let shiftD = Keybinding("d", [.command, .shift])
+        let toolbar = Command.toggleToolbar.rawValue
+        let claimed = migrate([Command.newTab.rawValue: shiftD], moved: movedDefaults, from: 2)
+        let pinOld = migrate([Command.pinTab.rawValue: shiftD], moved: movedDefaults, from: 0)
+        let ownToolbar = migrate([toolbar: Keybinding("t", [.command, .option]),
+                                  Command.newTab.rawValue: shiftD], moved: movedDefaults, from: 2)
+        out += [
+            ("a saved ⇧⌘D keeps its command and Show Toolbar is left unbound",
+             claimed[Command.newTab.rawValue] == shiftD && claimed[toolbar] == .unassigned),
+            ("Pin Tab's old ⇧⌘D default is no claim, so Show Toolbar keeps ⇧⌘D",
+             pinOld[Command.pinTab.rawValue] == nil && pinOld[toolbar] == nil),
+            ("a Show Toolbar binding the user chose is not touched",
+             ownToolbar[toolbar] == Keybinding("t", [.command, .option])),
+            ("a table with ⇧⌘D free keeps Show Toolbar on it",
+             migrate([:], moved: movedDefaults, from: 2)[toolbar] == nil),
+            ("a table already at 3 is not migrated again",
+             migrate([Command.newTab.rawValue: shiftD], moved: movedDefaults, from: 3)[toolbar] == nil),
         ]
         // And the same thing through the store, which is where it bites: a table written
         // before this migration existed, read back once.
         let old = Saved(bindings: [Command.searchTabs.rawValue: Keybinding("c", .command)],
-                        priorities: [:], migrated: migration - 1)
+                        priorities: [:], migrated: 1)
         if let blob = try? JSONEncoder().encode(old) {
             defaults.set(blob, forKey: storeKey)
             cached = nil
@@ -1174,6 +1208,21 @@ extension Keybindings {
         } else {
             out.append(("a table saved before the migration comes back with ⌘C gone", false))
         }
+        // The iCloud path: an adopted table stamped 2 that holds ⇧⌘D, picked up the way
+        // `reloadICloudPreferences` does it — the cache dropped, the getter migrating.
+        let synced = Saved(bindings: [Command.newTab.rawValue: shiftD], priorities: [:], migrated: 2)
+        if let blob = try? JSONEncoder().encode(synced) {
+            defaults.set(blob, forKey: storeKey)
+            reloadICloudPreferences()
+            out.append(("an adopted iCloud table holding ⇧⌘D keeps it, with Show Toolbar unbound",
+                        command(for: shiftD) == .newTab
+                            && binding(for: .toggleToolbar) == .unassigned
+                            && conflicts(shiftD) == [.newTab]))
+        } else {
+            out.append(("an adopted iCloud table holding ⇧⌘D keeps it, with Show Toolbar unbound", false))
+        }
+        reset(.newTab)
+        reset(.toggleToolbar)
 
         // Reset.
         reset(.newWindow)

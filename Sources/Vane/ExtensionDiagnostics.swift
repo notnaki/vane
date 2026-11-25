@@ -21,8 +21,34 @@ import WebKit
         let declared = Set(((manifest["permissions"] as? [String] ?? [])
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
-        var issues = declared.subtracting(recognized).sorted().map {
+        // Vane supplies `sidePanel` and `identity` itself; see ExtensionSidePanel.swift, ExtensionIdentity.swift.
+        // Vane supplies part of `idle` and `management`; see ExtensionChromiumGaps.swift.
+        let missing = declared.subtracting(recognized)
+        // `idle`'s stand-in needs it as a required permission; `getSelf` needs none.
+        // The stand-ins are MV3-only, so MV2 extensions still hear these are unrecognized.
+        let mv3 = manifest["manifest_version"] as? Int == 3
+        let required = mv3 ? Set(manifest["permissions"] as? [String] ?? []) : []
+        var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission,
+                                          ExtensionTabGroupsAPI.permission] + (mv3 ? ["management"] : []))
+            .subtracting(required.intersection(["idle"])).sorted().map {
             "\($0): \(unrecognized)"
+        }
+        if missing.contains("idle"), required.contains("idle") { issues.append("idle: Vane always reports the user as active; state changes never fire.") }
+        if mv3, missing.contains("management") { issues.append("management: Vane answers getSelf only.") }
+        if declared.contains(ExtensionSidePanelAPI.permission) {
+            issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events are unavailable.")
+        }
+        if declared.contains(ExtensionDebuggerAPI.permission) {
+            issues.append("debugger: Vane answers part of the DevTools protocol for the tab on screen: Runtime.evaluate, Page.captureScreenshot, mouse, key and text input, Page.navigate and Page.reload. Console, network and dialog events are not sent, and other commands fail.")
+        }
+        if ExtensionIdentityAPI.declared(manifest) {
+            issues.append("identity: Vane runs web sign-in (launchWebAuthFlow) in its own window. Google account tokens (getAuthToken) are unavailable.")
+        } else if declared.contains(ExtensionIdentityAPI.permission) {
+            // WebKit cannot grant a permission it does not know, so there is no grant to honour.
+            issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
+        }
+        if declared.contains(ExtensionTabGroupsAPI.permission) {
+            issues.append("tabGroups: Vane's groups are folders in Today. Pinned tabs and Favourites cannot be grouped, tabs stay in their own window, colours are kept but not shown, and extensions change only the folders extensions made.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"
@@ -40,7 +66,6 @@ import WebKit
         }
         for (key, detail) in [
             ("chrome_url_overrides", "replacement browser pages"),
-            ("side_panel", "extension side panels"),
             ("devtools_page", "extension developer-tools panels"),
             ("omnibox", "extension search keywords"),
             ("oauth2", "Chrome identity integration")

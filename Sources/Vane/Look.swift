@@ -49,8 +49,9 @@ enum Look {
     static let tileHeight: CGFloat = 46
     /// The sidebar's side padding, and the gap between a pill's edge and the card.
     static let inset: CGFloat = 8
-    /// Clearance around the page card on its top, trailing and bottom edges.
-    static let cardGap: CGFloat = 11
+    /// Clearance around the page card on its top, trailing and bottom edges. Arc's, measured
+    /// at 2x beside it: 20px from page to window edge.
+    static let cardGap: CGFloat = 10
     /// Inside a row: from its fill to the favicon, and from the favicon to the title.
     static let rowInset: CGFloat = 10
     static let rowSpacing: CGFloat = streamlined ? 9 : 11

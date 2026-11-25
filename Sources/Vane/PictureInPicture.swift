@@ -73,6 +73,11 @@ import WebKit
           // An <audio> is never a candidate, and neither is a <video> carrying an
           // audio-only stream: videoWidth is 0 until there are actual frames.
           if (!v.videoWidth || !v.videoHeight) { return 'audio'; }
+          // Muted is the tell of a decorative loop — autoplay only works muted, so Apple's
+          // product animations and hero reels all are. What the user is watching makes sound,
+          // except a call: WebRTC shows the camera muted and plays the voice through <audio>.
+          var live = window.MediaStream && v.srcObject instanceof MediaStream;
+          if (!live && (v.muted || !v.volume)) { return 'muted'; }
           // A thumbnail, a hero loop or a tracking pixel is not what the user is watching.
           if (v.clientWidth < minW || v.clientHeight < minH) { return 'small'; }
           if (v.webkitPresentationMode !== 'inline') { return 'already'; }
@@ -417,6 +422,8 @@ import WebKit
              script.contains("Object.defineProperty(window, '__vanePiPAuto', { value: auto })")),
             ("a paused video is not detached", script.contains("if (v.paused || v.ended) { return 'idle'; }")),
             ("an audio-only stream is never detached", script.contains("if (!v.videoWidth || !v.videoHeight)")),
+            ("a muted autoplay loop is never detached", script.contains("if (!live && (v.muted || !v.volume)) { return 'muted'; }")),
+            ("…but a muted call's camera still is", script.contains("v.srcObject instanceof MediaStream")),
             ("a video too small to be watched is left alone", script.contains("return 'small';")),
             ("a picture-in-picture the user opened is never taken away", script.contains("if (autoed &&")),
             // The other half of that: our claim has to *end*, or a detach the user started

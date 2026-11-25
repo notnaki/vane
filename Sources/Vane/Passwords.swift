@@ -851,6 +851,25 @@ enum Passwords {
         return ctx
     }
 
+    /// The locked Settings → Passwords pane's inline scan: biometrics only, evaluated on the
+    /// context its embedded Touch ID view is attached to, so no sheet appears. The pane's
+    /// "Use Password…" goes through `authenticate` for the login-password fallback.
+    @discardableResult
+    @MainActor static func authenticateInline(_ context: LAContext, _ reason: String,
+                                              _ done: @escaping @MainActor (Bool) -> Void) -> LAContext? {
+        #if DEBUG
+        if let authenticator { authenticator(reason, done); return nil }
+        #endif
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) else {
+            done(false)
+            return nil
+        }
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { ok, _ in
+            Task { @MainActor in done(ok) }
+        }
+        return context
+    }
+
     /// Erasing one instance must leave every other data directory's credentials alone.
     /// Enumerate metadata first, then delete exact owned references, including legacy tokens.
     @discardableResult static func deleteEverything(dataDir: String? = Store.overrideDirectory,
@@ -1228,6 +1247,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("certificate trust", CertificateTrust.check),
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
+                               ("page translation", PageTranslation.check),
                                ("command palette", Palette.check),
                                ("find in page", Find.check),
                                ("clear browsing data", BrowsingData.check),
@@ -1509,6 +1529,29 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             ProfileManager.shared.deleteSpace(space.id, in: profileID)
         } else {
             print("  --    no private VANE_DATA_DIR, nothing to pin")
+        }
+
+        // Not pure: real commits on a real page. Only on a private `VANE_DATA_DIR`.
+        print("page translation across a navigation")
+        if Store.overrideDirectory != nil {
+            let store = TabStore(isPrivate: true)
+            let tab = store.newBlankTab(focus: false)
+            var serial = 0
+            for (name, ok) in PageTranslation.liveCheck(tab: tab, load: { html in
+                serial += 1
+                let url = URL(string: "https://translate\(serial).example/")!
+                tab.web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+                let deadline = Date().addingTimeInterval(5)
+                // `url` moves at provisional start; `isLoading` ends after commit and load.
+                while (tab.web.url != url || tab.web.isLoading || tab.loading), Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+                }
+                return tab.web.url == url && !tab.web.isLoading
+            }) { check(name, ok) }
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        } else {
+            print("  --    no private VANE_DATA_DIR, nothing to translate")
         }
 
         print("closing a selected pinned page")

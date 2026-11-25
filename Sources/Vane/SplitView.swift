@@ -500,7 +500,7 @@ struct SplitPanes: View {
                         SplitDivider(index: i - 1, vertical: split.vertical, extent: extent,
                                      weights: split.weights)
                     }
-                    pane(id, size: max(0, extent * weight(i)))
+                    pane(id, size: max(0, extent * weight(i)), leads: i == 0)
                 }
             }
         }
@@ -513,9 +513,9 @@ struct SplitPanes: View {
         split.weights.indices.contains(i) ? CGFloat(split.weights[i]) : 0
     }
 
-    @ViewBuilder private func pane(_ id: Tab.ID, size: CGFloat) -> some View {
+    @ViewBuilder private func pane(_ id: Tab.ID, size: CGFloat, leads: Bool) -> some View {
         if let tab = store.tabs.first(where: { $0.id == id }) {
-            Pane(tab: tab, active: store.current == id) { store.focusPane(id) }
+            Pane(tab: tab, active: store.current == id, leads: leads) { store.focusPane(id) }
                 .frame(width: split.vertical ? nil : size,
                        height: split.vertical ? size : nil)
         }
@@ -526,11 +526,33 @@ struct SplitPanes: View {
 /// pointed at, so it is drawn inside the pane's own clip rather than around it.
 private struct Pane: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
+    @EnvironmentObject private var store: TabStore
     @ObservedObject var tab: Tab
     let active: Bool
+    /// The first pane is the one in the card's top-leading corner.
+    let leads: Bool
     let focus: () -> Void
+    @AppStorage(MainToolbar.prefKey, store: .vane) private var showsToolbar = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
+        // View › Show Toolbar: each pane has its own strip, about its own page, as in Arc.
+        VStack(spacing: 0) {
+            if showsToolbar && !store.isLittle {
+                MainToolbarBar(tab: tab, leads: leads).transition(.move(edge: .top))
+            }
+            page
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: showsToolbar)
+        .modifier(BrowserPaneSurface(active: active))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(TidyTitles.title(for: tab))
+        .accessibilityValue(active ? "active pane" : "pane")
+        .accessibilityAction(named: "Focus Pane", focus)
+    }
+
+    private var page: some View {
         TabPage(tab: tab, pane: true).id(tab.id)
             // A pane is on screen whether or not the keyboard is in it, so a pane that comes
             // back from the session parked has to wake up rather than sit there blank.
@@ -541,11 +563,6 @@ private struct Pane: View {
                 }
             }
             .simultaneousGesture(TapGesture().onEnded { if tab.easelID != nil { focus() } })
-            .modifier(BrowserPaneSurface(active: active))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(TidyTitles.title(for: tab))
-            .accessibilityValue(active ? "active pane" : "pane")
-            .accessibilityAction(named: "Focus Pane", focus)
     }
 }
 

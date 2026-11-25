@@ -1,4 +1,5 @@
 import AppKit
+import Security
 import SwiftUI
 
 /// Settings ▸ Passwords: the saved logins, grouped by site, searchable, editable.
@@ -23,6 +24,8 @@ import SwiftUI
     /// Deletes wait on an Undo toast before they reach the Keychain.
     @ObservedObject private var deletion: PasswordPendingDeletion
     @AppStorage(PasswordPaneLock.requiredKey, store: UserDefaults.vane) private var requiresUnlock = true
+    /// Only observed, so a change in Privacy and Security redraws the locked control.
+    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var unlockMethod = FolderUnlockMethod.touchID
     @State private var query = ""
     @State private var sort = PasswordSort.website
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
@@ -186,15 +189,22 @@ import SwiftUI
             lock.watchSettings(); deletion.watchSettingsClose()
             // Another pane instance may have unlocked a different profile.
             if let open = lock.unlockedProfile, open != profileID { lock.lock() }
-            if !unlocked { lock.unlock(profileID) }
+            lock.rearm()
         }
-        .onDisappear { deletion.commit(); secrets.stopWatching(); metadata.stopWatching() }
+        .onDisappear {
+            deletion.commit(); secrets.stopWatching(); metadata.stopWatching()
+            lock.cancel(); lock.rearm()
+        }
         .onReceive(NotificationCenter.default.publisher(for: SettingsWindow.presentationRequest)) { note in
             // Retained hosting views also skip onAppear when reopening. Only an
             // explicit presentation of this pane should restart its metadata read.
             guard note.object as? String == "passwords" else { return }
             reload()
-            if !unlocked { lock.unlock(profileID) }
+            lock.rearm(); lock.beginAutomaticUnlock(profileID)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            // Shown while Vane was in the background: start once Settings comes forward.
+            if SettingsWindow.holds(note.object as? NSWindow) { lock.beginAutomaticUnlock(profileID) }
         }
         .onChange(of: logins) {
             // Reloads finish asynchronously; reconcile the detail destination only
@@ -234,9 +244,23 @@ import SwiftUI
                 .accessibilityHidden(true)
             Text("Passwords are locked").font(Look.heading).foregroundStyle(Look.inkPrimary)
             quiet("Unlock with Touch ID or your Mac login password to see saved passwords.")
-            Button { lock.unlock(profileID) } label: { Text("Unlock").frame(minWidth: 80) }
-                .buttonStyle(.borderedProminent).controlSize(.large)
+            // Like a locked folder: the Touch ID control itself, already listening.
+            // Tapping it retries after a cancel or failure.
+            let inline = lock.usesInline
+            InlineUnlockButton(
+                context: lock.inlineContext, inline: inline, authenticating: lock.authenticating,
+                title: lock.authenticating ? (lock.usingPassword ? "Unlocking…" : "Touch the Touch ID sensor")
+                    : (inline ? "Unlock with Touch ID" : "Unlock passwords…"),
+                attached: { lock.beginAutomaticUnlock(profileID) }
+            ) { lock.unlock(profileID) }
                 .keyboardShortcut(.defaultAction)
+                .padding(.top, Look.inset * 0.5)
+            if inline {
+                Button("Use Password…") { lock.unlock(profileID, password: true) }
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Look.inkSecondary)
+                    .help("Opens macOS authentication, where you can use your Mac login password.")
+                    .disabled(lock.authenticating && lock.usingPassword)
+            }
             if let problem = lock.problem {
                 Text(problem).font(Look.caption).foregroundStyle(Look.warning)
                     .fixedSize(horizontal: false, vertical: true)
@@ -282,10 +306,17 @@ import SwiftUI
             : "\(logins.count) \(logins.count == 1 ? "password" : "passwords") · \(groups.count) \(groups.count == 1 ? "site" : "sites") in this Mac’s Keychain"
     }
 
+    /// Apple's managed browser grant; WebKit only offers passkeys when the signature has it.
+    private static let passkeysSigned = SecTaskCreateFromSelf(nil).flatMap {
+        SecTaskCopyValueForEntitlement($0, "com.apple.developer.web-browser.public-key-credential" as CFString, nil)
+    } as? Bool == true
+
     private var about: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
             Text("Optional password sync is managed in Settings → iCloud. Local saved logins remain available when sync is off.")
-            Text("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
+            Text(Self.passkeysSigned
+                 ? "Passkeys use macOS’s passkey sheet, with Touch ID and Apple Passwords or another passkey app you’ve turned on."
+                 : "This build isn’t signed for passkeys, so websites can’t use them here.")
         }
         .font(Look.caption).foregroundStyle(Look.inkSecondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -1231,7 +1262,17 @@ extension PasswordChooser {
               let tab = WebsitePopupWindow.tab(in: event.window)
                 ?? TabStore.all.first(where: { $0.window === event.window })?.active,
               tab.passwordChoice != nil else { return false }
+        // This monitor sees every key in the app. A list that a focus in the page opened
+        // answers only keys typed into that page: Return in Find or the command bar is not
+        // a choice of account, and the page may have focused its login to wait for one.
+        if tab.chooserFollowsFocus, !tab.pageHoldsKeyboard {
+            tab.closeChooser(.input)
+            return false
+        }
         if event.modifierFlags.contains(.shift), [126, 125, 36, 76].contains(event.keyCode) { return false }
+        // A held Return auto-repeating into a list that just opened on its own (say the page
+        // got the keyboard back when the command bar closed) is not a choice of account.
+        if event.isARepeat, tab.chooserFollowsFocus, [36, 76].contains(event.keyCode) { return true }
         switch event.keyCode {
         case 126: tab.moveChoice(-1)
         case 125: tab.moveChoice(1)
@@ -1741,6 +1782,22 @@ struct PasswordSavingPreference: View {
                     .labelsHidden()
             }
             Footnote("Applies to this profile. Saved-password autofill, manual edits, and imports remain available.")
+            PasswordFillAuthenticationRow()
         }
+    }
+}
+
+/// App-wide: who may sit at this Mac is not a per-profile question.
+struct PasswordFillAuthenticationRow: View {
+    @AppStorage(PasswordFillGate.requiredKey, store: UserDefaults.vane) private var required = true
+
+    var body: some View {
+        SettingsRow("Require Touch ID to fill passwords") {
+            Toggle("Require Touch ID to fill passwords", isOn: Binding(
+                get: { required },
+                set: { PasswordFillGate.shared.setRequired($0) }))
+                .labelsHidden()
+        }
+        Footnote("Asks once, then not again for five minutes or until the Mac locks or sleeps. Uses your login password when Touch ID is unavailable.")
     }
 }

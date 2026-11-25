@@ -17,6 +17,40 @@ same-origin password page for up to two minutes. A hidden or read-only account i
 must match that choice. An explicit account choice can fill an `off` form. Filling never
 submits.
 
+Events a page dispatches from script (`dispatchEvent`, `click()`) do not open the chooser.
+A focus opens it only while the page holds the keyboard, meaning its web view is first
+responder in the key window: WebKit reports a script's `element.focus()` as a trusted
+focus wherever the keyboard is, so a focus alone proves nothing. WebKit would also make
+the web view first responder for that script focus; while another control holds the
+keyboard Vane refuses that, so a page cannot pull typing out of Find or the command bar.
+Up/Down and Return reach a focus-opened list only while the page holds the keyboard.
+Typed in Find, the command bar or any other native field, they close the list and go
+where they were typed. Clicking a row is unaffected. A list opened by focusing a field
+also fills only while the focus is still in that login: the fill asks the document for its active element (through open shadow roots
+and same-origin frames) before the username and again before the password, so a page that
+hides the blur and moves focus elsewhere gets nothing from Return. The **Fill Password**
+menu command and a continued sign-in do not depend on focus.
+
+One case remains open. A page whose own text field already has the keyboard, or one that
+focuses a field while no control holds the keyboard, can call `focus()` on its login field
+just before a Return it expects, such as the end of a search. The same applies when
+closing Find or the command bar hands the keyboard back to a page that was focusing its
+login; a held, auto-repeating Return never chooses from such a list, only a fresh press does.
+That Return chooses the first account. The list is drawn before the key can reach it, and
+the password fill asks for Touch ID unless a prompt was answered in the last five minutes;
+nothing else stands in the way.
+
+Filling a password asks macOS for device-owner authentication first — Touch ID, an Apple
+Watch, or the login password. One successful prompt covers every tab for five minutes;
+locking the screen, sleep or fast user switching ends that window at once. Only one prompt
+is on screen at a time: fills that arrive while it is up wait for its answer, and a prompt
+whose last fill was cancelled is dismissed. A username-only
+step asks nobody and reads no secret from the Keychain. If the prompt is cancelled or
+fails, nothing fills and the chooser stays closed. A navigation while
+the prompt is up cancels the fill and dismisses the prompt. The page, address, document
+and origin are rechecked after any prompt, before the secret is read. **Settings → Passwords → Require Touch ID to fill passwords** is on by default
+and applies to the whole app; turning it off asks for the same authentication.
+
 Detection prefers `autocomplete=username`, `current-password`, and `new-password`, then
 conservative field names and email fields. New fields and visibility/type changes are
 rediscovered after a short coalesced delay. Username-first flows retain an account only
@@ -96,8 +130,13 @@ with Allow saving under Never Saved in Settings → Passwords.
 ## Manage and protect credentials
 
 **Require Touch ID to view passwords** (on by default, for every profile) locks Settings →
-Passwords. Opening the pane shows only an Unlock button and asks once with the same
-device-owner authentication as reveal (login-password fallback). The list locks again after
+Passwords. Like a locked folder, the locked pane holds the inline Touch ID control and starts
+listening as soon as Settings is in front, so a touch of the sensor opens the list with no
+system sheet. It starts on its own once per presentation: after a cancel or failure, tap the
+control to try again. **Use Password…** opens the macOS sheet with the login-password
+fallback. The Locked Folders unlock method in Settings → Privacy and Security applies here
+too: **System**, or a Mac without Touch ID, uses the macOS sheet instead of the inline
+control. Leaving the pane takes a waiting scan down. The list locks again after
 five minutes without a key press, click or scroll in Settings, and when Settings closes, the
 screen locks, the Mac sleeps, the session switches or another profile is selected. Switching
 to another Settings pane and back does not ask again. Turning the setting on while the list
@@ -129,6 +168,7 @@ blue and symbols pink so l/1/I and O/0 are distinguishable; VoiceOver reads the 
 
 Reveal, password copy, edit and the existing export flow use macOS device-owner
 authentication, including its login-password fallback when Touch ID is unavailable.
+Autofill uses the same authentication with a five-minute window (see above).
 Custom data directories no longer bypass authentication. Reveals hide after 60 seconds;
 closing Settings or leaving the manager clears temporary secrets and invalidates pending
 authentication. Draft/save-offer reveals also hide automatically. Copy password buttons mark clipboard items concealed for cooperating clipboard managers and expire after 60 seconds only if
@@ -140,8 +180,11 @@ not read, fill, generate through the saved-password bridge, or persist password 
 Existing import/export remains available; this change adds no export format or new
 plaintext-export action. No strength or reused-password analysis is added.
 
-Passkeys remain outside this implementation. Settings explains the pending Apple browser
-capability approval and provisioning; Vane does not simulate passkey support.
+Passkeys are WebKit's own: Apple approved Vane's managed browser passkey entitlement
+(2026-10-06), and builds signed with the provisioning profile that carries it should hand
+WebAuthn requests to the macOS passkey sheet; real-site sign-in is not yet verified (see the
+[readiness tracker](BROWSER-READINESS-TODO.md)). Ad-hoc and unprovisioned builds lack it, and Settings
+says so. Vane does not store or simulate passkeys itself.
 
 ## Apple Passwords and iCloud Keychain
 
@@ -167,14 +210,22 @@ and the path that could enable this are in
 flows, signup/change fields, account choice, rejected attempts, form abandonment,
 navigation/field races, frame/origin/action boundaries, profiles/private mode, generator
 options, Keychain errors/collisions, manager sorting, clipboard ownership, popup rendering,
-and keyboard scrolling. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
+keyboard scrolling, script-dispatched focus/click, page `focus()` and list keys while a
+native field holds the keyboard, fill-time focus, and the autofill authentication gate
+(prompt, refusal, five-minute window, lock/sleep, navigation during the prompt, fills
+sharing one prompt, dismissal of a prompt nobody waits for). Those gate cases stub the
+authenticator and the Keychain reader, in a never-shown window that reports itself key; no
+test raises a system prompt, and under XCTest the unstubbed gate refuses instead of prompting. Set `VANE_TEST_KEYCHAIN=1` for the isolated import/export round trip.
 Keychain-dependent tests skip explicitly if the host cannot store disposable items.
 `VANE_PASSWORD_SNAPSHOTS=/tmp/vane-password-ui` writes native fixture PNGs, including the
-manager's list, locked, detail, undo-toast and add-sheet states in light and dark
+manager's list, locked (listening, after a cancel, and the macOS-sheet method), detail,
+undo-toast and add-sheet states in light and dark
 (`PasswordManagerSnapshotTests`, a names-only fixture list and a stubbed lock). Tests never
 show a real Touch ID prompt: `TestEnvironment.prepare()` installs a denying
-`Passwords.authenticator` (debug builds only, so release builds cannot reach it), and
-`PasswordPaneLockTests` inject their own.
+`Passwords.authenticator` (debug builds only, so release builds cannot reach it) that also
+answers the pane's inline scan, and `PasswordPaneLockTests` inject their own. The embedded
+Touch ID view draws nothing offscreen, so the listening snapshot shows an empty space where
+the fingerprint appears in the app.
 
 `python3 scripts/check-browser-smoke.py --binary .build/debug/vane` assembles an ad-hoc
 signed sandbox fixture. It also writes disposable credentials, exits, reads them from a
@@ -198,7 +249,10 @@ existing foreground suites in required CI; focus-free fixtures do not prove thos
 These are controlled fixtures, not verified provider sign-ins. Unusual SPA login-completion
 signals, closed shadow roots, cross-origin identity-provider frames and nonstandard fetch
 buttons can require manual entry or adding a login in Settings. Visible rejection markers
-are heuristics and cannot establish authentication success. Touch ID/VoiceOver behavior,
+are heuristics and cannot establish authentication success. The autofill requirement is a
+preference: someone who can already edit the app's preferences outside Vane can turn it
+off, and a Mac that cannot evaluate device-owner authentication cannot fill while it is on.
+Touch ID/VoiceOver behavior,
 Developer ID upgrades, notarized clean-Mac persistence, and broad real-site compatibility
 need separate device/user validation. The existing import/export and isolated signed
 persistence checks do not establish those claims.

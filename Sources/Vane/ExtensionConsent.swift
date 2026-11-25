@@ -9,7 +9,9 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
     let sites: Set<String>
 
     @MainActor init(_ ext: WKWebExtension) {
+        // WebKit does not know `debugger`; Vane provides it, so the review must name it.
         permissions = Set(ext.requestedPermissions.map(\.rawValue))
+            .union(ExtensionDebuggerAPI.declared(ext.manifest) ? [ExtensionDebuggerAPI.permission] : [])
         sites = Set(ext.requestedPermissionMatchPatterns.union(ext.allRequestedMatchPatterns).map(\.string))
     }
 
@@ -41,6 +43,7 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         case "clipboardWrite": "Write to your clipboard"
         case "contextMenus", "menus": "Add items to page and tab menus"
         case "cookies": "Read and change website cookies"
+        case "debugger": "Control pages you allow it on: read them, click, type and take screenshots"
         case "declarativeNetRequest", "declarativeNetRequestWithHostAccess": "Block or modify website requests"
         case "declarativeNetRequestFeedback": "Read information about filtered website requests"
         case "nativeMessaging": "Exchange messages with native apps"
@@ -165,7 +168,14 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         if !review.limitations.isEmpty {
             text.string += "\n\nCompatibility limitations\n\n" + review.limitations.joined(separator: "\n")
         }
+        style(text)
+        text.drawsBackground = false
+        // Fit short lists; long ones scroll.
+        text.layoutManager?.ensureLayout(for: text.textContainer!)
+        let used = (text.layoutManager?.usedRect(for: text.textContainer!).height ?? 240) + 16
+        text.frame.size.height = min(max(used, 60), 260)
         let scroll = NSScrollView(frame: text.frame)
+        scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.documentView = text
         alert.accessoryView = scroll
@@ -174,6 +184,37 @@ struct ExtensionAccess: Codable, Equatable, Sendable {
         // Nothing answers Return, so the key can never grant access.
         alert.addButton(withTitle: review.installing ? "Cancel" : "Don’t Allow").keyEquivalent = "\u{1b}"
         return alert
+    }
+
+    static let headings: Set<String> = ["Capabilities", "Website access", "Compatibility limitations",
+                                        "New access", "All requested access", "Newly available capabilities"]
+
+    /// Styles the plain review text in place: headings in semibold, the capability name
+    /// before a limitation's colon in medium, and air between lines. The string itself
+    /// is unchanged.
+    static func style(_ text: NSTextView) {
+        guard let storage = text.textStorage else { return }
+        let body = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 2
+        paragraph.paragraphSpacing = 3
+        storage.setAttributes([.font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph],
+                              range: NSRange(location: 0, length: storage.length))
+        var inLimitations = false
+        let string = storage.string as NSString
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byLines) { line, range, _, _ in
+            guard let line else { return }
+            if headings.contains(line) {
+                inLimitations = line == "Compatibility limitations"
+                storage.addAttributes([.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                                       .foregroundColor: NSColor.secondaryLabelColor], range: range)
+            } else if inLimitations, let colon = line.firstIndex(of: ":") {
+                let name = NSRange(location: range.location, length: line.distance(from: line.startIndex, to: colon))
+                storage.addAttribute(.font, value: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold), range: name)
+                storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor,
+                                     range: NSRange(location: NSMaxRange(name), length: range.length - name.length))
+            }
+        }
     }
 
     static func ask(_ review: Review) -> Bool {

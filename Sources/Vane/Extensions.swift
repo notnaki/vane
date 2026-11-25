@@ -191,6 +191,10 @@ import WebKit
     @Published private(set) var loaded: [(path: String, context: WKWebExtensionContext)] = []
 
     var installed: [WKWebExtensionContext] { loaded.map(\.context) }
+    /// The icon of the extension whose base URL's host is `owner`: what its folders wear.
+    func icon(owner: String) -> NSImage? {
+        loaded.first { $0.context.baseURL.host == owner }?.context.webExtension.icon(for: CGSize(width: 16, height: 16))
+    }
 
     struct Entry: Identifiable {
         let path: String
@@ -228,7 +232,7 @@ import WebKit
     private var workerIdentityUpdate: Task<Void, Never>?
     private var records: [String: ExtensionCodeStore.Record] = [:]
     private var metadataFailure: String?
-    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus"]
+    private static let integratedCapabilities: Set<String> = ["contextMenus", "menus", ExtensionDebuggerAPI.permission]
     private var metadataIcons: [String: NSImage] = [:]
     private struct LegacyMetadata {
         var version: String
@@ -311,6 +315,12 @@ import WebKit
         webConfiguration.websiteDataStore = configuration.defaultWebsiteDataStore
         WebKitStartup.configureExtensionPages(webConfiguration)
         ExtensionMV2Compatibility.configure(webConfiguration)
+        ExtensionIdentityAPI.configure(webConfiguration)
+        ExtensionDebuggerAPI.configure(webConfiguration)
+        // Ahead of the stand-ins, which leave a namespace that is already there alone.
+        ExtensionTabGroupsAPI.configure(webConfiguration)
+        ExtensionChromiumGaps.configure(webConfiguration)
+        ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
@@ -366,7 +376,7 @@ import WebKit
         for path in contextIdentifiers.keys where folders[path] == nil { folders[path] = URL(fileURLWithPath: path).lastPathComponent }
         for path in Array(folders.keys) {
             if let metadataFailure { failures[path] = metadataFailure; continue }
-            if let record = records[path] { cacheIcon(for: path, in: record.safari == nil ? codeStore.code(for: record) : codeStore.code(for: record).appendingPathComponent("extension.appex/Contents/Resources")) }
+            if let record = records[path] { cacheIcon(for: path, in: codeStore.resources(for: record)) }
             else if let manifest = try? Self.validate(sourceFolder(for: path)) {
                 func optional(_ key: String) -> [String] { manifest[key] as? [String] ?? [] }
                 let declarations = optional("optional_permissions")
@@ -687,6 +697,7 @@ import WebKit
     private func unloadContext(_ context: WKWebExtensionContext) throws {
         if let path = loaded.first(where: { $0.context === context })?.path { revokeICloudStorageLeases(path) }
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
+        webSockets.close(owner: ObjectIdentifier(context))
         try controller.unload(context)
         filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
         backgroundViews.removeObject(forKey: context)
@@ -1348,9 +1359,9 @@ import WebKit
         if let safari = record.safari {
             let current = try await safari.resolve()
             guard recoveringSafariUpdate || current.source.signatureHash == safari.signatureHash else { throw Failure("The app was updated. Choose Update from App to review its extension before enabling it.") }
-            let bundleURL = codeStore.code(for: record).appendingPathComponent("extension.appex", isDirectory: true)
+            guard let bundleURL = codeStore.bundle(for: record) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             try await Self.verifySnapshot(bundleURL, source: safari)
-            folder = bundleURL.appendingPathComponent("Contents/Resources")
+            folder = codeStore.resources(for: record)
             guard let bundle = Bundle(url: bundleURL) else { throw Failure("The accepted Safari extension bundle is unavailable.") }
             appBundle = bundle
         } else {
@@ -1404,6 +1415,15 @@ import WebKit
                         enable: enabling, operationToken: token, review: ask)
                     return
                 }
+            }
+            // A record from before Vane provided `debugger` does not list it: WebKit never
+            // reported it. The accepted manifest does, so it is reviewed here as new support
+            // rather than refused later as code that changed.
+            var record = record
+            if let manifest = try? Self.validate(codeStore.resources(for: record)),
+               ExtensionDebuggerAPI.declared(manifest) {
+                record.required = ExtensionAccess(permissions: record.required.permissions.union([ExtensionDebuggerAPI.permission]),
+                                                  sites: record.required.sites)
             }
             let previous = ExtensionConsent.saved(for: URL(fileURLWithPath: path), profileID: profileID)
             let review = ExtensionConsent.Review(name: record.name, requested: record.required, previous: previous, installing: false, limitations: record.compatibility,
@@ -1487,6 +1507,10 @@ import WebKit
         let version = (manifest["manifest_version"] as? NSNumber)?.doubleValue ?? 0
         guard version == 2 || version == 3 else {
             throw Failure("manifest_version must be 2 or 3 (found \(manifest["manifest_version"] ?? "nothing")).")
+        }
+        // Vane's own names; an extension's manifest has no say in them.
+        if let key = manifest.keys.first(where: { $0.lowercased().hasPrefix("__vane") }) {
+            throw Failure("manifest.json uses \"\(key)\", a name Vane reserves.")
         }
         return manifest
     }
@@ -1587,6 +1611,16 @@ import WebKit
     /// gesture, which is what `activeTab` extensions actually wait for.
     func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
         guard installed.contains(where: { $0 === context }) else { return }
+        noteSidePanelGesture(context)
+        // Only an extension that asked for `openPanelOnActionClick` has its button toggle
+        // its panel. Any other click reaches the popup or `onClicked`, as in Chrome.
+        if sidePanelsOnAction.contains(ObjectIdentifier(context)), let tab, let store = store(holding: tab) {
+            // In a window too narrow for both, the dock hides the panel and leaves it open.
+            // The press still closes it, and the next opens it hidden: nothing shows until
+            // the window widens, exactly as for a panel the extension opened itself.
+            if let panel = sidePanel(in: store), panel.context === context { closeSidePanel(panel); return }
+            if (try? openSidePanel(context, tab: tab, in: store)) != nil { return }
+        }
         let key = ActionKey(context, tab)
         if let existing = actionWindows[key], !existing.isClosed {
             context.performAction(for: shim(tab))
@@ -1942,6 +1976,9 @@ import WebKit
                 presentation.close()
             }
         }
+        syncSidePanels()
+        debugger.sync()
+        tabGroups.sync(contexts: installed)
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -2050,6 +2087,29 @@ import WebKit
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         try requireActive(context)
+        if let request = try ExtensionIdentityAPI.Request(configuration.url, base: context.baseURL) {
+            throw Failure(ExtensionIdentityAPI.marker + (await authenticate(request, for: context)))
+        }
+        if let request = ExtensionSidePanelAPI.Request(configuration.url, base: context.baseURL) {
+            try perform(request, tab: (configuration.parentTab as? ExtTab)?.tab,
+                        store: (configuration.window as? ExtWindow)?.store, for: context)
+            return nil
+        }
+        if let request = ExtensionChromiumGaps.Request(configuration.url, base: context.baseURL) {
+            let result: Result<Any, any Error>
+            do { result = .success(try await answer(request, for: context)) } catch { result = .failure(error) }
+            throw Failure(ExtensionChromiumGaps.reply(result))
+        }
+        if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL,
+                                                      path: ExtensionTabGroupsAPI.bridgePath) {
+            return try await tabGroups.handle(request, tab: configuration.parentTab as? ExtTab,
+                                              window: configuration.window as? ExtWindow, contexts: installed,
+                                              for: context) { [debugger] in debugger.reply($0, for: context) }
+        }
+        if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
+            defer { sweepIdleGroups() }
+            return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
+        }
         if let url = configuration.url, ExternalApps.isOwn(url.scheme) {
             throw Failure("Extensions cannot navigate to Vane’s internal URLs.")
         }
@@ -2187,6 +2247,357 @@ import WebKit
         presentation.show()
     }
 
+    // MARK: Chromium stand-ins
+
+    private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) async throws -> Any {
+        let arguments = request.arguments
+        switch request.operation {
+        case "contexts":
+            return extensionContexts(context)
+        case "fetch":
+            return try await credentialedFetch(arguments, for: context)
+        case let operation where operation.hasPrefix("ws."):
+            let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+            if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
+            throw Failure("Vane does not answer \(operation).")
+        default:
+            throw Failure("Vane does not answer \(request.operation).")
+        }
+    }
+
+    private let fetchSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
+
+    /// A credentialed request from the extension to a site it may access, sent with the
+    /// profile's cookies as Chrome sends them; cookies the reply sets land in the profile.
+    /// Null when the extension may not access the site: the page then fetches as WebKit does.
+    /// Redirects are followed here, one hop at a time, so each hop carries only its own
+    /// site's cookies and a hop to a site the extension may not access fails.
+    // ponytail: the whole body arrives at once; stream over the bridge if an extension
+    // reads a credentialed event stream.
+    private func credentialedFetch(_ arguments: [String: Any], for context: WKWebExtensionContext) async throws -> Any {
+        func allowed(_ url: URL) -> Bool {
+            ["http", "https"].contains(url.scheme?.lowercased()) && url.host != nil
+                && [.grantedExplicitly, .grantedImplicitly].contains(context.permissionStatus(for: url))
+        }
+        guard var url = (arguments["url"] as? String).flatMap(URL.init(string:)), allowed(url),
+              let store = controller.configuration.defaultWebsiteDataStore else { return NSNull() }
+        var method = arguments["method"] as? String ?? "GET"
+        var body = (arguments["body"] as? String).flatMap { Data(base64Encoded: $0) }
+        let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+        let first = ExtensionDebuggerAPI.origin(of: url)
+        // As the Fetch spec drops them: body headers once the body is, credentials off-origin.
+        var dropped: Set<String> = ["cookie", "host", "content-length", "origin"]
+        for _ in 0..<20 {
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            for case let pair as [String] in arguments["headers"] as? [Any] ?? [] where pair.count == 2
+                && !dropped.contains(pair[0].lowercased()) {
+                request.setValue(pair[1], forHTTPHeaderField: pair[0])
+            }
+            if let ua = arguments["ua"] as? String { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
+            request.setValue(origin, forHTTPHeaderField: "Origin")
+            request.httpBody = body
+            let cookies = Self.cookies(await store.httpCookieStore.allCookies(), for: url)
+            if !cookies.isEmpty { request.setValue(HTTPCookie.requestHeaderFields(with: cookies)["Cookie"], forHTTPHeaderField: "Cookie") }
+            let (data, response) = try await fetchSession.data(for: request, delegate: NoRedirects.shared)
+            guard let http = response as? HTTPURLResponse else { throw Failure("The site sent no HTTP response.") }
+            let fields = http.allHeaderFields.reduce(into: [String: String]()) { $0["\($1.key)"] = "\($1.value)" }
+            for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: url) { await store.httpCookieStore.setCookie(cookie) }
+            if [301, 302, 303, 307, 308].contains(http.statusCode),
+               let next = http.value(forHTTPHeaderField: "Location").flatMap({ URL(string: $0, relativeTo: url)?.absoluteURL }) {
+                guard allowed(next) else { throw Failure("Redirected to a site the extension may not access.") }
+                if (http.statusCode == 303 && method.uppercased() != "HEAD")
+                    || ([301, 302].contains(http.statusCode) && method.uppercased() == "POST") {
+                    method = "GET"
+                    body = nil
+                    dropped.formUnion(["content-type", "content-encoding", "content-language", "content-location"])
+                }
+                if ExtensionDebuggerAPI.origin(of: next) != first { dropped.insert("authorization") }
+                url = next
+                continue
+            }
+            return ["status": http.statusCode, "statusText": HTTPURLResponse.localizedString(forStatusCode: http.statusCode).capitalized,
+                    "headers": fields.filter { $0.key.lowercased() != "set-cookie" }.map { [$0.key, $0.value] },
+                    "body": data.base64EncodedString(), "url": url.absoluteString]
+        }
+        throw Failure("Too many redirects.")
+    }
+
+    /// The profile's cookies a request to `url` carries: domain, path (on a `/` boundary),
+    /// secure and expiry, as RFC 6265 matches them.
+    nonisolated static func cookies(_ all: [HTTPCookie], for url: URL) -> [HTTPCookie] {
+        guard let host = url.host?.lowercased() else { return [] }
+        let raw = url.path(percentEncoded: true)
+        let secure = url.scheme?.lowercased() == "https", path = raw.isEmpty ? "/" : raw
+        return all.filter { cookie in
+            let domain = cookie.domain.lowercased()
+            let hostMatches = domain.hasPrefix(".") ? host == domain.dropFirst() || host.hasSuffix(domain) : host == domain
+            let pathMatches = path == cookie.path || (path.hasPrefix(cookie.path)
+                && (cookie.path.hasSuffix("/") || path.dropFirst(cookie.path.count).first == "/"))
+            return hostMatches && pathMatches && (!cookie.isSecure || secure) && (cookie.expiresDate ?? .distantFuture) > Date()
+        }
+    }
+
+    /// Hands each redirect back to `credentialedFetch` instead of following it.
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        static let shared = NoRedirects()
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? { nil }
+    }
+
+    /// `runtime.getContexts`: what this host shows of the extension. Tab and window IDs are
+    /// WebKit's to give and unknown here: -1, as Chrome reports for windowless contexts.
+    private func extensionContexts(_ context: WKWebExtensionContext) -> [[String: Any]] {
+        let origin = context.baseURL.absoluteString.hasSuffix("/") ? String(context.baseURL.absoluteString.dropLast()) : context.baseURL.absoluteString
+        var list: [[String: Any]] = []
+        func add(_ type: String, _ url: URL?, _ owner: AnyObject, frameId: Int = 0) {
+            var entry: [String: Any] = ["contextType": type, "contextId": String(UInt(bitPattern: ObjectIdentifier(owner).hashValue), radix: 16),
+                                        "tabId": -1, "windowId": -1, "frameId": frameId, "incognito": false, "documentOrigin": origin]
+            if let url { entry["documentUrl"] = url.absoluteString }
+            list.append(entry)
+        }
+        if context.webExtension.hasBackgroundContent {
+            let background = context.webExtension.manifest["background"] as? [String: Any]
+            let path = (background?["service_worker"] ?? background?["page"]) as? String
+            add("BACKGROUND", path.flatMap { URL(string: $0, relativeTo: context.baseURL)?.absoluteURL }, context, frameId: background?["service_worker"] != nil ? -1 : 0)
+        }
+        for panel in sidePanels where panel.context === context { add("SIDE_PANEL", panel.web.url ?? panel.page, panel) }
+        for presentation in actionWindows.values where presentation.context === context { add("POPUP", presentation.web.url, presentation) }
+        for adapter in requestedWindows.values where adapter.presentation.context === context {
+            add("TAB", adapter.presentation.web.url, adapter.presentation)
+        }
+        for tab in myStores.flatMap(\.tabs) {
+            if let url = tab.existingWeb?.url, url.scheme == context.baseURL.scheme, url.host == context.baseURL.host { add("TAB", url, tab) }
+        }
+        return list
+    }
+
+    // MARK: Web sign-in
+
+    private let webSockets = ExtensionWebSockets()
+
+    /// By flow: an extension may run several at once, as in Chrome.
+    private var authFlows: [ObjectIdentifier: (context: WKWebExtensionContext, flow: ExtensionAuthFlow)] = [:]
+
+    /// The ID Chrome would give a loaded extension: its store's, its `key`'s, else its own.
+    /// Never the extension's word, which is only its manifest.
+    private func chromeID(of context: WKWebExtensionContext, path: String?) -> (id: String, fromKey: Bool) {
+        if let id = path.flatMap({ records[$0]?.store?.id }) { return (id.lowercased(), false) }
+        if let id = ExtensionIdentityAPI.chromeID(storeID: nil, manifest: context.webExtension.manifest) { return (id, true) }
+        return (context.uniqueIdentifier.lowercased(), false)
+    }
+
+    /// `identity.launchWebAuthFlow`'s answer: `resolve <url>` or `reject <Chrome's message>`.
+    private func authenticate(_ request: ExtensionIdentityAPI.Request, for context: WKWebExtensionContext) async -> String {
+        guard ExtensionIdentityAPI.declared(context.webExtension.manifest) else {
+            return "reject This extension has not requested the identity permission."
+        }
+        let path = loaded.first { $0.context === context }?.path
+        let (id, fromKey) = chromeID(of: context, path: path)
+        // A folder's `key` can name any ID, another installed extension's included; its
+        // redirect URL and the provider's trust in it stay that extension's.
+        if fromKey, loaded.contains(where: { $0.context !== context && chromeID(of: $0.context, path: $0.path).id == id })
+            || records.contains(where: { $0.key != path && $0.value.store?.id.lowercased() == id }) {
+            return "reject This extension's key gives it another installed extension's ID."
+        }
+        let cfg = WKWebViewConfiguration()
+        if let store = controller.configuration.defaultWebsiteDataStore { cfg.websiteDataStore = store }
+        let name = context.webExtension.displayName ?? "Extension"
+        let flow = ExtensionAuthFlow(request: request, redirectHost: ExtensionIdentityAPI.redirectHost(id),
+                                     configuration: cfg, title: "Sign in for “\(name)”")
+        userAgent.track(flow.web)
+        flow.preparePopup = { [weak self] in self?.userAgent.track($0) }
+        let key = ObjectIdentifier(flow)
+        authFlows[key] = (context, flow)
+        defer { authFlows[key] = nil }
+        // WebKit ends the message with a period unless it has one; this one is the URL's end.
+        do { return "resolve " + (try await flow.run(over: frontmostStore?.window)) + "." }
+        catch { return "reject " + error.localizedDescription }
+    }
+
+    // MARK: Side panels
+    //
+    // ponytail: options and behaviour live as long as the loaded extension, not across
+    // restarts. Persist them per installation if an extension sets them once in
+    // `onInstalled` and never again.
+
+    @Published private(set) var sidePanels: [ExtensionSidePanel] = []
+    /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
+    private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
+    /// How long an extension's group of driven tabs sits untouched before it is dissolved.
+    var groupIdle: TimeInterval = 10 * 60
+    private var idleSweep: Task<Void, Never>?
+    /// Checks for finished sessions' groups once the debugger has been quiet for `groupIdle`.
+    func sweepIdleGroups() {
+        idleSweep?.cancel()
+        idleSweep = Task { @MainActor [weak self] in
+            guard let idle = self?.groupIdle, (try? await Task.sleep(for: .seconds(idle + 1))) != nil, let self else { return }
+            tabGroups.dissolveIdle(used: debugger.used, after: groupIdle, contexts: installed)
+        }
+    }
+    /// `chrome.tabGroups` over Today's folders; see ExtensionTabGroups.swift.
+    private(set) lazy var tabGroups = ExtensionTabGroups(profileID: profileID)
+    /// Published: a tab's `enabled` decides whether the window's panel shows on it.
+    @Published private var sidePanelOptions: [ActionKey: ExtensionSidePanelAPI.Options] = [:]
+    private var sidePanelsOnAction: Set<ObjectIdentifier> = []
+    private var sidePanelGestures: [ObjectIdentifier: ContinuousClock.Instant] = [:]
+
+    /// The panel a window shows: its current tab's own, else the window's unless that tab
+    /// has it disabled.
+    func sidePanel(in store: TabStore) -> ExtensionSidePanel? {
+        if let own = sidePanels.first(where: { $0.tabID != nil && $0.tabID == store.current && $0.store === store }) {
+            return own
+        }
+        guard let shared = sidePanels.first(where: { $0.tabID == nil && $0.store === store }),
+              sidePanelPage(shared.context, tab: store.tabs.first { $0.id == store.current }).enabled else { return nil }
+        return shared
+    }
+
+    /// How long ago the user last pressed the mouse anywhere. A variable so a test can
+    /// answer for a machine somebody is using.
+    var secondsSinceClick: () -> CFTimeInterval = {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown)
+    }
+
+    /// The user just pressed this extension's button or shortcut.
+    func noteSidePanelGesture(_ context: WKWebExtensionContext) {
+        sidePanelGestures[ObjectIdentifier(context)] = .now
+    }
+
+    /// `sidePanel.open()` answers a user gesture, as in Chrome: the extension's button or
+    /// shortcut a moment ago, a click in the calling extension page, WebKit's own record
+    /// for the tab, or a real click in the target's key window a moment ago. The last is
+    /// Chrome's documented pattern: a button in the page messages the worker, which opens
+    /// the panel for `sender.tab.id`.
+    // ponytail: advisory, not a security boundary. Any context of the extension can forge
+    // the reported click (it is the caller's own `navigator.userActivation`, sent over the
+    // bridge), any click in the window counts for every extension, and WebKit's
+    // `hasActiveUserGesture(in:)` stays true until the tab navigates. The gate only keeps
+    // a panel from opening out of nowhere; the worst a forgery does is show the
+    // extension's own page in a panel the header closes. A host-observed gesture token
+    // per call is the upgrade if that ever matters.
+    private func hasSidePanelGesture(_ context: WKWebExtensionContext, tab: Tab?, in store: TabStore,
+                                     reported: Bool) -> Bool {
+        if reported { return true }
+        if let last = sidePanelGestures[ObjectIdentifier(context)], .now - last < .seconds(5) { return true }
+        if store.window?.isKeyWindow == true, secondsSinceClick() < 5 { return true }
+        return shim(tab).map { context.hasActiveUserGesture(in: $0) } ?? false
+    }
+
+    /// A tab's panel and options last as long as the tab, and a Space kept alive behind the
+    /// one on screen still holds its tabs: `sidePanel(in:)` hides them, nothing closes.
+    private func syncSidePanels() {
+        guard !sidePanels.isEmpty || sidePanelOptions.keys.contains(where: { $0.tab != nil }) else { return }
+        let held = Set(TabStore.all.filter { $0.profileID == profileID }.flatMap { $0.everyTab.map(\.id) })
+        for panel in sidePanels {
+            if let id = panel.tabID {
+                if let tab = panel.tab, let store = store(holding: tab) { move(panel, to: store) }
+                else if !held.contains(id) { closeSidePanel(panel) }
+            } else if let store = panel.store, TabStore.all.contains(where: { $0 === store }),
+                      store.window != nil || store.isParked {
+                // A window's panel lasts as long as its store has a window, on screen or
+                // parked behind another profile's (`Windows.hop`), where it stays hidden.
+            } else { closeSidePanel(panel) }
+        }
+        if sidePanelOptions.keys.contains(where: { $0.tab.map { !held.contains($0) } ?? false }) {
+            sidePanelOptions = sidePanelOptions.filter { $0.key.tab.map(held.contains) ?? true }
+        }
+    }
+
+    /// A tab's panel follows it to another window, and its page delegate with it.
+    private func move(_ panel: ExtensionSidePanel, to store: TabStore) {
+        guard panel.store !== store else { return }
+        panel.store = store
+        pageUI.removeValue(forKey: ObjectIdentifier(panel.web))?.invalidate()
+        if let window = store.window { configurePageUI(panel.web, context: panel.context, window: window) }
+        objectWillChange.send()
+    }
+
+    private func sidePanelPage(_ context: WKWebExtensionContext, tab: Tab?) -> (url: URL?, enabled: Bool, ownPath: Bool) {
+        let own = tab.flatMap { sidePanelOptions[ActionKey(context, $0)] }
+        let shared = sidePanelOptions[ActionKey(context, nil)]
+        let path = own?.path ?? shared?.path
+            ?? (context.webExtension.manifest["side_panel"] as? [String: Any])?["default_path"] as? String
+        return (path.flatMap { ExtensionSidePanelAPI.page($0, base: context.baseURL) },
+                own?.enabled ?? shared?.enabled ?? true, own?.path != nil)
+    }
+
+    private func perform(_ request: ExtensionSidePanelAPI.Request, tab: Tab?, store: TabStore?,
+                         for context: WKWebExtensionContext) throws {
+        guard ExtensionSidePanelAPI.declared(context.webExtension.manifest) else {
+            throw Failure("This extension has not requested the sidePanel permission.")
+        }
+        let target = tab.flatMap { self.store(holding: $0) } ?? store
+        switch request.operation {
+        case .setPanelBehavior:
+            if request.options.enabled == true { sidePanelsOnAction.insert(ObjectIdentifier(context)) }
+            else { sidePanelsOnAction.remove(ObjectIdentifier(context)) }
+        case .setOptions:
+            let key = ActionKey(context, tab)
+            var options = sidePanelOptions[key] ?? .init()
+            if let path = request.options.path { options.path = path }
+            if let enabled = request.options.enabled { options.enabled = enabled }
+            sidePanelOptions[key] = options
+            // An open panel follows its options: a disabled one closes, a new path loads.
+            for panel in sidePanels where panel.context === context && (tab == nil || panel.tabID == tab?.id) {
+                let current = sidePanelPage(context, tab: panel.tab)
+                if !current.enabled { closeSidePanel(panel) }
+                else if let url = current.url, url != panel.page {
+                    panel.page = url
+                    panel.web.load(URLRequest(url: url))
+                }
+            }
+        case .open:
+            guard let target else { throw Failure("sidePanel.open() needs the tabId or windowId of an open window.") }
+            guard hasSidePanelGesture(context, tab: tab ?? target.tabs.first { $0.id == target.current },
+                                      in: target, reported: request.gesture) else {
+                throw Failure("sidePanel.open() may only be called in response to a user gesture.")
+            }
+            try openSidePanel(context, tab: tab, in: target)
+        case .close:
+            for panel in sidePanels where panel.context === context && (target == nil || panel.store === target)
+                && (panel.tabID == nil || tab == nil || panel.tabID == tab?.id) { closeSidePanel(panel) }
+        }
+    }
+
+    private func openSidePanel(_ context: WKWebExtensionContext, tab: Tab?, in store: TabStore) throws {
+        let page = sidePanelPage(context, tab: tab)
+        guard page.enabled, let url = page.url, let cfg = context.webViewConfiguration else {
+            throw Failure("“\(context.webExtension.displayName ?? "This extension")” has no enabled side panel to open here.")
+        }
+        // A tab with a path of its own gets a panel of its own; any other shares the window's.
+        let owner = page.ownPath ? tab : nil
+        // A window's panel sits under a tab's own. Opened for the tab on screen, it must
+        // not stay hidden behind another extension's.
+        if owner == nil, tab == nil || tab?.id == store.current,
+           let cover = sidePanel(in: store), cover.tabID != nil, cover.context !== context { closeSidePanel(cover) }
+        if sidePanels.contains(where: { $0.context === context && $0.store === store && $0.tabID == owner?.id }) { return }
+        for panel in sidePanels where panel.store === store && panel.tabID == owner?.id { closeSidePanel(panel) }
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: ExtensionSidePanelAPI.width, height: 600), configuration: cfg)
+        userAgent.track(web)
+        web.isInspectable = Settings.inspectorEnabled
+        let panel = ExtensionSidePanel(context: context, web: web, page: url, tab: owner, store: store)
+        panel.didClose = { [weak self] in self?.closeSidePanel($0) }
+        panel.openExternal = { [weak panel] in panel?.store?.newBlankTab().navigate(to: $0) }
+        web.uiDelegate = panel
+        if let window = store.window { configurePageUI(web, context: context, window: window) }
+        sidePanels.append(panel)
+        web.load(URLRequest(url: url))
+    }
+
+    func closeSidePanel(_ panel: ExtensionSidePanel) {
+        guard let index = sidePanels.firstIndex(where: { $0 === panel }) else { return }
+        sidePanels.remove(at: index)
+        pageUI.removeValue(forKey: ObjectIdentifier(panel.web))?.invalidate()
+        panel.web.stopLoading()
+    }
+
     /// Any of this profile's windows that is actually key, Little Vane included — unlike
     /// `myFocusedStore`, which is the browser window an extension is allowed to *act* on and
     /// deliberately skips a Little Vane. A popup only needs somewhere to be drawn.
@@ -2318,6 +2729,13 @@ import WebKit
             pageUI.removeValue(forKey: key)?.invalidate()
         }
         for presentation in Array(actionWindows.values) where presentation.context === context { presentation.close() }
+        for panel in sidePanels where panel.context === context { closeSidePanel(panel) }
+        for entry in authFlows.values where entry.context === context { entry.flow.cancel() }
+        sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
+        sidePanelsOnAction.remove(ObjectIdentifier(context))
+        sidePanelGestures[ObjectIdentifier(context)] = nil
+        debugger.forget(context)
+        tabGroups.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()

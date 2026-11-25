@@ -78,12 +78,17 @@ extension EnvironmentValues {
     private let autoSubviews: Bool
     private var installed = false
     private var restored = false
+    private let originalOrigin: NSPoint
+    /// The page keeps its top edge, not its origin, while its height changes: in AppKit's
+    /// unflipped host that edge is the far one. Set before `prepare()`.
+    var topAnchored = false
 
     init(web: WKWebView, size: NSSize) {
         self.web = web
         self.size = size
         parent = web.superview
         originalSize = web.frame.size
+        originalOrigin = web.frame.origin
         originalParentSize = web.superview?.bounds.size ?? .zero
         preparationParentSize = originalParentSize
         mask = web.autoresizingMask
@@ -116,9 +121,15 @@ extension EnvironmentValues {
     }
 
     func prepare() {
+        let top = web.frame.maxY
         freezeNativeGeometry()
         prepareStyle()
         web.setFrameSize(size)
+        if topAnchored, let parent, !parent.isFlipped {
+            // Hang from the top and let the bottom margin take the host's slide.
+            web.setFrameOrigin(NSPoint(x: web.frame.minX, y: top - size.height))
+            web.autoresizingMask = [.minYMargin]
+        }
         web.prepareContent(in: NSRect(origin: .zero, size: size))
     }
 
@@ -138,6 +149,7 @@ extension EnvironmentValues {
             if committed { installNativeGeometry() }
             if !committed {
                 let parentSize = parent?.bounds.size ?? originalParentSize
+                if topAnchored { web.setFrameOrigin(originalOrigin) }
                 web.setFrameSize(NSSize(
                     width: originalSize.width + (mask.contains(.width) ? parentSize.width - originalParentSize.width : 0),
                     height: originalSize.height + (mask.contains(.height) ? parentSize.height - originalParentSize.height : 0)))
@@ -400,9 +412,10 @@ extension EnvironmentValues {
 
     private static let presentation = NSSelectorFromString("_doAfterNextPresentationUpdate:")
 
-    static func targets(in root: NSView, nextSize: NSSize, leadingExpansion: CGFloat = 0) -> [PreparedPageResize] {
+    static func targets(in root: NSView, nextSize: NSSize, leadingExpansion: CGFloat = 0,
+                        heightExpansion: CGFloat = 0) -> [PreparedPageResize] {
         let delta = NSSize(width: nextSize.width - root.bounds.width,
-                           height: nextSize.height - root.bounds.height)
+                           height: nextSize.height - root.bounds.height + heightExpansion)
         var result: [PreparedPageResize] = []
         var admitted = true
         func visit(_ view: NSView) {
@@ -452,6 +465,8 @@ extension EnvironmentValues {
     private var active = false
     private(set) var published = false
     var awaitingPaint: Bool { active && !published }
+    /// Ending before the paint still commits: the command must not be lost to a resize.
+    var commitsOnCancel = false
 
 
     init(window: NSWindow, pages: [PreparedPageResize],
@@ -480,6 +495,9 @@ extension EnvironmentValues {
             }
         }
         pages.forEach { $0.prepare() }
+#if DEBUG
+        ResizeTimingDiagnostics.record("sidebar.prepare.start")
+#endif
         armDeadline(after: 0.25)
         for page in pages {
             let callback: @MainActor @Sendable () -> Void = { [weak self] in self?.presented() }
@@ -498,10 +516,37 @@ extension EnvironmentValues {
         let timeout: @MainActor @Sendable () -> Void = { [weak self] in self?.timedOut(token) }
         if let deadline { deadline(interval, timeout) }
         else {
-            let timer = Timer(timeInterval: interval, repeats: false) { _ in MainActor.assumeIsolated { timeout() } }
+            // Count only time this process was running. A stalled or contended host
+            // (a paused VM, a starved runner, a blocked main thread) passes wall-clock
+            // time without letting WebKit's paint reply arrive; expiring then would
+            // reveal the width unpainted. Each tick counts at most one tick, so the
+            // budget stretches with the host's slowness, not with real time.
+            // ponytail: a WebContent process that alone is starved still times out
+            // after `interval` of responsive ticks.
+            deadlineRemaining = interval
+            deadlineLast = CACurrentMediaTime()
+            let timer = Timer(timeInterval: Self.deadlineTick, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                MainActor.assumeIsolated { self.deadlineTicked(token, timeout) }
+            }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
+    }
+
+    private static let deadlineTick: TimeInterval = 0.05
+    private var deadlineRemaining: TimeInterval = 0
+    private var deadlineLast: CFTimeInterval = 0
+
+    private func deadlineTicked(_ token: UUID, _ timeout: @MainActor () -> Void) {
+        guard deadlineToken == token else { return }
+        let now = CACurrentMediaTime()
+        deadlineRemaining -= min(now - deadlineLast, Self.deadlineTick)
+        deadlineLast = now
+        guard deadlineRemaining <= 0 else { return }
+        timer?.invalidate()
+        timer = nil
+        timeout()
     }
 
     func cancel() {
@@ -517,6 +562,7 @@ extension EnvironmentValues {
             PageResizeStyle.finish(page.web)
         }
         pages.removeAll()
+        if commitsOnCancel && !published { commit() }
     }
 
     private var ownsLayout: Bool {
@@ -529,6 +575,9 @@ extension EnvironmentValues {
         guard active, !published else { return }
         remaining -= 1
         guard remaining == 0 else { return }
+#if DEBUG
+        ResizeTimingDiagnostics.record("sidebar.prepare.presented")
+#endif
         guard ownsLayout, isCurrent(), pages.allSatisfy(\.stillOwned) else { cancel(); return }
         pages.forEach { $0.installNativeGeometry() }
         published = true
@@ -555,6 +604,9 @@ extension EnvironmentValues {
     private func timedOut(_ token: UUID) {
         guard active, deadlineToken == token else { return }
         let shouldCommit = !published && ownsLayout && isCurrent()
+#if DEBUG
+        if !published { ResizeTimingDiagnostics.record("sidebar.prepare.timeout") }
+#endif
         cancel()
         // A stalled WebContent process must not disable the sidebar command.
         if shouldCommit { commit() }

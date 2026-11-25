@@ -49,6 +49,18 @@ in other profiles. Each window keeps its own sidebar visibility.
 **Toggle Sidebar** (`⌘S` by default) also closes Library when it is open. Showing the
 sidebar again returns to your tabs.
 
+**View › Show Toolbar** (`⇧⌘D` by default, as in Arc, or **Show Toolbar** in the command
+bar) adds a slim strip to the top of the page card with Back, Forward and Reload, the
+page's host in the middle, and Copy Link, pinned extensions and Page Actions on the right.
+In Split View each pane has its own strip for its own page. A long address is shortened
+so it never covers the buttons. Click the host to edit that page's address. The buttons and
+address move there from the top of the sidebar, which keeps its sidebar button. It
+applies to every browser window and is remembered after you quit. With the sidebar
+hidden, the strip in the window's top-left corner starts with the window's close,
+minimise, and zoom buttons and the sidebar button (in full screen macOS shows those
+buttons itself), and you can drag its empty space to move the window. Little Vane and
+Peek keep their own bar.
+
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
 The tab's close button appears at the end of the row while you hover; otherwise the
 title uses the row's full width.
@@ -394,6 +406,7 @@ evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
+| Show Toolbar | `⇧⌘D` |
 
 Shortcuts can be changed in Settings. The menu bar shows the current bindings, including
 numbered tab selection and search commands. Choose **Prefer Website** for a shortcut to
