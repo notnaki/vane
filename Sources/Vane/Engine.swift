@@ -877,8 +877,8 @@ struct TitleReveal: Equatable, Sendable {
             c.addUserScript(WKUserScript(source: ChromeWebStorePage.script, injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true, in: ChromeWebStorePage.world))
         }
-        let manifests = ExtensionHost.host(for: profileID).loaded.map(\.context.webExtension.manifest)
-        if let script = ExtensionChromiumGaps.webPageScript(manifests) {
+        let extensions = ExtensionHost.host(for: profileID).loaded.map { ($0.context.uniqueIdentifier, $0.context.webExtension.manifest) }
+        if let script = ExtensionChromiumGaps.webPageScript(extensions) {
             c.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         }
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,

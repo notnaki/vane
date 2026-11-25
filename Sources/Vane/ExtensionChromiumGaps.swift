@@ -265,18 +265,44 @@ import WebKit
     /// Websites an extension lists in `externally_connectable` message it as Chrome has
     /// them: `chrome.runtime.sendMessage(id, …)`. WebKit offers the same calls on every
     /// page as `browser` only, so sign-ins such as claude.ai's never reach the extension.
-    /// Only matching pages get the alias; elsewhere `window.chrome` stays undefined.
+    /// Only matching pages get `chrome`; elsewhere `window.chrome` stays undefined.
+    /// WebKit also answers a message to an extension that isn't installed with
+    /// `undefined`, which claude.ai takes for success from Anthropic's internal build
+    /// before ever trying the store one. Chrome fails it, and so does this `chrome`.
     // ponytail: patterns are read when a tab's web view is made; a tab open before an
     // install gets them from its next web view.
-    nonisolated static func webPageScript(_ manifests: [[String: Any]]) -> String? {
-        let patterns = Set(manifests.flatMap { (($0["externally_connectable"] as? [String: Any])?["matches"] as? [String]) ?? [] })
-            .compactMap(pageRegex).sorted()
-        guard !patterns.isEmpty, let json = try? JSONSerialization.data(withJSONObject: patterns) else { return nil }
+    nonisolated static func webPageScript(_ extensions: [(id: String, manifest: [String: Any])]) -> String? {
+        let entries: [[Any]] = extensions.compactMap { id, manifest in
+            let patterns = ((manifest["externally_connectable"] as? [String: Any])?["matches"] as? [String] ?? [])
+                .compactMap(pageRegex).sorted()
+            return patterns.isEmpty ? nil : [id, patterns]
+        }
+        guard !entries.isEmpty, let json = try? JSONSerialization.data(withJSONObject: entries, options: .sortedKeys) else { return nil }
         return """
             ;(() => {
-              if (globalThis.chrome !== undefined || typeof globalThis.browser?.runtime?.sendMessage !== 'function') return;
-              if (!\(String(decoding: json, as: UTF8.self)).some(pattern => new RegExp(pattern).test(location.href))) return;
-              Object.defineProperty(globalThis, 'chrome', {configurable: true, writable: true, value: globalThis.browser});
+              const native = globalThis.browser?.runtime;
+              if (globalThis.chrome !== undefined || typeof native?.sendMessage !== 'function') return;
+              const ids = \(String(decoding: json, as: UTF8.self))
+                .filter(([, patterns]) => patterns.some(pattern => new RegExp(pattern).test(location.href))).map(([id]) => id);
+              if (!ids.length) return;
+              let lastError;
+              const settle = (promise, callback) => {
+                if (typeof callback !== 'function') return promise;
+                promise.then(value => callback(value), error => {
+                  lastError = {message: error?.message ?? String(error)};
+                  try { callback(); } finally { lastError = undefined; }
+                });
+              };
+              const runtime = Object.freeze({
+                sendMessage(id, message, ...rest) {
+                  const callback = typeof rest.at(-1) === 'function' ? rest.pop() : undefined;
+                  return settle(ids.includes(id) ? native.sendMessage(id, message, ...rest)
+                    : Promise.reject(new Error('Could not establish connection. Receiving end does not exist.')), callback);
+                },
+                connect: (...args) => native.connect(...args),
+                get lastError() { return lastError; }
+              });
+              Object.defineProperty(globalThis, 'chrome', {configurable: true, writable: true, value: Object.freeze({runtime})});
             })();
             """
     }

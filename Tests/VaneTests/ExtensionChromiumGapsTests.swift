@@ -38,11 +38,14 @@ import XCTest
     }
 
     func testChromeAliasOnlyOnPagesAnExtensionListsForMessaging() throws {
-        XCTAssertNil(ExtensionChromiumGaps.webPageScript([["name": "No pages"]]))
+        XCTAssertNil(ExtensionChromiumGaps.webPageScript([("a", ["name": "No pages"])]))
         let script = try XCTUnwrap(ExtensionChromiumGaps.webPageScript([
-            ["externally_connectable": ["matches": ["https://claude.ai/*", "https://*.claude.ai/*"]]]
+            ("fcoeoabgfenejglbffodgkkbkcdhcgfn", ["externally_connectable": ["matches": ["https://claude.ai/*", "https://*.claude.ai/*"]]]),
+            ("b", ["name": "No pages"])
         ]))
         XCTAssertTrue(script.contains("globalThis.browser"))
+        XCTAssertTrue(script.contains("fcoeoabgfenejglbffodgkkbkcdhcgfn"))
+        XCTAssertTrue(script.contains("Receiving end does not exist"), "an extension that isn't installed fails, as in Chrome")
         func matches(_ pattern: String, _ url: String) throws -> Bool {
             let regex = try NSRegularExpression(pattern: XCTUnwrap(ExtensionChromiumGaps.pageRegex(pattern)))
             return regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
@@ -51,7 +54,7 @@ import XCTest
         XCTAssertTrue(try matches("https://*.claude.ai/*", "https://claude.ai/new"))
         XCTAssertTrue(try matches("https://*.claude.ai/*", "https://a.b.claude.ai/"))
         XCTAssertTrue(try matches("*://example.com/app*", "http://example.com:8080/app/1"))
-        XCTAssertNil(ExtensionChromiumGaps.webPageScript([["externally_connectable": ["matches": ["*://*/*"]]]]), "never every site")
+        XCTAssertNil(ExtensionChromiumGaps.webPageScript([("a", ["externally_connectable": ["matches": ["*://*/*"]]])]), "never every site")
         XCTAssertFalse(try matches("https://*.claude.ai/*", "https://evilclaude.ai/"))
         XCTAssertFalse(try matches("https://claude.ai/*", "https://claude.ai.evil.test/"))
         XCTAssertFalse(try matches("https://claude.ai/*", "http://claude.ai/"))
