@@ -62,6 +62,7 @@ import Darwin
         var origin: String; var enabled: Bool; var font: String; var textScale: Double
         var background: String; var textColor: String; var linkColor: String; var hidden: [String]
         var cssDigest: String; var scriptDigest: String
+        var contrast: Double?; var brightness: Double?; var saturation: Double?; var textCase: String?
     }
     private struct Blocking: Codable, Sendable { var enabled: Bool }
     private struct SiteException: Codable, Sendable { var host: String }
@@ -146,7 +147,8 @@ import Darwin
         let script = try addAsset(Data(value.script.utf8), to: &assets)
         let portable = Boost(origin: origin, enabled: value.enabled, font: value.font, textScale: value.textScale,
             background: value.background, textColor: value.textColor, linkColor: value.linkColor,
-            hidden: value.hidden, cssDigest: css, scriptDigest: script)
+            hidden: value.hidden, cssDigest: css, scriptDigest: script,
+            contrast: value.contrast, brightness: value.brightness, saturation: value.saturation, textCase: value.textCase)
         return try item(portable, category: .boosts, id: profile.uuidString.lowercased() + "/" + ICloudIdentity.digest(origin), profile: profile, assets: assets)
     }
     private nonisolated static func subscriptionItem(_ subscription: FilterSubscription) throws -> ICloudItem {
@@ -414,7 +416,9 @@ import Darwin
                   portable.hidden.count <= 4096 else { throw ICloudFailure.invalid("Invalid synced Boost.") }
             let boost = SiteBoost(enabled: portable.enabled, font: portable.font, textScale: portable.textScale,
                 background: portable.background, textColor: portable.textColor, linkColor: portable.linkColor,
-                hidden: portable.hidden, css: css, script: script, scriptEnabled: false)
+                hidden: portable.hidden, css: css, script: script, scriptEnabled: false,
+                contrast: portable.contrast ?? 1, brightness: portable.brightness ?? 1,
+                saturation: portable.saturation ?? 1, textCase: portable.textCase ?? "")
             guard boost == boost.sanitized else { throw ICloudFailure.invalid("Invalid synced Boost settings.") }
             return .boost(profile, portable.origin, boost)
         case .contentBlocking:
