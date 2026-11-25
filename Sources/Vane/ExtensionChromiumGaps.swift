@@ -7,7 +7,7 @@ import WebKit
 /// still tells the extension the feature is missing. The exceptions answer truthfully
 /// enough to be cheap: `management.getSelf` (from the manifest), `idle.queryState`
 /// (always active) and `action.getUserSettings`; and, from the host over `bridgePath`,
-/// `runtime.getContexts`, `tabs.group`/`ungroup` with `tabGroups`, and `offscreen`.
+/// `runtime.getContexts` and `offscreen`.
 /// Vendor resources remain unchanged.
 @MainActor enum ExtensionChromiumGaps {
     /// Permission names whose namespace WebKit omits entirely.
@@ -148,48 +148,6 @@ import WebKit
                 })(), callback));
                 define(api.offscreen, 'hasDocument', callback => answer(ask('offscreenHas'), callback));
                 define(api.offscreen, 'closeDocument', callback => answer(ask('offscreenClose'), callback));
-              }
-              if (declared.has('tabGroups') && api.tabs?.get && api.tabs.query) {
-                // Vane shows no tab groups. The host keeps the extension's own, by WebKit's tab
-                // IDs, so its worker and pages agree; Vane's tab strip stays as it is.
-                const tabs = api.tabs, groups = api.tabGroups, get = tabs.get.bind(tabs), query = tabs.query.bind(tabs);
-                constants(groups, 'Color', Object.fromEntries(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'].map(c => [c.toUpperCase(), c])));
-                const state = () => ask('groups');
-                const grouped = (tab, members) => tab && typeof tab === 'object' ? {...tab, groupId: members[tab.id] ?? -1} : tab;
-                // Native callbacks first, so a failure still reports through runtime.lastError.
-                Object.defineProperty(tabs, 'get', {configurable: true, value: (id, callback) => {
-                  if (typeof callback !== 'function') return get(id).then(tab => state().then(s => grouped(tab, s.members)));
-                  get(id, tab => tab ? state().then(s => callback(grouped(tab, s.members)), () => callback(tab)) : callback(tab));
-                }});
-                Object.defineProperty(tabs, 'query', {configurable: true, value: (info, callback) => {
-                  const {groupId, ...rest} = info ?? {};
-                  const filtered = (list, members) => list.map(tab => grouped(tab, members)).filter(tab => groupId === undefined || tab.groupId === groupId);
-                  if (typeof callback !== 'function') return query(rest).then(list => state().then(s => filtered(list, s.members)));
-                  query(rest, list => list ? state().then(s => callback(filtered(list, s.members)), () => callback(list)) : callback(list));
-                }});
-                // A closed tab leaves its group, and an emptied group ends, as in Chrome. At the
-                // top level so a restarted worker listens again.
-                tabs.onRemoved.addListener(id => { ask('ungroup', {tabIds: [id]}).catch(() => {}); });
-                define(tabs, 'group', (options, callback) => answer((async () => {
-                  const tabIds = [options?.tabIds].flat();
-                  if (!tabIds.length || !tabIds.every(Number.isInteger)) throw new Error('No tab IDs given.');
-                  const found = await Promise.all(tabIds.map(id => get(id)));
-                  return ask('group', {tabIds, groupId: options?.groupId, windowId: options?.createProperties?.windowId ?? found[0].windowId});
-                })(), callback));
-                define(tabs, 'ungroup', (tabIds, callback) => answer(ask('ungroup', {tabIds: [tabIds].flat()}), callback));
-                const find = (list, id) => list.find(group => group.id === id) ?? (() => { throw new Error('No group with id: ' + id + '.'); })();
-                define(groups, 'get', (id, callback) => answer(state().then(s => find(s.groups, id)), callback));
-                define(groups, 'query', (info, callback) => answer((async () => {
-                  const s = await state();
-                  let windowId = info?.windowId;
-                  if (windowId === -2) windowId = (await api.windows.getCurrent()).id;
-                  return s.groups.filter(group => (windowId === undefined || group.windowId === windowId)
-                    && ['title', 'color', 'collapsed'].every(key => info?.[key] === undefined || group[key] === info[key]));
-                })(), callback));
-                define(groups, 'update', (id, properties, callback) => answer(ask('update', {groupId: id, title: properties?.title,
-                  color: properties?.color, collapsed: properties?.collapsed}), callback));
-                // ponytail: groups have no place in Vane's tab order; moving one changes nothing.
-                define(groups, 'move', (id, properties, callback) => answer(state().then(s => find(s.groups, id)), callback));
               }
               Object.defineProperty(api, Symbol('Vane Chromium API owners'), {value: owners});
               // Vane replaces accepted code at once; no update ever waits for a reload.
@@ -349,70 +307,6 @@ import WebKit
         }
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed])) ?? Data(#"{"error":"Vane could not encode its answer."}"#.utf8)
         return marker + String(decoding: data, as: UTF8.self)
-    }
-
-    /// One extension's `tabGroups`, by the tab IDs WebKit gave it. Vane draws no groups.
-    struct TabGroups {
-        struct Group: Equatable {
-            let id: Int
-            var title = ""
-            var color = "grey"
-            var collapsed = false
-            let windowId: Int
-            var json: [String: Any] {
-                ["id": id, "title": title, "color": color, "collapsed": collapsed, "windowId": windowId, "shared": false]
-            }
-        }
-
-        nonisolated static let colors: Set<String> = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"]
-        private(set) var groups: [Int: Group] = [:]
-        /// Tab ID to group ID.
-        private(set) var members: [Int: Int] = [:]
-        private var next = 1
-
-        /// Chrome's `tabs.group`: into `id`, else a new group in `windowId`.
-        mutating func group(_ tabs: [Int], into id: Int?, windowId: Int) throws -> Int {
-            let target: Int
-            if let id {
-                guard groups[id] != nil else { throw ExtensionHost.Failure("No group with id: \(id).") }
-                target = id
-            } else {
-                target = next
-                next += 1
-                groups[target] = Group(id: target, windowId: windowId)
-            }
-            for tab in tabs { members[tab] = target }
-            prune()
-            return target
-        }
-
-        mutating func ungroup(_ tabs: [Int]) {
-            for tab in tabs { members[tab] = nil }
-            prune()
-        }
-
-        mutating func update(_ id: Int, title: String?, color: String?, collapsed: Bool?) throws -> Group {
-            guard var group = groups[id] else { throw ExtensionHost.Failure("No group with id: \(id).") }
-            if let color {
-                guard Self.colors.contains(color) else { throw ExtensionHost.Failure("Invalid color: \(color).") }
-                group.color = color
-            }
-            if let title { group.title = title }
-            if let collapsed { group.collapsed = collapsed }
-            groups[id] = group
-            return group
-        }
-
-        /// As in Chrome, a group lasts only while it holds a tab.
-        private mutating func prune() {
-            let used = Set(members.values)
-            groups = groups.filter { used.contains($0.key) }
-        }
-
-        var json: [String: Any] {
-            ["groups": groups.values.sorted { $0.id < $1.id }.map(\.json),
-             "members": Dictionary(uniqueKeysWithValues: members.map { (String($0.key), $0.value) })]
-        }
     }
 
     static func configure(_ configuration: WKWebViewConfiguration) {

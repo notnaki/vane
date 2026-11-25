@@ -579,6 +579,10 @@ struct TitleReveal: Equatable, Sendable {
     private var passwordReadTask: Task<Void, Never>?
     private var passwordReadRequest = UUID()
     private var passwordExplicitFillRequest: UUID?
+    /// A chosen fill still waiting for WebKit's answer, and the field it is for. The page's
+    /// paced discovery can report that same, still-focused field again; that is an echo,
+    /// and reading names for it would cancel the fill or drop its receipt.
+    private var passwordPendingExplicitFill: (request: UUID, target: String)?
     /// A fill whose system prompt is up, until WebKit answers it. The prompt takes key
     /// from this window and hands it back; the page reports both as a blur and a fresh
     /// focus, and neither is the user changing their mind.
@@ -1722,6 +1726,7 @@ struct TitleReveal: Equatable, Sendable {
         let needsSecret = !target.contains(":username:"), gate = passwordFillGate
         passwordReadRequest = request
         passwordExplicitFillRequest = automatic ? nil : request
+        passwordPendingExplicitFill = automatic ? nil : (request, target)
         passwordAuthenticatingFill = needsSecret && gate.needsPrompt ? request : nil
         passwordPromptTookKey = false
         // Everything a fill was authorized against. Rechecked after each suspension, and the
@@ -1736,7 +1741,10 @@ struct TitleReveal: Equatable, Sendable {
         }
         passwordReadTask = Task { [weak self, weak page] in
             var delivered = false
-            defer { if !delivered, self?.passwordAuthenticatingFill == request { self?.passwordAuthenticatingFill = nil } }
+            defer {
+                if !delivered, self?.passwordAuthenticatingFill == request { self?.passwordAuthenticatingFill = nil }
+                if !delivered, self?.passwordPendingExplicitFill?.request == request { self?.passwordPendingExplicitFill = nil }
+            }
             do {
                 if let continuation {
                     guard !Task.isCancelled,
@@ -1770,6 +1778,7 @@ struct TitleReveal: Equatable, Sendable {
                                        in: nil, in: Autofill.world) { [weak self, weak page] result in
                     guard let self else { return }
                     if self.passwordAuthenticatingFill == request { self.passwordAuthenticatingFill = nil }
+                    if self.passwordPendingExplicitFill?.request == request { self.passwordPendingExplicitFill = nil }
                     var retryRejectedTarget = false
                     defer {
                         if self.passwordContinuationFill?.request == request {
@@ -2435,6 +2444,20 @@ struct TitleReveal: Equatable, Sendable {
         if navigationResponse.isForMainFrame { dismissDownloadTabIfBlank(w) }
     }
 
+    /// WebKit delivers native context-menu downloads through this delegate selector
+    /// because choosing Download Image does not start a navigation.
+    @objc(_webView:contextMenuDidCreateDownload:)
+    func contextMenuDidCreateDownload(_ w: WKWebView, download: WKDownload) {
+        guard w === existingWeb, !tornDown, !suspended,
+              let url = download.originalRequest?.url,
+              !HTTPSOnly.blocksDownload(url, profileID: profileID) else {
+            download.cancel { _ in }
+            return
+        }
+        TidyDownloads.remember(download, pageTitle: w.title)
+        Downloads.manager(for: profileID).attach(download, from: w)
+    }
+
     /// A new tab whose first navigation became a download has no document to keep.
     /// The URL can already name the provisional download, so use committed history
     /// rather than `url` or `hasEverLoaded` (which is set at provisional start).
@@ -2615,6 +2638,8 @@ struct TitleReveal: Equatable, Sendable {
             // while the keyboard is somewhere else is the page's doing, not the user's.
             guard !(passwordPromptTookKey && passwordAuthenticatingFill == passwordReadRequest), pageHoldsKeyboard,
                   let origin = secureOrigin, let target = body["target"] as? String else { return }
+            if let pending = passwordPendingExplicitFill, pending.request == passwordReadRequest,
+               pending.target == target { return }
             let host = origin.host
             let anchor = body.compactMapValues { $0 as? Double }
             let hint = body["accountHint"] as? String

@@ -313,6 +313,8 @@ import WebKit
         ExtensionMV2Compatibility.configure(webConfiguration)
         ExtensionIdentityAPI.configure(webConfiguration)
         ExtensionDebuggerAPI.configure(webConfiguration)
+        // Ahead of the stand-ins, which leave a namespace that is already there alone.
+        ExtensionTabGroupsAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
@@ -1971,6 +1973,7 @@ import WebKit
         }
         syncSidePanels()
         debugger.sync()
+        tabGroups.sync(contexts: installed)
         guard !loaded.isEmpty else { return }
         let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
@@ -2091,6 +2094,12 @@ import WebKit
             let result: Result<Any, any Error>
             do { result = .success(try await answer(request, for: context)) } catch { result = .failure(error) }
             throw Failure(ExtensionChromiumGaps.reply(result))
+        }
+        if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL,
+                                                      path: ExtensionTabGroupsAPI.bridgePath) {
+            return try await tabGroups.handle(request, tab: configuration.parentTab as? ExtTab,
+                                              window: configuration.window as? ExtWindow, contexts: installed,
+                                              for: context) { [debugger] in debugger.reply($0, for: context) }
         }
         if let request = ExtensionDebuggerAPI.Request(configuration.url, base: context.baseURL) {
             return try await debugger.handle(request, tab: configuration.parentTab as? ExtTab, panels: sidePanels, for: context)
@@ -2234,8 +2243,6 @@ import WebKit
 
     // MARK: Chromium stand-ins
 
-    /// `tabGroups` by extension; see `ExtensionChromiumGaps.TabGroups`.
-    private var tabGroups: [ObjectIdentifier: ExtensionChromiumGaps.TabGroups] = [:]
     /// `offscreen`: one hidden extension page per extension, as in Chrome.
     private var offscreenDocuments: [ObjectIdentifier: WKWebView] = [:]
 
@@ -2246,24 +2253,6 @@ import WebKit
         switch request.operation {
         case "contexts":
             return extensionContexts(context)
-        case "groups", "group", "ungroup", "update":
-            guard declared.contains("tabGroups") else { throw Failure("This extension has not requested the tabGroups permission.") }
-            var groups = tabGroups[key] ?? .init()
-            defer { tabGroups[key] = groups }
-            switch request.operation {
-            case "group":
-                return try groups.group(integers("tabIds"), into: (arguments["groupId"] as? NSNumber)?.intValue,
-                                        windowId: (arguments["windowId"] as? NSNumber)?.intValue ?? -1)
-            case "ungroup":
-                groups.ungroup(integers("tabIds"))
-                return NSNull()
-            case "update":
-                guard let id = (arguments["groupId"] as? NSNumber)?.intValue else { throw Failure("No group with id: undefined.") }
-                return try groups.update(id, title: arguments["title"] as? String, color: arguments["color"] as? String,
-                                         collapsed: arguments["collapsed"] as? Bool).json
-            default:
-                return groups.json
-            }
         case "offscreenCreate", "offscreenHas", "offscreenClose":
             guard declared.contains("offscreen") else { throw Failure("This extension has not requested the offscreen permission.") }
             switch request.operation {
@@ -2375,6 +2364,8 @@ import WebKit
     @Published private(set) var sidePanels: [ExtensionSidePanel] = []
     /// `chrome.debugger` sessions; see ExtensionDebugger.swift.
     private(set) lazy var debugger = ExtensionDebugger(profileID: profileID)
+    /// `chrome.tabGroups` over Today's folders; see ExtensionTabGroups.swift.
+    private(set) lazy var tabGroups = ExtensionTabGroups(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.
     @Published private var sidePanelOptions: [ActionKey: ExtensionSidePanelAPI.Options] = [:]
     private var sidePanelsOnAction: Set<ObjectIdentifier> = []
@@ -2666,9 +2657,9 @@ import WebKit
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
-        tabGroups[ObjectIdentifier(context)] = nil
         offscreenDocuments.removeValue(forKey: ObjectIdentifier(context))?.stopLoading()
         debugger.forget(context)
+        tabGroups.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
         for page in pages where page.context === context {
             (page.window.contentView as? WKWebView)?.stopLoading()

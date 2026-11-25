@@ -94,6 +94,8 @@ import XCTest
 
     func testNativeDisclosureExpandsAndCollapsesItsControls() async throws {
         TestEnvironment.prepare()
+        // A focused filter runs this alone, before anything has created the application.
+        _ = NSApplication.shared
         // Never inherit a pending or prohibited policy from an earlier fixture.
         let callerPolicy = NSApp.activationPolicy()
         defer { NSApp.setActivationPolicy(callerPolicy) }
@@ -142,10 +144,38 @@ import XCTest
             let y = host.bounds.midY + (host.isFlipped ? -offset : offset)
             return host.convert(NSPoint(x: 25, y: y), to: nil)
         }
-        try click(trianglePoint(), in: window)
-        try await compatibilityWait { host.fittingSize.height > collapsedHeight + 30 }
-        try click(trianglePoint(), in: window)
-        try await compatibilityWait { abs(host.fittingSize.height - collapsedHeight) < 1 }
+        // Each click needs the key window of the active app: a click on an inactive
+        // window can be spent activating it instead of reaching the triangle.
+        var trace: [String] = []
+        func clickTriangle(_ label: String) async throws {
+            try await compatibilityWait {
+                let ready = NSApp.isActive && window.isKeyWindow
+                if !ready { reassertForeground(window) }
+                return ready
+            }
+            let point = trianglePoint()
+            let hit = window.contentView?.hitTest(window.contentView!.convert(point, from: nil))
+            trace.append("\(label) t=\(ProcessInfo.processInfo.systemUptime) key=\(window.isKeyWindow) "
+                + "exactKey=\(NSApp.keyWindow === window) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "active=\(NSApp.isActive) occlusion=\(window.occlusionState.rawValue) frame=\(window.frame) "
+                + "screen=\(String(describing: window.screen?.visibleFrame)) bounds=\(host.bounds) "
+                + "fitting=\(host.fittingSize) point=\(point)")
+            try click(point, in: window)
+            // Separates a click that never toggled from one whose layout has not settled.
+            host.layoutSubtreeIfNeeded()
+            trace.append("\(label) after click fitting=\(host.fittingSize)")
+        }
+        do {
+            try await clickTriangle("expand")
+            try await compatibilityWait { host.fittingSize.height > collapsedHeight + 30 }
+            try await clickTriangle("collapse")
+            try await compatibilityWait { abs(host.fittingSize.height - collapsedHeight) < 1 }
+        } catch {
+            // Keep the click-time geometry and foreground state for the next CI miss.
+            print("SETTINGS_DISCLOSURE_TRACE collapsed=\(collapsedHeight) now: key=\(window.isKeyWindow) "
+                + "active=\(NSApp.isActive) fitting=\(host.fittingSize)\n" + trace.joined(separator: "\n"))
+            throw error
+        }
     }
 
     private func click(_ point: NSPoint, in window: NSWindow) throws {

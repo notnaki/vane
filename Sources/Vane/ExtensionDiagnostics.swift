@@ -22,21 +22,19 @@ import WebKit
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
         // Vane supplies `sidePanel` and `identity` itself; see ExtensionSidePanel.swift, ExtensionIdentity.swift.
-        // Vane supplies part of `idle`, `management`, `tabGroups` and `offscreen`; see ExtensionChromiumGaps.swift.
+        // Vane supplies part of `idle`, `management` and `offscreen`; see ExtensionChromiumGaps.swift.
         let missing = declared.subtracting(recognized)
         // `idle`'s stand-in needs it as a required permission; `getSelf` needs none.
         // The stand-ins are MV3-only, so MV2 extensions still hear these are unrecognized.
         let mv3 = manifest["manifest_version"] as? Int == 3
         let required = mv3 ? Set(manifest["permissions"] as? [String] ?? []) : []
-        var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission] + (mv3 ? ["management"] : []))
-            .subtracting(required.intersection(["idle", "tabGroups", "offscreen"])).sorted().map {
+        var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission,
+                                          ExtensionTabGroupsAPI.permission] + (mv3 ? ["management"] : []))
+            .subtracting(required.intersection(["idle", "offscreen"])).sorted().map {
             "\($0): \(unrecognized)"
         }
         if missing.contains("idle"), required.contains("idle") { issues.append("idle: Vane always reports the user as active; state changes never fire.") }
         if mv3, missing.contains("management") { issues.append("management: Vane answers getSelf only.") }
-        if missing.contains("tabGroups"), required.contains("tabGroups") {
-            issues.append("tabGroups: Vane keeps the extension's groups for it; they do not appear in the sidebar, and group events are not sent.")
-        }
         if missing.contains("offscreen"), required.contains("offscreen") {
             issues.append("offscreen: Vane runs the document hidden until the extension closes it or reloads.")
         }
@@ -51,6 +49,9 @@ import WebKit
         } else if declared.contains(ExtensionIdentityAPI.permission) {
             // WebKit cannot grant a permission it does not know, so there is no grant to honour.
             issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
+        }
+        if declared.contains(ExtensionTabGroupsAPI.permission) {
+            issues.append("tabGroups: Vane's groups are folders in Today. Pinned tabs and Favourites cannot be grouped, tabs stay in their own window, colours are kept but not shown, and extensions change only the folders extensions made.")
         }
         for permission in declared.intersection(unsupportedPermissions).sorted() {
             issues.append("\(permission): " + notProvided + (permission == "nativeMessaging"

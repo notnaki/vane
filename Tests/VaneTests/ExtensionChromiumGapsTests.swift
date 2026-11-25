@@ -17,26 +17,6 @@ import XCTest
         XCTAssertEqual(ExtensionChromiumGaps.reply(.failure(ExtensionHost.Failure("No."))), #"[vane-gaps] {"error":"No."}"#)
     }
 
-    func testTabGroupsFollowChrome() throws {
-        var groups = ExtensionChromiumGaps.TabGroups()
-        let id = try groups.group([1, 2], into: nil, windowId: 7)
-        XCTAssertEqual(groups.members, [1: id, 2: id])
-        XCTAssertEqual(groups.groups[id]?.windowId, 7)
-        XCTAssertEqual(try groups.group([3], into: id, windowId: -1), id, "into an existing group")
-        XCTAssertThrowsError(try groups.group([4], into: 99, windowId: 7))
-        let updated = try groups.update(id, title: "Claude", color: "orange", collapsed: true)
-        XCTAssertEqual([updated.title, updated.color], ["Claude", "orange"])
-        XCTAssertTrue(updated.collapsed)
-        XCTAssertThrowsError(try groups.update(id, title: nil, color: "mauve", collapsed: nil))
-        // Moving every tab out of a group ends it, as in Chrome.
-        let other = try groups.group([1, 2, 3], into: nil, windowId: 7)
-        XCTAssertNotEqual(other, id)
-        XCTAssertNil(groups.groups[id])
-        groups.ungroup([1, 2, 3])
-        XCTAssertTrue(groups.groups.isEmpty)
-        XCTAssertTrue(groups.members.isEmpty)
-    }
-
     func testChromeAliasOnlyOnPagesAnExtensionListsForMessaging() throws {
         XCTAssertNil(ExtensionChromiumGaps.webPageScript([("a", ["name": "No pages"])]))
         let script = try XCTUnwrap(ExtensionChromiumGaps.webPageScript([

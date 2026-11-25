@@ -707,7 +707,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 afterPresentation()
             }, launchReadiness: {
-                self.nativeContinuationReady(window, document: document) && launchReadiness()
+                // A declined one-shot activation would otherwise hold readiness
+                // false for the whole budget. Every caller is a pre-action wait.
+                let ready = self.nativeContinuationReady(window, document: document)
+                if !ready { reassertForeground(window) }
+                return ready && launchReadiness()
             })
     }
 
@@ -770,8 +774,17 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
             // Fit the complete decorated window, not just its content rectangle.
             window.setFrame(CGRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
                                    width: size.width, height: size.height), display: false)
-            let loop = try await admitNativePresentation(window, document: tab.web,
-                launchReadiness: launchReadiness, afterPresentation: afterPresentation)
+            let loop: NativeFixtureApplicationLoop
+            do {
+                loop = try await admitNativePresentation(window, document: tab.web,
+                    launchReadiness: launchReadiness, afterPresentation: afterPresentation)
+            } catch {
+                // Name the readiness getter that held a failed launch admission.
+                emitNativeContinuationReadiness(window, document: tab.web, stage: "admission-failed")
+                NativeFixtureDiagnostics.emit("Native continuation admission failed: \(error). " +
+                    nativeWindowVisibilityState(window))
+                throw error
+            }
             acquiredLoop = loop
             afterLoopAdmission()
             // These fixtures choose native account rows. Establish that user-facing
@@ -1353,7 +1366,11 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
         }
     }
 
-    private enum EmbeddedFillControl { case none, heldReply, domOnlyMutation }
+    func testDiscoveryFocusEchoCannotCancelHeldExplicitFill() async throws {
+        try await exerciseEmbeddedSelection(control: .focusEcho)
+    }
+
+    private enum EmbeddedFillControl { case none, heldReply, domOnlyMutation, focusEcho }
     private struct PrematureFillAdmission: Error {}
 
     @MainActor private final class FillHoldFrame: NSObject, WKScriptMessageHandler {
@@ -1576,6 +1593,20 @@ private final class PasswordFixtureReadHold: @unchecked Sendable {
                 if let hold, hold.isHoldingReply, domAndTarget {
                     observedHeldBoundary = true
                     guard !ready else { throw PrematureFillAdmission() }
+                    if control == .focusEcho {
+                        // The frame's paced discovery reports the still-focused field
+                        // again. The trailing round trip orders it before the reply.
+                        _ = try await js(web, """
+                            (() => {
+                                const anchor = JSON.parse(window.__vaneAnchor());
+                                anchor.focus = true;
+                                anchor.mainDocument = false;
+                                webkit.messageHandlers.vanepw.postMessage(anchor);
+                                return true;
+                            })()
+                            """, world: Autofill.world)
+                        _ = try await js(web, "true", world: Autofill.world)
+                    }
                     hold.release()
                     // Return the sampled predicate, not a forced false. A later
                     // sample must observe the actual native completion receipt.
