@@ -1153,6 +1153,7 @@ private struct Sidebar: View {
     @StateObject private var downloadsHover = DownloadsHover()
     @State private var feedbackScope = FeedbackOcclusionScope()
     @StateObject private var dragPreview = SidebarDragPreview()
+    @State private var pointer = SidebarPointer()
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -1243,6 +1244,10 @@ private struct Sidebar: View {
         // The same motion as the toolbar arriving over the page.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
         .environment(\.sidebarDropMarker, dropMarker)
+        .environment(\.sidebarPointer, pointer)
+        // Arc reveals the pill's glyphs and Today's Clear whenever the pointer is anywhere
+        // over the sidebar. Only the readers re-render; this body does not read it.
+        .onHover { pointer.inside = $0 }
         // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
@@ -1729,6 +1734,7 @@ private struct PillBody: View {
     var layoutWidth: CGFloat? = nil
     var plain = false
     @State private var hovering = false
+    @Environment(\.sidebarPointer) private var sidebarPointer
     @State private var showingSiteControls = false
     @State private var pillFocused = false
     @StateObject private var overflowAnchor = ActionAnchor()
@@ -1938,6 +1944,8 @@ private struct PillBody: View {
         }
     }
 
+    private var revealed: Bool { hovering || pillFocused || sidebarPointer?.inside == true }
+
     private var fullContent: some View {
         HStack(spacing: Look.pillGlyphGap) {
             ZStack(alignment: .leading) {
@@ -1962,15 +1970,15 @@ private struct PillBody: View {
             .id(reduced)
             Spacer(minLength: 4)
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
-            // Reserve the action slots while hidden so hover cannot move the host,
-            // zoom chip, or pinned extensions. Keyboard focus reveals the same actions.
+            // Arc's order: pinned extensions, Copy Link, Site Controls, all hidden until the
+            // pointer is over the sidebar. Slots stay reserved so the reveal moves nothing.
+            PinnedExtensions(store: store, tab: tab, revealed: revealed, reduced: reduced)
             if !address.isEmpty, let tab, tab.easelID == nil {
                 PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
                                 feedback: store.feedback, address: address,
-                                revealed: hovering || pillFocused, copyLink: copyLink)
+                                revealed: revealed, copyLink: copyLink)
                     .transition(.opacity)
             }
-            PinnedExtensions(store: store, tab: tab)
         }
         .animation(reduced ? nil : Look.pillChange, value: address.isEmpty)
     }
@@ -2032,7 +2040,7 @@ private struct PillHoverGlyphs: View {
                 .accessibilityValue(copied ? "Copied" : "")
                 .nativeSidebarKeyboardControl(focusChanged: { copyFocused = $0 })
             Button { showingSiteControls.toggle() } label: {
-                Image(systemName: "slider.horizontal.3")
+                Image(systemName: "slider.horizontal.2.square")
                     .overlay(alignment: .topTrailing) {
                         if site.badge != nil {
                             Circle().fill(Color.accentColor)
@@ -2068,7 +2076,7 @@ private struct PillGlyphReveal: ViewModifier {
     let reduced: Bool
     func body(content: Content) -> some View {
         content.opacity(visible ? 1 : 0)
-            .animation(reduced ? nil : Look.quick, value: visible)
+            .animation(reduced ? nil : Look.feedback, value: visible)
             .id(reduced)
     }
 }
@@ -2079,12 +2087,14 @@ private struct PillGlyphReveal: ViewModifier {
 ///
 /// ponytail: no reserved slot. An unpinned browser's pill is exactly the pill it was, and
 /// the width goes when the pin is made rather than being held empty against the chance of
-/// one — the pill's own glyphs (the lock, the chip) are the stable chrome here.
+/// one. In the sidebar pill they fade in with Copy Link and Site Controls, as in Arc.
 private struct PinnedExtensions: View {
     /// The window, not the tab, decides which extensions are pinned here: the pill keeps its
     /// glyphs with no tab open, the way the back and forward buttons keep theirs.
     let store: TabStore
     let tab: Tab?
+    var revealed = true
+    var reduced = false
     /// A badge is not on the tab: the extension sets it, and `ExtensionHost`'s
     /// `didUpdate` delegate bumps this. No timer.
     @ObservedObject private var changes = SiteChanges.shared
@@ -2092,7 +2102,7 @@ private struct PinnedExtensions: View {
     var body: some View {
         let host = ExtensionHost.host(for: store.profileID)
         ForEach(host.pinned(private: store.isPrivate), id: \.uniqueIdentifier) { context in
-            ExtensionGlyph(host: host, tab: tab, context: context)
+            ExtensionGlyph(host: host, tab: tab, context: context, revealed: revealed, reduced: reduced)
         }
     }
 }
@@ -2126,7 +2136,14 @@ private struct ExtensionGlyph: View {
     let host: ExtensionHost
     let tab: Tab?
     let context: WKWebExtensionContext
+    var revealed = true
+    var reduced = false
     @StateObject private var anchor = ActionAnchor()
+    @FocusState private var focused: Bool
+    /// Like Site Controls: keyboard focus or its own open popup keeps it up. The popup is
+    /// read on render, so it holds the glyph while the pointer moves into it.
+    /// ponytail: popup close isn't published; the glyph settles on the next hover change.
+    private var visible: Bool { revealed || focused || host.actionPopupWindow(context, for: tab) != nil }
 
     var body: some View {
         // Every string built before the chain: a modifier chain this long with the work
@@ -2149,6 +2166,10 @@ private struct ExtensionGlyph: View {
             .accessibilityHint(hint)
             .accessibilityAction { press() }
             .accessibilityAction(named: "Unpin from Address Bar") { host.togglePin(context) }
+            .opacity(visible ? 1 : 0)
+            .animation(reduced ? nil : Look.feedback, value: visible)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
     }
 
     /// A `Button`, which consumes its own click the way the pill's Copy Link glyph does —
@@ -2161,12 +2182,12 @@ private struct ExtensionGlyph: View {
             ActionIcon(host: host, context: context, tab: tab, badge: badge).contentShape(.rect)
         }
         .buttonStyle(TactileButtonStyle())
+        .focused($focused)
         .opacity(live ? 1 : Look.dimmed)
     }
 
     /// What the action says about itself right now. `note` is why it is not pressable, and
-    /// nil when it is: a pinned glyph is drawn whatever the window holds — the pill's chrome
-    /// does not come and go — but it only runs on a page, and only while its extension
+    /// nil when it is: a pinned glyph is drawn whatever the window holds, but it only runs on a page, and only while its extension
     /// leaves the action enabled.
     private var state: (badge: String?, note: String?) {
         let action = host.action(context, for: tab)
@@ -4689,7 +4710,7 @@ struct SidebarTidySurface<Actions: View>: View {
 }
 
 /// The divider is absent when Today is empty. Otherwise, it keeps Clear visible for
-/// a pile of Today tabs and reveals it on hover for any nonempty Today section.
+/// a pile of Today tabs and reveals it while the pointer is over the sidebar.
 /// Tidy follows its own threshold and preference. The line shortens as controls appear
 /// without moving the rows above or below it.
 private struct TidyRow: View {
@@ -4700,12 +4721,13 @@ private struct TidyRow: View {
     /// Set while a tab that this would actually move is over the divider. See below.
     @State private var lit: Landing.Band?
     @State private var hovering = false
+    @Environment(\.sidebarPointer) private var sidebarPointer
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // Counted once: it reads every tab, and this body runs on each store publication.
         let today = TidyTabs.todayCount(store)
-        let offering = TidyTabs.offersClear(today: today, hovering: hovering)
+        let offering = TidyTabs.offersClear(today: today, hovering: hovering || sidebarPointer?.inside == true)
         let tidy = TidyTabs.control(today: today, threshold: TidyTabs.threshold, enabled: TidyTabs.enabled,
                                     running: progress.isRunning(store))
         SidebarTidySurface {
@@ -4740,7 +4762,7 @@ private struct TidyRow: View {
                     .accessibilityLabel("Clear Tabs")
             }
         }
-        .animation(reduceMotion ? nil : Look.list, value: offering)
+        .animation(reduceMotion ? nil : Look.feedback, value: offering)
         .animation(reduceMotion ? nil : Look.list, value: tidy)
         .vaneMotionPolicy()
         // The divider is the end of the Pinned list, so a tab let go on it pins, at the end
@@ -6417,4 +6439,12 @@ private struct LibraryButton: View {
         guard categories.contains(category) else { return }
         if !preparePreview() { hover.dismiss() }
     }
+}
+
+/// Whether the pointer is over this window's sidebar. Observable, so only views that read
+/// `inside` re-render when it flips.
+@Observable final class SidebarPointer { var inside = false }
+
+extension EnvironmentValues {
+    @Entry var sidebarPointer: SidebarPointer? = nil
 }
