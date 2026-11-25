@@ -4090,7 +4090,7 @@ private struct FolderRow: View {
         .accessibilityAction(named: "Archive All Tabs in Folder") {
             store.archiveFolder(folder.id, in: shape)
         }
-        .accessibilityAction(named: "Delete Folder") { store.deleteFolder(folder.id, in: shape) }
+        .accessibilityAction(named: "Dissolve Folder") { store.deleteFolder(folder.id, in: shape) }
         // The live commands reach the keyboard and VoiceOver the same way every other folder
         // command does — and only on a live folder, as in the menu above.
         .modifier(LiveFolderActions(store: store, folder: folder, editing: $editing))
@@ -4141,7 +4141,7 @@ private struct FolderRow: View {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
             } else {
-                Text(ExtensionTabGroups.shownName(folder, in: store[keyPath: shape], store: store)).font(Look.folderTitle)
+                Text(folder.name).font(Look.folderTitle)
             }
         } trailing: {
             FolderDisclosure(folder: folder, locked: locked)
@@ -4301,16 +4301,19 @@ private struct FolderMenu: View {
         if shape == \TabStore.pins {
             Button("New Folder") { store.newFolder(beside: folder.id, in: shape) }
         }
-        // An extension's folders: whether its sessions share one folder (`gather`).
-        if shape == \TabStore.todayShape, folder.extensionOwner != nil {
-            Toggle("Keep Extension Sessions Together", isOn: Binding(
-                get: { ExtensionTabGroups.gathers },
-                set: { ExtensionTabGroups.setGathers($0, in: store) }))
+        // An extension's folders: whether its groups share one folder (`gather`).
+        if shape == \TabStore.todayShape, let owner = folder.extensionOwner {
+            let name = ExtensionHost.host(for: store.profileID).loaded
+                .first { $0.context.baseURL.host == owner }?.context.webExtension.displayName ?? folder.name
+            Toggle("Keep \(name) Groups in One Folder", isOn: Binding(
+                get: { ExtensionTabGroups.gathers(owner) },
+                set: { ExtensionTabGroups.setGathers($0, owner: owner, name: name) }))
         }
         Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id, in: shape) }
             .disabled(store.isFolderLocked(folder.id) || store[keyPath: shape].tabs(in: folder.id).isEmpty)
         Divider()
-        Button("Delete Folder") { store.deleteFolder(folder.id, in: shape) }
+        // Arc calls this Delete Folder; Dissolve says the tabs stay.
+        Button("Dissolve Folder") { store.deleteFolder(folder.id, in: shape) }
             .disabled(store.isFolderLocked(folder.id))
     }
 }

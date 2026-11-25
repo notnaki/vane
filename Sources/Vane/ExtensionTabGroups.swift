@@ -339,7 +339,7 @@ import WebKit
             else { throw Failure("Folders nest \(Pins.maxDepth + 1) deep at most.") }
             let owner = context.baseURL.host ?? ""
             shape.edit(folder: made.id) { $0.extensionOwner = owner; $0.groupColor = "grey" }
-            if Self.gathers { Self.gather(made.id, owner: owner, name: made.name, in: &shape) }
+            if Self.gathers(owner) { Self.gather(made.id, owner: owner, name: made.name, in: &shape) }
             target = made.id
         }
         for key in keys {
@@ -372,49 +372,36 @@ import WebKit
     }
 
     nonisolated static let gathersKey = "gatherExtensionGroups"
-    /// Whether `gather` runs; the user turns it off from an extension folder's menu.
-    static var gathers: Bool { UserDefaults.vane.object(forKey: gathersKey) as? Bool ?? true }
+    /// Whether `gather` runs for the extension `owner`. Off unless the user turns it on, from
+    /// one of its folders' menus or its page in Extensions.
+    static func gathers(_ owner: String) -> Bool { UserDefaults.vane.bool(forKey: gathersKey + "." + owner) }
 
-    /// Turns `gather` on or off, and rearranges Today to match now: every extension's
-    /// groups into its folder, or every such folder emptied out where it stood.
-    static func setGathers(_ on: Bool, in store: TabStore) {
-        UserDefaults.vane.set(on, forKey: gathersKey)
-        store.syncShapes()
-        var shape = store.todayShape
-        let folders = shape.entries.compactMap(\.folder)
-        if on {
-            let names = Dictionary(ExtensionHost.host(for: store.profileID).loaded.map {
-                ($0.context.baseURL.host ?? "", $0.context.webExtension.displayName ?? "Extension")
-            }, uniquingKeysWith: { a, _ in a })
-            for folder in folders where folder.extensionOwner != nil && !isHome(folder) {
-                let owner = folder.extensionOwner!
-                gather(folder.id, owner: owner, name: names[owner] ?? folder.name, in: &shape)
+    /// Turns `gather` on or off for `owner`, and rearranges Today in every window to match
+    /// now: its groups into one folder named `name`, or that folder emptied out where it stood.
+    static func setGathers(_ on: Bool, owner: String, name: String) {
+        UserDefaults.vane.set(on, forKey: gathersKey + "." + owner)
+        for store in TabStore.all where !store.isLittle {
+            store.syncShapes()
+            var shape = store.todayShape
+            let folders = shape.entries.compactMap(\.folder).filter { $0.extensionOwner == owner }
+            if on {
+                for folder in folders where !isHome(folder) { gather(folder.id, owner: owner, name: name, in: &shape) }
+            } else {
+                for home in folders where isHome(home) {
+                    // Last first, so the groups keep their order where the folder was.
+                    for child in shape.entries.filter({ $0.parent == home.id }).map(\.id).reversed() {
+                        shape.move(child, next: home.id.uuidString, after: true)
+                    }
+                    shape.remove(folder: home.id)
+                }
             }
-        } else {
-            for home in folders where isHome(home) {
-                // Last first, so the groups keep their order where the folder was.
-                for child in shape.entries.filter({ $0.parent == home.id }).map(\.id).reversed() { shape.move(child, next: home.id.uuidString, after: true) }
-                shape.remove(folder: home.id)
+            guard shape != store.todayShape else { continue }
+            Motion.list {
+                store.todayShape = shape
+                store.applyOrder(.today)
             }
+            store.savePins()
         }
-        Motion.list {
-            store.todayShape = shape
-            store.applyOrder(.today)
-        }
-        store.savePins()
-    }
-
-    /// What the sidebar calls `folder`: a group in its extension's folder that is still
-    /// called what that folder is ("Claude" in "Claude") goes by its first tab instead.
-    /// Only shown: the extension still reads the title it set.
-    static func shownName(_ folder: Folder, in shape: Pins, store: TabStore) -> String {
-        guard folder.extensionOwner != nil, let i = shape.index(of: folder.id),
-              let parent = shape.entries[i].parent, let home = shape.folder(parent),
-              isHome(home), folder.name == home.name,
-              let first = shape.tabs(in: folder.id).first,
-              let tab = store.tabs.first(where: { $0.id.uuidString == first }), !tab.title.isEmpty
-        else { return folder.name }
-        return tab.title
     }
 
     /// The folder `gather` keeps an extension's groups in: the extension's, with no colour.

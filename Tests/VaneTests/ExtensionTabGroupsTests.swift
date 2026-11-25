@@ -206,7 +206,7 @@ import XCTest
         XCTAssertTrue(privateStore.todayShape.entries.compactMap(\.folder).isEmpty)
     }
 
-    func testAnExtensionsSessionsShareOneFolderThatIsNoGroup() async throws {
+    func testAnExtensionsGroupsShareOneFolderOnlyWhenAsked() async throws {
         let store = browser()
         let a = store.newBlankTab(), b = store.newBlankTab(), c = store.newBlankTab()
         let host = ExtensionHost.host(for: profile)
@@ -223,31 +223,32 @@ import XCTest
         _ = try await run("return String(await chrome.tabs.group({tabIds: [ids[\(ia)]]}))", in: page)
         XCTAssertEqual(store.todayShape.entries.compactMap(\.folder).count, 1)
 
-        // Each further session is its own group, inside one folder named for the extension.
+        // Each further session is a group of its own, and by default a folder of its own.
         let groups = try await run("""
             await chrome.tabs.group({tabIds: [ids[\(ib)]]});
             await chrome.tabs.group({tabIds: [ids[\(ic)]]});
             return JSON.stringify((await chrome.tabGroups.query({})).length);
             """, in: page)
-        XCTAssertEqual(groups, "3", "The shared folder is no group")
+        XCTAssertEqual(groups, "3")
+        func tops() -> Int { store.todayShape.entries.filter { $0.folder != nil && $0.parent == nil }.count }
+        XCTAssertEqual(tops(), 3)
+
+        // Kept in one folder, they go inside one named for the extension, which is no group.
+        let owner = try XCTUnwrap(context.baseURL.host)
+        defer { UserDefaults.vane.removeObject(forKey: ExtensionTabGroups.gathersKey + "." + owner) }
+        ExtensionTabGroups.setGathers(true, owner: owner, name: "Group Fixture")
+        let kept = try await run("return JSON.stringify((await chrome.tabGroups.query({})).length)", in: page)
+        XCTAssertEqual(kept, "3", "The shared folder is no group")
         let folders = store.todayShape.entries.filter { $0.folder != nil }
         let home = try XCTUnwrap(folders.first { $0.parent == nil })
-        XCTAssertEqual(folders.filter { $0.parent == nil }.count, 1)
+        XCTAssertEqual(tops(), 1)
         XCTAssertEqual(home.folder?.name, "Group Fixture")
         XCTAssertEqual(folders.filter { $0.parent == home.folder?.id }.count, 3)
-        // A session still called what its folder is goes by its tab in the sidebar.
-        let session = try XCTUnwrap(folders.first { $0.parent == home.folder?.id }?.folder)
-        a.title = "Session Tab"; b.title = "Session Tab"; c.title = "Session Tab"
-        XCTAssertEqual(ExtensionTabGroups.shownName(session, in: store.todayShape, store: store), "Session Tab")
 
-        // Turned off, the sessions stand apart; turned back on, they share one folder again.
-        defer { UserDefaults.vane.removeObject(forKey: ExtensionTabGroups.gathersKey) }
-        ExtensionTabGroups.setGathers(false, in: store)
-        XCTAssertEqual(store.todayShape.entries.filter { $0.folder != nil && $0.parent == nil }.count, 3)
+        // Turned off again, the groups stand apart where the folder was.
+        ExtensionTabGroups.setGathers(false, owner: owner, name: "Group Fixture")
+        XCTAssertEqual(tops(), 3)
         XCTAssertFalse(store.todayShape.entries.compactMap(\.folder).contains { ExtensionTabGroups.isHome($0) })
-        ExtensionTabGroups.setGathers(true, in: store)
-        XCTAssertEqual(store.todayShape.entries.filter { $0.folder != nil && $0.parent == nil }.count, 1)
-        XCTAssertEqual(store.todayShape.entries.filter { $0.folder != nil }.count, 4)
 
         // Ungrouping every tab leaves no folder behind.
         _ = try await run("await chrome.tabs.ungroup([ids[\(ia)], ids[\(ib)], ids[\(ic)]]); return 'done'", in: page)

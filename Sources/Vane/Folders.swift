@@ -1464,7 +1464,7 @@ extension TabStore {
         // ordinary pinned tabs; what goes is the glyphs, so the map does not grow by one
         // entry per live folder ever made.
         if wasLive { LiveFolders.shared(for: profileID).forget(folder: id) }
-        axAnnounce("Deleted \(name). \(kept) tab\(kept == 1 ? "" : "s") kept in "
+        axAnnounce("Dissolved \(name). \(kept) tab\(kept == 1 ? "" : "s") kept in "
                    + TabMenu.name(kind(of: shape)) + ".")
     }
 
