@@ -49,11 +49,11 @@ import SwiftUI
         panel.title = "Boost This Site"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true  // drag from any empty spot, like Arc's Boost overlay
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.delegate = self
+        (panel as? BoostOverlayPanel)?.onUndo = { [weak self] in self?.undoPick() }
         if let store = TabStore.all.first(where: { $0.window === parent && $0.active === tab }) {
             panel.contentView = NSHostingView(rootView: BoostEditorView(session: self).spaceChrome(store))
         } else {
@@ -163,6 +163,13 @@ import SwiftUI
 
 private final class BoostOverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }  // borderless panels refuse key by default; the CSS/JS editors need it
+    var onUndo: (() -> Void)?
+    // ⌘Z undoes the last Zap, except while a text editor owns its own undo.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command, event.charactersIgnoringModifiers == "z",
+           !(firstResponder is NSTextView), let onUndo { onUndo(); return true }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 private struct BoostEditorView: View {
@@ -210,7 +217,10 @@ private struct BoostEditorView: View {
                     pill(caseLabel, fill: boost.textCase.isEmpty ? nil : .orange) { session.cycleCase() }.accessibilityLabel("Letter case")
                 }
                 row("Zap", trailing: AnyView(zapTrailing), inverted: session.zapping) { SiteBoostEditor.toggleZap(tab: session.tab) }
-                    .contextMenu { Button("Restore Zapped Elements") { session.change { $0.hidden = [] } }.disabled(boost.hidden.isEmpty) }
+                    .contextMenu {
+                        Button("Undo Last Zap") { session.undoPick() }.keyboardShortcut("z").disabled(boost.hidden.isEmpty)
+                        Button("Restore All Zapped Elements") { session.change { $0.hidden = [] } }.disabled(boost.hidden.isEmpty)
+                    }
                     .accessibilityLabel(session.zapping ? "Finish zapping" : "Zap elements")
                 row("Code", trailing: AnyView(Text("{ }").font(.system(size: 13, weight: .semibold, design: .monospaced)))) {
                     session.setZap(false); session.coding = true
@@ -245,6 +255,8 @@ private struct BoostEditorView: View {
             }.buttonStyle(.plain).accessibilityLabel("Reset Boost")
         }
         .padding(.horizontal, 12).frame(height: 38)
+        .contentShape(.rect)
+        .gesture(WindowDragGesture())  // move the overlay by its header; the color pad keeps its own drag
     }
 
     private var adjustments: some View {

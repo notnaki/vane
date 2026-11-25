@@ -22,6 +22,8 @@ struct SiteBoost: Codable, Equatable, Sendable {
                         "Trebuchet MS", "Arial Rounded MT Bold", "Menlo", "Courier New", "Georgia", "Palatino",
                         "Times New Roman", "Baskerville", "Didot", "Hoefler Text", "American Typewriter",
                         "Snell Roundhand", "Copperplate", "Chalkboard SE"]
+    /// Fonts every synced release accepts; see ICloudContentAdapter's `fontName`.
+    static let legacyFonts = ["", "Georgia", "Helvetica Neue", "Avenir Next", "Menlo", "Palatino", "Times New Roman"]
     static let cases = ["", "lowercase", "uppercase", "capitalize"]
 
     var sanitized: Self {

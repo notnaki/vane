@@ -134,6 +134,17 @@ import XCTest
         let saved = target.boosts.get(origin: "https://example.com", profile: ProfileManager.defaultID)
         XCTAssertEqual(saved.script, boost.script); XCTAssertEqual(saved.css, boost.css); XCTAssertFalse(saved.scriptEnabled)
     }
+    func testBoostLookSyncsWhileStayingReadableByOlderReleases() async throws {
+        let source = try fixture(), target = try fixture()
+        var boost = SiteBoost(); boost.font = "Futura"; boost.contrast = 1.2; boost.textCase = "uppercase"
+        source.boosts.set(boost, origin: "https://example.com", profile: ProfileManager.defaultID)
+        let items = try await source.adapter.capture([.boosts])
+        try await target.adapter.apply(items, deleted: [], enabled: [.boosts])
+        XCTAssertEqual(target.boosts.get(origin: "https://example.com", profile: ProfileManager.defaultID), boost)
+        let fields = try XCTUnwrap(items.first?.fields)
+        XCTAssertEqual(fields["font"], Data("\"\"".utf8), "Older releases reject fonts they do not know")
+        XCTAssertNil(fields["brightness"], "Default values stay off the wire")
+    }
     func testDisabledCategoriesNeverReadOrApply() async throws {
         let source = try fixture(), target = try fixture()
         _ = try await source.easel.createAsync(title: "Private board")
