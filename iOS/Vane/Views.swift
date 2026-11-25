@@ -756,12 +756,13 @@ struct TabCard: View {
                     if let snapshot = tab.snapshot {
                         Image(uiImage: snapshot).resizable().scaledToFill()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                            .background(Color(.systemBackground))
                     } else {
-                        SiteIcon(url: tab.url, size: 34).frame(maxWidth: .infinity, maxHeight: .infinity).background(GroundFill(strength: 1.2))
+                        // Not seen since launch: the site's icon on the Space's own fill, not a blank page.
+                        SiteIcon(url: tab.url, size: 30).frame(maxWidth: .infinity, maxHeight: .infinity).background(GroundFill(strength: 1.3))
                     }
                 }
                 .frame(height: 190)
-                .background(Color(.systemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(selected ? Color.primary : .primary.opacity(0.08), lineWidth: selected ? 2 : 1))
