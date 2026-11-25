@@ -21,10 +21,10 @@ import WebKit
         return true
     }
 
-    /// ⌘F over a vane://extensions tab searches its list, as it does in this window.
+    /// ⌘F over a vane://settings/extensions tab searches its list, as it does in this window.
     private static func extensionsTabProfile(in window: NSWindow) -> UUID? {
         guard let store = TabStore.all.first(where: { $0.window === window && $0.palette == nil && !$0.findOpen }),
-              let page = store.active?.vanePage, page.kind == .extensions else { return nil }
+              let page = store.active?.vanePage, page.section == .extensions else { return nil }
         return VanePages.profile(page.selection.profileID, fallback: store.profileID).id
     }
 
@@ -80,12 +80,11 @@ import WebKit
 
 struct ExtensionManagementView: View {
     @ObservedObject var host: ExtensionHost
-    /// Hosted in a vane://extensions tab rather than this file's window.
+    /// The Extensions section of a vane://settings tab rather than this file's window. The
+    /// tab draws the page around it, with the section's heading and profile menu.
     var inTab = false
-    /// The tab's profile menu, in place of the window's fixed profile label.
-    var profileMenu: AnyView? = nil
-    /// The tab's "← Settings": the same tab becomes vane://settings.
-    var openSettings: (() -> Void)? = nil
+    /// The tab's Chrome Web Store line: opens the store itself, like arc://extensions.
+    var openStore: (() -> Void)? = nil
     @State private var query = ""
     @State private var filter = ExtensionManagerModel.Filter.all
     @State private var selected: String?
@@ -216,41 +215,41 @@ struct ExtensionManagementView: View {
             } isTargeted: { dropTargeted = $0 }
     }
 
-    // MARK: vane://extensions
+    // MARK: vane://settings/extensions
 
-    /// arc://extensions: the page's header and nav around a grid of extension cards, each
-    /// with Details, Remove and its switch. Details opens the same detail view the window
-    /// shows, in place of the grid.
+    /// arc://extensions' grid of extension cards, each with Details, Remove and its switch,
+    /// under a search field. Details opens the same detail view the window shows, in place
+    /// of the grid.
     private var tabPage: some View {
-        installDrop(VanePageShell(title: "Extensions",
-                                  search: ("Search extensions", $query, $searchFocused, "extension-manager.search")) {
-            Feel06ActivityLine(busy: busy, text: "Checking…")
-        } nav: {
-            ExtensionsPageNav(openSettings: { openSettings?() },
-                              showList: { Motion.list { selected = nil } },
-                              storeInstall: isPrivate ? nil : { host.chooseStoreInstall() },
-                              folderInstall: isPrivate ? nil : { host.chooseAndInstall() },
-                              installDisabled: busy)
-        } content: {
-            VStack(alignment: .leading, spacing: 0) {
-                if let importError {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                            .accessibilityHidden(true)
-                        Text(importError).font(.callout).textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 8)
-                        Button { self.importError = nil } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.plain).accessibilityLabel("Dismiss installation error")
+        installDrop(VStack(alignment: .leading, spacing: 0) {
+            if !isPrivate {
+                HStack(spacing: Look.inset) {
+                    if !catalog.isEmpty {
+                        VanePageSearchField(prompt: "Search extensions", text: $query, focus: $searchFocused,
+                                            identifier: "extension-manager.search")
                     }
-                    .padding(VanePageLayout.cardPadding)
-                    .background(Color.orange.opacity(0.08), in: .rect(cornerRadius: Look.pageRadius - 2))
-                    .accessibilityElement(children: .contain)
-                    .vanePageColumn()
-                    .padding(.top, Look.inset)
+                    Feel06ActivityLine(busy: busy, text: "Checking…").frame(width: 90)
                 }
-                tabContent.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .vanePageColumn()
+                .padding(.top, Look.inset)
             }
+            if let importError {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                    Text(importError).font(.callout).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button { self.importError = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).accessibilityLabel("Dismiss installation error")
+                }
+                .padding(VanePageLayout.cardPadding)
+                .background(Color.orange.opacity(0.08), in: .rect(cornerRadius: Look.pageRadius - 2))
+                .accessibilityElement(children: .contain)
+                .vanePageColumn()
+                .padding(.top, Look.inset)
+            }
+            tabContent.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         })
         .animation(Motion.reduced ? nil : Look.list, value: selected)
         .animation(Motion.reduced ? nil : Look.list, value: busy)
@@ -280,21 +279,8 @@ struct ExtensionManagementView: View {
         }
     }
 
-    private func tabHeading(_ title: String) -> some View {
-        HStack(spacing: Look.inset) {
-            Text(title).font(VanePageLayout.sectionFont).foregroundStyle(Look.inkPrimary)
-                .accessibilityAddTraits(.isHeader)
-            if let profileMenu { profileMenu } else {
-                Text(profileName).foregroundStyle(Look.inkSecondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(minHeight: VanePageLayout.chipHeight)
-    }
-
     private var cards: some View {
         VStack(alignment: .leading, spacing: 12) {
-            tabHeading("All extensions")
             if catalog.isEmpty {
                 VanePageCard { firstInstall }
             } else if entries.isEmpty {
@@ -315,6 +301,7 @@ struct ExtensionManagementView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Installed extensions")
                 .accessibilityIdentifier("extension-manager.list")
+                installLine
             }
         }
         .vanePageColumn()
@@ -322,22 +309,34 @@ struct ExtensionManagementView: View {
         .padding(.bottom, 24)
     }
 
+    /// arc://extensions' Chrome Web Store line, and installing from disk.
+    private var installLine: some View {
+        HStack(spacing: Look.inset * 2) {
+            Button { if let openStore { openStore() } else { host.chooseStoreInstall() } } label: {
+                (Text("Discover more extensions on the ").foregroundStyle(Look.inkSecondary)
+                    + Text("Chrome Web Store").foregroundStyle(Color.accentColor).underline())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open the Chrome Web Store")
+            .accessibilityIdentifier("extension-manager.install")
+            Button("Install from a folder or Safari app…") { host.chooseAndInstall() }
+                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                .help("An unpacked extension folder, or a signed Safari extension app.")
+            Spacer(minLength: 0)
+        }
+        .font(Look.small)
+        .disabled(busy)
+        .padding(.top, 4)
+    }
+
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Extensions").font(.title2.weight(.semibold))
-                if let profileMenu {
-                    HStack(spacing: 5) {
-                        Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                        profileMenu
-                    }.font(.callout)
-                } else {
-                    Label(profileName, systemImage: isPrivate ? "eyeglasses" : "person.crop.circle")
-                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                        .accessibilityLabel("Profile: \(profileName)")
-                        .help("Extensions, permissions, and settings belong to this profile.")
-                }
+                Label(profileName, systemImage: isPrivate ? "eyeglasses" : "person.crop.circle")
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    .accessibilityLabel("Profile: \(profileName)")
+                    .help("Extensions, permissions, and settings belong to this profile.")
             }
             Spacer(minLength: 8)
             Feel06ActivityLine(busy: busy, text: "Checking…")
@@ -547,7 +546,7 @@ private struct ExtensionListRow: View {
     }
 }
 
-/// One extension on vane://extensions, as Chromium draws it: icon, name and description,
+/// One extension on vane://settings/extensions, as Chromium draws it: icon, name and description,
 /// Details and Remove, and its switch.
 private struct ExtensionCard: View {
     @ObservedObject var host: ExtensionHost
@@ -618,7 +617,7 @@ private struct ExtensionCard: View {
 private struct ExtensionDetailView: View {
     @ObservedObject var host: ExtensionHost
     let entry: ExtensionHost.Entry
-    /// In vane://extensions: in the page's content column rather than centred.
+    /// In vane://settings/extensions: in the page's content column rather than centred.
     var inColumn = false
     @State private var error: String?
     @State private var confirmingRemoval = false

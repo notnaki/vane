@@ -97,8 +97,17 @@ final class ExtensionManagerModelTests: XCTestCase {
         }
         let command = try XCTUnwrap(PaletteCommand.all(for: store).first { $0.id == "manageExtensions" })
         command.run()
-        let page = store.tabs.compactMap(\.vanePage).first { $0.kind == .extensions }
-        XCTAssertEqual(page?.selection.profileID, profile.id,
+        let tab = store.tabs.first { $0.vanePage?.section == .extensions }
+        XCTAssertEqual(tab?.vanePage?.selection.profileID, profile.id,
                        "The action must retain its originating store rather than resolve the active profile when invoked")
+        XCTAssertEqual(tab?.address, "vane://settings/extensions")
+        // Extensions is a section of vane://settings: another section reuses the same tab,
+        // and so does an old vane://extensions address.
+        XCTAssertTrue(VanePages.open(.settings(.passwords), from: store) === tab)
+        XCTAssertEqual(tab?.vanePage?.section, .passwords)
+        let alias = try XCTUnwrap(VanePage(URL(string: "vane://extensions")))
+        XCTAssertTrue(VanePages.open(alias, from: store) === tab)
+        XCTAssertEqual(tab?.vanePage?.section, .extensions)
+        XCTAssertEqual(store.tabs.filter { $0.vanePage != nil }.count, 1)
     }
 }

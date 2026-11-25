@@ -1793,7 +1793,7 @@ private struct PaletteSuggestionWatch: View, Equatable {
                 axAnnounce("JavaScript URLs cannot be opened from the address bar.")
             }
         }
-        // vane://settings and vane://extensions open (or focus) Vane's own page in an
+        // vane://settings (and its vane://extensions alias) open (or focus) Vane's own page in an
         // ordinary window — never by loading the address in the target tab.
         if let url = Search.url(for: typed), case .page(let page) = VanePage.route(url, from: .app) {
             return PaletteRow(id: "typed", icon: page.icon, title: typed, trailing: "Open", kind: "Open") { _ in
@@ -2003,9 +2003,7 @@ private struct PaletteSuggestionWatch: View, Equatable {
         let open = Set(store.tabs.compactMap { $0.vanePage?.url })
         return Palette.rankPages(typed, VanePage.catalog(for: typed), title: \.title, url: \.page.url.absoluteString)
             .map { entry in
-                PaletteRow(id: "vane:" + entry.page.url.absoluteString, icon: entry.page.kind == .settings
-                               ? VaneSettingsSection.navigable.first { .settings($0) == entry.page }?.icon ?? "gearshape"
-                               : entry.page.icon,
+                PaletteRow(id: "vane:" + entry.page.url.absoluteString, icon: entry.page.section.icon,
                            title: entry.title, detail: entry.page.url.absoluteString,
                            matchURL: entry.page.url.absoluteString,
                            trailing: open.contains(entry.page.url) ? "Switch to Tab" : "Open",

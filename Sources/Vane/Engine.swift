@@ -535,7 +535,7 @@ struct TitleReveal: Equatable, Sendable {
     @Published private(set) var easelSession: EaselSession?
     var easelID: UUID? { easelSession?.selected }
     private var easelObservation: AnyCancellable?
-    /// vane://settings or vane://extensions, drawn natively. See VanePages.swift.
+    /// vane://settings, drawn natively. See VanePages.swift.
     @Published private(set) var vanePage: VanePageSession?
     private var vanePageObservation: AnyCancellable?
     /// The page whose persisted title is standing in while a parked web view wakes. WebKit
@@ -1251,7 +1251,7 @@ struct TitleReveal: Equatable, Sendable {
     @discardableResult func routeVanePage(_ page: VanePage, profileID shown: UUID? = nil,
                                           parked: Bool = false) -> Bool {
         guard !isPrivate else { return false }
-        if let session = vanePage, session.kind == page.kind {
+        if let session = vanePage {
             session.show(page, profileID: shown)
             if !parked { suspended = false }
             return true
