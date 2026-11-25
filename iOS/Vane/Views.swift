@@ -5,7 +5,6 @@ struct RootView: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
     @State private var settings = false
-    @State private var reader: Article?
     @State private var noArticle = false
     @State private var bookmarks = false
     @State private var themeDemo = false
@@ -22,6 +21,14 @@ struct RootView: View {
                 WebContainer(tab: tab).id(tab.id)
                     .ignoresSafeArea()
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                if let pull = tab.pull {
+                    PullActions(pull: pull).frame(maxHeight: .infinity, alignment: .top)
+                }
+                // Reader is a mode of the tab: the article takes the page's place, under the same bar.
+                if let article = tab.reading {
+                    ReaderView(article: article)
+                        .transition(.opacity)
+                }
             } else {
                 // Home: every Space, full screen, swiped between like Arc on iPhone.
                 SpacesHome(openSettings: { settings = true })
@@ -40,10 +47,10 @@ struct RootView: View {
         }
         .animation(.smooth(duration: 0.28), value: browser.editing)
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
+        .animation(.easeInOut(duration: 0.25), value: browser.selected?.reading)
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
         .sheet(isPresented: $settings) { SettingsView().frostsBehind() }
-        .sheet(item: $reader) { ReaderView(article: $0) }
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
         .sheet(isPresented: $bookmarks) { BookmarksView().frostsBehind() }
         .alert("Reader isn't available for this page", isPresented: $noArticle) {}
@@ -65,7 +72,11 @@ struct RootView: View {
             ControlGroup {
                 ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
                 Button("Find", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
-                Button("Reader", systemImage: "doc.plaintext") { Task { reader = await tab.article(); noArticle = reader == nil } }
+                if tab.reading == nil {
+                    Button("Reader", systemImage: "doc.plaintext") { Task { tab.reading = await tab.article(); noArticle = tab.reading == nil } }
+                } else {
+                    Button("Leave Reader", systemImage: "doc.plaintext.fill") { tab.reading = nil }
+                }
             }
             if !space.isIncognito {
                 Menu("Keep This Page", systemImage: "star") {
@@ -253,6 +264,9 @@ struct BottomBar<Menu: View>: View {
                 Button { browser.editing = .current } label: {
                 HStack(spacing: 8) {
                     if let tab {
+                        if tab.reading != nil {
+                            Image(systemName: "doc.plaintext.fill").font(.subheadline).accessibilityLabel("Reader")
+                        }
                         SiteIcon(url: tab.url, size: 16)
                         Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
                     } else {
@@ -592,23 +606,22 @@ struct FolderView: View {
 
 struct ReaderView: View {
     let article: Article
-    @Environment(\.dismiss) private var dismiss
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(article.site).font(.subheadline).foregroundStyle(.secondary)
-                    Text(article.title).font(.system(.largeTitle, design: .serif).bold())
-                    ForEach(Array(article.blocks.enumerated()), id: \.offset) { _, block in
-                        Text(block.text)
-                            .font(block.heading ? .system(.title2, design: .serif).bold() : .system(.body, design: .serif))
-                            .lineSpacing(5).textSelection(.enabled)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(article.site).font(.subheadline).foregroundStyle(.secondary)
+                Text(article.title).font(.system(.largeTitle, design: .serif).bold())
+                ForEach(Array(article.blocks.enumerated()), id: \.offset) { _, block in
+                    Text(block.text)
+                        .font(block.heading ? .system(.title2, design: .serif).bold() : .system(.body, design: .serif))
+                        .lineSpacing(5).textSelection(.enabled)
+                        .padding(.top, block.heading ? 10 : 0)
                 }
-                .padding(24).frame(maxWidth: 680, alignment: .leading).frame(maxWidth: .infinity)
             }
-            .toolbar { Button("Done") { dismiss() } }
+            .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, Look.barHeight + 40)
+            .frame(maxWidth: 680, alignment: .leading).frame(maxWidth: .infinity)
         }
+        .background(Color(.systemBackground).ignoresSafeArea())
     }
 }
 
@@ -877,5 +890,36 @@ struct TabCard: View {
             .accessibilityLabel("Close \(tab.title)")
         }
         .accessibilityLabel(tab.title)
+    }
+}
+
+/// Chrome's pull-down actions over the top of the page: slide sideways to choose, let go to do it.
+struct PullActions: View {
+    let pull: Tab.Pull
+    var body: some View {
+        let armed = pull.progress >= 1
+        HStack(spacing: 0) {
+            item("plus", "New Tab", .newTab)
+            item("arrow.clockwise", "Reload", .reload)
+            item("xmark", "Close Tab", .close)
+        }
+        .frame(maxWidth: 320)
+        .padding(.top, 6)
+        .opacity(Double(pull.progress))
+        .scaleEffect(0.85 + 0.15 * pull.progress)
+        .animation(.spring(duration: 0.25, bounce: 0.3), value: pull.choice)
+        .animation(.easeOut(duration: 0.15), value: armed)
+        .allowsHitTesting(false)
+    }
+    private func item(_ symbol: String, _ title: String, _ choice: Tab.PullChoice) -> some View {
+        let on = pull.choice == choice
+        return Image(systemName: symbol)
+            .font(.system(size: 17, weight: .semibold))
+            .rotationEffect(.degrees(choice == .reload ? Double(pull.progress) * 270 : 0))
+            .frame(width: 48, height: 48)
+            .background(on && pull.progress >= 1 ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: Circle())
+            .opacity(on ? 1 : 0.45)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel(title)
     }
 }

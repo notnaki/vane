@@ -17,6 +17,15 @@ import WebKit
     var collapsed = false
     /// How the page last looked, for its card in the Space. Memory only.
     var snapshot: UIImage?
+    /// Reader is on: the article shown in place of the page.
+    var reading: Article?
+    /// Pulling down past the top of the page, Chrome-style: how far (0…1, armed at 1) and which
+    /// action the finger is over: new tab on the left, reload in the middle, close on the right.
+    struct Pull: Equatable { var progress: CGFloat; var choice: PullChoice }
+    enum PullChoice: Int { case newTab = -1, reload = 0, close = 1 }
+    var pull: Pull?
+    var onPull: (PullChoice) -> Void = { _ in }
+    private var pullTracker: PullTracker?
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -43,16 +52,17 @@ import WebKit
         web.isFindInteractionEnabled = true
         web.allowsLinkPreview = true
         web.uiDelegate = PopupOpener.shared
-        // Pull down at the top of a page to reload it.
-        let refresh = UIRefreshControl()
-        refresh.addAction(UIAction { [weak web, weak refresh] _ in
-            web?.reload()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { refresh?.endRefreshing() }
-        }, for: .valueChanged)
-        web.scrollView.refreshControl = refresh
+        // Pull down at the top of a page for new tab / reload / close, as in Chrome.
+        web.scrollView.alwaysBounceVertical = true
+        let tracker = PullTracker { [weak self] pan in self?.pulled(pan) }
+        web.scrollView.panGestureRecognizer.addTarget(tracker, action: #selector(PullTracker.fire(_:)))
+        pullTracker = tracker
         observations = [
             web.observe(\.title) { [weak self] web, _ in MainActor.assumeIsolated { if let t = web.title, !t.isEmpty { self?.title = t; self?.onChange() } } },
-            web.observe(\.url) { [weak self] web, _ in MainActor.assumeIsolated { if let u = web.url { self?.url = u; self?.onChange() } } },
+            web.observe(\.url) { [weak self] web, _ in MainActor.assumeIsolated {
+                // Going to another page leaves Reader.
+                if let u = web.url { if u != self?.url { self?.reading = nil }; self?.url = u; self?.onChange() }
+            } },
             web.observe(\.estimatedProgress) { [weak self] web, _ in MainActor.assumeIsolated { self?.progress = web.estimatedProgress } },
             web.observe(\.canGoBack) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoBack = web.canGoBack } },
             web.observe(\.canGoForward) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoForward = web.canGoForward } },
@@ -65,6 +75,27 @@ import WebKit
         web.load(URLRequest(url: url))
         view = web
         return web
+    }
+
+    private func pulled(_ pan: UIPanGestureRecognizer) {
+        guard let scroll = pan.view as? UIScrollView else { return }
+        let depth = -(scroll.contentOffset.y + scroll.adjustedContentInset.top)
+        switch pan.state {
+        case .began, .changed:
+            guard depth > 0, reading == nil else { if pull != nil { pull = nil }; return }
+            let dx = pan.translation(in: scroll).x
+            let next = Pull(progress: min(depth / 100, 1), choice: dx < -45 ? .newTab : dx > 45 ? .close : .reload)
+            if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
+                UISelectionFeedbackGenerator().selectionChanged()
+            }
+            pull = next
+        default:
+            if let pull, pull.progress >= 1 {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                onPull(pull.choice)
+            }
+            pull = nil
+        }
     }
 
     private func scrolled(_ scroll: UIScrollView) {
@@ -122,13 +153,21 @@ struct Article: Hashable, Identifiable {
     if (!best) return null;
     const blocks = [];
     for (const node of best.querySelectorAll('h1,h2,h3,h4,p,li,blockquote,pre')) {
-      if (node.closest('nav,aside,footer,form,figure figcaption')) continue;
+      if (node.closest('nav,aside,footer,form,figure figcaption,#toc,.toc,.vector-toc,[role=navigation],.navbox,.reflist,.mw-editsection')) continue;
+      if (node.tagName === 'LI' && node.querySelector('li')) continue;
       const text = node.innerText.trim();
       if (text) blocks.push({ heading: /^H/.test(node.tagName), text });
     }
     const heading = document.querySelector('h1');
     return { title: (heading && heading.innerText.trim()) || document.title, blocks };
     """
+}
+
+/// Forwards the scroll view's pan to the tab, which isn't an NSObject.
+final class PullTracker: NSObject {
+    let handler: (UIPanGestureRecognizer) -> Void
+    init(_ handler: @escaping (UIPanGestureRecognizer) -> Void) { self.handler = handler }
+    @MainActor @objc func fire(_ pan: UIPanGestureRecognizer) { handler(pan) }
 }
 
 /// Links that ask for a new window (target=_blank, window.open) open in the same tab, and a
@@ -265,6 +304,14 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     }
 
     private func watch(_ tab: Tab) {
+        tab.onPull = { [weak self, weak tab] choice in
+            guard let self, let tab else { return }
+            switch choice {
+            case .newTab: self.editing = .newTab
+            case .reload: tab.webView.reload()
+            case .close: withAnimation(.smooth(duration: 0.3)) { self.close(tab) }
+            }
+        }
         tab.onLoaded = { [weak self, weak tab] in
             guard let self, let tab, !tab.isPrivate, ["http", "https"].contains(tab.url.scheme ?? ""), tab.visited != tab.url else { return }
             tab.visited = tab.url
