@@ -85,7 +85,7 @@ struct Onboarding: View {
         case .theme:
             page("A space that feels like you.", "Pick a colour for your first Space. Every Space can have its own.") {
                 let chosen = color ?? library.spaces.first?.palette.first ?? "#6E7DD2"
-                Wash(space: themed)
+                Wash(space: themed, full: true)
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     .overlay(alignment: .bottom) {
                         Capsule().fill(GroundFill()).frame(height: 30).padding(14)

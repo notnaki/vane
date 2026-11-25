@@ -37,10 +37,10 @@ struct RootView: View {
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
-        .sheet(isPresented: $settings) { SettingsView().frostsBehind().presentationBackground { Wash(space: space) } }
+        .sheet(isPresented: $settings) { SettingsView().frostsBehind() }
         .sheet(item: $reader) { ReaderView(article: $0) }
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
-        .sheet(isPresented: $bookmarks) { BookmarksView().frostsBehind().presentationBackground { Wash(space: space) } }
+        .sheet(isPresented: $bookmarks) { BookmarksView().frostsBehind() }
         .alert("Reader isn't available for this page", isPresented: $noArticle) {}
         .fullScreenCover(isPresented: Binding(get: { !onboarded }, set: { onboarded = !$0 })) { Onboarding { onboarded = true } }
         .preferredColorScheme(space?.appearance == "dark" ? .dark : space?.appearance == "light" ? .light : nil)
@@ -136,7 +136,7 @@ struct BottomBar<Menu: View>: View {
                     Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.caption.weight(.semibold)).lineLimit(1)
                 }
                 .padding(.horizontal, 12).frame(height: 28)
-                .background { Wash(space: space).clipShape(Capsule()) }
+                .background(.regularMaterial, in: Capsule())
                 .clipShape(Capsule())
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
             }
@@ -202,7 +202,8 @@ struct BottomBar<Menu: View>: View {
         }
         .buttonStyle(.plain)
         .padding(4)
-        .background { Wash(space: space).clipShape(Capsule()) }
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.16), radius: 12, y: 3)
         .frame(maxWidth: 560)
         .padding(.horizontal, 14).padding(.bottom, 2)
@@ -562,7 +563,7 @@ struct BookmarksView: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
+            
             .overlay { if groups.isEmpty { ContentUnavailableView("No Bookmarks", systemImage: "book", description: Text("Use Bookmark in the ••• menu to save a page.")) } }
             .navigationTitle("Bookmarks").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
@@ -634,7 +635,7 @@ struct AddressEditor: View {
             .padding(.bottom, 8)
         }
         .padding(.horizontal, Look.inset)
-        .background { Wash(space: space) }
+        .background(Color(.systemBackground).ignoresSafeArea())
         .onAppear {
             // Editing the page you're on starts from its address, all selected so typing replaces it.
             text = newTab ? "" : browser.selected?.url.absoluteString ?? ""
@@ -703,7 +704,7 @@ struct SettingsView: View {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 }
             }
-            .scrollContentBackground(.hidden)
+            
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
             .confirmationDialog("Clear history, cookies and website data on this device?", isPresented: $confirmClear, titleVisibility: .visible) {
@@ -731,7 +732,7 @@ struct HistoryView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
+        
         .searchable(text: $query)
         .overlay { if browser.allHistory.isEmpty { ContentUnavailableView("No History", systemImage: "clock") } }
         .navigationTitle("History")

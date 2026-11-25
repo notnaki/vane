@@ -50,6 +50,9 @@ extension Color {
 /// spread evenly corner to corner, with the Space's film grain on top.
 struct Wash: View {
     let space: SpaceRow?
+    /// The Mac's full-strength wash, for previews of a theme. Everywhere else the Space's
+    /// colour is only a light tint over the system background, the way Arc Search keeps it plain.
+    var full = false
     @Environment(\.colorScheme) private var scheme
     var body: some View {
         let dark = scheme == .dark
@@ -57,11 +60,11 @@ struct Wash: View {
         let palette = space?.palette.compactMap { Color(hex: $0) } ?? []
         let colors = (palette.isEmpty ? [Look.vane] : palette).map { Self.ground($0, dark: dark, tint: tint) }
         ZStack {
-            Color(dark ? .black : .white)
+            if full { Color(dark ? .black : .white) } else { Color(.systemBackground) }
             LinearGradient(colors: colors.count == 1 ? [colors[0], colors[0].mix(with: dark ? .black : .white, by: 0.12)] : colors,
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-                .opacity(Self.opacity(dark: dark, tint: tint))
-            if let grain = space?.grain, grain > 0 {
+                .opacity(full ? Self.opacity(dark: dark, tint: tint) : dark ? 0.16 : 0.12)
+            if full, let grain = space?.grain, grain > 0 {
                 Image(uiImage: Grain.tile).resizable(resizingMode: .tile).opacity(grain * 0.35).blendMode(.overlay)
             }
         }
@@ -97,7 +100,8 @@ enum Grain {
 struct GroundFill: ShapeStyle {
     var strength = 1.0
     func resolve(in environment: EnvironmentValues) -> Color.Resolved {
-        Color.white.opacity((environment.colorScheme == .dark ? 0.09 : 0.42) * strength).resolve(in: environment)
+        // A plain system grey, as in Safari and Arc Search.
+        (environment.colorScheme == .dark ? Color.white.opacity(0.1 * strength) : Color.black.opacity(0.05 * strength)).resolve(in: environment)
     }
 }
 

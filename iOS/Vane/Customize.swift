@@ -36,14 +36,13 @@ struct ThemeEditor: View {
         }
         .tint(.primary)
         .frostsBehind()
-        .presentationBackground { Wash(space: draft) }
         .preferredColorScheme(draft.appearance == "dark" ? .dark : draft.appearance == "light" ? .light : nil)
     }
 
     /// The Space as it will look: its mark and name on its own ground, with a page card.
     private var preview: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(GroundFill(strength: 0.7))
+            Wash(space: draft, full: true).clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     SpaceMark(space: draft, size: 18)
