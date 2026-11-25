@@ -601,7 +601,7 @@ struct LittleArcView: View {
                     // Over the page it needs a ground of its own; above it, the window's shows.
                     .background { if autoHide { ZStack { WindowGlass(); SpaceGround() } } }
             } page: {
-                WebCard(topGap: 0, edgeToEdge: true).modifier(DownloadFeedbackAnchor(target: .page))
+                WebCard(topGap: 0, edgeToEdge: true)
             }
             // Last, so ⌘L's bar composites over the bar as well as the page.
             if let mode = store.palette {

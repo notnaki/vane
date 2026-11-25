@@ -234,15 +234,19 @@ struct DownloadBadge: View {
     let from: CGPoint
     let to: CGPoint
     var still = false
-    @State private var hopped = false
+    @State private var hopped: Bool
+
+    init(from: CGPoint, to: CGPoint, still: Bool = false) {
+        self.from = from; self.to = to; self.still = still
+        _hopped = State(initialValue: still)   // under Reduce Motion it starts settled
+    }
 
     var body: some View {
-        let settled = hopped || still
         DownloadArrow()
-            .scaleEffect(settled ? 0.68 : 0.8)
-            .position(settled ? to : from)
+            .scaleEffect(hopped ? 0.68 : 0.8)
+            .position(hopped ? to : from)
             .task {
-                guard !still else { return }
+                guard !hopped else { return }
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.73)) { hopped = true }
             }
     }

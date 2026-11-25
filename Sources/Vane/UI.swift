@@ -587,7 +587,7 @@ private struct BrowserWindowContent: View {
                 floating: store.sidebarFloatingChrome,
                 panelWidth: libraryWidth, palettePresented: store.palette != nil,
                 monitor: store.librarySwipeMonitor,
-                page: WebCard().modifier(DownloadFeedbackAnchor(target: .page))
+                page: WebCard()
                     .modifier(SidebarPageResizeMetadata(sidebarShown: store.sidebarShown,
                         layout: PageResizeLayout(librarySection: store.libraryOpen ? library.section : nil,
                             spaces: spaceCount, isPrivate: store.isPrivate,
@@ -1007,6 +1007,8 @@ struct WebCard: View {
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .anchorPreference(key: PeekContentBounds.self, value: .bounds) { $0 }
+        // The visible card, not its outer gaps: the download box keeps equal insets from it.
+        .modifier(DownloadFeedbackAnchor(target: .page))
         .padding(.leading, edgeToEdge ? 0 : libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], edgeToEdge ? 0 : Look.cardGap)
