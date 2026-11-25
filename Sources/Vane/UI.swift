@@ -1990,7 +1990,7 @@ private struct PillBody: View {
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { glyphsWidth = $0 }
             .onPreferenceChange(PillGlyphsShown.self) { shown in
-                // Paced with the glyphs' own fade, so the host never slides under one still fading.
+                // Paced with the glyphs' own fade rather than jumping under them as they go.
                 withAnimation(reduced ? nil : Look.feedback) { glyphsShown = shown }
             }
         }
