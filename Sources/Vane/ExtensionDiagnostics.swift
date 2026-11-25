@@ -22,7 +22,7 @@ import WebKit
                             + (manifest["optional_permissions"] as? [String] ?? []))
             .filter { !$0.contains("://") && $0 != "<all_urls>" })
         // Vane supplies `sidePanel` and `identity` itself; see ExtensionSidePanel.swift, ExtensionIdentity.swift.
-        // Vane supplies part of `idle`, `management` and `offscreen`; see ExtensionChromiumGaps.swift.
+        // Vane supplies part of `idle` and `management`; see ExtensionChromiumGaps.swift.
         let missing = declared.subtracting(recognized)
         // `idle`'s stand-in needs it as a required permission; `getSelf` needs none.
         // The stand-ins are MV3-only, so MV2 extensions still hear these are unrecognized.
@@ -30,14 +30,11 @@ import WebKit
         let required = mv3 ? Set(manifest["permissions"] as? [String] ?? []) : []
         var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission,
                                           ExtensionTabGroupsAPI.permission] + (mv3 ? ["management"] : []))
-            .subtracting(required.intersection(["idle", "offscreen"])).sorted().map {
+            .subtracting(required.intersection(["idle"])).sorted().map {
             "\($0): \(unrecognized)"
         }
         if missing.contains("idle"), required.contains("idle") { issues.append("idle: Vane always reports the user as active; state changes never fire.") }
         if mv3, missing.contains("management") { issues.append("management: Vane answers getSelf only.") }
-        if missing.contains("offscreen"), required.contains("offscreen") {
-            issues.append("offscreen: Vane runs the document hidden until the extension closes it or reloads.")
-        }
         if declared.contains(ExtensionSidePanelAPI.permission) {
             issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events are unavailable.")
         }

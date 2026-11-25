@@ -693,6 +693,7 @@ import WebKit
     private func unloadContext(_ context: WKWebExtensionContext) throws {
         if let path = loaded.first(where: { $0.context === context })?.path { revokeICloudStorageLeases(path) }
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
+        webSockets.close(owner: ObjectIdentifier(context))
         try controller.unload(context)
         filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
         backgroundViews.removeObject(forKey: context)
@@ -2243,47 +2244,64 @@ import WebKit
 
     // MARK: Chromium stand-ins
 
-    /// `offscreen`: one hidden extension page per extension, as in Chrome.
-    private var offscreenDocuments: [ObjectIdentifier: WKWebView] = [:]
-
     private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) async throws -> Any {
-        let key = ObjectIdentifier(context), arguments = request.arguments
-        let declared = Set(context.webExtension.manifest["permissions"] as? [String] ?? [])
-        func integers(_ name: String) -> [Int] { (arguments[name] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue } }
+        let arguments = request.arguments
         switch request.operation {
         case "contexts":
             return extensionContexts(context)
-        case "offscreenCreate", "offscreenHas", "offscreenClose":
-            guard declared.contains("offscreen") else { throw Failure("This extension has not requested the offscreen permission.") }
-            switch request.operation {
-            case "offscreenHas":
-                return offscreenDocuments[key] != nil
-            case "offscreenClose":
-                guard let web = offscreenDocuments.removeValue(forKey: key) else { throw Failure("No current offscreen document.") }
-                web.stopLoading()
-                return NSNull()
-            default:
-                guard offscreenDocuments[key] == nil else { throw Failure("Only a single offscreen document may be created.") }
-                // `page` keeps the document inside the extension; the stand-in sends its path.
-                guard let url = (arguments["url"] as? String).flatMap({ ExtensionSidePanelAPI.page($0, base: context.baseURL) }),
-                      let cfg = context.webViewConfiguration else { throw Failure("Invalid offscreen document URL.") }
-                let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: cfg)
-                userAgent.track(web)
-                web.isInspectable = Settings.inspectorEnabled
-                offscreenDocuments[key] = web
-                // Chrome resolves once the document has loaded, so its listeners are there for
-                // the extension's next message.
-                let loaded = await OffscreenLoad.run(web, url: url)
-                guard loaded, offscreenDocuments[key] === web else {
-                    if offscreenDocuments[key] === web { offscreenDocuments[key] = nil }
-                    web.stopLoading()
-                    throw Failure("The offscreen document could not be loaded.")
-                }
-                return NSNull()
-            }
+        case "fetch":
+            return try await credentialedFetch(arguments, for: context)
+        case let operation where operation.hasPrefix("ws."):
+            let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+            if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
+            throw Failure("Vane does not answer \(operation).")
         default:
             throw Failure("Vane does not answer \(request.operation).")
         }
+    }
+
+    private let fetchSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
+
+    /// A credentialed request from the extension to a site it may access, sent with the
+    /// profile's cookies as Chrome sends them; cookies the reply sets land in the profile.
+    /// Null when the extension may not access the site: the page then fetches as WebKit does.
+    // ponytail: the whole body arrives at once and redirects are always followed; stream
+    // over the bridge if an extension reads a credentialed event stream.
+    private func credentialedFetch(_ arguments: [String: Any], for context: WKWebExtensionContext) async throws -> Any {
+        guard let url = (arguments["url"] as? String).flatMap(URL.init(string:)), let host = url.host?.lowercased(),
+              ["http", "https"].contains(url.scheme?.lowercased()),
+              [.grantedExplicitly, .grantedImplicitly].contains(context.permissionStatus(for: url)),
+              let store = controller.configuration.defaultWebsiteDataStore else { return NSNull() }
+        var request = URLRequest(url: url)
+        request.httpMethod = arguments["method"] as? String ?? "GET"
+        for case let pair as [String] in arguments["headers"] as? [Any] ?? [] where pair.count == 2
+            && !["cookie", "host", "content-length", "origin"].contains(pair[0].lowercased()) {
+            request.setValue(pair[1], forHTTPHeaderField: pair[0])
+        }
+        if let ua = arguments["ua"] as? String { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
+        request.setValue("chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id, forHTTPHeaderField: "Origin")
+        if let body = arguments["body"] as? String { request.httpBody = Data(base64Encoded: body) }
+        let secure = url.scheme?.lowercased() == "https", path = url.path.isEmpty ? "/" : url.path
+        let cookies = await store.httpCookieStore.allCookies().filter { cookie in
+            let domain = cookie.domain.lowercased()
+            let hostMatches = domain.hasPrefix(".") ? host == domain.dropFirst() || host.hasSuffix(domain) : host == domain
+            return hostMatches && path.hasPrefix(cookie.path) && (!cookie.isSecure || secure) && (cookie.expiresDate ?? .distantFuture) > Date()
+        }
+        if !cookies.isEmpty { request.setValue(HTTPCookie.requestHeaderFields(with: cookies)["Cookie"], forHTTPHeaderField: "Cookie") }
+        let (data, response) = try await fetchSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw Failure("The site sent no HTTP response.") }
+        let final = http.url ?? url
+        let fields = http.allHeaderFields.reduce(into: [String: String]()) { $0["\($1.key)"] = "\($1.value)" }
+        for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: final) { await store.httpCookieStore.setCookie(cookie) }
+        return ["status": http.statusCode, "statusText": HTTPURLResponse.localizedString(forStatusCode: http.statusCode).capitalized,
+                "headers": fields.filter { $0.key.lowercased() != "set-cookie" }.map { [$0.key, $0.value] },
+                "body": data.base64EncodedString(), "url": final.absoluteString]
     }
 
     /// `runtime.getContexts`: what this host shows of the extension. Tab and window IDs are
@@ -2303,7 +2321,6 @@ import WebKit
             add("BACKGROUND", path.flatMap { URL(string: $0, relativeTo: context.baseURL)?.absoluteURL }, context, frameId: background?["service_worker"] != nil ? -1 : 0)
         }
         for panel in sidePanels where panel.context === context { add("SIDE_PANEL", panel.web.url ?? panel.page, panel) }
-        if let web = offscreenDocuments[ObjectIdentifier(context)] { add("OFFSCREEN_DOCUMENT", web.url, web) }
         for presentation in actionWindows.values where presentation.context === context { add("POPUP", presentation.web.url, presentation) }
         for adapter in requestedWindows.values where adapter.presentation.context === context {
             add("TAB", adapter.presentation.web.url, adapter.presentation)
@@ -2315,6 +2332,8 @@ import WebKit
     }
 
     // MARK: Web sign-in
+
+    private let webSockets = ExtensionWebSockets()
 
     /// By flow: an extension may run several at once, as in Chrome.
     private var authFlows: [ObjectIdentifier: (context: WKWebExtensionContext, flow: ExtensionAuthFlow)] = [:]
@@ -2657,7 +2676,6 @@ import WebKit
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
-        offscreenDocuments.removeValue(forKey: ObjectIdentifier(context))?.stopLoading()
         debugger.forget(context)
         tabGroups.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
@@ -3237,32 +3255,4 @@ extension View {
         store?.window?.performClose(nil)
         store.map { ExtensionHost.host(for: $0.profileID).sync() }
     }
-}
-
-/// One offscreen document's first load: finished, failed, or out of time.
-@MainActor private final class OffscreenLoad: NSObject, WKNavigationDelegate {
-    private var continuation: CheckedContinuation<Bool, Never>?
-
-    static func run(_ web: WKWebView, url: URL) async -> Bool {
-        let load = OffscreenLoad()
-        web.navigationDelegate = load
-        defer { web.navigationDelegate = nil }
-        return await withCheckedContinuation { continuation in
-            load.continuation = continuation
-            web.load(URLRequest(url: url))
-            Task { [weak load] in
-                try? await Task.sleep(for: .seconds(10))
-                load?.finish(false)
-            }
-        }
-    }
-
-    private func finish(_ loaded: Bool) {
-        continuation?.resume(returning: loaded)
-        continuation = nil
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish(true) }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) { finish(false) }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) { finish(false) }
 }
