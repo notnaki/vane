@@ -104,7 +104,8 @@ import XCTest
             libraryOpen: true, sidebarShown: !floating, floating: floating, panelWidth: 392,
             palettePresented: false, monitor: LibrarySwipeMonitor(),
             page: CardProbe(view: card), sidebar: Color.clear, panel: Color.clear)
-            .environmentObject(store).environmentObject(ProfileManager.shared))
+            .environmentObject(store).environmentObject(ProfileManager.shared)
+            .environmentObject(DownloadFeedback()))
         host.sizingOptions = []
         let attachment = NativeFixtureMountAdmission.attach(host, to: window)
         defer {
