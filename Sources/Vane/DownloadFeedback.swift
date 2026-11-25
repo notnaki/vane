@@ -84,14 +84,15 @@ struct DownloadFeedbackPresentation: ViewModifier {
                    let target = DownloadFeedbackBounds.destination(
                     page: geometry[page], bucket: bounds[.bucket].map { geometry[$0] }, chrome: chrome) {
                     let pageRect = geometry[page]
-                    let source = DownloadFeedbackBounds.source(page: pageRect, click: downloadFeedback.click)
+                    let origin = geometry.frame(in: .global).origin
+                    let click = downloadFeedback.click.map { CGPoint(x: $0.x - origin.x, y: $0.y - origin.y) }
+                    let source = DownloadFeedbackBounds.source(page: pageRect, click: click)
                     let still = reduceMotion || batterySaver.isActive
                     // Once landed, the arrow hops onto the bucket's corner and stays there.
                     let badge = Group {
                         if downloadFeedback.landed {
-                            DownloadBadge(from: still ? DownloadFlight.badge(on: target)
-                                                      : DownloadFlight.landing(on: target),
-                                          to: DownloadFlight.badge(on: target))
+                            DownloadBadge(from: DownloadFlight.landing(on: target),
+                                          to: DownloadFlight.badge(on: target), still: still)
                                 .id(start.id)
                         }
                     }
@@ -101,9 +102,12 @@ struct DownloadFeedbackPresentation: ViewModifier {
                         // clipped by it, and back out the same way together.
                         ZStack {
                             Button {
-                                // Little Vane has no Library; its downloads open in a main window.
-                                let host = store.isLittle ? Windows.main : store
-                                host?.window?.makeKeyAndOrderFront(nil)
+                                // Little Vane has no Library; its downloads open in a main
+                                // window of the same profile and privacy, made if need be.
+                                let host = !store.isLittle ? store
+                                    : Windows.current(in: store.profileID, isPrivate: store.isPrivate)
+                                        ?? Windows.open(isPrivate: store.isPrivate, profile: store.profile)
+                                host.window?.makeKeyAndOrderFront(nil)
                                 Motion.list { Library.open(.downloads, in: host) }
                             } label: {
                                 LibraryDownloadGlyph(filled: true, hovered: false)
@@ -121,13 +125,13 @@ struct DownloadFeedbackPresentation: ViewModifier {
                             .position(x: target.midX, y: target.midY)
                             badge
                         }
-                        .mask {
-                            Rectangle().frame(width: pageRect.width, height: pageRect.height)
-                                .position(x: pageRect.midX, y: pageRect.midY)
-                        }
                         .transition(.asymmetric(
-                            insertion: .offset(x: pageRect.minX - target.maxX).animation(still ? nil : slide),
-                            removal: .offset(x: pageRect.minX - target.maxX - 12).animation(still ? nil : slide)))
+                            insertion: .modifier(active: PageSlide(dx: pageRect.minX - target.maxX, page: pageRect),
+                                                 identity: PageSlide(dx: 0, page: pageRect))
+                                .animation(still ? nil : slide),
+                            removal: .modifier(active: PageSlide(dx: pageRect.minX - target.maxX - 12, page: pageRect),
+                                               identity: PageSlide(dx: 0, page: pageRect))
+                                .animation(still ? nil : slide)))
                     } else {
                         badge
                     }
@@ -162,6 +166,19 @@ struct DownloadFeedbackPresentation: ViewModifier {
                let start = downloadFeedback.start { downloadFeedback.land(start.id) }
         }
         .onDisappear { downloadFeedback.cancel() }
+    }
+}
+
+/// Moves its content sideways under a mask that stays on the page, so whatever slides past
+/// the page's edge is hidden by it. The offset is inside the mask, not outside it.
+private struct PageSlide: ViewModifier {
+    let dx: CGFloat
+    let page: CGRect
+
+    func body(content: Content) -> some View {
+        content.offset(x: dx).mask {
+            Rectangle().frame(width: page.width, height: page.height).position(x: page.midX, y: page.midY)
+        }
     }
 }
 
@@ -216,13 +233,18 @@ private struct DownloadArrow: View {
 struct DownloadBadge: View {
     let from: CGPoint
     let to: CGPoint
+    var still = false
     @State private var hopped = false
 
     var body: some View {
+        let settled = hopped || still
         DownloadArrow()
-            .scaleEffect(hopped ? 0.68 : 0.8)
-            .position(hopped ? to : from)
-            .task { withAnimation(.spring(response: 0.4, dampingFraction: 0.73)) { hopped = true } }
+            .scaleEffect(settled ? 0.68 : 0.8)
+            .position(settled ? to : from)
+            .task {
+                guard !still else { return }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.73)) { hopped = true }
+            }
     }
 }
 
