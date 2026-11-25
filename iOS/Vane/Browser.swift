@@ -26,6 +26,11 @@ import WebKit
     var pull: Pull?
     var onPull: (PullChoice) -> Void = { _ in }
     private var pullTracker: PullTracker?
+    /// Where the finger was, on screen, when the page first passed its top: sideways movement
+    /// counts from here, not from wherever the scroll began.
+    private var pullStart: CGFloat?
+    /// The page's own colour (its theme colour, else what's behind its content), for the pull strip.
+    var pageColor: UIColor?
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -67,6 +72,8 @@ import WebKit
             web.observe(\.canGoBack) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoBack = web.canGoBack } },
             web.observe(\.canGoForward) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoForward = web.canGoForward } },
             web.scrollView.observe(\.contentOffset) { [weak self] scroll, _ in MainActor.assumeIsolated { self?.scrolled(scroll) } },
+            web.observe(\.themeColor) { [weak self] web, _ in MainActor.assumeIsolated { self?.pageColor = web.themeColor ?? web.underPageBackgroundColor } },
+            web.observe(\.underPageBackgroundColor) { [weak self] web, _ in MainActor.assumeIsolated { self?.pageColor = web.themeColor ?? web.underPageBackgroundColor } },
             web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded() } } },
         ]
         // The floating bar covers the page's foot; let its last line scroll clear of it.
@@ -82,14 +89,18 @@ import WebKit
         let depth = -(scroll.contentOffset.y + scroll.adjustedContentInset.top)
         switch pan.state {
         case .began, .changed:
-            guard depth > 0, reading == nil else { if pull != nil { pull = nil }; return }
-            let dx = pan.translation(in: scroll).x
-            let next = Pull(progress: min(depth / 100, 1), choice: dx < -45 ? .newTab : dx > 45 ? .close : .reload, dx: dx, depth: depth)
+            guard depth > 0, reading == nil else { if pull != nil { pull = nil }; pullStart = nil; return }
+            let x = pan.location(in: nil).x
+            let start = pullStart ?? x
+            pullStart = start
+            let dx = x - start
+            let next = Pull(progress: min(depth / 100, 1), choice: dx < -32 ? .newTab : dx > 32 ? .close : .reload, dx: dx, depth: depth)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
                 UISelectionFeedbackGenerator().selectionChanged()
             }
             pull = next
         default:
+            pullStart = nil
             if let pull, pull.progress >= 1 {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 onPull(pull.choice)

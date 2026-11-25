@@ -22,7 +22,7 @@ struct RootView: View {
                     .ignoresSafeArea()
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 if let pull = tab.pull {
-                    PullActions(pull: pull).frame(maxHeight: .infinity, alignment: .top)
+                    PullActions(pull: pull, color: tab.pageColor).frame(maxHeight: .infinity, alignment: .top)
                 }
                 // Reader is a mode of the tab: the article takes the page's place, under the same bar.
                 if let article = tab.reading {
@@ -920,7 +920,17 @@ struct TabCard: View {
 /// action with its name underneath. Let go to do it.
 struct PullActions: View {
     let pull: Tab.Pull
+    /// The page's colour; the strip continues it, with icons that read on it.
+    let color: UIColor?
+    @Environment(\.colorScheme) private var scheme
     private let spacing: CGFloat = 96
+    /// Dark when the colour is, so the icons flip to white on it.
+    static func dark(_ color: UIColor?) -> ColorScheme? {
+        guard let color else { return nil }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard color.getRed(&r, green: &g, blue: &b, alpha: &a), a > 0.5 else { return nil }
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5 ? .dark : .light
+    }
     private let choices: [(Tab.PullChoice, String, String)] = [
         (.newTab, "plus", "New Tab"), (.reload, "arrow.clockwise", "Reload"), (.close, "xmark", "Close Tab"),
     ]
@@ -957,7 +967,9 @@ struct PullActions: View {
         .offset(y: -20 * (1 - pull.progress))
         // The browser's own strip over the gap the page leaves as it's pulled down.
         .frame(maxWidth: .infinity, minHeight: pull.depth, alignment: .top)
-        .background(Color(.systemBackground).ignoresSafeArea(edges: .top))
+        // The page's own colour, so the gap reads as more of the page rather than a black bar.
+        .background(Color(color ?? .systemBackground).ignoresSafeArea(edges: .top))
+        .environment(\.colorScheme, Self.dark(color) ?? scheme)
         .animation(.spring(duration: 0.3, bounce: 0.35), value: pull.choice)
         .animation(.spring(duration: 0.3, bounce: 0.35), value: armed)
         .allowsHitTesting(false)
