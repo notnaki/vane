@@ -1,243 +1,494 @@
 import SwiftUI
-
-extension Color {
-    init?(hex: String?) {
-        guard let hex, let value = UInt32(hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) else { return nil }
-        self.init(red: Double(value >> 16 & 0xFF) / 255, green: Double(value >> 8 & 0xFF) / 255, blue: Double(value & 0xFF) / 255)
-    }
-}
+import LocalAuthentication
 
 struct RootView: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    @State private var sidebar = false
+    @State private var spaces = false
     @State private var address = false
     @State private var settings = false
+    @State private var reader: Article?
+    @State private var noArticle = false
+    @State private var bookmarks = false
+    @State private var themeDemo = false
 
     private var space: SpaceRow? { library.spaces.first { $0.id == browser.spaceID } }
 
     var body: some View {
-        Group {
-            if let tab = browser.selected {
-                WebContainer(tab: tab).ignoresSafeArea(edges: .bottom).id(tab.id)
-            } else {
-                StartPage(open: { sidebar = false; browser.open($0.url, home: $0.url) })
+        ZStack {
+            Wash(space: space)
+            VStack(spacing: 0) {
+                if let tab = browser.selected {
+                    // The page uses the whole width and runs up under the status bar; only its
+                    // foot rounds off onto the Space's ground, where the controls sit.
+                    WebContainer(tab: tab).id(tab.id)
+                        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: Look.pageRadius, bottomTrailingRadius: Look.pageRadius, style: .continuous))
+                        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+                        .ignoresSafeArea(edges: .top)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                } else {
+                    SpaceColumn(space: space, close: {}, openSettings: { settings = true })
+                        .transition(.opacity)
+                }
+                BottomBar(spaces: $spaces, address: $address, menu: menu)
             }
+            .animation(.smooth(duration: 0.3), value: browser.selectedID)
         }
-        .safeAreaInset(edge: .bottom) { toolbar }
-        .tint(Color(hex: space?.colorHex) ?? .accentColor)
-        .sheet(isPresented: $sidebar) { Sidebar(settings: $settings, dismiss: { sidebar = false }).presentationDetents([.medium, .large]) }
-        .sheet(isPresented: $address) { AddressSheet(dismiss: { address = false }) }
-        .sheet(isPresented: $settings) { SettingsView() }
+        .sheet(isPresented: $spaces) {
+            SpacesPanel(close: { spaces = false }, openSettings: { spaces = false; settings = true })
+        }
+        .sheet(isPresented: $address) { AddressSheet(space: space, dismiss: { address = false }) }
+        .sheet(isPresented: $settings) { SettingsView().presentationBackground { Wash(space: space) } }
+        .sheet(item: $reader) { ReaderView(article: $0) }
+        .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
+        .sheet(isPresented: $bookmarks) { BookmarksView().presentationBackground { Wash(space: space) } }
+        .alert("Reader isn't available for this page", isPresented: $noArticle) {}
+        .preferredColorScheme(space?.appearance == "dark" ? .dark : space?.appearance == "light" ? .light : nil)
+        .tint(.primary)
+        .task { demo() }
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 14) {
-            Button { browser.selected?.webView.goBack() } label: { Image(systemName: "chevron.backward") }
-                .disabled(browser.selected?.canGoBack != true).accessibilityLabel("Back")
-            Button { browser.selected?.webView.goForward() } label: { Image(systemName: "chevron.forward") }
-                .disabled(browser.selected?.canGoForward != true).accessibilityLabel("Forward")
-            Button { address = true } label: {
-                HStack {
-                    Image(systemName: browser.selected?.url.scheme == "https" ? "lock.fill" : "magnifyingglass").font(.caption)
-                    Text(browser.selected?.url.host() ?? "Search or enter address").lineLimit(1)
-                }
-                .font(.subheadline).foregroundStyle(.primary).frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background(.quaternary, in: Capsule())
-                .overlay(alignment: .bottom) {
-                    if let tab = browser.selected, tab.progress < 1 {
-                        ProgressView(value: tab.progress).progressViewStyle(.linear).padding(.horizontal, 12)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            Button { sidebar = true } label: {
-                Image(systemName: "square.on.square").overlay { Text("\(browser.spaceTabs.count)").font(.system(size: 9, weight: .bold)) }
-            }.accessibilityLabel("Tabs and Spaces")
-            PageMenu(settings: $settings)
-        }
-        .font(.title3).padding(.horizontal).padding(.vertical, 8).background(.bar)
-    }
-}
-
-struct PageMenu: View {
-    @Environment(Library.self) private var library
-    @Environment(Browser.self) private var browser
-    @Binding var settings: Bool
-    var body: some View {
-        Menu {
-            if let tab = browser.selected, let space = library.spaces.first(where: { $0.id == browser.spaceID }) {
-                ShareLink(item: tab.url)
+    @ViewBuilder private var menu: some View {
+        if let tab = browser.selected, let space {
+            ControlGroup {
+                Button("Back", systemImage: "chevron.backward") { tab.webView.goBack() }.disabled(!tab.canGoBack)
+                Button("Forward", systemImage: "chevron.forward") { tab.webView.goForward() }.disabled(!tab.canGoForward)
                 Button("Reload", systemImage: "arrow.clockwise") { tab.webView.reload() }
-                Button("Find on Page", systemImage: "doc.text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
+                ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
+            }
+            Button("Reader", systemImage: "doc.plaintext") { Task { reader = await tab.article(); noArticle = reader == nil } }
+            Button("Find on Page", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
+            Section {
                 Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
                 Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
-                Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
-            }
-            Button("Settings", systemImage: "gear") { settings = true }
-        } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("More")
-    }
-}
-
-struct Monogram: View {
-    let link: LinkRow
-    var body: some View {
-        Text(String((link.url.host() ?? link.title).replacingOccurrences(of: "www.", with: "").prefix(1)).uppercased())
-            .font(.headline).frame(width: 44, height: 44)
-            .background(.tint.opacity(0.18), in: RoundedRectangle(cornerRadius: 12)).foregroundStyle(.tint)
-    }
-}
-
-struct FavouritesGrid: View {
-    @Environment(Library.self) private var library
-    let profile: UUID
-    let open: (LinkRow) -> Void
-    var body: some View {
-        let links = library.favourites(profile: profile)
-        if !links.isEmpty {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72))], spacing: 14) {
-                ForEach(links) { link in
-                    Button { open(link) } label: {
-                        VStack(spacing: 6) { Monogram(link: link); Text(link.title).font(.caption2).lineLimit(1).foregroundStyle(.secondary) }
-                    }
-                    .contextMenu { Button("Remove Favourite", systemImage: "star.slash", role: .destructive) { library.remove(link.id) } }
+                if let key = library.bookmarked(tab.url, profile: space.profileID) {
+                    Button("Remove Bookmark", systemImage: "bookmark.slash") { library.remove(key) }
+                } else {
+                    Button("Bookmark", systemImage: "bookmark") { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
                 }
             }
+            Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
         }
+        Section {
+            Button("Bookmarks", systemImage: "book") { bookmarks = true }
+            Button("Settings", systemImage: "gearshape") { settings = true }
+        }
+    }
+
+    /// Debug-only launch arguments for screenshots, e.g. `-demoPanel spaces -demoOpen https://…`.
+    private func demo() {
+        #if DEBUG
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "demoSeed"), let space = library.spaces.first {
+            for site in ["https://www.apple.com", "https://github.com", "https://en.wikipedia.org", "https://developer.mozilla.org", "https://www.youtube.com", "https://news.ycombinator.com"] {
+                library.addFavourite(URL(string: site)!, profile: space.profileID)
+            }
+            library.addPinned(URL(string: "https://developer.apple.com")!, title: "Apple Developer", space: space)
+            library.addPinned(URL(string: "https://www.swift.org")!, title: "Swift.org", space: space)
+            var themed = space; themed.colors = ["#6CBAD9", "#C5C6E5", "#F29BBB"]; themed.icon = "sparkles"; themed.grain = 0.4
+            library.setTheme(themed)
+            library.addSpace("Work", profile: space.profileID)
+            browser.open(URL(string: "https://en.wikipedia.org/wiki/Weather_vane")!)
+            browser.open(URL(string: "https://www.swift.org/about/")!)
+            browser.select(nil)
+        }
+        if let raw = defaults.string(forKey: "demoOpen"), let url = URL(string: raw) { browser.open(url) }
+        switch defaults.string(forKey: "demoPanel") {
+        case "spaces": spaces = true
+        case "settings": settings = true
+        case "address": address = true
+        case "theme": themeDemo = true
+        default: break
+        }
+        #endif
     }
 }
 
-struct StartPage: View {
+/// The controls under the page, on the Space's ground. Sliding along the bar moves to the
+/// next or previous Space, the way a two-finger swipe does on the Mac sidebar.
+struct BottomBar<Menu: View>: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    let open: (LinkRow) -> Void
+    @Binding var spaces: Bool
+    @Binding var address: Bool
+    let menu: Menu
+    @State private var nudge: CGFloat = 0
+
     var body: some View {
-        let space = library.spaces.first { $0.id == browser.spaceID }
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Text(space?.name ?? "Vane").font(.largeTitle.bold())
-                if let space {
-                    FavouritesGrid(profile: space.profileID, open: open)
-                    let pinned = library.pinned(space: space.id)
-                    if !pinned.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Pinned").font(.headline)
-                            ForEach(pinned) { link in
-                                Button { open(link) } label: { Label(link.title, systemImage: "pin").lineLimit(1) }
-                            }
+        let tab = browser.selected
+        HStack(spacing: 10) {
+            Button { spaces = true } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 22, height: 22)
+                    Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+                }
+                .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("Spaces and tabs, \(browser.spaceTabs.count) open")
+
+            Button { address = true } label: {
+                HStack(spacing: 8) {
+                    if let tab {
+                        SiteIcon(url: tab.url, size: 16)
+                        Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
+                    } else {
+                        Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium))
+                        Text("Search or enter address").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity).frame(height: 40)
+                .background(GroundFill(strength: 1.4), in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous))
+                .overlay(alignment: .bottom) {
+                    if let tab, tab.progress > 0, tab.progress < 1 {
+                        GeometryReader { geo in
+                            Capsule().fill(.primary.opacity(0.55)).frame(width: geo.size.width * tab.progress, height: 2)
                         }
+                        .frame(height: 2).padding(.horizontal, Look.pillRadius).padding(.bottom, 3)
+                        .animation(.easeOut(duration: 0.2), value: tab.progress)
                     }
                 }
-                if library.favourites(profile: space?.profileID ?? Local.profile).isEmpty && library.pinned(space: browser.spaceID).isEmpty {
-                    Text("Open a page and use the ••• menu to add it to Favourites or pin it to this Space.")
-                        .foregroundStyle(.secondary)
+            }
+            .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
+
+            SwiftUI.Menu { menu } label: {
+                Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("More")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8).padding(.top, 4)
+        .offset(x: nudge)
+        .gesture(DragGesture(minimumDistance: 24).onChanged { value in
+            nudge = value.translation.width * 0.12
+        }.onEnded { value in
+            let ids = library.spaces.map(\.id)
+            if abs(value.translation.width) > 80, let index = ids.firstIndex(of: browser.spaceID) {
+                let next = index + (value.translation.width < 0 ? 1 : -1)
+                if ids.indices.contains(next) {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    browser.switchSpace(ids[next])
                 }
             }
-            .padding(24).frame(maxWidth: .infinity, alignment: .leading)
-        }
+            withAnimation(.spring(duration: 0.35, bounce: 0.3)) { nudge = 0 }
+        })
     }
 }
 
-struct Sidebar: View {
+/// Every Space side by side, swiped between like the Mac sidebar, over the current Space's
+/// colour. The footer holds the Space marks, as at the foot of the Mac sidebar.
+struct SpacesPanel: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    @Environment(Sync.self) private var sync
-    @Binding var settings: Bool
-    let dismiss: () -> Void
-    @State private var naming: SpaceRow?
+    let close: () -> Void
+    let openSettings: () -> Void
     @State private var creating = false
     @State private var name = ""
-    @State private var deleting: SpaceRow?
 
     var body: some View {
-        let space = library.spaces.first { $0.id == browser.spaceID }
-        NavigationStack {
-            List {
-                Section {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            ForEach(library.spaces) { row in
-                                SpaceChip(row: row, selected: row.id == browser.spaceID) { browser.switchSpace(row.id) }
-                                    .contextMenu {
-                                        Button("Rename", systemImage: "pencil") { name = row.name; naming = row }
-                                        Button("Delete Space", systemImage: "trash", role: .destructive) { deleting = row }
-                                    }
-                            }
-                            Button { name = ""; creating = true } label: { Image(systemName: "plus") }.accessibilityLabel("New Space")
-                        }
-                    }
-                }
-                if let space {
-                    Section { FavouritesGrid(profile: space.profileID, open: open).padding(.vertical, 4) }
-                    let pinned = library.pinned(space: space.id)
-                    if !pinned.isEmpty {
-                        Section("Pinned") {
-                            ForEach(pinned) { link in
-                                Button { open(link) } label: { Label(link.title, systemImage: "pin").lineLimit(1) }
-                                    .swipeActions { Button("Unpin", role: .destructive) { library.remove(link.id) } }
-                            }
-                        }
-                    }
-                }
-                Section("Tabs") {
-                    Button { browser.select(nil); dismiss() } label: { Label("New Tab", systemImage: "plus") }
-                    ForEach(browser.spaceTabs.reversed()) { tab in
-                        Button { browser.select(tab); dismiss() } label: {
-                            VStack(alignment: .leading) {
-                                Text(tab.title).lineLimit(1).fontWeight(tab.id == browser.selectedID ? .semibold : .regular)
-                                Text(tab.url.host() ?? "").font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .swipeActions { Button("Close", role: .destructive) { browser.close(tab) } }
-                    }
-                }
-                ForEach(library.remoteTabs, id: \.device) { group in
-                    Section("On \(group.device)") {
-                        ForEach(group.tabs) { tab in
-                            Button { browser.open(tab.url); dismiss() } label: {
-                                VStack(alignment: .leading) {
-                                    Text(tab.title.isEmpty ? tab.url.absoluteString : tab.title).lineLimit(1)
-                                    Text(tab.url.host() ?? "").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-                if !sync.enabled {
-                    Section { Button("Turn on iCloud sync to see your Mac's Spaces") { settings = true } }
+        let current = library.spaces.first { $0.id == browser.spaceID }
+        VStack(spacing: 0) {
+            TabView(selection: Binding(get: { browser.spaceID }, set: { browser.switchSpace($0) })) {
+                ForEach(library.spaces) { space in
+                    SpaceColumn(space: space, close: close, openSettings: openSettings).tag(space.id)
                 }
             }
-            .refreshable { await sync.run() }
-            .navigationTitle(space?.name ?? "Spaces").navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done", action: dismiss) }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            HStack(spacing: 4) {
+                ForEach(library.spaces) { space in
+                    Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
+                        SpaceMark(space: space, size: 17)
+                            .opacity(space.id == browser.spaceID ? 1 : 0.45)
+                            .frame(width: 40, height: 40)
+                    }
+                    .accessibilityLabel(space.name)
+                }
+                Spacer()
+                Button { name = ""; creating = true } label: { Image(systemName: "plus").frame(width: 40, height: 40) }
+                    .accessibilityLabel("New Space")
+                Button(action: openSettings) { Image(systemName: "gearshape").frame(width: 40, height: 40) }
+                    .accessibilityLabel("Settings")
+            }
+            .font(.system(size: 17, weight: .medium))
+            .buttonStyle(.plain)
+            .padding(.horizontal, Look.inset).padding(.bottom, 6)
         }
+        .padding(.top, 8)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground { Wash(space: current) }
         .alert("New Space", isPresented: $creating) {
             TextField("Name", text: $name)
             Button("Create") {
                 guard !name.isEmpty else { return }
-                let profile = space.map(\.profileID) ?? Local.profile
-                browser.switchSpace(library.addSpace(name, profile: profile))
+                browser.switchSpace(library.addSpace(name, profile: current?.profileID ?? Local.profile))
             }
             Button("Cancel", role: .cancel) {}
         }
-        .alert("Rename Space", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
-            TextField("Name", text: $name)
-            Button("Rename") { if let naming, !name.isEmpty { library.renameSpace(naming, to: name) } }
+    }
+}
+
+/// One Space, laid out like the Mac sidebar: favourites as tiles, pinned tabs and folders,
+/// a hairline, New Tab, then the Space's open tabs. Other devices' tabs follow.
+struct SpaceColumn: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    @Environment(Sync.self) private var sync
+    let space: SpaceRow?
+    let close: () -> Void
+    let openSettings: () -> Void
+    @State private var renaming = false
+    @State private var deleting = false
+    @State private var theming = false
+    @State private var name = ""
+    @State private var naming: LinkRow?
+
+    var body: some View {
+        let favourites = space.map { library.favourites(profile: $0.profileID) } ?? []
+        let tabs = browser.tabs.filter { $0.spaceID == space?.id }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                if !favourites.isEmpty {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                        ForEach(favourites) { link in
+                            Button { open(link) } label: {
+                                SiteIcon(url: link.url, size: 24)
+                                    .frame(maxWidth: .infinity).frame(height: Look.tileHeight)
+                                    .background(GroundFill(strength: browser.selected?.home == link.url ? 2.2 : 1),
+                                                in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous))
+                            }
+                            .buttonStyle(PressFill())
+                            .accessibilityLabel(link.title)
+                            .contextMenu {
+                                Text(link.title)
+                                Button("Rename", systemImage: "pencil") { name = link.title; naming = link }
+                                Button("Remove Favourite", systemImage: "star.slash", role: .destructive) { library.remove(link.id) }
+                            }
+                        }
+                    }
+                }
+                if let space {
+                    VStack(spacing: 2) { PinnedRows(space: space.id, open: open) }
+                }
+                Rectangle().fill(.primary.opacity(0.14)).frame(height: 1).padding(.horizontal, 12)
+                VStack(spacing: 2) {
+                    Row(title: "New Tab", icon: AnyView(Image(systemName: "plus").fontWeight(.medium))) {
+                        browser.select(nil); close()
+                    }
+                    ForEach(tabs.reversed()) { tab in
+                        Row(title: tab.title, selected: tab.id == browser.selectedID, icon: AnyView(SiteIcon(url: tab.url, size: 18))) {
+                            browser.select(tab); close()
+                        } trailing: {
+                            Button { withAnimation(.smooth(duration: 0.25)) { browser.close(tab) } } label: {
+                                Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).frame(width: 32, height: 32)
+                            }
+                            .buttonStyle(.plain).opacity(0.6)
+                            .accessibilityLabel("Close \(tab.title)")
+                        }
+                    }
+                }
+                ForEach(library.remoteTabs, id: \.device) { group in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(group.device, systemImage: "laptopcomputer")
+                            .font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 4)
+                        ForEach(group.tabs) { tab in
+                            Row(title: tab.title.isEmpty ? tab.url.absoluteString : tab.title, icon: AnyView(SiteIcon(url: tab.url, size: 18))) {
+                                browser.open(tab.url); close()
+                            }
+                        }
+                    }
+                }
+                if favourites.isEmpty && tabs.isEmpty && library.pinned(space: space?.id ?? Local.space).isEmpty {
+                    emptyHint
+                }
+            }
+            .padding(.horizontal, Look.inset).padding(.vertical, 12)
+        }
+        .scrollIndicators(.hidden)
+        .refreshable { await sync.run() }
+        .sheet(isPresented: $theming) { if let space { ThemeEditor(space: space) } }
+        .alert("Rename", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
+            TextField(naming?.url.host() ?? "Name", text: $name)
+            Button("Rename") { if let naming { library.setCustomName(naming.id, to: name) } }
+            Button("Use Page Title") { if let naming { library.setCustomName(naming.id, to: nil) } }
             Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("Delete this Space?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+        .alert("Rename Space", isPresented: $renaming) {
+            TextField("Name", text: $name)
+            Button("Rename") { if let space, !name.isEmpty { library.renameSpace(space, to: name) } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete \(space?.name ?? "this Space")?", isPresented: $deleting, titleVisibility: .visible) {
             Button("Delete Space", role: .destructive) {
-                guard let row = deleting else { return }
-                browser.closeTabs(in: row.id)
-                library.deleteSpace(row)
-                if browser.spaceID == row.id, let first = library.spaces.first { browser.switchSpace(first.id) }
+                guard let space else { return }
+                browser.closeTabs(in: space.id)
+                library.deleteSpace(space)
+                if let first = library.spaces.first { browser.switchSpace(first.id) }
             }
         } message: {
-            Text(deleting?.isLocal == true ? "Its tabs and pinned links will be removed." : "Its pinned tabs will also be removed from your other synced devices.")
+            Text(space?.isLocal == true ? "Its tabs and pinned tabs are removed." : "Its pinned tabs are also removed from your other synced devices.")
         }
     }
 
-    private func open(_ link: LinkRow) { browser.open(link.url, home: link.url); dismiss() }
+    private var header: some View {
+        HStack(spacing: 10) {
+            if let space { SpaceMark(space: space, size: 20) }
+            Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
+            if let space, !space.isLocal, let profile = library.profileName(space.profileID) {
+                Text(profile).font(.footnote.weight(.medium)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if space != nil {
+                Menu {
+                    Button("Edit Theme and Icon", systemImage: "paintpalette") { theming = true }
+                    Button("Rename", systemImage: "pencil") { name = space?.name ?? ""; renaming = true }
+                    Button("Delete Space", systemImage: "trash", role: .destructive) { deleting = true }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).frame(width: 36, height: 36)
+                        .background(GroundFill(), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Space options")
+            }
+        }
+        .padding(.horizontal, 4).padding(.top, 8)
+    }
+
+    private var emptyHint: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Keep what you come back to here. Open a page, then add it to Favourites or pin it to this Space from the ••• menu.")
+            if !sync.enabled {
+                Button("Bring in your Spaces from Vane on your Mac", action: openSettings)
+                    .fontWeight(.medium)
+            }
+        }
+        .font(.subheadline).foregroundStyle(.secondary)
+        .padding(.horizontal, 12).padding(.top, 6)
+    }
+
+    private func open(_ link: LinkRow) { browser.open(link.url, home: link.url); close() }
+}
+
+/// Pinned tabs and their folders. Folders locked on the Mac open only after Face ID or the passcode.
+struct PinnedRows: View {
+    @Environment(Library.self) private var library
+    let space: UUID
+    let open: (LinkRow) -> Void
+    var body: some View {
+        ForEach(library.folders(space: space)) { FolderView(folder: $0, open: open) }
+        ForEach(library.pinned(space: space)) { LinkButton(link: $0, open: open) }
+    }
+}
+
+struct LinkButton: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    let link: LinkRow
+    let open: (LinkRow) -> Void
+    @State private var renaming = false
+    @State private var name = ""
+    var body: some View {
+        Row(title: link.title, selected: browser.selected?.home == link.url, icon: AnyView(SiteIcon(url: link.url, size: 18))) { open(link) }
+            .contextMenu {
+                Button("Rename", systemImage: "pencil") { name = link.title; renaming = true }
+                Button("Unpin", systemImage: "pin.slash", role: .destructive) { library.remove(link.id) }
+            }
+            .alert("Rename", isPresented: $renaming) {
+                TextField(link.url.host() ?? "Name", text: $name)
+                Button("Rename") { library.setCustomName(link.id, to: name) }
+                Button("Use Page Title") { library.setCustomName(link.id, to: nil) }
+                Button("Cancel", role: .cancel) {}
+            }
+    }
+}
+
+struct FolderView: View {
+    let folder: FolderRow
+    let open: (LinkRow) -> Void
+    @State private var expanded = false
+    @State private var unlocked = false
+    var body: some View {
+        VStack(spacing: 2) {
+            Row(title: folder.name, icon: AnyView(Image(systemName: folder.locked && !unlocked ? "lock.fill" : expanded ? "folder.fill" : "folder"))) { toggle() } trailing: {
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).opacity(0.5)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+            if expanded {
+                VStack(spacing: 2) {
+                    ForEach(folder.folders) { FolderView(folder: $0, open: open) }
+                    ForEach(folder.links) { LinkButton(link: $0, open: open) }
+                }
+                .padding(.leading, 18)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .clipped()
+    }
+    private func toggle() {
+        guard !expanded, folder.locked, !unlocked else { return withAnimation(.smooth(duration: 0.25)) { expanded.toggle() } }
+        Task {
+            let context = LAContext()
+            if (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Open \(folder.name)")) == true {
+                unlocked = true
+                withAnimation(.smooth(duration: 0.25)) { expanded = true }
+            }
+        }
+    }
+}
+
+
+struct ReaderView: View {
+    let article: Article
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(article.site).font(.subheadline).foregroundStyle(.secondary)
+                    Text(article.title).font(.system(.largeTitle, design: .serif).bold())
+                    ForEach(Array(article.blocks.enumerated()), id: \.offset) { _, block in
+                        Text(block.text)
+                            .font(block.heading ? .system(.title2, design: .serif).bold() : .system(.body, design: .serif))
+                            .lineSpacing(5).textSelection(.enabled)
+                    }
+                }
+                .padding(24).frame(maxWidth: 680, alignment: .leading).frame(maxWidth: .infinity)
+            }
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+struct BookmarksView: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        let profile = library.spaces.first { $0.id == browser.spaceID }?.profileID ?? Local.profile
+        let groups = library.bookmarks(profile: profile)
+        NavigationStack {
+            List {
+                ForEach(groups, id: \.folder) { group in
+                    Section(group.folder ?? "Bookmarks") {
+                        ForEach(group.links) { link in
+                            Button { browser.open(link.url); dismiss() } label: {
+                                VStack(alignment: .leading) {
+                                    Text(link.title).lineLimit(1)
+                                    Text(link.url.host() ?? "").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .swipeActions { Button("Delete", role: .destructive) { library.remove(link.id) } }
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .overlay { if groups.isEmpty { ContentUnavailableView("No Bookmarks", systemImage: "book", description: Text("Use Bookmark in the ••• menu to save a page.")) } }
+            .navigationTitle("Bookmarks").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
 }
 
 struct SpaceChip: View {
@@ -255,26 +506,45 @@ struct SpaceChip: View {
     }
 }
 
+/// The address field and what it finds, on the Space's colour.
 struct AddressSheet: View {
     @Environment(Browser.self) private var browser
+    let space: SpaceRow?
     let dismiss: () -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
     var body: some View {
-        NavigationStack {
-            List {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").font(.body.weight(.medium)).opacity(0.6)
                 TextField("Search or enter address", text: $text)
                     .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
                     .submitLabel(.go).onSubmit { go(browser.destination(for: text)) }
-                ForEach(browser.suggestions(for: text), id: \.self) { visit in
-                    Button { go(visit.url) } label: {
-                        VStack(alignment: .leading) { Text(visit.title).lineLimit(1); Text(visit.url.absoluteString).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if !text.isEmpty {
+                    Button { text = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
+                        .buttonStyle(.plain).accessibilityLabel("Clear")
+                }
+            }
+            .padding(.horizontal, 14).frame(height: 50)
+            .background(GroundFill(strength: 1.6), in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous))
+            ScrollView {
+                VStack(spacing: 2) {
+                    if let destination = browser.destination(for: text), !text.isEmpty {
+                        Row(title: destination.host() == nil || destination.absoluteString.contains("?q=") ? "Search for \u{201C}\(text)\u{201D}" : destination.absoluteString,
+                            icon: AnyView(Image(systemName: destination.absoluteString.contains("?q=") ? "magnifyingglass" : "arrow.up.right"))) { go(destination) }
+                    }
+                    ForEach(browser.suggestions(for: text), id: \.self) { visit in
+                        Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
+                            Text(visit.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
                 }
             }
-            .navigationTitle("Go to").navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Cancel", action: dismiss) }
+            .scrollDismissesKeyboard(.interactively)
         }
+        .padding(.horizontal, Look.inset).padding(.top, 18)
+        .presentationDetents([.large])
+        .presentationBackground { Wash(space: space) }
         .onAppear { text = browser.selected?.url.absoluteString ?? ""; focused = true }
     }
     private func go(_ url: URL?) {
@@ -287,20 +557,32 @@ struct AddressSheet: View {
 struct SettingsView: View {
     @Environment(Sync.self) private var sync
     @Environment(Browser.self) private var browser
+    @Environment(Library.self) private var library
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClear = false
+    @State private var styleChanged = false
     var body: some View {
         @Bindable var sync = sync
         @Bindable var browser = browser
+        @Bindable var library = library
         NavigationStack {
             Form {
                 Section {
                     Toggle("Sync with iCloud", isOn: $sync.enabled).disabled(!sync.available)
                     LabeledContent("Status", value: sync.busy ? "Syncing…" : sync.status)
                     if let last = sync.lastSuccess { LabeledContent("Last synced", value: last.formatted(date: .omitted, time: .shortened)) }
+                    Toggle("Include browsing history", isOn: $library.syncHistory).disabled(!sync.enabled)
                     Button("Sync Now") { Task { await sync.run() } }.disabled(!sync.enabled || sync.busy)
                 } header: { Text("iCloud") } footer: {
-                    Text("Spaces, favourites, pinned tabs and open tabs sync with Vane on your Mac through your private iCloud database. Nothing is sent to Vane.")
+                    Text("Spaces, favourites, pinned tabs and folders, bookmarks and open tabs sync with Vane on your Mac through your private iCloud database. Nothing is sent to Vane.")
+                }
+                Section {
+                    AppIconPicker()
+                    Toggle("Streamlined", isOn: Binding(
+                        get: { UserDefaults.standard.string(forKey: "interfaceStyle") == "streamlined" },
+                        set: { UserDefaults.standard.set($0 ? "streamlined" : nil, forKey: "interfaceStyle"); styleChanged = true }))
+                } header: { Text("Look") } footer: {
+                    Text(styleChanged ? "Streamlined applies the next time Vane opens." : "Streamlined uses denser rows and tiles, as on the Mac. Each Space's colours and icon are set from its ••• menu.")
                 }
                 Section("Search") {
                     Picker("Search engine", selection: $browser.engine) { ForEach(SearchEngine.allCases) { Text($0.name).tag($0) } }
@@ -314,10 +596,16 @@ struct SettingsView: View {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 }
             }
+            .scrollContentBackground(.hidden)
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
             .confirmationDialog("Clear history, cookies and website data on this device?", isPresented: $confirmClear, titleVisibility: .visible) {
-                Button("Clear", role: .destructive) { browser.clearHistory() }
+                Button("Clear", role: .destructive) {
+                    browser.clearHistory()
+                    if library.syncHistory { library.clearSyncedHistory() }
+                }
+            } message: {
+                if library.syncHistory { Text("Synced history is also cleared on your other devices.") }
             }
         }
     }
@@ -328,7 +616,7 @@ struct HistoryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     var body: some View {
-        List(query.isEmpty ? Array(browser.history.prefix(500)) : browser.suggestions(for: query), id: \.self) { visit in
+        List(query.isEmpty ? Array(browser.allHistory.prefix(500)) : browser.suggestions(for: query), id: \.self) { visit in
             Button { browser.open(visit.url); dismiss() } label: {
                 VStack(alignment: .leading) {
                     Text(visit.title).lineLimit(1)
@@ -336,8 +624,9 @@ struct HistoryView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
         .searchable(text: $query)
-        .overlay { if browser.history.isEmpty { ContentUnavailableView("No History", systemImage: "clock") } }
+        .overlay { if browser.allHistory.isEmpty { ContentUnavailableView("No History", systemImage: "clock") } }
         .navigationTitle("History")
     }
 }

@@ -24,6 +24,20 @@ targets:
       - path: ../Sources/Vane/ICloudApplyContext.swift
       - path: ../AppIcons/AppIcon.icon
         buildPhase: resources
+      - path: ../AppIcons/AppIcon-Candy.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-FlutedGlass.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-FlutedGlassDark.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Galaxy.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Luminous.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Neon.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Schoolbook.icon
+        buildPhase: resources
     entitlements:
       path: Vane/Vane.entitlements
       properties:
@@ -31,6 +45,9 @@ targets:
         com.apple.developer.icloud-services: [CloudKit]
         aps-environment: development
         keychain-access-groups: ["$(AppIdentifierPrefix)io.github.notnaki.vane.ios"]
+        # Default browser. Uncomment once Apple grants the entitlement to this App ID;
+        # signing fails while the profile doesn't include it.
+        # com.apple.developer.web-browser: true
     info:
       path: Vane/Info.plist
       properties:
@@ -38,6 +55,10 @@ targets:
         LSApplicationCategoryType: public.app-category.productivity
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # Required to be offered as the default browser.
+        CFBundleURLTypes:
+          - CFBundleURLName: Web
+            CFBundleURLSchemes: [http, https]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
@@ -56,5 +77,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.notnaki.vane.ios
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The Mac's alternate icons, chosen in Settings → App Icon.
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIcon-Candy AppIcon-FlutedGlass AppIcon-FlutedGlassDark AppIcon-Galaxy AppIcon-Luminous AppIcon-Neon AppIcon-Schoolbook
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic
+  VaneTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: Vane
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.notnaki.vane.ios.tests
+schemes:
+  Vane:
+    build:
+      targets:
+        Vane: all
+    test:
+      targets: [VaneTests]

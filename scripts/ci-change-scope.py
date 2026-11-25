@@ -44,6 +44,10 @@ def routing_only_workflow_change(base, head):
 
 def cheap_checks_only(path):
     parts = PurePosixPath(path).parts
+    # The iOS app has its own workflow (ios.yml). Shared sync sources live under
+    # Sources/ and still run the Mac checks.
+    if parts and parts[0] == "iOS" or path == ".github/workflows/ios.yml":
+        return True
     if path in ROUTING_FILES or path in WEBSITE_FILES:
         return True
     if parts and parts[0] == "docs" and PurePosixPath(path).suffix in WEBSITE_SUFFIXES:

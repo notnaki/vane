@@ -16,6 +16,10 @@ import WebKit
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
     var onChange: () -> Void = {}
+    /// A page finished loading: the moment its URL and title are both settled.
+    var onLoaded: () -> Void = {}
+    /// The last URL reported as a visit, so reloads and subresource loads don't repeat it.
+    var visited: URL?
 
     init(_ saved: Saved) { id = saved.id; spaceID = saved.spaceID; url = saved.url; title = saved.title; home = saved.home }
     var saved: Saved { Saved(id: id, spaceID: spaceID, url: url, title: title, home: home) }
@@ -35,11 +39,56 @@ import WebKit
             web.observe(\.estimatedProgress) { [weak self] web, _ in MainActor.assumeIsolated { self?.progress = web.estimatedProgress } },
             web.observe(\.canGoBack) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoBack = web.canGoBack } },
             web.observe(\.canGoForward) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoForward = web.canGoForward } },
+            web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded() } } },
         ]
         web.load(URLRequest(url: url))
         view = web
         return web
     }
+
+    /// The page's article as plain text blocks, or nil when there isn't one. The script runs
+    /// in its own content world, so the page's scripts can't tamper with it, and only text
+    /// comes back: the reader view renders it natively, never as the page's markup.
+    func article() async -> Article? {
+        guard let view else { return nil }
+        let result = try? await view.callAsyncJavaScript(Article.script, contentWorld: .world(name: "vane-reader"))
+        guard let object = result as? [String: Any], let title = object["title"] as? String,
+              let raw = object["blocks"] as? [[String: Any]] else { return nil }
+        let blocks = raw.prefix(5000).compactMap { block -> Article.Block? in
+            guard let text = block["text"] as? String, !text.isEmpty else { return nil }
+            return Article.Block(heading: block["heading"] as? Bool == true, text: String(text.prefix(20000)))
+        }
+        // ponytail: "enough text" is a 600-character floor; tune if short articles are refused.
+        guard blocks.filter({ !$0.heading }).reduce(0, { $0 + $1.text.count }) >= 600 else { return nil }
+        return Article(title: title, site: url.host() ?? "", blocks: blocks)
+    }
+}
+
+struct Article: Hashable, Identifiable {
+    var id: Self { self }
+    struct Block: Hashable { var heading: Bool; var text: String }
+    var title: String, site: String, blocks: [Block]
+    /// Picks the element whose paragraphs hold the most text, then reads its headings and
+    /// paragraphs in order. ponytail: a cut-down Readability; port the Mac's Reader scoring
+    /// if real articles come out wrong.
+    static let script = """
+    const candidates = new Map();
+    for (const p of document.querySelectorAll('p')) {
+      const parent = p.parentElement; if (!parent) continue;
+      candidates.set(parent, (candidates.get(parent) || 0) + p.innerText.trim().length);
+    }
+    let best = null, score = 0;
+    for (const [node, length] of candidates) if (length > score) { best = node; score = length; }
+    if (!best) return null;
+    const blocks = [];
+    for (const node of best.querySelectorAll('h1,h2,h3,h4,p,li,blockquote,pre')) {
+      if (node.closest('nav,aside,footer,form,figure figcaption')) continue;
+      const text = node.innerText.trim();
+      if (text) blocks.push({ heading: /^H/.test(node.tagName), text });
+    }
+    const heading = document.querySelector('h1');
+    return { title: (heading && heading.innerText.trim()) || document.title, blocks };
+    """
 }
 
 /// Links that ask for a new window (target=_blank, window.open) open in the same tab.
@@ -61,6 +110,10 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     private(set) var history: [Visit] = []
     var engine: SearchEngine { didSet { UserDefaults.standard.set(engine.rawValue, forKey: "engine") } }
     var onTabsChanged: () -> Void = {}
+    var onVisit: (Tab) -> Void = { _ in }
+    /// History from other devices, when history sync is on.
+    var syncedHistory: () -> [Visit] = { [] }
+    var allHistory: [Visit] { (history + syncedHistory()).sorted { $0.at > $1.at } }
     private let tabsFile = Store.directory.appending(path: "tabs.json")
     private let historyFile = Store.directory.appending(path: "history.json")
 
@@ -122,7 +175,7 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     func suggestions(for text: String) -> [Visit] {
         guard !text.isEmpty else { return [] }
         var seen = Set<URL>()
-        return history.filter { ($0.url.absoluteString.localizedCaseInsensitiveContains(text) || $0.title.localizedCaseInsensitiveContains(text)) && seen.insert($0.url).inserted }.prefix(8).map { $0 }
+        return allHistory.filter { ($0.url.absoluteString.localizedCaseInsensitiveContains(text) || $0.title.localizedCaseInsensitiveContains(text)) && seen.insert($0.url).inserted }.prefix(8).map { $0 }
     }
 
     func clearHistory() {
@@ -131,6 +184,11 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     }
 
     private func watch(_ tab: Tab) {
+        tab.onLoaded = { [weak self, weak tab] in
+            guard let self, let tab, ["http", "https"].contains(tab.url.scheme ?? ""), tab.visited != tab.url else { return }
+            tab.visited = tab.url
+            self.onVisit(tab)
+        }
         tab.onChange = { [weak self, weak tab] in
             guard let self, let tab else { return }
             if ["http", "https"].contains(tab.url.scheme ?? ""), self.history.first?.url != tab.url || self.history.first?.title != tab.title {

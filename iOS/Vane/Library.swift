@@ -19,11 +19,21 @@ enum Local {
 struct SpaceRow: Identifiable, Hashable {
     let id: UUID, profileID: UUID
     var name: String, icon: String?, colorHex: String?
+    /// The Mac's theme: up to three colours, how strongly they tint the ground (0…1, default
+    /// 0.8), film grain (0…1), and "light"/"dark" or nil to follow the system.
+    var colors: [String]? = nil, tint: Double? = nil, grain: Double? = nil, appearance: String? = nil
     var isLocal: Bool { profileID == Local.profile }
+    var palette: [String] { colors ?? colorHex.map { [$0] } ?? [] }
 }
 struct LinkRow: Identifiable, Hashable {
     let id: String
     var url: URL, title: String
+}
+/// A sidebar folder in a Space's Pinned section, with what's filed inside it.
+struct FolderRow: Identifiable, Hashable {
+    let id: UUID
+    var name: String, locked: Bool
+    var links: [LinkRow], folders: [FolderRow]
 }
 /// Same shape as the Mac's `ICloudRemoteTab`, so open tabs read both ways.
 struct RemoteTab: Codable, Equatable, Identifiable {
@@ -42,7 +52,14 @@ struct RemoteTab: Codable, Equatable, Identifiable {
 /// byte for byte, so the Mac never sees them as deleted. Identities and field encodings
 /// match `ICloudLibraryAdapter` on the Mac, which is what lets each side read the other.
 @MainActor @Observable final class Library: ICloudAdapter {
-    let categories: Set<ICloudCategory> = [.profiles, .spaces, .favourites, .pinnedTabs, .openTabs]
+    /// History is off by default, as on the Mac, because it is the largest category.
+    var syncHistory = UserDefaults.standard.bool(forKey: "icloud.history") {
+        didSet { UserDefaults.standard.set(syncHistory, forKey: "icloud.history"); onEdit() }
+    }
+    var categories: Set<ICloudCategory> {
+        let base: Set<ICloudCategory> = [.profiles, .spaces, .favourites, .pinnedTabs, .sidebarFolders, .bookmarks, .openTabs]
+        return syncHistory ? base.union([.history]) : base
+    }
     private(set) var items: [String: ICloudItem] = [:]
     let deviceID: String
     var deviceName = "iPhone"
@@ -70,11 +87,17 @@ struct RemoteTab: Codable, Equatable, Identifiable {
     /// Synced profiles in the Mac's order, then this phone's own.
     var spaces: [SpaceRow] {
         let order = Dictionary(all(.profiles).enumerated().compactMap { index, item in item.profileID.map { ($0, index) } }, uniquingKeysWith: min)
-        return all(.spaces).compactMap { item -> SpaceRow? in
+        // The Mac's global Space order, when it has one, wins over per-profile positions.
+        let global = items.values.first(where: \.isSpaceOrder).flatMap { value($0, "ids", [UUID].self) } ?? []
+        let rank = Dictionary(global.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
+        let rows = all(.spaces).compactMap { item -> SpaceRow? in
             guard let pid = item.profileID, let id = UUID(uuidString: item.id) else { return nil }
             return SpaceRow(id: id, profileID: pid, name: value(item, "name", String.self) ?? "Space",
-                            icon: value(item, "icon", String.self), colorHex: value(item, "colorHex", String.self))
+                            icon: value(item, "icon", String.self), colorHex: value(item, "colorHex", String.self),
+                            colors: value(item, "colors", [String].self), tint: value(item, "tint", Double.self),
+                            grain: value(item, "grain", Double.self), appearance: value(item, "appearance", String.self))
         }.enumerated().sorted { (order[$0.element.profileID] ?? .max, $0.offset) < (order[$1.element.profileID] ?? .max, $1.offset) }.map(\.element)
+        return global.isEmpty ? rows : rows.enumerated().sorted { (rank[$0.element.id] ?? .max, $0.offset) < (rank[$1.element.id] ?? .max, $1.offset) }.map(\.element)
     }
     func profileName(_ id: UUID) -> String? {
         all(.profiles).first { $0.profileID == id }.flatMap { value($0, "name", String.self) }
@@ -82,16 +105,57 @@ struct RemoteTab: Codable, Equatable, Identifiable {
     func favourites(profile: UUID) -> [LinkRow] {
         all(.favourites).filter { $0.profileID == profile }.compactMap { item in
             guard let raw = value(item, "url", String.self), let url = URL(string: raw) else { return nil }
-            return LinkRow(id: item.key, url: url, title: value(item, "customName", String.self) ?? url.host() ?? raw)
+            let host = url.host().map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 }
+            return LinkRow(id: item.key, url: url, title: value(item, "customName", String.self) ?? host ?? raw)
         }
     }
-    func pinned(space: UUID) -> [LinkRow] {
-        all(.pinnedTabs).filter { $0.parentID == space.uuidString }.compactMap { item in
+    /// Pinned tabs not inside a folder.
+    func pinned(space: UUID) -> [LinkRow] { pinnedRows(space: space, folder: nil) }
+    private func pinnedRows(space: UUID, folder: UUID?) -> [LinkRow] {
+        all(.pinnedTabs).filter { $0.parentID == space.uuidString && value($0, "parentFolderID", UUID?.self) ?? nil == folder }.compactMap { item in
             guard let url = value(item, "url", URL.self) else { return nil }
             let title = value(item, "customName", String.self) ?? value(item, "title", String.self)
             return LinkRow(id: item.key, url: url, title: title.flatMap { $0.isEmpty ? nil : $0 } ?? url.host() ?? url.absoluteString)
         }
     }
+    /// The Pinned section's folders, nested as on the Mac.
+    func folders(space: UUID, parent: UUID? = nil) -> [FolderRow] {
+        all(.sidebarFolders).filter {
+            $0.parentID == space.uuidString && value($0, "section", Int.self) == 1 && (value($0, "parentFolderID", UUID?.self) ?? nil) == parent
+        }.compactMap { item in
+            guard let id = UUID(uuidString: item.id) else { return nil }
+            return FolderRow(id: id, name: value(item, "name", String.self) ?? "Folder",
+                             locked: value(item, "requiresAuthentication", Bool.self) == true,
+                             links: pinnedRows(space: space, folder: id), folders: folders(space: space, parent: id))
+        }
+    }
+    /// Bookmarks by folder; unfiled ones first under a nil name.
+    func bookmarks(profile: UUID) -> [(folder: String?, links: [LinkRow])] {
+        let all = all(.bookmarks).filter { $0.profileID == profile }
+        let folders = all.filter { $0.id.hasPrefix("folder:") }
+        let pages = all.filter { !$0.id.hasPrefix("folder:") }.compactMap { item -> (String?, LinkRow)? in
+            guard let raw = value(item, "url", String.self), let url = URL(string: raw) else { return nil }
+            let title = value(item, "title", String.self).flatMap { $0.isEmpty ? nil : $0 } ?? url.host() ?? raw
+            return (value(item, "folderID", String?.self) ?? nil, LinkRow(id: item.key, url: url, title: title))
+        }
+        let loose = pages.filter { folder in !folders.contains { $0.id == "folder:" + (folder.0 ?? "") } }.map(\.1)
+        let filed = folders.map { folder in
+            (folder: Optional(value(folder, "name", String.self) ?? "Folder"),
+             links: pages.filter { "folder:" + ($0.0 ?? "") == folder.id }.map(\.1))
+        }.filter { !$0.links.isEmpty }
+        return (loose.isEmpty ? [] : [(nil, loose)]) + filed
+    }
+    func bookmarked(_ url: URL, profile: UUID) -> String? {
+        all(.bookmarks).first { $0.profileID == profile && value($0, "url", String.self) == url.absoluteString }?.key
+    }
+    /// History synced from other devices, newest first.
+    var syncedHistory: [Visit] {
+        items.values.filter { $0.category == .history }.compactMap { item in
+            guard let raw = value(item, "url", String.self), let url = URL(string: raw), let at = value(item, "at", Double.self) else { return nil }
+            return Visit(url: url, title: value(item, "title", String.self) ?? raw, at: Date(timeIntervalSince1970: at))
+        }.sorted { $0.at > $1.at }
+    }
+
     /// Other devices' open tabs, by device name.
     var remoteTabs: [(device: String, tabs: [RemoteTab])] {
         let tabs = all(.openTabs).compactMap { try? $0.decode(RemoteTab.self) }.filter { $0.deviceID != deviceID }
@@ -129,16 +193,61 @@ struct RemoteTab: Codable, Equatable, Identifiable {
             ["url": enc(url), "title": enc(title), "customName": enc(String?.none), "position": enc(pinned(space: space.id).count),
              "spaceID": enc(space.id), "parentFolderID": enc(UUID?.none)])
     }
+    /// Bookmark and history fields are written the way the Mac's Store writes them
+    /// (JSONSerialization), so the Mac's read-back is byte-identical and sends no echo.
+    private func page(_ url: URL, _ title: String) -> [String: Data] {
+        let object: [String: Any] = ["url": url.absoluteString, "title": title, "at": Date.now.timeIntervalSince1970, "kind": "page", "folderID": NSNull()]
+        return object.mapValues { try! JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed, .sortedKeys]) }
+    }
+    func addBookmark(_ url: URL, title: String, profile: UUID) {
+        guard bookmarked(url, profile: profile) == nil else { return }
+        put(.bookmarks, id: UUID().uuidString, profile: profile, parent: nil, page(url, title))
+    }
+    /// A visit on this device, published while history sync is on.
+    func addVisit(_ url: URL, title: String, profile: UUID) {
+        guard syncHistory else { return }
+        let item = ICloudItem(category: .history, id: UUID().uuidString, profileID: profile, parentID: nil, fields: page(url, title))
+        items[item.key] = item
+        save(); onEdit()
+    }
+    /// Clearing history here clears synced history everywhere it syncs.
+    func clearSyncedHistory() {
+        items = items.filter { $0.value.category != .history }
+        save(); onEdit()
+    }
     @discardableResult func addSpace(_ name: String, profile: UUID) -> UUID {
         let id = UUID()
         put(.spaces, id: id.uuidString, profile: profile, parent: nil,
             ["name": enc(name), "position": enc(spaces.filter { $0.profileID == profile }.count)])
         return id
     }
-    func renameSpace(_ space: SpaceRow, to name: String) {
+    func renameSpace(_ space: SpaceRow, to name: String) { editSpace(space) { $0["name"] = enc(name) } }
+
+    /// The same fields the Mac's theme editor writes (`Spaces.setThemeColors`): its exact
+    /// P3 palette is dropped, so the Mac reads these hex colours as the theme.
+    func setTheme(_ space: SpaceRow) {
+        let colors = Array(space.palette.prefix(3))
+        editSpace(space) { fields in
+            fields["colors"] = colors.isEmpty ? nil : enc(colors)
+            fields["colorHex"] = colors.first.map(enc)
+            fields["themePalette"] = nil; fields["themeHarmony"] = nil
+            fields["tint"] = space.tint.map(enc)
+            fields["grain"] = space.grain.map(enc)
+            fields["appearance"] = space.appearance.map(enc)
+            fields["icon"] = space.icon.flatMap { $0.isEmpty ? nil : enc($0) }
+            fields["name"] = enc(space.name)
+        }
+    }
+    private func editSpace(_ space: SpaceRow, _ change: (inout [String: Data]) -> Void) {
         guard var item = items[ICloudIdentity.recordKey(category: .spaces, id: space.id.uuidString, profileID: space.profileID)] else { return }
-        item.fields["name"] = enc(name)
+        change(&item.fields)
         items[item.key] = item; save(); onEdit()
+    }
+    /// A favourite's or pinned tab's own name; nil goes back to the page's.
+    func setCustomName(_ key: String, to name: String?) {
+        guard var item = items[key] else { return }
+        item.fields["customName"] = enc(name.flatMap { $0.isEmpty ? nil : $0 })
+        items[key] = item; save(); onEdit()
     }
     /// Deleting a Space takes its pinned tabs with it, here and on every synced device.
     func deleteSpace(_ space: SpaceRow) {
@@ -185,6 +294,8 @@ struct RemoteTab: Codable, Equatable, Identifiable {
         save()
     }
 
+    // ponytail: rewrites the whole file on each edit; with history sync on that is every
+    // visit. Debounce or move to SQLite if large synced histories make this measurable.
     private func save() {
         try? FileManager.default.createDirectory(at: Store.directory, withIntermediateDirectories: true)
         try? JSONEncoder().encode(items).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])

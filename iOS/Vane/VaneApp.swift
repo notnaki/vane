@@ -7,6 +7,11 @@ import SwiftUI
         WindowGroup {
             RootView().environment(model.library).environment(model.browser).environment(model.sync)
                 .task { await model.sync.run() }
+                // Links from other apps, including when Vane is the default browser.
+                .onOpenURL { url in
+                    guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+                    model.browser.open(url)
+                }
         }
         .onChange(of: phase) { _, phase in if phase == .active { Task { await model.sync.run() } } }
     }
@@ -26,6 +31,10 @@ import SwiftUI
         let (library, browser, sync) = (library, browser, sync)
         if !library.spaces.contains(where: { $0.id == browser.spaceID }), let first = library.spaces.first { browser.switchSpace(first.id) }
         library.onEdit = { sync.soon() }
+        browser.onVisit = { tab in
+            if let profile = library.publishingProfile(for: tab.spaceID) { library.addVisit(tab.url, title: tab.title, profile: profile) }
+        }
+        browser.syncedHistory = { library.syncHistory ? library.syncedHistory : [] }
         browser.onTabsChanged = { sync.soon() }
         library.ownTabs = {
             browser.tabs.enumerated().compactMap { index, tab in

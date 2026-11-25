@@ -89,6 +89,23 @@ class ChangeScopeTests(unittest.TestCase):
                 self.commit()
                 self.scope(True)
 
+    def test_ios_app_and_its_workflow_skip_mac_app_work(self):
+        for name in ("iOS/Vane/Views.swift", "iOS/project.yml", ".github/workflows/ios.yml"):
+            with self.subTest(name=name):
+                base = self.git("rev-parse", "HEAD")
+                p = self.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("fixture " + name + "\n")
+                self.commit()
+                self.scope(False, base)
+
+    def test_ios_mixed_with_shared_sources_requires_app_work(self):
+        (self.root / "iOS").mkdir()
+        (self.root / "iOS/App.swift").write_text("ios\n")
+        (self.root / "App.swift").write_text("shared change\n")
+        self.commit()
+        self.scope(True)
+
     def test_website_assets_and_routing_tools_skip_app_work(self):
         for name in ("docs/index.html", "docs/styles.css", "docs/space.js", "docs/tests/galaxy.test.cjs",
                      "docs/media/logo.svg", "docs/media/screenshot.png", "docs/.nojekyll",
