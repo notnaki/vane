@@ -3684,7 +3684,13 @@ struct Stash {
     /// `newTab` for a url Vane itself saved (the Archive, the Library): an internal page
     /// opens rather than being refused the way a link's would be. Returns the tab it used.
     @discardableResult func newTabFromApp(_ url: URL) -> Tab? {
-        if let page = VanePage(url) { return VanePages.open(page, profileID: profileID, from: self) }
+        if let page = VanePage(url) {
+            // A fresh row here, like any restored page — not VanePages.open's reuse of an
+            // existing Settings tab, which a Library drag would then pin or merge into.
+            guard !isPrivate, !isLittle else { return VanePages.open(page, profileID: profileID, from: self) }
+            let tab = newBlankTab()
+            return tab.routeVanePage(page) ? tab : nil
+        }
         newTab(url)
         return tabs.last
     }
