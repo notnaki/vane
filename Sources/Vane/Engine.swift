@@ -4030,7 +4030,7 @@ struct Stash {
         let away = separating ? tab.currentURL : nil
         guard sendHome(tab) else { return }
         if let away {
-            newTabBeside(id).go(away)
+            newTabBeside(id).goFromApp(away)
             axAnnounce("Separated into Today tabs.")
         } else {
             if onScreenTabs.contains(where: { $0.id == id }) { tab.resume() }

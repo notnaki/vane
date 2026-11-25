@@ -240,6 +240,13 @@ extension Tab {
     /// ponytail ceiling: an .html file's siblings — its stylesheet, its images — are outside
     /// that root and do not load. Upgrade path is `NSOpenPanel` on the folder, which is the
     /// only way the sandbox hands one over.
+    /// `go` for a URL Vane itself already holds — a tab's own address being duplicated or
+    /// split off — so an internal page opens instead of being refused as web-supplied.
+    func goFromApp(_ url: URL) {
+        if case let .page(page) = VanePage.route(url, from: .app), routeVanePage(page) { return }
+        go(url)
+    }
+
     func go(_ url: URL) {
         // WebKit can execute these without asking the navigation delegate. Guard before
         // recovery, page-state changes, or creating/loading the web view.

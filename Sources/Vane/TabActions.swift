@@ -330,7 +330,7 @@ extension TabActions {
     /// different feature.
     @MainActor static func duplicate(_ tab: Tab, in store: TabStore) {
         guard let url = tab.currentURL else { return }
-        store.openBeside(url, focus: true)
+        store.newTabBeside(store.current, focus: true).goFromApp(url)
     }
 }
 
