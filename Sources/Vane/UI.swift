@@ -1739,6 +1739,9 @@ private struct PillBody: View {
     @Environment(\.sidebarPointer) private var sidebarPointer
     @State private var showingSiteControls = false
     @State private var pillFocused = false
+    /// Width of the hover glyphs, and whether any is showing: hidden, they lend it to the host.
+    @State private var glyphsWidth: CGFloat = 0
+    @State private var glyphsShown = false
     @StateObject private var overflowAnchor = ActionAnchor()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1850,7 +1853,7 @@ private struct PillBody: View {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
                     Text("Search").font(Look.heading).lineLimit(1).accessibilityHidden(true)
                 } else {
-                    Text(host).font(Look.text).lineLimit(1).truncationMode(.head)
+                    FadingHost(host: host)
                     .accessibilityHidden(true)
                     .vaneTooltip(address)
                 }
@@ -1960,7 +1963,7 @@ private struct PillBody: View {
                     }
                     .transition(.offset(x: -Look.pillPromptTravel).combined(with: .opacity))
                 } else {
-                    Text(host).font(Look.text).lineLimit(1).truncationMode(.head)
+                    FadingHost(host: host)
                         .vaneTooltip(address)
                         .transition(.opacity)
                 }
@@ -1970,16 +1973,25 @@ private struct PillBody: View {
             // Rebuild only the label when policy changes, settling a running transition
             // without replacing the pill's keyboard owner or its native buttons.
             .id(reduced)
-            Spacer(minLength: 4)
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
-            // Arc's order: pinned extensions, Copy Link, Site Controls, all hidden until the
-            // pointer is over the sidebar. Slots stay reserved so the reveal moves nothing.
-            PinnedExtensions(store: store, tab: tab, revealed: revealed, reduced: reduced)
-            if !address.isEmpty, let tab, tab.easelID == nil {
-                PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
-                                feedback: store.feedback, address: address,
-                                revealed: revealed, copyLink: copyLink)
-                    .transition(.opacity)
+        }
+        // Arc's order: pinned extensions, Copy Link, Site Controls, all hidden until the
+        // pointer is over the sidebar. Hidden, they lend their width to the host, as in Arc.
+        .padding(.trailing, glyphsShown && glyphsWidth > 0 ? glyphsWidth + Look.pillGlyphGap : 0)
+        .overlay(alignment: .trailing) {
+            HStack(spacing: Look.pillGlyphGap) {
+                PinnedExtensions(store: store, tab: tab, revealed: revealed, reduced: reduced)
+                if !address.isEmpty, let tab, tab.easelID == nil {
+                    PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
+                                    feedback: store.feedback, address: address,
+                                    revealed: revealed, copyLink: copyLink)
+                        .transition(.opacity)
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { glyphsWidth = $0 }
+            .onPreferenceChange(PillGlyphsShown.self) { shown in
+                // Paced with the glyphs' own fade rather than jumping under them as they go.
+                withAnimation(reduced ? nil : Look.feedback) { glyphsShown = shown }
             }
         }
         .animation(reduced ? nil : Look.pillChange, value: address.isEmpty)
@@ -2069,7 +2081,32 @@ private struct PillHoverGlyphs: View {
         }
         .allowsHitTesting(visible)
         .accessibilityHidden(!visible)
+        .preference(key: PillGlyphsShown.self, value: visible)
     }
+}
+
+/// Arc's overlong host: no ellipsis; the end of the host stays put and its start fades out.
+private struct FadingHost: View {
+    let host: String
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(host).lineLimit(1)
+            Text(host).lineLimit(1).fixedSize()
+                // Ideal 0: otherwise `ViewThatFits` finds no fit and lets the text spill out.
+                .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .trailing)
+                .clipped()
+                .mask(LinearGradient(stops: [.init(color: .clear, location: 0),
+                                             .init(color: .black, location: 1)],
+                                     startPoint: .leading, endPoint: .init(x: 0.12, y: 0.5)))
+        }
+        .font(Look.text)
+    }
+}
+
+/// Whether any of the pill's hover glyphs is showing, so the host knows to make room.
+private struct PillGlyphsShown: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
 
 /// Only paint is replaced on a motion-policy change; the Button retains focus.
@@ -2172,6 +2209,7 @@ private struct ExtensionGlyph: View {
             .animation(reduced ? nil : Look.feedback, value: visible)
             .allowsHitTesting(visible)
             .accessibilityHidden(!visible)
+            .preference(key: PillGlyphsShown.self, value: visible)
     }
 
     /// A `Button`, which consumes its own click the way the pill's Copy Link glyph does —
