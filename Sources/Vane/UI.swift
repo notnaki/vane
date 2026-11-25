@@ -4180,6 +4180,9 @@ struct FolderDisclosure: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            if let status = folder.extensionStatus {
+                ExtensionFolderStatus(status: status, reduced: reduced).font(Look.rowGlyph)
+            }
             if folder.requiresAuthentication == true {
                 Image(systemName: locked ? "lock.fill" : "lock.open.fill")
                     .font(Look.rowGlyph)
@@ -4205,46 +4208,34 @@ struct FolderDisclosure: View {
 /// A folder’s glyph in a favicon’s box, so its name lines up with the tab titles around it.
 /// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
 /// apart, and it does so by looking at the string rather than by a second stored field.
-/// What sits on an extension's folder: its icon, or, while it reports a status as Claude
-/// does, that status, with the icon small in the corner (`ExtensionFolderCorner`).
+/// The icon of the extension that made a folder, once that extension has loaded.
 private struct ExtensionFolderBadge: View {
-    let owner: String
-    let status: Folder.ExtensionStatus?
-    let reduced: Bool
-    @ObservedObject private var host = ExtensionHost.shared
-
-    var body: some View {
-        Group {
-            switch status {
-            case .working:
-                Image(systemName: "hourglass").foregroundStyle(Look.inkSecondary)
-                    .symbolEffect(.rotate, options: .repeat(.continuous), isActive: !reduced)
-            case .attention:
-                Image(systemName: "bell.fill").foregroundStyle(Look.warning)
-                    .symbolEffect(.wiggle, options: .repeat(.continuous), isActive: !reduced)
-            case .done:
-                Image(systemName: "checkmark").foregroundStyle(Color.green)
-            case nil:
-                if let image = host.icon(owner: owner) { Image(nsImage: image).resizable().interpolation(.high) }
-            }
-        }
-        .font(.system(size: 8, weight: .bold))
-        .frame(width: Look.sourceBadge, height: Look.sourceBadge)
-        .accessibilityHidden(true)
-    }
-}
-
-/// The extension's icon, small, in the folder's corner while its status has the face.
-private struct ExtensionFolderCorner: View {
     let owner: String
     @ObservedObject private var host = ExtensionHost.shared
 
     var body: some View {
         if let image = host.icon(owner: owner) {
             Image(nsImage: image).resizable().interpolation(.high)
-                .frame(width: 7, height: 7)
-                .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
-                .accessibilityHidden(true)
+                .frame(width: Look.sourceBadge, height: Look.sourceBadge).accessibilityHidden(true)
+        }
+    }
+}
+
+/// An extension's status at the end of its folder's row, as Claude reports it: a spinner
+/// while it works, a bell when it needs you, a check when it is done.
+private struct ExtensionFolderStatus: View {
+    let status: Folder.ExtensionStatus
+    let reduced: Bool
+
+    var body: some View {
+        switch status {
+        case .working:
+            ProgressView().controlSize(.mini)
+        case .attention:
+            Image(systemName: "bell.fill").foregroundStyle(Look.warning)
+                .symbolEffect(.wiggle, options: .repeat(.continuous), isActive: !reduced)
+        case .done:
+            Image(systemName: "checkmark").foregroundStyle(Color.green)
         }
     }
 }
@@ -4306,7 +4297,7 @@ struct FolderGlyph: View {
                 }
             } else if let owner = folder.extensionOwner {
                 // An extension's folder wears its icon, as a live folder wears GitHub's.
-                let badge = ExtensionFolderBadge(owner: owner, status: folder.extensionStatus, reduced: reduced)
+                let badge = ExtensionFolderBadge(owner: owner)
                 if folder.icon == Folder.defaultIcon {
                     badge.opacity(arrivalMark ? 0 : 1)
                         .offset(FolderFace.badgeOffset)
@@ -4317,11 +4308,6 @@ struct FolderGlyph: View {
                 } else {
                     badge.offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                 }
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if let owner = folder.extensionOwner, folder.extensionStatus != nil, folder.icon == Folder.defaultIcon {
-                ExtensionFolderCorner(owner: owner)
             }
         }
         .animation(reduced ? nil : FolderMotion.animation(opening: iconOpen), value: arrivalMark)
