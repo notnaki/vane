@@ -4181,7 +4181,7 @@ struct FolderDisclosure: View {
     var body: some View {
         HStack(spacing: 6) {
             if let status = folder.extensionStatus {
-                ExtensionFolderStatus(status: status, reduced: reduced).font(Look.rowGlyph)
+                ExtensionFolderStatus(status: status, reduced: reduced).font(Look.rowGlyph.weight(.bold))
             }
             if folder.requiresAuthentication == true {
                 Image(systemName: locked ? "lock.fill" : "lock.open.fill")
@@ -4230,7 +4230,7 @@ private struct ExtensionFolderStatus: View {
     var body: some View {
         switch status {
         case .working:
-            ProgressView().controlSize(.mini)
+            ProgressView().controlSize(.small).scaleEffect(0.8).frame(width: 14, height: 14)
         case .attention:
             Image(systemName: "bell.fill").foregroundStyle(Look.warning)
                 .symbolEffect(.wiggle, options: .repeat(.continuous), isActive: !reduced)
