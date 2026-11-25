@@ -28,7 +28,7 @@ import WebKit
     private var pullTracker: PullTracker?
     /// Where the finger was, on screen, when the page first passed its top: sideways movement
     /// counts from here, not from wherever the scroll began.
-    private var pullStart: CGFloat?
+    private var pullStart: (finger: CGFloat, travel: CGFloat)?
     /// The page's own colour (its theme colour, else what's behind its content), for the pull strip.
     var pageColor: UIColor?
     private var lastOffset: CGFloat = 0
@@ -90,10 +90,13 @@ import WebKit
         switch pan.state {
         case .began, .changed:
             guard depth > 0, reading == nil else { if pull != nil { pull = nil }; pullStart = nil; return }
-            let x = pan.location(in: nil).x
-            let start = pullStart ?? x
+            // A finger moves the touch point; a trackpad or mouse wheel (the Simulator, iPad)
+            // moves only the pan's travel. Count whichever went further sideways.
+            let finger = pan.location(in: nil).x, travel = pan.translation(in: nil).x
+            let start = pullStart ?? (finger, travel)
             pullStart = start
-            let dx = x - start
+            let moved = (finger - start.finger, travel - start.travel)
+            let dx = abs(moved.0) >= abs(moved.1) ? moved.0 : moved.1
             let next = Pull(progress: min(depth / 100, 1), choice: dx < -32 ? .newTab : dx > 32 ? .close : .reload, dx: dx, depth: depth)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
                 UISelectionFeedbackGenerator().selectionChanged()

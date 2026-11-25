@@ -966,7 +966,10 @@ struct PullActions: View {
         .opacity(Double(min(1, pull.progress * 1.6)))
         .offset(y: -20 * (1 - pull.progress))
         // The browser's own strip over the gap the page leaves as it's pulled down.
-        .frame(maxWidth: .infinity, minHeight: pull.depth, alignment: .top)
+        // Exactly the gap: it never reaches over the page itself.
+        .frame(maxWidth: .infinity)
+        .frame(height: max(0, pull.depth), alignment: .center)
+        .clipped()
         // The page's own colour, so the gap reads as more of the page rather than a black bar.
         .background(Color(color ?? .systemBackground).ignoresSafeArea(edges: .top))
         .environment(\.colorScheme, Self.dark(color) ?? scheme)
