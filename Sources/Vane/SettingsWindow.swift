@@ -1691,6 +1691,11 @@ private struct AdvancedPane: View {
                 }
             }
 
+            SettingsDisclosure("Diagnostics", summary: "Performance measured on this Mac, never sent",
+                               icon: "gauge.with.dots.needle.50percent", tint: .orange) {
+                PerformanceSettingsCard()
+            }
+
             SettingsDisclosure("Backup and Restore", summary: "Export your library and recover saved data",
                                icon: "externaldrive.fill", tint: .green) {
                 BackupSettings(controller: .shared)

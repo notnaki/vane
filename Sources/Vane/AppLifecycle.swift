@@ -355,6 +355,7 @@ enum QuitAsk {
             // treat a failure like any other unsaved change rather than quitting silently.
             if !(await PasswordPendingDeletion.shared.finishForQuit(failuresAtStart: passwordDeleteFailures)) { succeeded = false }
             if !(await AppIcon.flushPersistence()) { succeeded = false }
+            await PerformanceLog.shared.saveNow()
             if !(await ICloudController.finishIfRunning()) { succeeded = false }
             await Updater.markHealthyLaunchAsync()
             if succeeded && !discarding {
