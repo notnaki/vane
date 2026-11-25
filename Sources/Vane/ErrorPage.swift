@@ -125,11 +125,12 @@ import Foundation
 
     /// Snake, for the offline page only: something to do while the Wi-Fi comes back, the way
     /// Chrome has its dinosaur. Space starts, arrows or WASD steer, walls and your own tail end
-    /// it. The best score lives in this page's localStorage. When the connection comes back
-    /// the page reloads itself, unless a game is in progress.
+    /// it. When the connection comes back the page reloads itself, or after the game in progress
+    /// ends.
     ///
-    /// ponytail: inline canvas, setInterval tick, no assets. No backslashes below: this is a
-    /// Swift literal.
+    /// ponytail: inline canvas, setInterval tick, no assets. Best score is in memory only: the
+    /// page runs at the failed site's origin, so localStorage would write into that site.
+    /// No backslashes below: this is a Swift literal.
     private static let snakeStyle = """
           .board { position: relative; margin-top: 2rem; }
           #snake { display: block; width: 100%; height: auto; background: var(--card);
@@ -154,12 +155,14 @@ import Foundation
             const S = 16, W = 30, H = 12, r = devicePixelRatio || 1;
             c.width = W * S * r; c.height = H * S * r; g.scale(r, r);
             const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-            let best = 0; try { best = +localStorage.snakeBest || 0; } catch (e) {}
+            const h1 = document.querySelector('h1'), title = h1.textContent;
+            let best = 0, back = false;
             let snake, dir, next, food, score = 0, timer, state = 'idle';
             const hud = () => { scoreEl.textContent = 'Score ' + score;
                                 bestEl.textContent = best ? 'Best ' + best : ''; };
             const hit = (p, list) => list.some(q => q.x === p.x && q.y === p.y);
-            const place = () => { do food = { x: Math.random() * W | 0, y: Math.random() * H | 0 };
+            const place = () => { if (snake.length >= W * H) { food = { x: -1, y: -1 }; return; }
+                                  do food = { x: Math.random() * W | 0, y: Math.random() * H | 0 };
                                   while (hit(food, snake)); };
             const say = t => { msg.textContent = t; msg.style.display = t ? '' : 'none'; };
             const run = () => { clearInterval(timer); state = 'play'; say(''); timer = setInterval(step, 110); };
@@ -174,8 +177,10 @@ import Foundation
               const eat = h.x === food.x && h.y === food.y;
               if (h.x < 0 || h.y < 0 || h.x >= W || h.y >= H || hit(h, eat ? snake : snake.slice(0, -1))) {
                 clearInterval(timer); state = 'over';
-                if (score > best) { best = score; try { localStorage.snakeBest = best; } catch (e) {} }
-                hud(); say('Game over · Space to play again'); return;
+                best = Math.max(best, score);
+                hud(); say('Game over · Space to play again');
+                if (back) setTimeout(() => location.reload(), 1500);
+                return;
               }
               snake.unshift(h);
               if (eat) { score++; hud(); place(); } else snake.pop();
@@ -193,7 +198,7 @@ import Foundation
             const keys = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
                            w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0] };
             addEventListener('keydown', e => {
-              if (e.metaKey || e.ctrlKey || e.altKey) return;
+              if (e.metaKey || e.ctrlKey || e.altKey || e.target instanceof HTMLButtonElement) return;
               if (e.key === ' ') { e.preventDefault();
                 if (state === 'paused') run(); else if (state !== 'play') start(); return; }
               const k = keys[e.key.length === 1 ? e.key.toLowerCase() : e.key];
@@ -202,12 +207,15 @@ import Foundation
               if (k[0] !== -dir.x || k[1] !== -dir.y) next = { x: k[0], y: k[1] };
             });
             c.addEventListener('click', () => { if (state === 'paused') run(); else if (state !== 'play') start(); });
-            addEventListener('blur', () => { if (state === 'play') {
-              clearInterval(timer); state = 'paused'; say('Paused · Space to continue'); } });
+            const pause = () => { if (state === 'play') {
+              clearInterval(timer); state = 'paused'; say('Paused · Space to continue'); } };
+            addEventListener('blur', pause);
+            document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
             addEventListener('online', () => {
-              if (state === 'play' || state === 'paused') document.querySelector('h1').textContent = 'You’re back online';
-              else location.reload();
+              if (state !== 'play' && state !== 'paused') return location.reload();
+              back = true; h1.textContent = 'You’re back online';
             });
+            addEventListener('offline', () => { back = false; h1.textContent = title; });
             reset(); food = { x: 24, y: 6 }; hud(); draw(); // idle frame: keep the food clear of the message
           })();
           </script>
