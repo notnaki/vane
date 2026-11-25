@@ -4,7 +4,6 @@ import LocalAuthentication
 struct RootView: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    @State private var address = false
     @State private var settings = false
     @State private var reader: Article?
     @State private var noArticle = false
@@ -29,12 +28,15 @@ struct RootView: View {
                     .safeAreaPadding(.bottom, Look.barHeight + 4)
                     .transition(.opacity)
             }
-            BottomBar(space: space, address: $address, menu: menu)
+            BottomBar(space: space, menu: menu)
+            if browser.editing != nil {
+                AddressEditor(space: space).transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: browser.editing)
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
-        .sheet(isPresented: $address) { AddressSheet(space: space, dismiss: { address = false }) }
         .sheet(isPresented: $settings) { SettingsView().frostsBehind().presentationBackground { Wash(space: space) } }
         .sheet(item: $reader) { ReaderView(article: $0) }
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
@@ -68,6 +70,7 @@ struct RootView: View {
             Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
         }
         Section {
+            Button("New Tab", systemImage: "plus") { browser.editing = .newTab }
             if space?.isIncognito == true {
                 Button("Leave Incognito", systemImage: "eyeglasses") { leaveIncognito() }
             } else {
@@ -107,7 +110,7 @@ struct RootView: View {
         switch defaults.string(forKey: "demoPanel") {
         case "spaces": browser.select(nil)
         case "settings": settings = true
-        case "address": address = true
+        case "address": browser.editing = .current
         case "theme": themeDemo = true
         default: break
         }
@@ -121,7 +124,6 @@ struct BottomBar<Menu: View>: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
     let space: SpaceRow?
-    @Binding var address: Bool
     let menu: Menu
     @State private var nudge: CGFloat = 0
 
@@ -165,7 +167,7 @@ struct BottomBar<Menu: View>: View {
             .opacity(tab == nil && last == nil ? 0.35 : 1)
             .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
 
-            Button { address = true } label: {
+            Button { browser.editing = .current } label: {
                 HStack(spacing: 8) {
                     if let tab {
                         SiteIcon(url: tab.url, size: 16)
@@ -335,7 +337,7 @@ struct SpaceColumn: View {
                 Rectangle().fill(.primary.opacity(0.14)).frame(height: 1).padding(.horizontal, 12)
                 VStack(spacing: 2) {
                     Row(title: "New Tab", icon: AnyView(Image(systemName: "plus").fontWeight(.medium))) {
-                        browser.select(nil); close()
+                        browser.editing = .newTab; close()
                     }
                 }
                 // Open tabs as cards, newest first, like Arc on iPhone.
@@ -584,51 +586,73 @@ struct SpaceChip: View {
 }
 
 /// The address field and what it finds, on the Space's colour.
-struct AddressSheet: View {
+/// Typing an address, Safari-style: the field stays at the foot of the screen with the
+/// keyboard straight up under it, and suggestions stack upward from it, nearest first.
+struct AddressEditor: View {
     @Environment(Browser.self) private var browser
     let space: SpaceRow?
-    let dismiss: () -> Void
     @State private var text = ""
+    @State private var selection: TextSelection?
     @FocusState private var focused: Bool
+    private var newTab: Bool { browser.editing == .newTab || browser.selected == nil }
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").font(.body.weight(.medium)).opacity(0.6)
-                TextField("Search or enter address", text: $text)
-                    .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .submitLabel(.go).onSubmit { go(browser.destination(for: text)) }
-                if !text.isEmpty {
-                    Button { text = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
-                        .buttonStyle(.plain).accessibilityLabel("Clear")
-                }
-            }
-            .padding(.horizontal, 14).frame(height: 50)
-            .background(GroundFill(strength: 1.6), in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous))
+        VStack(spacing: 8) {
             ScrollView {
                 VStack(spacing: 2) {
-                    if let destination = browser.destination(for: text), !text.isEmpty {
-                        Row(title: destination.host() == nil || destination.absoluteString.contains("?q=") ? "Search for \u{201C}\(text)\u{201D}" : destination.absoluteString,
-                            icon: AnyView(Image(systemName: destination.absoluteString.contains("?q=") ? "magnifyingglass" : "arrow.up.right"))) { go(destination) }
-                    }
-                    ForEach(browser.suggestions(for: text), id: \.self) { visit in
+                    ForEach(visits.reversed(), id: \.self) { visit in
                         Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
                             Text(visit.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
+                    if let destination = browser.destination(for: text), !text.isEmpty {
+                        let search = destination.absoluteString.contains("?q=")
+                        Row(title: search ? "Search for \u{201C}\(text)\u{201D}" : destination.absoluteString,
+                            icon: AnyView(Image(systemName: search ? "magnifyingglass" : "arrow.up.right"))) { go(destination) }
+                    }
                 }
+                .frame(maxWidth: 560)
+                .frame(maxWidth: .infinity)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .defaultScrollAnchor(.bottom)
+            .scrollDismissesKeyboard(.never)
+            HStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
+                    TextField("Search or enter address", text: $text, selection: $selection)
+                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.go).onSubmit { go(browser.destination(for: text)) }
+                    if !text.isEmpty {
+                        Button { text = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
+                            .buttonStyle(.plain).accessibilityLabel("Clear")
+                    }
+                }
+                .padding(.horizontal, 14).frame(height: 44)
+                .background(GroundFill(strength: 1.6), in: Capsule())
+                Button("Cancel") { browser.editing = nil }.fontWeight(.medium).padding(.horizontal, 8)
+            }
+            .frame(maxWidth: 560)
+            .padding(.bottom, 8)
         }
-        .padding(.horizontal, Look.inset).padding(.top, 18)
-        .presentationDetents([.large])
-        .frostsBehind()
-        .presentationBackground { Wash(space: space) }
-        .onAppear { text = browser.selected?.url.absoluteString ?? ""; focused = true }
+        .padding(.horizontal, Look.inset)
+        .background { Wash(space: space) }
+        .onAppear {
+            // Editing the page you're on starts from its address, all selected so typing replaces it.
+            text = newTab ? "" : browser.selected?.url.absoluteString ?? ""
+            selection = TextSelection(range: text.startIndex..<text.endIndex)
+            focused = true
+        }
     }
+    /// Matches while typing; before that, where you've been lately.
+    private var visits: [Visit] {
+        guard text.isEmpty || text == browser.selected?.url.absoluteString else { return browser.suggestions(for: text) }
+        var seen = Set<URL>()
+        return Array(browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(6))
+    }
+
     private func go(_ url: URL?) {
         guard let url else { return }
-        browser.open(url, newTab: browser.selected == nil)
-        dismiss()
+        browser.open(url, newTab: newTab)
+        browser.editing = nil
     }
 }
 

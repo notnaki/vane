@@ -43,6 +43,13 @@ import WebKit
         web.isFindInteractionEnabled = true
         web.allowsLinkPreview = true
         web.uiDelegate = PopupOpener.shared
+        // Pull down at the top of a page to reload it.
+        let refresh = UIRefreshControl()
+        refresh.addAction(UIAction { [weak web, weak refresh] _ in
+            web?.reload()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { refresh?.endRefreshing() }
+        }, for: .valueChanged)
+        web.scrollView.refreshControl = refresh
         observations = [
             web.observe(\.title) { [weak self] web, _ in MainActor.assumeIsolated { if let t = web.title, !t.isEmpty { self?.title = t; self?.onChange() } } },
             web.observe(\.url) { [weak self] web, _ in MainActor.assumeIsolated { if let u = web.url { self?.url = u; self?.onChange() } } },
@@ -124,9 +131,23 @@ struct Article: Hashable, Identifiable {
     """
 }
 
-/// Links that ask for a new window (target=_blank, window.open) open in the same tab.
+/// Links that ask for a new window (target=_blank, window.open) open in the same tab, and a
+/// long-pressed link offers a new tab.
 final class PopupOpener: NSObject, WKUIDelegate {
     @MainActor static let shared = PopupOpener()
+    /// Opens a URL in a new tab; set by the browser.
+    @MainActor var openInNewTab: (URL) -> Void = { _ in }
+    func webView(_ webView: WKWebView, contextMenuConfigurationFor elementInfo: WKContextMenuElementInfo) async -> UIContextMenuConfiguration? {
+        guard let url = elementInfo.linkURL, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { suggested in
+            UIMenu(children: [
+                UIAction(title: "Open in New Tab", image: UIImage(systemName: "plus.square.on.square")) { _ in
+                    MainActor.assumeIsolated { PopupOpener.shared.openInNewTab(url) }
+                },
+                UIAction(title: "Copy Link", image: UIImage(systemName: "doc.on.doc")) { _ in UIPasteboard.general.url = url },
+            ] + suggested)
+        }
+    }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
@@ -142,6 +163,9 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     var spaceID: UUID { didSet { UserDefaults.standard.set(spaceID.uuidString, forKey: "space") } }
     private(set) var history: [Visit] = []
     var engine: SearchEngine { didSet { UserDefaults.standard.set(engine.rawValue, forKey: "engine") } }
+    enum Editing { case current, newTab }
+    /// The address field is open: for the page on screen, or for a new tab.
+    var editing: Editing?
     var onTabsChanged: () -> Void = {}
     var onVisit: (Tab) -> Void = { _ in }
     /// History from other devices, when history sync is on.
@@ -162,6 +186,7 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
             tabs = saved.map(Tab.init).filter { !$0.isPrivate }; tabs.forEach(watch)
         }
         if let data = try? Data(contentsOf: historyFile) { history = (try? JSONDecoder().decode([Visit].self, from: data)) ?? [] }
+        PopupOpener.shared.openInNewTab = { [weak self] url in self?.open(url) }
         selectedID = UserDefaults.standard.string(forKey: "tab").flatMap(UUID.init(uuidString:))
         if selected?.spaceID != spaceID { selectedID = nil }
     }
