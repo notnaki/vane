@@ -38,7 +38,7 @@ import WebKit
       // The live timeOrigin can differ from its captured value. Use a stable per-document identity for visual operations.
       const token = [...crypto.getRandomValues(new Uint32Array(4))].map(value => value.toString(16).padStart(8, '0')).join('');
       const style = new CSSStyleSheet();
-      let overlay = null, cover = null, selected = null, bubble = null, pending = null;
+      let overlay = null, cover = null, selected = null, bubble = null, pending = null, previewing = false;
       const preview = new CSSStyleSheet();
       const sizeSelector = 'p,h1,h2,h3,h4,h5,h6,a,span,li,td,th,button,input,textarea,label,blockquote';
       const sizes = new Map();
@@ -130,6 +130,8 @@ import WebKit
         try { const count = document.querySelectorAll(key).length; return count > 1 ? {key, count} : null; } catch { return null; }
       };
       const showPreview = key => {
+        if (!key && !previewing) return;
+        previewing = !!key;
         preview.replaceSync(key ? key + ' { outline: 2px solid #ff9500 !important; outline-offset: -2px !important; }' : '');
         const others = document.adoptedStyleSheets.filter(sheet => sheet !== preview);
         document.adoptedStyleSheets = key ? [...others, preview] : others;
