@@ -193,7 +193,7 @@ extension SiteControlModel {
                 control: .toggle(pictureInPicture)),
             Row(id: .zoom, title: "Zoom", glyph: "textformat.size",
                 control: .zoom(PillState.zoomLabel(zoom) ?? "100%")),
-            Row(id: .blocker, title: "Block Ads on This Site", glyph: "shield",
+            Row(id: .blocker, title: "Block Ads", glyph: "shield",
                 control: .toggle(blocking),
                 note: profileBlocking ? "This exact host in this profile. Changing it reloads the page." : "Blocking is off for this profile. Enable it in Privacy settings.",
                 inert: !profileBlocking),
@@ -224,7 +224,7 @@ extension SiteControlModel {
         // site that has never been allowed an app has no row here, the same way a site with
         // no extensions has none for those.
         for (i, app) in apps.enumerated() {
-            out.append(Row(id: .app(i), title: "Open in " + app.name,
+            out.append(Row(id: .app(i), title: "Can Open " + app.name,
                            glyph: "arrow.up.forward.app",
                            control: .toggle(true),
                            note: "Always opens " + app.scheme + ": links from this site."))
@@ -244,6 +244,54 @@ extension SiteControlModel {
         out.append(Row(id: .developer, title: "Developer Mode", glyph: "hammer",
                        control: .toggle(developer),
                        note: "The dev bar and Web Inspector for this site. On by itself for localhost."))
+        return out
+    }
+
+    /// Arc's Settings section: not every setting, only the ones this site has something to
+    /// say about. Developer Mode always; a permission once it has an answer; zoom once it is
+    /// off 100%; ad blocking once it is off here; an app once it may be opened. Everything
+    /// else waits in Site Settings, one click further in.
+    struct Setting: Identifiable, Equatable, Sendable {
+        let id: RowID
+        let title: String
+        let value: String
+        let glyph: String
+        /// Drawn on a light disc rather than a dark one: allowed, or on.
+        let on: Bool
+    }
+
+    var settings: [Setting] {
+        guard !siteless else { return [] }
+        var out = [Setting(id: .developer, title: "Developer Mode", value: developer ? "On" : "Off",
+                           glyph: "hammer.fill", on: developer)]
+        let permissions: [(RowID, String, String, Bool?, Bool)] = [
+            (.camera, "Camera", "camera.fill", camera, cameraOnce),
+            (.microphone, "Microphone", "mic.fill", microphone, microphoneOnce),
+            (.location, "Location", "location.fill", location, locationOnce),
+            (.popups, "Pop-ups", "macwindow.on.rectangle", popups, false),
+        ]
+        for (id, title, glyph, answer, once) in permissions {
+            guard let answer else { continue }
+            out.append(Setting(id: id, title: title,
+                               value: answer ? (once ? "Allowed Once" : "Allowed") : "Blocked",
+                               glyph: glyph, on: answer))
+        }
+        if pictureInPicture {
+            out.append(Setting(id: .pictureInPicture, title: "Picture in Picture", value: "On", glyph: "pip.fill", on: true))
+        }
+        if let label = PillState.zoomLabel(zoom) {
+            out.append(Setting(id: .zoom, title: "Zoom", value: label, glyph: "textformat.size", on: true))
+        }
+        if profileBlocking && !blocking {
+            out.append(Setting(id: .blocker, title: "Block Ads", value: "Off", glyph: "shield.slash", on: false))
+        }
+        if translated {
+            out.append(Setting(id: .translate, title: "Translation", value: "On", glyph: "translate", on: true))
+        }
+        for (i, app) in apps.enumerated() {
+            out.append(Setting(id: .app(i), title: "Open " + app.name, value: "Allowed",
+                               glyph: "arrow.up.forward.app.fill", on: true))
+        }
         return out
     }
 
@@ -602,19 +650,41 @@ extension SiteControlModel {
         let appRows: [SiteControlModel.Row] =
             opens.rows.filter { if case .app = $0.id { return true }; return false }
         out.append(("one row per remembered app", appRows.count == 2))
-        out.append(("…named after the app, not the scheme", appRows.first?.title == "Open in Zoom"))
+        out.append(("…named after the app, not the scheme", appRows.first?.title == "Can Open Zoom"))
         out.append(("…and saying which links it takes",
                     appRows.first?.note == "Always opens zoommtg: links from this site."))
         out.append(("…as a switch that is on, because the only thing it can do is be taken back",
                     appRows.allSatisfy { $0.control == .toggle(true) && !$0.inert }))
         out.append(("…in the order the store hands them over, so the rows do not shuffle",
-                    appRows.map(\.title) == ["Open in Zoom", "Open in Microsoft Teams"]))
+                    appRows.map(\.title) == ["Can Open Zoom", "Can Open Microsoft Teams"]))
         out.append(("…and they sit above Clear Site Data, which is still the last thing but one",
                     opens.rows.dropLast().last?.id == .clearData))
         out.append(("a scheme nothing claims any more is still listed, so it can be removed",
                     { var orphan = opens
                       orphan.apps = [SiteControlModel.App(scheme: "zoommtg", name: "zoommtg")]
-                      return orphan.rows.contains { $0.title == "Open in zoommtg" } }()))
+                      return orphan.rows.contains { $0.title == "Can Open zoommtg" } }()))
+
+        // The Settings section shows only what this site has an answer for.
+        out.append(("a fresh site shows Developer Mode and nothing else",
+                    m.settings.map(\.id) == [.developer]))
+        var answered = opens
+        answered.camera = true
+        answered.popups = false
+        answered.zoom = 1.25
+        answered.blocking = false
+        let shown = answered.settings
+        out.append(("…an answered permission appears, allowed or blocked",
+                    shown.first { $0.id == .camera }?.value == "Allowed"
+                        && shown.first { $0.id == .popups }?.value == "Blocked"))
+        out.append(("…an unanswered one does not", !shown.contains { $0.id == .microphone }))
+        out.append(("…zoom appears once it is off 100%", shown.contains { $0.id == .zoom }))
+        out.append(("…ad blocking once it is off for the site", shown.first { $0.id == .blocker }?.value == "Off"))
+        out.append(("…and each app the site may open", shown.filter { if case .app = $0.id { true } else { false } }.count == 2))
+        var once = m
+        once.camera = true
+        once.cameraOnce = true
+        out.append(("a one-time answer says so", once.settings.first { $0.id == .camera }?.value == "Allowed Once"))
+        out.append(("nothing loaded has no settings", SiteControlModel().settings.isEmpty))
 
         // Clearing site data, scoped.
         out.append(("a site's own record is cleared",
@@ -637,31 +707,44 @@ extension SiteControlModel {
 
 // MARK: - The popover
 
-/// ~300pt of flat rows hanging off the pill's site glyph. No blur and no material: it is a
-/// panel of controls, and every fill in it comes from `Look` like the sidebar's do.
+/// Arc's layout at Arc's width: action tiles, the extensions as tiles, a Settings list whose
+/// permissions fold away, and a footer with the connection and a ··· menu. It sits on the
+/// popover's own translucent material, so every fill is `Look` ink rather than a ground.
 struct SiteControlPopover: View {
     @ObservedObject var tab: Tab
     /// Redraws when a setting changes rather than the tab — see `SiteChanges`.
     @ObservedObject private var changes = SiteChanges.shared
+    /// Site Settings: every setting this site has, one page in from the summary.
+    @State private var allSettings = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let model = SiteControlModel(tab)
-        // One snapshot, taken where the model was built and handed to every row: the model's
+        // One snapshot, taken where the model was built and handed to every tile: the model's
         // `.ext(i)` indexes into *this* list, and re-reading it at click time would let an
-        // extension that finished loading in between renumber the rows under the pointer.
+        // extension that finished loading in between renumber the tiles under the pointer.
         let contexts = SiteControl.contexts(on: tab)
-        VStack(alignment: .leading, spacing: Look.rowGap) {
-            header(model)
+        let rows = model.rows
+        ZStack(alignment: .top) {
             if model.siteless {
                 Text("There is nothing to control on this page.")
                     .font(Look.caption)
                     .foregroundStyle(Look.inkQuiet)
-                    .padding(.horizontal, Look.rowInset)
-                    .padding(.bottom, Look.inset)
+                    .padding(Look.rowInset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if allSettings {
+                siteSettings(model, rows: rows)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
-                ForEach(model.rows) { row in
-                    SiteControlRow(row: row, tab: tab, contexts: contexts)
+                VStack(alignment: .leading, spacing: Look.rowGap) {
+                    tiles(rows)
+                    extensions(rows, contexts: contexts)
+                    section("Settings")
+                    ForEach(model.settings) { SettingItem(setting: $0, tab: tab) }
+                    Divider().padding(.horizontal, Look.captionGap).padding(.vertical, Look.captionGap)
+                    footer(model, rows: rows)
                 }
+                .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
         .padding(Look.inset)
@@ -669,65 +752,504 @@ struct SiteControlPopover: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Site Control Center")
         .accessibilityValue(model.siteless ? "No page loaded" : "\(model.title), \(model.connection)")
+        // An extension turned on or removed from here redraws the tiles.
+        .onReceive(tab.extensions.objectWillChange) { _ in Task { @MainActor in SiteChanges.shared.bump() } }
         .vaneMotionPolicy()
     }
 
-    private func header(_ model: SiteControlModel) -> some View {
-        HStack(spacing: Look.rowSpacing) {
-            Group {
-                if let icon = tab.favicon {
-                    SiteIcon(icon: icon, size: Look.rowIcon, rounded: tab.currentURL?.isFileURL != true)
-                } else {
-                    Image(systemName: model.glyph).resizable().foregroundStyle(.tertiary)
+    private func show(allSettings: Bool) {
+        withAnimation(Motion.reduced ? nil : Look.quick) { self.allSettings = allSettings }
+    }
+
+    private var grid: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: Look.siteTileGap), count: 4)
+    }
+
+    private func section(_ title: String) -> some View {
+        Text(title).font(Look.heading).foregroundStyle(Look.inkPrimary)
+            .padding(.horizontal, Look.captionGap).padding(.top, Look.captionGap)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// Run a row's action after the popover has gone, for the ones that open a window or
+    /// take over the page.
+    private func afterDismiss(_ id: SiteControlModel.RowID) {
+        dismiss()
+        Task { @MainActor in SiteControl.act(id, on: tab) }
+    }
+
+    /// Arc's four: Share, Boost, Capture, Reader.
+    private func tiles(_ rows: [SiteControlModel.Row]) -> some View {
+        let row = { (id: SiteControlModel.RowID) in rows.first { $0.id == id } }
+        return LazyVGrid(columns: grid, spacing: Look.siteTileGap) {
+            ShareTile(tab: tab)
+            if let boost = row(.boost) {
+                SiteTile(glyph: "paintbrush.pointed", label: boost.title, help: boost.title,
+                         on: tab.currentURL.flatMap(SiteBoosts.origin).map { SiteBoosts.value(origin: $0, tab: tab) != SiteBoost() } ?? false,
+                         inert: false, dark: true) { afterDismiss(.boost) }
+            }
+            if let capture = row(.capture) {
+                SiteTile(glyph: "camera", label: capture.title, help: capture.title,
+                         on: false, inert: false, dark: true) { afterDismiss(.capture) }
+            }
+            if let reader = row(.reader) {
+                SiteTile(glyph: "text.viewfinder", label: reader.title, help: reader.note ?? reader.title,
+                         on: reader.control == .toggle(true), inert: reader.inert, dark: true) {
+                    SiteControl.act(.reader, on: tab)
                 }
             }
-            .aspectRatio(contentMode: .fit)
-            .frame(width: Look.rowIcon, height: Look.rowIcon)
-            VStack(alignment: .leading, spacing: Look.captionGap) {
-                Text(model.siteless ? "This Page" : model.title)
-                    .font(Look.heading).foregroundStyle(Look.inkPrimary).lineLimit(1)
-                Text(model.connection)
-                    .font(Look.caption)
-                    .foregroundStyle(model.insecure ? Look.warning : Look.inkTertiary)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func extensions(_ rows: [SiteControlModel.Row], contexts: [WKWebExtensionContext]) -> some View {
+        let installable = tab.extensions.profileID != Profile.incognito.id
+        let extRows = rows.filter { if case .ext = $0.id { true } else { false } }
+        if !extRows.isEmpty || installable {
+            section("Extensions")
+            LazyVGrid(columns: grid, spacing: Look.siteTileGap) {
+                ForEach(extRows) { row in
+                    if case .ext(let i) = row.id, contexts.indices.contains(i) {
+                        ExtensionTile(row: row, tab: tab, context: contexts[i])
+                    }
+                }
+                // Installed but not running: turned off, or waiting on a fix. Every extension in
+                // the profile has a tile, not only the ones that happen to be loaded.
+                if installable {
+                    ForEach(tab.extensions.inactive) { entry in
+                        OffExtensionTile(host: tab.extensions, entry: entry)
+                    }
+                    SiteTile(glyph: "plus", label: "Add Extension", help: "Find extensions in the Chrome Web Store",
+                             on: false, inert: false) { addExtension() }
+                }
+            }
+        }
+    }
+
+    /// Arc's +: the store, in a tab, where Add to Chrome installs into Vane.
+    private func addExtension() {
+        dismiss()
+        // The tab's own window, or another of its profile's: Add to Chrome installs into
+        // whichever profile the store page is open in, and never a private one.
+        let profile = tab.profileID
+        let ok = { (store: TabStore) in store.profileID == profile && !store.isPrivate && store.window != nil }
+        let store = PageTranslation.store(of: tab)
+            ?? Windows.current.flatMap { ok($0) ? $0 : nil }
+            ?? TabStore.all.first(where: ok)
+        Task { @MainActor in store?.newTab(URL(string: "https://chromewebstore.google.com/")) }
+    }
+
+    private func footer(_ model: SiteControlModel, rows: [SiteControlModel.Row]) -> some View {
+        HStack(spacing: Look.rowSpacing) {
+            if model.insecure || model.glyph == "lock" {
+                Label(model.insecure ? "Not Secure" : "Secure", systemImage: model.glyph)
+                    .font(Look.caption.weight(.semibold))
+                    .foregroundStyle(model.insecure ? Look.warning : Look.inkSecondary)
+                    .padding(.horizontal, Look.rowInset).padding(.vertical, Look.captionGap * 3)
+                    .background(model.insecure ? Look.warning.opacity(0.15) : Look.controlFill,
+                                in: .rect(cornerRadius: Look.pillRadius))
+                    .help(model.connection)
+                    .accessibilityLabel(model.connection)
             }
             Spacer(minLength: 0)
+            Menu {
+                Button("Clear Site Data…") { afterDismiss(.clearData) }
+                Divider()
+                if let translate = rows.first(where: { $0.id == .translate }) {
+                    Button(translate.control == .toggle(true) ? "Show Original" : "Translate Page") {
+                        SiteControl.act(.translate, on: tab)
+                    }
+                }
+                if let offers = rows.first(where: { $0.id == .translateOffers }), case .toggle(let on) = offers.control {
+                    Toggle("Offer to Translate", isOn: Binding(get: { on }, set: { _ in SiteControl.act(.translateOffers, on: tab) }))
+                }
+                Divider()
+                Button("Manage Extensions…") {
+                    dismiss()
+                    let host = tab.extensions, store = VanePages.store(of: tab)
+                    Task { @MainActor in ExtensionManagement.openPage(for: host, from: store) }
+                }
+                if tab.extensions.profileID != Profile.incognito.id {
+                    Button("Add Extension…") { addExtension() }
+                }
+                Divider()
+                Button("Filter Lists and Diagnostics…") { afterDismiss(.blockerSettings) }
+                Button("Site Settings…") { show(allSettings: true) }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .tint(Look.inkPrimary)
+            .frame(width: Look.siteTile, height: Look.siteTile)
+            .background(Look.controlFill, in: .circle)
+            .help("More Site Actions")
+            .accessibilityLabel("More Site Actions")
         }
-        .padding(.horizontal, Look.rowInset)
-        .padding(.vertical, Look.inset)
-        .accessibilityElement(children: .combine)
+    }
+
+    /// Every setting this site has, as rows with their controls, one page in.
+    private func siteSettings(_ model: SiteControlModel, rows: [SiteControlModel.Row]) -> some View {
+        let shown: Set<SiteControlModel.RowID> = [.camera, .microphone, .location, .popups, .pictureInPicture,
+                                                  .zoom, .blocker, .translateOffers, .developer]
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { show(allSettings: false) } label: {
+                HStack(spacing: Look.rowSpacing) {
+                    Image(systemName: "chevron.left").font(Look.caption.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Site Settings").font(Look.heading).foregroundStyle(Look.inkPrimary)
+                        Text(model.title).font(Look.caption).foregroundStyle(Look.inkTertiary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, Look.captionGap).padding(.bottom, Look.inset)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back")
+            ForEach(rows.filter { row in
+                if case .app = row.id { return true }
+                return shown.contains(row.id)
+            }) { SiteControlRow(row: $0, tab: tab) }
+        }
     }
 }
 
-/// One row: glyph, title, an optional second line, and whatever control the model asked for.
+/// One entry in the Settings section: Arc's disc with a glyph, the setting's name, and its
+/// state under it. A click flips it; a permission's right-click offers all three answers.
+private struct SettingItem: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    let setting: SiteControlModel.Setting
+    let tab: Tab
+    @State private var hovering = false
+
+    private var kind: SitePermissions.Kind? {
+        switch setting.id {
+        case .camera: .camera
+        case .microphone: .microphone
+        case .location: .location
+        case .popups: .popups
+        default: nil
+        }
+    }
+
+    var body: some View {
+        Button(action: flip) {
+            HStack(spacing: Look.rowSpacing) {
+                Image(systemName: setting.glyph).font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(setting.on ? Color.black.opacity(0.75) : Look.inkPrimary)
+                    .frame(width: Look.siteDisc, height: Look.siteDisc)
+                    .background(setting.on ? Look.ink(0.9) : Look.ink(0.16), in: .circle)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(setting.title).font(Look.heading).foregroundStyle(Look.inkPrimary).lineLimit(1)
+                    Text(setting.value).font(Look.caption).foregroundStyle(Look.inkTertiary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(Look.captionGap * 2)
+            .background(hovering ? chromeTheme.hovered : .clear, in: .rect(cornerRadius: Look.pillRadius))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Motion.reduced ? nil : Look.quick, value: hovering)
+        .animation(Motion.reduced ? nil : Look.quick, value: setting)
+        .contextMenu {
+            if let kind {
+                Button("Ask") { SiteControl.set(kind, to: nil, on: tab) }
+                Button("Allow") { SiteControl.set(kind, to: true, on: tab) }
+                Button("Block") { SiteControl.set(kind, to: false, on: tab) }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(setting.title)
+        .accessibilityValue(setting.value)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityActions {
+            if let kind {
+                Button("Ask") { SiteControl.set(kind, to: nil, on: tab) }
+                Button("Allow") { SiteControl.set(kind, to: true, on: tab) }
+                Button("Block") { SiteControl.set(kind, to: false, on: tab) }
+            }
+        }
+    }
+
+    /// A permission swaps Allowed and Blocked; everything else does what its row did.
+    private func flip() {
+        if let kind { return SiteControl.set(kind, to: !setting.on, on: tab) }
+        SiteControl.act(setting.id, on: tab)
+    }
+}
+
+/// A square in the popover's grids: an SF Symbol on a fill, brighter when its state is on.
+private struct SiteTile: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    let glyph: String
+    let label: String
+    let help: String
+    let on: Bool
+    let inert: Bool
+    /// Arc's top row sits darker than the popover; its extension tiles sit lighter.
+    var dark = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    private var fill: Color {
+        if on { return chromeTheme.selected }
+        if dark { return Color.black.opacity(hovering ? 0.32 : 0.45) }
+        return hovering ? chromeTheme.hovered : chromeTheme.controlFill
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: glyph).font(.system(size: 16))
+                .frame(maxWidth: .infinity, minHeight: Look.siteTile)
+                .background(fill, in: .rect(cornerRadius: Look.pillRadius))
+                .overlay { if dark { RoundedRectangle(cornerRadius: Look.pillRadius).strokeBorder(Look.ink(0.08)) } }
+                .contentShape(.rect)
+        }
+        .buttonStyle(TactileButtonStyle())
+        .foregroundStyle(inert ? Look.inkDisabled : Look.inkPrimary)
+        .disabled(inert)
+        .onHover { hovering = $0 }
+        .animation(Motion.reduced ? nil : Look.quick, value: hovering)
+        .animation(Motion.reduced ? nil : Look.quick, value: on)
+        .help(help)
+        .accessibilityLabel(label)
+        .accessibilityValue(on ? "On" : "")
+    }
+}
+
+/// The system share sheet, anchored to its own tile.
+private struct ShareTile: View {
+    let tab: Tab
+    @StateObject private var anchor = ActionAnchor()
+
+    var body: some View {
+        SiteTile(glyph: "square.and.arrow.up", label: "Share", help: "Share…", on: false, inert: false, dark: true) {
+            guard let url = tab.currentURL, let view = anchor.view else { return }
+            NSSharingServicePicker(items: [url]).show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        }
+        .actionAnchor(anchor)
+    }
+}
+
+/// An extension's action as a tile. A click runs it; a right-click is Arc's extension menu.
+private struct ExtensionTile: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    @Environment(\.dismiss) private var dismiss
+    let row: SiteControlModel.Row
+    let tab: Tab
+    let context: WKWebExtensionContext
+    @StateObject private var anchor = ActionAnchor()
+    @State private var hovering = false
+
+    var body: some View {
+        let host = tab.extensions
+        let pinned = host.isPinned(context)
+        Button {
+            guard !row.dim else { return }
+            host.run(context, for: tab, from: anchor.view)
+        } label: {
+            ActionIcon(host: host, context: context, tab: tab, badge: row.badge)
+                .opacity(row.dim ? Look.dimmed : 1)
+                .frame(maxWidth: .infinity, minHeight: Look.siteTile)
+                .background(hovering && !row.dim ? chromeTheme.hovered : chromeTheme.controlFill,
+                            in: .rect(cornerRadius: Look.pillRadius))
+                .overlay(alignment: .bottomTrailing) {
+                    if pinned {
+                        // Arc's pin: a small light disc on the tile's corner.
+                        Image(systemName: "pin.fill").font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.black.opacity(0.7))
+                            .frame(width: 14, height: 14)
+                            .background(Look.ink(0.85), in: .circle)
+                            .offset(x: -6, y: 4)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .contentShape(.rect)
+        }
+        .buttonStyle(TactileButtonStyle())
+        .actionAnchor(anchor)
+        .onHover { hovering = $0 }
+        .animation(Motion.reduced ? nil : Look.quick, value: hovering)
+        .contextMenu { ExtensionMenu(host: host, context: context, tab: tab, leave: { dismiss() }) }
+        .help(row.note.map { "\(row.title) — \($0)" } ?? row.title)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.title)
+        .accessibilityValue([row.badge.map { "Badge \($0)" },
+                             row.control == .toggle(true) ? "Allowed on this site" : "Not allowed on this site",
+                             row.dim ? "Unavailable on this page" : nil].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(row.dim ? "" : "Runs this extension here. More actions are in its context menu.")
+        .accessibilityActions { ExtensionMenu(host: host, context: context, tab: tab, leave: { dismiss() }).accessibility }
+    }
+}
+
+/// An installed extension that is not running. Drawn dim; a click turns it back on.
+private struct OffExtensionTile: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
+    @Environment(\.dismiss) private var dismiss
+    let host: ExtensionHost
+    let entry: ExtensionHost.Inactive
+
+    var body: some View {
+        Button { entry.needsAttention ? manage() : turnOn() } label: {
+            Group {
+                if let icon = entry.icon {
+                    Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                } else {
+                    Image(systemName: "puzzlepiece.extension").resizable().aspectRatio(contentMode: .fit)
+                }
+            }
+            .frame(width: Look.rowIcon, height: Look.rowIcon)
+            .saturation(0).opacity(Look.dimmed)
+            .frame(maxWidth: .infinity, minHeight: Look.siteTile)
+            .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+            .contentShape(.rect)
+        }
+        .buttonStyle(TactileButtonStyle())
+        .disabled(entry.busy)
+        .contextMenu { menu }
+        .help("\(entry.name) — " + state + (entry.busy || entry.needsAttention ? "" : ". Click to turn it on."))
+        .accessibilityLabel(entry.name)
+        .accessibilityValue(state)
+        .accessibilityHint(entry.busy ? "" : entry.needsAttention ? "Opens it in Extensions." : "Turns this extension on.")
+        .accessibilityActions { menu }
+    }
+
+    @ViewBuilder private var menu: some View {
+        if !entry.needsAttention { Button("Turn On", action: turnOn) }
+        Button("Remove from Vane…") {
+            dismiss()
+            let host = host, entry = entry
+            Task { @MainActor in ExtensionMenu.confirmRemoval(name: entry.name) { host.remove(path: entry.path) } }
+        }
+        Button("Manage Extension…", action: manage)
+    }
+
+    private var state: String { entry.busy ? "Loading…" : entry.needsAttention ? "Needs attention" : "Off" }
+
+    private func turnOn() {
+        let host = host, path = entry.path
+        Task { await host.enable(path: path) }
+    }
+
+    private func manage() {
+        dismiss()
+        let host = host, path = entry.path
+        Task { @MainActor in ExtensionManagement.openPage(for: host, selecting: path) }
+    }
+}
+
+/// Arc's right-click menu for an extension, in the popover and on the address bar alike.
+/// `leave` runs before anything that opens a window — the popover passes its dismiss.
+struct ExtensionMenu: View {
+    let host: ExtensionHost
+    let context: WKWebExtensionContext
+    let tab: Tab?
+    var leave: () -> Void = {}
+
+    var body: some View {
+        Text(name)
+        Divider()
+        if let access {
+            Toggle("Can Read and Change This Site", isOn: Binding(get: { access }, set: { _ in toggleAccess() }))
+            Divider()
+        }
+        actions
+    }
+
+    /// The menu as VoiceOver actions: buttons only, since a Toggle or a Text in
+    /// `accessibilityActions` is dropped rather than published.
+    @ViewBuilder var accessibility: some View {
+        if let access {
+            Button(access ? "Deny Access to This Site" : "Allow Access to This Site", action: toggleAccess)
+        }
+        actions
+    }
+
+    @ViewBuilder private var actions: some View {
+        if context.optionsPageURL != nil {
+            Button("Options") {
+                leave()
+                let host = host, context = context
+                Task { @MainActor in try? await host.webExtensionController(host.controller, openOptionsPageFor: context) }
+            }
+        }
+        let pinned = host.isPinned(context)
+        let full = !pinned && !host.canPin
+        Button(full ? "Address Bar Is Full — \(ExtensionPins.cap) Pinned"
+                    : pinned ? "Unpin from Address Bar" : "Pin to Address Bar") {
+            host.togglePin(context)
+        }
+        .disabled(full)
+        if host.profileID != Profile.incognito.id {
+            Button("Remove from Vane…") {
+                leave()
+                let host = host, context = context, name = name
+                Task { @MainActor in ExtensionMenu.confirmRemoval(name: name) { host.remove(context) } }
+            }
+        }
+        Divider()
+        Button("Manage Extension…") {
+            leave()
+            let host = host, path = host.path(of: context), store = tab.flatMap(VanePages.store(of:))
+            Task { @MainActor in ExtensionManagement.openPage(for: host, selecting: path, from: store) }
+        }
+    }
+
+    private var name: String { context.webExtension.displayName ?? "Extension" }
+
+    /// Whether it may see this tab's site; nil when there is no site to ask about.
+    private var access: Bool? {
+        guard let url = tab?.currentURL, url.host() != nil else { return nil }
+        return context.hasAccess(to: url)
+    }
+
+    private func toggleAccess() {
+        guard let tab else { return }
+        SiteControl.toggleAccess(context, on: tab)
+        SiteChanges.shared.bump()
+    }
+
+    /// The same question the Extensions window asks before removing one.
+    static func confirmRemoval(name: String, remove: () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Remove “\(name)” from this profile?"
+        alert.informativeText = "This removes the installation, its approval, and toolbar pin. Your original source folder is kept. Reinstalling creates a new extension identity and cannot restore its old settings."
+        alert.addButton(withTitle: "Remove Extension").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        remove()
+    }
+}
+
+/// One Settings or Permissions row: glyph, title, and whatever control the model asked for.
 /// The whole row is the hit target, the way the sidebar's rows are — a 20pt switch is not
-/// something anyone should have to aim at.
+/// something anyone should have to aim at. At this width a note is a tooltip unless it is
+/// the reason the row is greyed or a one-time answer that ends by itself.
 private struct SiteControlRow: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let row: SiteControlModel.Row
     let tab: Tab
-    /// The extensions the popover indexed its rows against, taken once where the model was
-    /// built. `.ext(i)` means `contexts[i]` and nothing else.
-    let contexts: [WKWebExtensionContext]
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Website Data opens in its own window, so Clear Site Data closes this
-    /// first and runs on the next turn of the loop.
-    @Environment(\.dismiss) private var dismiss
-    /// An extension's popup hangs off this row, not off the top of the window.
-    @StateObject private var anchor = ActionAnchor()
+
+    private var inlineNote: String? {
+        guard let note = row.note, row.inert || note.hasPrefix("Allowed once") else { return nil }
+        return note
+    }
 
     var body: some View {
         HStack(spacing: Look.rowSpacing) {
-            icon
+            Image(systemName: row.glyph).font(Look.symbol)
                 .frame(width: Look.rowIcon, height: Look.rowIcon)
-                .opacity(row.dim ? Look.dimmed : 1)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Look.captionGap) {
                 Text(row.title).font(Look.rowTitle).lineLimit(1)
-                if let note = row.note {
+                if let note = inlineNote {
                     Text(note).font(Look.caption).foregroundStyle(Look.inkQuiet)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: Look.rowGap)
@@ -742,10 +1264,9 @@ private struct SiteControlRow: View {
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .animation(Motion.reduced ? nil : Look.quick, value: row.control)
         .contentShape(.rect)
-        .actionAnchor(anchor)
         .onHover { hovering = $0 && !row.inert }
-        .onTapGesture(perform: press)
-        .contextMenu { pinItem }
+        .onTapGesture { if !row.inert { SiteControl.act(row.id, on: tab) } }
+        .help(row.note ?? "")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.title)
         .accessibilityValue(axValue)
@@ -759,93 +1280,20 @@ private struct SiteControlRow: View {
                 Button("Zoom In") { Zoom.zoomIn(tab); SiteChanges.shared.bump() }
                 Button("Zoom Out") { Zoom.zoomOut(tab); SiteChanges.shared.bump() }
             }
-            // An extension row's tap runs the extension and its switch is hidden from
-            // VoiceOver (the row already reads as a button), so without this there is no
-            // route at all to the one thing the row is really about: may it see this site.
-            if let ext = extRow, case .toggle(let allowed) = row.control {
-                Button(allowed ? "Deny Access to This Site" : "Allow Access to This Site") {
-                    SiteControl.toggleAccess(ext.context, on: tab)
-                    SiteChanges.shared.bump()
-                }
-            }
-            // The pin lives in a context menu, which is not a route a screen reader has.
-            pinItem
         }
     }
 
-    /// An extension row leads with the extension's own action icon, badge and all, drawn in
-    /// the same 16pt box a favicon or an SF Symbol would be. The image is read here rather
-    /// than carried in the model: an `NSImage` is neither `Sendable` nor `Equatable`, and
-    /// the model is both.
-    @ViewBuilder private var icon: some View {
-        if let context = extRow?.context {
-            ActionIcon(host: tab.extensions, context: context, tab: tab, badge: row.badge)
-        } else {
-            Image(systemName: row.glyph).font(Look.symbol)
-        }
-    }
-
-    /// Arc's "pin to the address bar", per extension. Capped at three, and the item says so
-    /// rather than going quietly dead.
-    @ViewBuilder private var pinItem: some View {
-        if let ext = extRow {
-            let pinned = tab.extensions.isPinned(ext.context)
-            let full = !pinned && !tab.extensions.canPin
-            Button(full ? "Address Bar Is Full — \(ExtensionPins.cap) Pinned"
-                        : pinned ? "Unpin from Address Bar" : "Pin to Address Bar") {
-                tab.extensions.togglePin(ext.context)
-            }
-            .disabled(full)
-        }
-    }
-
-    /// The extension this row stands for, if it stands for one — out of the snapshot the
-    /// popover indexed against, never re-read, so the row cannot act on its neighbour.
-    private var extRow: (index: Int, context: WKWebExtensionContext)? {
-        guard case .ext(let i) = row.id, contexts.indices.contains(i) else { return nil }
-        return (i, contexts[i])
-    }
-
-    private func press() {
-        guard !row.inert else { return }
-        // An extension row is its action button: the click runs the extension, and the
-        // switch beside it is what still answers "may it see this site".
-        if let ext = extRow {
-            guard !row.dim else { return }
-            return tab.extensions.run(ext.context, for: tab, from: anchor.view)
-        }
-        guard case .action = row.control else { return SiteControl.act(row.id, on: tab) }
-        dismiss()
-        Task { @MainActor in SiteControl.act(row.id, on: tab) }
-    }
-
-    /// What the row is about to do, when that is not obvious from its title — and, on the
-    /// two rows that do something a tap cannot be taken back from, what it costs.
     private var hint: String {
-        if case .ext = row.id, !row.dim {
-            return "Runs this extension here. The switch beside it says whether it may see this site."
+        if case .zoom = row.control {
+            return "Resets the page to actual size. Zoom In and Zoom Out are also available."
         }
-        switch row.control {
-        case .zoom:   return "Resets the page to actual size. Zoom In and Zoom Out are also available."
-        case .action where row.id == .blockerSettings:
-            return "Opens filter subscriptions, update status, unsupported rules, and site exceptions."
-        case .action where row.id == .boost:
-            return "Change this website’s fonts and colors, hide distractions, or add custom code."
-        case .action where row.id == .capture:
-            return "Click an element or drag a region to capture. Escape cancels."
-        case .action: return "Signs you out of this site and forgets what it stored. This cannot be undone."
-        default:      return row.note ?? ""
-        }
+        return row.note ?? ""
     }
 
     @ViewBuilder private var control: some View {
         switch row.control {
         case .toggle(let on):
-            Toggle("", isOn: Binding(get: { on }, set: { _ in
-                guard let ext = extRow else { return SiteControl.act(row.id, on: tab) }
-                SiteControl.toggleAccess(ext.context, on: tab)
-                SiteChanges.shared.bump()
-            }))
+            Toggle("", isOn: Binding(get: { on }, set: { _ in SiteControl.act(row.id, on: tab) }))
                 // A switch, not the checkbox a bare `Toggle` renders as in a popover: this
                 // is a setting that takes effect as it is flipped, not a box on a form.
                 .toggleStyle(.switch).labelsHidden().controlSize(.mini).disabled(row.inert)
@@ -880,24 +1328,16 @@ private struct SiteControlRow: View {
         }
     }
 
-    /// An extension row's badge is the only thing on it a screen reader would otherwise
-    /// miss entirely: it is drawn on an icon that is `accessibilityHidden`, and "3 blocked"
-    /// is the whole point of the button.
     private var axValue: String {
-        var parts: [String] = []
-        if let badge = row.badge { parts.append("Badge \(badge)") }
         switch row.control {
-        case .toggle(let on):
-            if extRow != nil { parts.append(on ? "Allowed on this site" : "Not allowed on this site") }
-            else { parts.append(on ? "On" : "Off") }
-        case .permission(let a):     parts.append(PermissionAnswer(a).title)
-        case .zoom(let label):       parts.append(label)
-        case .action:                break
+        case .toggle(let on):        on ? "On" : "Off"
+        case .permission(let a):     PermissionAnswer(a).title
+        case .zoom(let label):       label
+        case .action:                ""
         }
-        if row.dim { parts.append("Unavailable on this page") }
-        return parts.joined(separator: ", ")
     }
 }
+
 
 /// −/+ beside the zoom label. A plain glyph on a fill, sized like a settings control.
 private struct StepButton: View {

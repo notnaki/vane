@@ -2196,7 +2196,7 @@ private struct ExtensionGlyph: View {
         let hint: String = live ? "Runs this extension on this page." : ""
         glyph(badge: now.badge, live: live)
             .actionAnchor(anchor)
-            .contextMenu { Button("Unpin from Address Bar") { host.togglePin(context) } }
+            .contextMenu { ExtensionMenu(host: host, context: context, tab: tab) }
             .vaneTooltip(help)
             // One element: the badge drawn on the icon is a `Text`, and without this it is
             // published as a second button of its own beside the glyph.
@@ -2206,7 +2206,7 @@ private struct ExtensionGlyph: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityHint(hint)
             .accessibilityAction { press() }
-            .accessibilityAction(named: "Unpin from Address Bar") { host.togglePin(context) }
+            .accessibilityActions { ExtensionMenu(host: host, context: context, tab: tab).accessibility }
             .opacity(visible ? 1 : 0)
             .animation(reduced ? nil : Look.feedback, value: visible)
             .allowsHitTesting(visible)

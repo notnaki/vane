@@ -194,6 +194,42 @@ import WebKit
     @Published private(set) var loaded: [(path: String, context: WKWebExtensionContext)] = []
 
     var installed: [WKWebExtensionContext] { loaded.map(\.context) }
+
+    /// An installed extension that is not running: turned off, or waiting on a fix.
+    struct Inactive: Identifiable {
+        let path: String
+        let name: String
+        let icon: NSImage?
+        let needsAttention: Bool
+        let busy: Bool
+        var id: String { path }
+    }
+
+    /// `entries` minus the expensive part — no manifests read, no files checked — so a
+    /// popover can draw it on every redraw.
+    var inactive: [Inactive] {
+        let running = Set(loaded.map(\.path))
+        return folders.keys.filter { !running.contains($0) }
+            .sorted { (folders[$0] ?? "").localizedStandardCompare(folders[$1] ?? "") == .orderedAscending }
+            .map { path in
+                Inactive(path: path, name: records[path]?.name ?? folders[path] ?? URL(fileURLWithPath: path).lastPathComponent,
+                         icon: metadataIcons[path], needsAttention: failures[path] != nil,
+                         busy: operations[path] != nil || restoring[path] != nil)
+            }
+    }
+
+    /// Turning one on from outside the Extensions window, which says so when it fails.
+    func enable(path: String) async {
+        do { try await setEnabled(true, for: path) }
+        catch is CancellationError { }
+        catch { warn("Could not turn that extension on.", error.localizedDescription) }
+    }
+
+    /// Removal from outside the Extensions window, which says so when it fails.
+    func remove(path: String) {
+        do { try remove(folder: path) }
+        catch { warn("Could not remove that extension.", error.localizedDescription) }
+    }
     /// The icon of the extension whose base URL's host is `owner`: what its folders wear.
     func icon(owner: String) -> NSImage? {
         loaded.first { $0.context.baseURL.host == owner }?.context.webExtension.icon(for: CGSize(width: 16, height: 16))

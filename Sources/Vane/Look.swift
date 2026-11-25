@@ -305,9 +305,14 @@ enum Look {
     /// look at a screenshot of them stacked into a column.
     static let buttonPadding: CGFloat = 26
 
-    /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
-    /// on one line, and no wider — it hangs off the address pill, not off the window.
-    static let siteWidth: CGFloat = 300
+    /// The Site Control Center popover: Arc's width. It grows taller when Permissions opens,
+    /// never wider — it hangs off the address pill, not off the window.
+    static let siteWidth: CGFloat = 240
+    /// One tile in its action and extension grids, four to a row like Arc's.
+    static let siteTile: CGFloat = 36
+    /// The disc a Settings entry wears, Arc's size.
+    static let siteDisc: CGFloat = 32
+    static let siteTileGap: CGFloat = 6
     /// The mark on the pill's site glyph when the site holds a permission, and how far
     /// outside the glyph's box it sits: a badge on the lock, not a second glyph beside it.
     static let badge: CGFloat = 5
@@ -1035,9 +1040,8 @@ extension Look {
                     sourceBadge > badge))
         out.append(("…and hangs off the glyph's corner rather than floating clear of it",
                     sourceBadgeOffset > 0 && sourceBadgeOffset < sourceBadge))
-        out.append(("the live folder callout is narrower than the Site Control Center and "
-                    + "stays up longer than a toast",
-                    calloutWidth < siteWidth && calloutDuration > toastDuration))
+        out.append(("the live folder callout stays up longer than a toast",
+                    calloutDuration > toastDuration))
         out.append(("a button that cannot be pressed fades without disappearing",
                     dimmed > 0 && dimmed < 1))
         out.append(("a pane's pill has room for a favicon and a corner of its own",
