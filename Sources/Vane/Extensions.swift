@@ -2290,11 +2290,14 @@ import WebKit
         var method = arguments["method"] as? String ?? "GET"
         var body = (arguments["body"] as? String).flatMap { Data(base64Encoded: $0) }
         let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
+        let first = ExtensionDebuggerAPI.origin(of: url)
+        // As the Fetch spec drops them: body headers once the body is, credentials off-origin.
+        var dropped: Set<String> = ["cookie", "host", "content-length", "origin"]
         for _ in 0..<20 {
             var request = URLRequest(url: url)
             request.httpMethod = method
             for case let pair as [String] in arguments["headers"] as? [Any] ?? [] where pair.count == 2
-                && !["cookie", "host", "content-length", "origin"].contains(pair[0].lowercased()) {
+                && !dropped.contains(pair[0].lowercased()) {
                 request.setValue(pair[1], forHTTPHeaderField: pair[0])
             }
             if let ua = arguments["ua"] as? String { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
@@ -2309,10 +2312,13 @@ import WebKit
             if [301, 302, 303, 307, 308].contains(http.statusCode),
                let next = http.value(forHTTPHeaderField: "Location").flatMap({ URL(string: $0, relativeTo: url)?.absoluteURL }) {
                 guard allowed(next) else { throw Failure("Redirected to a site the extension may not access.") }
-                if http.statusCode == 303 || ([301, 302].contains(http.statusCode) && method.uppercased() == "POST") {
+                if (http.statusCode == 303 && method.uppercased() != "HEAD")
+                    || ([301, 302].contains(http.statusCode) && method.uppercased() == "POST") {
                     method = "GET"
                     body = nil
+                    dropped.formUnion(["content-type", "content-encoding", "content-language", "content-location"])
                 }
+                if ExtensionDebuggerAPI.origin(of: next) != first { dropped.insert("authorization") }
                 url = next
                 continue
             }
@@ -2327,7 +2333,8 @@ import WebKit
     /// secure and expiry, as RFC 6265 matches them.
     nonisolated static func cookies(_ all: [HTTPCookie], for url: URL) -> [HTTPCookie] {
         guard let host = url.host?.lowercased() else { return [] }
-        let secure = url.scheme?.lowercased() == "https", path = url.path.isEmpty ? "/" : url.path
+        let raw = url.path(percentEncoded: true)
+        let secure = url.scheme?.lowercased() == "https", path = raw.isEmpty ? "/" : raw
         return all.filter { cookie in
             let domain = cookie.domain.lowercased()
             let hostMatches = domain.hasPrefix(".") ? host == domain.dropFirst() || host.hasSuffix(domain) : host == domain

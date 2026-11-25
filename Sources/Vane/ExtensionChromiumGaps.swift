@@ -489,6 +489,8 @@ import WebKit
         case "ws.close":
             let code = URLSessionWebSocketTask.CloseCode(rawValue: (arguments["code"] as? NSNumber)?.intValue ?? 1000) ?? .normalClosure
             socket.task.cancel(with: code, reason: (arguments["reason"] as? String).map { Data($0.utf8) })
+            // A `ws.next` in flight keeps its own copy and still reports the close.
+            sockets[id] = nil
             return NSNull()
         case "ws.next":
             do {

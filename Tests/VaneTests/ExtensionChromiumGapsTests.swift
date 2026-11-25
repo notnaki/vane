@@ -33,6 +33,8 @@ import XCTest
         func names(_ url: String) -> Set<String> { Set(ExtensionHost.cookies(all, for: URL(string: url)!).map(\.name)) }
         XCTAssertEqual(names("https://claude.ai/api/x"), ["site", "api", "safe"])
         XCTAssertEqual(names("https://claude.ai/apix"), ["site", "safe"], "A path matches on a / boundary")
+        XCTAssertEqual(Set(ExtensionHost.cookies([cookie("slash", "claude.ai", "/api/")], for: URL(string: "https://claude.ai/api/")!).map(\.name)),
+                       ["slash"], "A trailing slash is part of the path")
         XCTAssertEqual(names("http://claude.ai/"), ["site"], "A secure cookie goes over https only")
         XCTAssertEqual(names("https://evil.example/"), ["other"], "A redirect's next hop gets only its own cookies")
     }
