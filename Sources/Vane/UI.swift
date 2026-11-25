@@ -4051,6 +4051,15 @@ private struct FolderRow: View {
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
+    /// An extension's status, for VoiceOver: the sidebar shows it only on the icon.
+    static func status(_ folder: Folder) -> String {
+        switch folder.extensionStatus {
+        case .working: ", working"
+        case .attention: ", needs you"
+        case .done: ", done"
+        case nil: ""
+        }
+    }
     private var showsArrivals: Bool {
         !locked && folder.collapsed && folder.live != nil
             && store[keyPath: shape].entries.contains {
@@ -4077,7 +4086,7 @@ private struct FolderRow: View {
                 .environment(\.bufferedSidebarFocus, nil)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(folder.name)
+        .accessibilityLabel(folder.shownName + Self.status(folder))
         .accessibilityValue(state)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint(locked ? "Unlocks with Touch ID or your Mac password." : "Activate to expand or collapse this folder.")
@@ -4116,7 +4125,7 @@ private struct FolderRow: View {
             DropLine(on: zone == .before || zone == .after, axis: .vertical, target: folder.id.uuidString)
                 .offset(y: zone == .after ? Look.rowGap / 2 : -Look.rowGap / 2)
         }
-        .vaneTooltip(folder.name, hint: locked ? "Unlock with Touch ID or your Mac password" : "Click to expand or collapse")
+        .vaneTooltip(folder.shownName, hint: locked ? "Unlock with Touch ID or your Mac password" : "Click to expand or collapse")
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { dragWidth = $0 }
         .onDrag { folderDragPayload(folder) } preview: {
             labelRow(held: true)
@@ -4141,7 +4150,7 @@ private struct FolderRow: View {
             if !held && store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
             } else {
-                Text(folder.name).font(Look.folderTitle)
+                Text(folder.shownName).font(Look.folderTitle)
             }
         } trailing: {
             FolderDisclosure(folder: folder, locked: locked)
@@ -4197,14 +4206,31 @@ struct FolderDisclosure: View {
 /// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
 /// apart, and it does so by looking at the string rather than by a second stored field.
 /// The icon of the extension that made a folder, once that extension has loaded.
+/// Claude's status rides on it: the mark turns while it works, pulses when it needs you,
+/// and wears a green dot when it is done.
 private struct ExtensionFolderBadge: View {
     let owner: String
+    let status: Folder.ExtensionStatus?
+    let reduced: Bool
     @ObservedObject private var host = ExtensionHost.shared
 
     var body: some View {
         if let image = host.icon(owner: owner) {
-            Image(nsImage: image).resizable().interpolation(.high)
-                .frame(width: Look.sourceBadge, height: Look.sourceBadge).accessibilityHidden(true)
+            let moving = !reduced && (status == .working || status == .attention)
+            TimelineView(.animation(paused: !moving)) { timeline in
+                let t = moving ? timeline.date.timeIntervalSinceReferenceDate : 0
+                Image(nsImage: image).resizable().interpolation(.high)
+                    .rotationEffect(.degrees(status == .working ? (t * 120).truncatingRemainder(dividingBy: 360) : 0))
+                    .scaleEffect(status == .attention ? 1 + 0.18 * abs(sin(t * 3)) : 1)
+            }
+            .frame(width: Look.sourceBadge, height: Look.sourceBadge)
+            .overlay(alignment: .topTrailing) {
+                if status == .done || status == .attention {
+                    Circle().fill(status == .done ? Color.green : Look.warning)
+                        .frame(width: 4, height: 4).offset(x: 2, y: -2)
+                }
+            }
+            .accessibilityHidden(true)
         }
     }
 }
@@ -4266,7 +4292,7 @@ struct FolderGlyph: View {
                 }
             } else if let owner = folder.extensionOwner {
                 // An extension's folder wears its icon, as a live folder wears GitHub's.
-                let badge = ExtensionFolderBadge(owner: owner)
+                let badge = ExtensionFolderBadge(owner: owner, status: folder.extensionStatus, reduced: reduced)
                 if folder.icon == Folder.defaultIcon {
                     badge.opacity(arrivalMark ? 0 : 1)
                         .offset(FolderFace.badgeOffset)

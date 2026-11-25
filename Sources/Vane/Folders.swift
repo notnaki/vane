@@ -53,6 +53,20 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
 
     /// True when `icon` is something to draw as text rather than to look up in SF Symbols.
     var iconIsEmoji: Bool { !icon.allSatisfy(\.isASCII) }
+
+    /// What Claude writes at the head of its group's title: working, needs you, finished.
+    enum ExtensionStatus: Unicode.Scalar { case working = "\u{231B}", attention = "\u{1F514}", done = "\u{2705}" }
+    /// An extension's group's status, which the sidebar shows on the icon instead of in the name.
+    var extensionStatus: ExtensionStatus? {
+        guard extensionOwner != nil, let first = name.unicodeScalars.first else { return nil }
+        return ExtensionStatus(rawValue: first)
+    }
+    /// The name less that status; the extension still reads the title it set.
+    var shownName: String {
+        guard extensionStatus != nil else { return name }
+        let rest = String(name.dropFirst()).trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? name : rest
+    }
 }
 
 /// The whole shape of a sidebar section: folders, the tabs in them, and the order they are
@@ -553,6 +567,16 @@ extension Pins {
     nonisolated static func check() -> [(String, Bool)] {
         var out: [(String, Bool)] = []
         func assert(_ name: String, _ ok: Bool) { out.append((name, ok)) }
+        do {
+            var claude = Folder(name: "\u{2705} Claude for x"); claude.extensionOwner = "e"
+            var working = Folder(name: "\u{231B}\u{FE0F} Claude"); working.extensionOwner = "e"
+            let mine = Folder(name: "\u{2705} Done")
+            assert("an extension's status leaves its folder's name for its icon",
+                   claude.extensionStatus == .done && claude.shownName == "Claude for x"
+                       && working.extensionStatus == .working && working.shownName == "Claude")
+            assert("a folder the user named with a status emoji keeps it",
+                   mine.extensionStatus == nil && mine.shownName == mine.name)
+        }
         /// A section of loose tabs, named "a", "b"… so the assertions read as lists.
         func flat(_ ids: String...) -> Pins {
             Pins(entries: ids.map { Entry(row: .tab($0), parent: nil) })
