@@ -72,20 +72,26 @@ struct RootView: View {
             ControlGroup {
                 ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
                 Button("Find", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
-                if tab.reading == nil {
-                    Button("Reader", systemImage: "doc.plaintext") { Task { tab.reading = await tab.article(); noArticle = tab.reading == nil } }
-                } else {
-                    Button("Leave Reader", systemImage: "doc.plaintext.fill") { tab.reading = nil }
+                // One short label either way; the filled icon says Reader is on.
+                Button("Reader", systemImage: tab.reading == nil ? "doc.plaintext" : "doc.plaintext.fill") {
+                    if tab.reading != nil { tab.reading = nil } else { Task { tab.reading = await tab.article(); noArticle = tab.reading == nil } }
                 }
             }
             if !space.isIncognito {
-                Menu("Keep This Page", systemImage: "star") {
-                    Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
-                    Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
-                    if let key = library.bookmarked(tab.url, profile: space.profileID) {
-                        Button("Remove Bookmark", systemImage: "bookmark.slash") { library.remove(key) }
-                    } else {
-                        Button("Bookmark", systemImage: "bookmark") { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
+                // Each way to keep the page, named plainly, filled when the page already is one;
+                // tapping again undoes it.
+                let favourite = library.favourites(profile: space.profileID).first { $0.url == tab.url }
+                let pin = library.pinned(space: space.id).first { $0.url == tab.url }
+                let bookmark = library.bookmarked(tab.url, profile: space.profileID)
+                ControlGroup {
+                    Button("Favourite", systemImage: favourite == nil ? "star" : "star.fill") {
+                        if let favourite { library.remove(favourite.id) } else { library.addFavourite(tab.url, profile: space.profileID) }
+                    }
+                    Button("Pin Tab", systemImage: pin == nil ? "pin" : "pin.fill") {
+                        if let pin { library.remove(pin.id) } else { library.addPinned(tab.url, title: tab.title, space: space) }
+                    }
+                    Button("Bookmark", systemImage: bookmark == nil ? "bookmark" : "bookmark.fill") {
+                        if let bookmark { library.remove(bookmark) } else { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
                     }
                 }
             }
