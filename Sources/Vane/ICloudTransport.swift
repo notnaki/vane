@@ -9,6 +9,13 @@ struct ICloudProvisioning: Sendable {
     let keychainGroup: String
 
     static func current() throws -> Self {
+        #if os(iOS)
+        // The iOS app shares the Mac's container under its own App ID and syncs no Keychain
+        // secrets. iOS has no public API to read a process's own entitlements, and App Store
+        // installs carry no embedded profile. Every signed build carries these entitlements
+        // (iOS/project.yml), and CloudKit chooses the environment from the signature.
+        return Self(container: "iCloud.io.github.notnaki.vane", environment: "Production", keychainGroup: "")
+        #else
         guard let task = SecTaskCreateFromSelf(nil) else { throw ICloudFailure.unavailable("This build has no verified signing entitlements.") }
         func value(_ key: String) -> Any? { SecTaskCopyValueForEntitlement(task, key as CFString, nil) }
         return try validate(
@@ -21,6 +28,7 @@ struct ICloudProvisioning: Sendable {
             push: value("com.apple.developer.aps-environment") as? String,
             profilePresent: FileManager.default.fileExists(atPath: Bundle.main.bundleURL
                 .appendingPathComponent("Contents/embedded.provisionprofile").path))
+        #endif
     }
     static func validate(containers: [String]?, services: [String]?, environment: String?, team: String?,
                          application: String?, groups: [String]?, push: String?, profilePresent: Bool) throws -> Self {
