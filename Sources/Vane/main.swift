@@ -142,9 +142,10 @@ if args.first == "import" {
             || Keybindings.handle($0) || ExtensionCommands.handle($0) ? nil : $0
     }
     app.activate(ignoringOtherApps: true)
+    // Before the default-browser prompt, which waits on the user. A launch that recovered from
+    // a crash or a backup may already have; it is not a timing.
+    if !Crash.didCrashLastLaunch, backupLaunchResult != .restored { PerformanceLog.recordLaunch() }
     if !FirstLaunch.presentIfNeeded() { URLHandling.promptIfNotDefaultOnce() }
-    // A launch that recovered from a crash may have waited on the user; it is not a timing.
-    if !Crash.didCrashLastLaunch { PerformanceLog.recordLaunch() }
 
 }
 // Install GetURL before starting AppKit: early launch events join the recovery gate.

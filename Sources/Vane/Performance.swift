@@ -75,16 +75,30 @@ import UniformTypeIdentifiers
     func clear() {
         samples = []
         saveScheduled = false
-        try? FileManager.default.removeItem(at: file)
-        try? FileManager.default.removeItem(at: metricKitDirectory)
+        let (file, reports) = (file, metricKitDirectory)
+        // Behind any write already queued, so a save in flight cannot bring them back.
+        Self.disk.async {
+            try? FileManager.default.removeItem(at: file)
+            try? FileManager.default.removeItem(at: reports)
+        }
     }
+
+    /// Every write and delete of these files, in the order they were asked for.
+    nonisolated static let disk = DispatchQueue(label: "app.vane.performance", qos: .utility)
 
     // MARK: Export
 
-    /// Apple puts the region format in every report's metadata; it says nothing about speed.
-    /// The rest of this list is what "Include Mac details" adds back.
-    static let alwaysStripped: Set<String> = ["regionFormat"]
-    static let macDetailKeys: Set<String> = ["deviceType", "osVersion", "platformArchitecture"]
+    /// Never exported. The region format and pid say nothing about speed; an exception's
+    /// message, a termination reason and the memory map can quote a URL, title or file path.
+    static let alwaysStripped: Set<String> = [
+        "regionFormat", "pid", "composedMessage", "formatString", "arguments",
+        "terminationReason", "virtualMemoryRegionInfo",
+    ]
+    /// What "Include Mac model and macOS version" adds back. A system framework's binary UUID
+    /// names the exact macOS build, and a source build's own UUID is unique to that Mac.
+    static let macDetailKeys: Set<String> = ["deviceType", "osVersion", "platformArchitecture", "binaryUUID"]
+    /// Cut to the day when anonymous, like the samples.
+    nonisolated static let timestampKeys: Set<String> = ["timeStampBegin", "timeStampEnd"]
 
     var metricKitReports: [URL] {
         ((try? FileManager.default.contentsOfDirectory(at: metricKitDirectory, includingPropertiesForKeys: nil)) ?? [])
@@ -100,7 +114,7 @@ import UniformTypeIdentifiers
         let stripped = includeMac ? Self.alwaysStripped : Self.alwaysStripped.union(Self.macDetailKeys)
         let reports: [Any] = metricKitReports.compactMap { url in
             (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) }
-                .map { Self.removing(stripped, from: $0) }
+                .map { Self.scrub($0, removing: stripped, dayOnly: !includeMac) }
         }
         var root: [String: Any] = [
             "vane": Self.version,
@@ -113,11 +127,19 @@ import UniformTypeIdentifiers
         return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
     }
 
-    nonisolated static func removing(_ keys: Set<String>, from value: Any) -> Any {
+    nonisolated static func scrub(_ value: Any, removing keys: Set<String>, dayOnly: Bool) -> Any {
         if let dict = value as? [String: Any] {
-            return dict.filter { !keys.contains($0.key) }.mapValues { removing(keys, from: $0) }
+            var out: [String: Any] = [:]
+            for (key, value) in dict where !keys.contains(key) {
+                if dayOnly, timestampKeys.contains(key), let text = value as? String {
+                    out[key] = String(text.prefix(10))
+                } else {
+                    out[key] = scrub(value, removing: keys, dayOnly: dayOnly)
+                }
+            }
+            return out
         }
-        if let array = value as? [Any] { return array.map { removing(keys, from: $0) } }
+        if let array = value as? [Any] { return array.map { scrub($0, removing: keys, dayOnly: dayOnly) } }
         return value
     }
 
@@ -148,7 +170,12 @@ import UniformTypeIdentifiers
         saveScheduled = false
         guard let data = try? JSONEncoder().encode(samples) else { return }
         let file = file
-        await Task.detached(priority: .utility) { try? data.write(to: file, options: .atomic) }.value
+        await withCheckedContinuation { done in
+            Self.disk.async {
+                try? data.write(to: file, options: .atomic)
+                done.resume()
+            }
+        }
     }
 
     nonisolated static func day(_ date: Date) -> String { String(date.ISO8601Format().prefix(10)) }
@@ -161,27 +188,39 @@ import UniformTypeIdentifiers
 
     private static var busySince: CFTimeInterval = 0
     private static var inbox: MetricKitInbox?
+    private static var started = false
 
     /// Call first thing in launch. Installs the hang watch and MetricKit, once.
     static func start() {
-        guard inbox == nil else { return }
-        let inbox = MetricKitInbox(directory: shared.metricKitDirectory)
-        Self.inbox = inbox
-        MXMetricManager.shared.add(inbox)
-        // ponytail: a run loop observer, not a watchdog thread. It sees a stall only once the
-        // stall ends, so a hang that never ends (a deadlock) is MetricKit's to report.
-        let activities = CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue
-        let observer = CFRunLoopObserverCreateWithHandler(nil, activities, true, 0) { _, activity in
+        guard !started else { return }
+        started = true
+        // MetricKit hands each report over once, per app, not per data directory: a test copy
+        // run with VANE_DATA_DIR would take the real app's reports into its throwaway folder.
+        if getenv("VANE_DATA_DIR") == nil {
+            let inbox = MetricKitInbox(directory: shared.metricKitDirectory)
+            Self.inbox = inbox
+            MXMetricManager.shared.add(inbox)
+        }
+        // ponytail: run loop observers, not a watchdog thread. A stall is seen once it ends, so
+        // one that never ends (a deadlock) is MetricKit's to report. The clock starts before
+        // anything else wakes and stops after everything else is done before sleeping, Core
+        // Animation's commit and AppKit's display pass included: layout and drawing count.
+        let main = CFRunLoopGetMain()
+        let wake = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue,
+                                                      true, CFIndex.min) { _, _ in
+            MainActor.assumeIsolated { busySince = CACurrentMediaTime() }
+        }
+        let sleep = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue,
+                                                       true, CFIndex.max) { _, _ in
             MainActor.assumeIsolated {
-                let now = CACurrentMediaTime()
-                if activity == .afterWaiting { busySince = now; return }
                 guard busySince > 0 else { return }
-                let ms = Int((now - busySince) * 1000)
+                let ms = Int((CACurrentMediaTime() - busySince) * 1000)
                 busySince = 0
                 if ms >= hangThresholdMs { shared.record(.hang, ms: ms) }
             }
         }
-        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        CFRunLoopAddObserver(main, wake, .commonModes)
+        CFRunLoopAddObserver(main, sleep, .commonModes)
     }
 
     /// Process start to the first windows being open, dyld included.
@@ -204,7 +243,7 @@ import UniformTypeIdentifiers
 }
 
 /// MetricKit hands over Apple's daily hang, CPU, disk and crash reports for this app. They are
-/// filed as they came, up to the most recent 30; nothing here sends them anywhere.
+/// filed as they came, the most recent 30 of each kind; nothing here sends them anywhere.
 final class MetricKitInbox: NSObject, MXMetricManagerSubscriber, Sendable {
     static let keep = 30
     let directory: URL
@@ -215,15 +254,21 @@ final class MetricKitInbox: NSObject, MXMetricManagerSubscriber, Sendable {
     func didReceive(_ payloads: [MXDiagnosticPayload]) { file(payloads.map { $0.jsonRepresentation() }, "diagnostics") }
 
     private func file(_ reports: [Data], _ kind: String) {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        let stamp = Int(Date().timeIntervalSince1970)
-        for (i, data) in reports.enumerated() {
-            try? data.write(to: directory.appendingPathComponent("\(stamp)-\(i)-\(kind).json"), options: .atomic)
+        let directory = directory
+        PerformanceLog.disk.async {
+            let fm = FileManager.default
+            // Not intermediate directories: after Erase Everything the data folder stays gone.
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: false)
+            let stamp = Int(Date().timeIntervalSince1970)
+            for (i, data) in reports.enumerated() {
+                try? data.write(to: directory.appendingPathComponent("\(stamp)-\(i)-\(kind).json"), options: .atomic)
+            }
+            // Per kind, so a month of daily metrics cannot push out the crash reports.
+            let mine = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.lastPathComponent.hasSuffix("-\(kind).json") }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            for old in mine.dropLast(Self.keep) { try? fm.removeItem(at: old) }
         }
-        let all = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for old in all.dropLast(Self.keep) { try? fm.removeItem(at: old) }
     }
 }
 
@@ -252,7 +297,7 @@ struct PerformanceSettingsCard: View {
                 Button("Clear") { log.clear(); status = "" }
                 Button("Export…") { export() }
             }
-            Footnote("Measured on this Mac and never sent. Exports contain timings, counts, the Vane version and Apple’s crash and hang reports — not sites, tabs, Spaces or names."
+            Footnote("Measured on this Mac and never sent. Exports contain timings, counts, the Vane version and Apple’s crash and hang reports with their messages and file paths removed — not sites, tabs, Spaces or names."
                      + (status.isEmpty ? "" : " " + status))
         }
     }
