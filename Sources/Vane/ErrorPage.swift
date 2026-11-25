@@ -179,7 +179,7 @@ import Foundation
                 clearInterval(timer); state = 'over';
                 best = Math.max(best, score);
                 hud(); say('Game over · Space to play again');
-                if (back) setTimeout(() => location.reload(), 1500);
+                if (back) setTimeout(() => { if (back && state === 'over') location.reload(); }, 1500);
                 return;
               }
               snake.unshift(h);
@@ -198,7 +198,8 @@ import Foundation
             const keys = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
                            w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0] };
             addEventListener('keydown', e => {
-              if (e.metaKey || e.ctrlKey || e.altKey || e.target instanceof HTMLButtonElement) return;
+              if (e.metaKey || e.ctrlKey || e.altKey) return;
+              if (e.key === ' ' && e.target instanceof HTMLButtonElement) return; // Space presses the button
               if (e.key === ' ') { e.preventDefault();
                 if (state === 'paused') run(); else if (state !== 'play') start(); return; }
               const k = keys[e.key.length === 1 ? e.key.toLowerCase() : e.key];
