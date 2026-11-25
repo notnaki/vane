@@ -817,7 +817,7 @@ struct SiteControlPopover: View {
                 // the profile has a tile, not only the ones that happen to be loaded.
                 if installable {
                     ForEach(tab.extensions.inactive) { entry in
-                        OffExtensionTile(host: tab.extensions, entry: entry)
+                        OffExtensionTile(host: tab.extensions, entry: entry, store: VanePages.store(of: tab))
                     }
                     SiteTile(glyph: "plus", label: "Add Extension", help: "Find extensions in the Chrome Web Store",
                              on: false, inert: false) { addExtension() }
@@ -1091,6 +1091,8 @@ private struct OffExtensionTile: View {
     @Environment(\.dismiss) private var dismiss
     let host: ExtensionHost
     let entry: ExtensionHost.Inactive
+    /// The popover's window, where Manage Extension opens its tab.
+    let store: TabStore?
 
     var body: some View {
         Button { entry.needsAttention ? manage() : turnOn() } label: {
@@ -1136,8 +1138,8 @@ private struct OffExtensionTile: View {
 
     private func manage() {
         dismiss()
-        let host = host, path = entry.path
-        Task { @MainActor in ExtensionManagement.openPage(for: host, selecting: path) }
+        let host = host, path = entry.path, store = store
+        Task { @MainActor in ExtensionManagement.openPage(for: host, selecting: path, from: store) }
     }
 }
 

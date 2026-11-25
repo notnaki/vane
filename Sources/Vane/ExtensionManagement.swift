@@ -28,17 +28,12 @@ import WebKit
         return VanePages.profile(page.selection.profileID, fallback: store.profileID).id
     }
 
-    /// The extension a "Manage Extension…" asked to show, taken by the manager when it
-    /// next appears or is presented, in the vane://settings/extensions tab or the window.
-    fileprivate static var pendingSelection: [UUID: String] = [:]
-
     /// "Manage Extension(s)…": the Extensions section of vane://settings, with one extension
-    /// selected when given — a list left open on another search or filter is cleared for it.
+    /// selected when given — in the tab this opens, and a list left on another search or
+    /// filter is cleared for it.
     static func openPage(for host: ExtensionHost, selecting path: String? = nil, from store: TabStore? = nil) {
-        if let path { pendingSelection[host.profileID] = path }
-        VanePages.open(.extensions, profileID: host.profileID, from: store)
-        // A page already on screen does not appear again; this is what tells it.
-        NotificationCenter.default.post(name: presentationRequest, object: host.profileID)
+        let tab = VanePages.open(.extensions, profileID: host.profileID, from: store)
+        if let path { tab?.vanePage?.pendingExtension = path }
     }
 
     static func show(for host: ExtensionHost = .shared) {
@@ -98,6 +93,8 @@ struct ExtensionManagementView: View {
     var inTab = false
     /// The tab's Chrome Web Store line: opens the store itself, like arc://extensions.
     var openStore: (() -> Void)? = nil
+    /// The tab's request to show one extension; taken and cleared on arrival.
+    var pending: Binding<String?>? = nil
     @State private var query = ""
     @State private var filter = ExtensionManagerModel.Filter.all
     @State private var selected: String?
@@ -155,16 +152,15 @@ struct ExtensionManagementView: View {
         Group {
             if inTab { tabPage } else { windowPage }
         }
-        .onAppear { refreshCatalog(); takePendingSelection() }
+        .onAppear { refreshCatalog(); takePending() }
+        .onChange(of: pending?.wrappedValue) { _, _ in takePending() }
         .onDisappear { catalogRefresh?.cancel(); catalogRefresh = nil }
         .onReceive(host.objectWillChange) { _ in refreshCatalog() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshCatalog()
         }
         .onReceive(NotificationCenter.default.publisher(for: ExtensionManagement.presentationRequest)) { note in
-            guard note.object as? UUID == host.profileID else { return }
-            refreshCatalog()
-            takePendingSelection()
+            if note.object as? UUID == host.profileID { refreshCatalog() }
         }
         .onChange(of: visible.map(\.id)) { _, _ in
             selected = ExtensionManagerModel.selection(selected, in: visible)
@@ -474,8 +470,9 @@ struct ExtensionManagementView: View {
 
     /// Show the extension "Manage Extension…" asked for, clearing a leftover search or
     /// filter that would hide it.
-    private func takePendingSelection() {
-        guard let path = ExtensionManagement.pendingSelection.removeValue(forKey: host.profileID) else { return }
+    private func takePending() {
+        guard let pending, let path = pending.wrappedValue else { return }
+        pending.wrappedValue = nil
         query = ""
         filter = .all
         selected = path

@@ -126,6 +126,9 @@ enum VanePage: Equatable, Sendable {
 /// `selection.id`, and this tab follows.
 @MainActor final class VanePageSession: ObservableObject {
     let selection = SettingsSelection()
+    /// The extension a "Manage Extension…" opened this tab to show. The Extensions section
+    /// takes it, so it reaches this tab and no other window's.
+    @Published var pendingExtension: String?
 
     init(_ page: VanePage, profileID: UUID) {
         selection.profileID = profileID
@@ -363,7 +366,8 @@ struct VanePageView: View {
     @ViewBuilder private var extensions: some View {
         if let host = ExtensionHost.running(for: profile.id) {
             ExtensionManagementView(host: host, inTab: true,
-                                    openStore: { store.openBeside(URL(string: "https://chromewebstore.google.com/")!, focus: true) })
+                                    openStore: { store.openBeside(URL(string: "https://chromewebstore.google.com/")!, focus: true) },
+                                    pending: $session.pendingExtension)
                 .id(profile.id)
         } else {
             VanePageCard {
