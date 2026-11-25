@@ -12,13 +12,28 @@ struct SiteBoost: Codable, Equatable, Sendable {
     var css = ""
     var script = ""
     var scriptEnabled = false
+    var contrast = 1.0
+    var brightness = 1.0
+    var saturation = 1.0
+    var textCase = ""
 
-    static let fonts = ["", "Georgia", "Helvetica Neue", "Avenir Next", "Menlo", "Palatino", "Times New Roman"]
+    /// The Boost panel's font grid; "" is the website's own font.
+    static let fonts = ["", "Helvetica Neue", "Avenir Next", "Futura", "Gill Sans", "Optima", "Verdana",
+                        "Trebuchet MS", "Arial Rounded MT Bold", "Menlo", "Courier New", "Georgia", "Palatino",
+                        "Times New Roman", "Baskerville", "Didot", "Hoefler Text", "American Typewriter",
+                        "Snell Roundhand", "Copperplate", "Chalkboard SE"]
+    /// Fonts every synced release accepts; see ICloudContentAdapter's `fontName`.
+    static let legacyFonts = ["", "Georgia", "Helvetica Neue", "Avenir Next", "Menlo", "Palatino", "Times New Roman"]
+    static let cases = ["", "lowercase", "uppercase", "capitalize"]
 
     var sanitized: Self {
         var copy = self
         if !Self.fonts.contains(font) { copy.font = "" }
         copy.textScale = textScale.isFinite ? min(2, max(0.75, textScale)) : 1
+        copy.contrast = contrast.isFinite ? min(1.5, max(0.5, contrast)) : 1
+        copy.brightness = brightness.isFinite ? min(1.5, max(0.5, brightness)) : 1
+        copy.saturation = saturation.isFinite ? min(2, max(0, saturation)) : 1
+        if !Self.cases.contains(textCase) { copy.textCase = "" }
         for key in [\Self.background, \Self.textColor, \Self.linkColor] {
             if copy[keyPath: key].range(of: "^#[0-9a-fA-F]{6}$", options: .regularExpression) == nil {
                 copy[keyPath: key] = ""
@@ -42,10 +57,32 @@ struct SiteBoost: Codable, Equatable, Sendable {
         }
         if !value.textColor.isEmpty { rules.append("body, body :is(p,h1,h2,h3,h4,h5,h6,span,li,td,th,label,blockquote) { color: \(value.textColor) !important; }") }
         if !value.linkColor.isEmpty { rules.append("body a, body a * { color: \(value.linkColor) !important; }") }
+        if !value.textCase.isEmpty {
+            rules.append("body, body :is(p,h1,h2,h3,h4,h5,h6,a,span,li,td,th,button,label,blockquote) { text-transform: \(value.textCase) !important; }")
+        }
+        if (value.contrast, value.brightness, value.saturation) != (1, 1, 1) {
+            rules.append("html { filter: contrast(\(value.contrast)) brightness(\(value.brightness)) saturate(\(value.saturation)) !important; }")
+        }
         // Each selector is its own rule: one stale selector must not discard the others.
         rules += value.hidden.map { "\($0) { display: none !important; }" }
         rules.append(value.css)
         return rules.joined(separator: "\n")
+    }
+}
+
+extension SiteBoost {
+    // Saved and synced Boosts predate some fields; a missing key keeps its default instead of dropping the Boost.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        func read<T: Decodable>(_ key: CodingKeys, _ path: WritableKeyPath<Self, T>) throws {
+            if let value = try c.decodeIfPresent(T.self, forKey: key) { self[keyPath: path] = value }
+        }
+        try read(.enabled, \.enabled); try read(.font, \.font); try read(.textScale, \.textScale)
+        try read(.background, \.background); try read(.textColor, \.textColor); try read(.linkColor, \.linkColor)
+        try read(.hidden, \.hidden); try read(.css, \.css); try read(.script, \.script)
+        try read(.scriptEnabled, \.scriptEnabled); try read(.contrast, \.contrast); try read(.brightness, \.brightness)
+        try read(.saturation, \.saturation); try read(.textCase, \.textCase)
     }
 }
 
@@ -259,6 +296,9 @@ struct SiteBoost: Codable, Equatable, Sendable {
                   let selector = body["selector"] as? String, !selector.isEmpty,
                   selector.utf8.count <= 4096, SiteBoostEditor.acceptsPick(tab: tab) else { return }
             SiteBoostEditor.pick(selector, tab: tab)
+        case "undo":
+            guard documents[tab.id]?.token == token, SiteBoostEditor.acceptsPick(tab: tab) else { return }
+            SiteBoostEditor.undo(tab: tab)
         case "done":
             guard documents[tab.id]?.token == token else { return }
             SiteBoostEditor.stopZap(tab: tab)

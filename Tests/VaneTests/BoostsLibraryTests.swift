@@ -12,6 +12,18 @@ import XCTest
         XCTAssertTrue(section.searchable)
     }
 
+    func testBoostsSavedBeforeFiltersAndCaseStillDecode() throws {
+        let old = ##"{"enabled":true,"font":"Georgia","textScale":1.25,"background":"","textColor":"","linkColor":"","hidden":["#ad"],"css":"","script":"","scriptEnabled":false}"##
+        let boost = try JSONDecoder().decode(SiteBoost.self, from: Data(old.utf8))
+        XCTAssertEqual(boost.font, "Georgia"); XCTAssertEqual(boost.hidden, ["#ad"])
+        XCTAssertEqual(boost.contrast, 1); XCTAssertEqual(boost.textCase, "")
+        var styled = boost; styled.textCase = "uppercase"; styled.contrast = 1.2
+        XCTAssertEqual(try JSONDecoder().decode(SiteBoost.self, from: JSONEncoder().encode(styled)), styled)
+        XCTAssertTrue(styled.style.contains("text-transform: uppercase"))
+        XCTAssertTrue(styled.style.contains("filter: contrast(1.2) brightness(1.0) saturate(1.0)"))
+        XCTAssertFalse(boost.style.contains("filter:"), "Default filters add no rule")
+    }
+
     func testLibraryRailOffersArchiveWithoutHistoryShortcut() {
         for isPrivate in [false, true] {
             let sections = LibrarySection.railSections(private: isPrivate)

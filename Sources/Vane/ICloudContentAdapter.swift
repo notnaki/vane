@@ -62,6 +62,9 @@ import Darwin
         var origin: String; var enabled: Bool; var font: String; var textScale: Double
         var background: String; var textColor: String; var linkColor: String; var hidden: [String]
         var cssDigest: String; var scriptDigest: String
+        // Optional and nil at defaults: older Macs ignore them and unchanged Boosts keep their synced bytes.
+        // Fonts older releases do not know travel as fontName, so their whole-batch validation still passes.
+        var contrast: Double?; var brightness: Double?; var saturation: Double?; var textCase: String?; var fontName: String?
     }
     private struct Blocking: Codable, Sendable { var enabled: Bool }
     private struct SiteException: Codable, Sendable { var host: String }
@@ -144,9 +147,13 @@ import Darwin
         var assets: [String: Data] = [:]
         let css = try addAsset(Data(value.css.utf8), to: &assets)
         let script = try addAsset(Data(value.script.utf8), to: &assets)
-        let portable = Boost(origin: origin, enabled: value.enabled, font: value.font, textScale: value.textScale,
+        let legacyFont = SiteBoost.legacyFonts.contains(value.font)
+        let portable = Boost(origin: origin, enabled: value.enabled, font: legacyFont ? value.font : "", textScale: value.textScale,
             background: value.background, textColor: value.textColor, linkColor: value.linkColor,
-            hidden: value.hidden, cssDigest: css, scriptDigest: script)
+            hidden: value.hidden, cssDigest: css, scriptDigest: script,
+            contrast: value.contrast == 1 ? nil : value.contrast, brightness: value.brightness == 1 ? nil : value.brightness,
+            saturation: value.saturation == 1 ? nil : value.saturation, textCase: value.textCase.isEmpty ? nil : value.textCase,
+            fontName: legacyFont ? nil : value.font)
         return try item(portable, category: .boosts, id: profile.uuidString.lowercased() + "/" + ICloudIdentity.digest(origin), profile: profile, assets: assets)
     }
     private nonisolated static func subscriptionItem(_ subscription: FilterSubscription) throws -> ICloudItem {
@@ -412,9 +419,11 @@ import Darwin
                   let css = String(data: try asset(portable.cssDigest, from: item), encoding: .utf8),
                   let script = String(data: try asset(portable.scriptDigest, from: item), encoding: .utf8),
                   portable.hidden.count <= 4096 else { throw ICloudFailure.invalid("Invalid synced Boost.") }
-            let boost = SiteBoost(enabled: portable.enabled, font: portable.font, textScale: portable.textScale,
+            let boost = SiteBoost(enabled: portable.enabled, font: portable.fontName ?? portable.font, textScale: portable.textScale,
                 background: portable.background, textColor: portable.textColor, linkColor: portable.linkColor,
-                hidden: portable.hidden, css: css, script: script, scriptEnabled: false)
+                hidden: portable.hidden, css: css, script: script, scriptEnabled: false,
+                contrast: portable.contrast ?? 1, brightness: portable.brightness ?? 1,
+                saturation: portable.saturation ?? 1, textCase: portable.textCase ?? "")
             guard boost == boost.sanitized else { throw ICloudFailure.invalid("Invalid synced Boost settings.") }
             return .boost(profile, portable.origin, boost)
         case .contentBlocking:
@@ -560,13 +569,24 @@ import Darwin
         for item in removed { try ICloudApplyContext.check(); try await remove(item, enabled: enabled) }
     }
 
+    private nonisolated static func boostDefaults(_ item: ICloudItem) -> ICloudItem {
+        var item = item
+        for key in ["contrast", "brightness", "saturation", "textCase", "fontName"] where item.fields[key] == nil {
+            item.fields[key] = Data("null".utf8)
+        }
+        return item
+    }
+
     private func mergeBoost(_ incoming: ICloudItem, origin: String, profile: UUID, baseline: [String: ICloudItem]) async throws {
         while true {
             try ICloudApplyContext.check()
             let snapshot = boosts.get(origin: origin, profile: profile)
             let updated = try await Task.detached(priority: .utility) {
-                let local = try Self.boostItem(snapshot, origin: origin, profile: profile)
-                let merged = Self.reconciled(incoming, current: local, baseline: baseline)
+                // Optional look fields are omitted at their defaults. A missing key must merge as
+                // "back to default", not "unchanged", on every side of the three-way merge.
+                let local = Self.boostDefaults(try Self.boostItem(snapshot, origin: origin, profile: profile))
+                var base = baseline; base[incoming.key] = base[incoming.key].map(Self.boostDefaults)
+                let merged = Self.reconciled(Self.boostDefaults(incoming), current: local, baseline: base)
                 guard case .boost(_, _, let value) = try Self.prepare(merged) else { throw ICloudFailure.invalid("Invalid synced Boost.") }
                 return value
             }.value

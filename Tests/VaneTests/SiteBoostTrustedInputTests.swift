@@ -17,13 +17,16 @@ import XCTest
             window.webkit = {messageHandlers:{vaneBoost:{postMessage: message => messages.push(message)}}};
             window.addEventListener = (type, callback) => listeners[type] = callback;
             window.removeEventListener = type => delete listeners[type];
+            var innerWidth = 800, innerHeight = 600;
             var document = {body:{contains:() => true}, documentElement:{append:() => {}},
-                createElement:() => ({dataset:{}, style:{setProperty:() => {}}, remove:() => {}}),
+                createElement:() => ({dataset:{}, style:{setProperty:() => {}}, remove:() => {}, append:() => {},
+                    addEventListener:() => {}, contains:() => false, getBoundingClientRect:() => ({x:0,y:0,width:100,height:30})}),
                 querySelectorAll:() => [target]};
-            var target = {id:'ad', parentElement:{}, getRootNode:() => document,
+            var target = {id:'ad', classList:[], parentElement:{}, getRootNode:() => document,
                 hasAttribute:() => false, getBoundingClientRect:() => {measured++; return {x:0,y:0,width:10,height:10}}};
-            function event(trusted) {return {isTrusted:trusted, target, key:'Escape',
+            function event(trusted, on = target) {return {isTrusted:trusted, target:on, key:'Escape',
                 preventDefault:() => prevented++, stopImmediatePropagation:() => {}};}
+            var zapThis = {closest:() => ({dataset:{action:'this'}})};
             """#)
         context.evaluateScript(SiteBoostScripts.runtime)
         XCTAssertNil(context.exception, context.exception?.toString() ?? "")
@@ -34,11 +37,15 @@ import XCTest
         XCTAssertEqual(context.evaluateScript("measured")?.toInt32(), 0)
         XCTAssertTrue(context.evaluateScript("window.__vaneBoost.zapping")?.toBool() == true)
         // The positive path proves the target and active session are selectable.
-        context.evaluateScript("listeners.pointermove(event(true)); listeners.click(event(true));")
+        // A trusted click opens the choice bubble; a synthetic choice must not pick.
+        context.evaluateScript("listeners.pointermove(event(true)); listeners.click(event(true)); listeners.click(event(false, zapThis));")
+        XCTAssertNil(context.exception, context.exception?.toString() ?? "")
+        XCTAssertEqual(context.evaluateScript("messages.length")?.toInt32(), 0)
+        context.evaluateScript("listeners.click(event(true, zapThis));")
         XCTAssertNil(context.exception, context.exception?.toString() ?? "")
         XCTAssertEqual(context.evaluateScript("messages[0].kind")?.toString(), "pick")
         XCTAssertEqual(context.evaluateScript("messages[0].selector")?.toString(), "#ad")
-        XCTAssertEqual(context.evaluateScript("measured")?.toInt32(), 1)
+        XCTAssertEqual(context.evaluateScript("measured")?.toInt32(), 2, "Hover and bubble placement measure the target")
         context.evaluateScript("listeners.keydown(event(true));")
         XCTAssertFalse(context.evaluateScript("window.__vaneBoost.zapping")?.toBool() ?? true)
         XCTAssertEqual(context.evaluateScript("messages[1].kind")?.toString(), "done")

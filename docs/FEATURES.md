@@ -159,10 +159,12 @@ Embedded frames are selected whole; custom drags can crop inside them.
 ## Site Boosts
 
 Choose **Site Controls → Boost This Site** to customize a website while viewing it. The
-native Boost editor previews fonts, text size, background/text/link colors, and custom
-CSS as you edit (CSS `@import` is not supported). **Zap an Element** highlights what is
-under the pointer; click to hide it, select **Undo** or a saved selector's restore
-button to bring it back, and press **Escape** to finish. Hidden-element rules also apply
+Boost panel floats over the page's right edge (drag its header to move it) and previews
+as you edit: a color pad with light/dark, contrast, brightness, and saturation, a font
+grid, **Size** and **Case**, and custom CSS (CSS `@import` is not supported). **Zap**
+highlights what is under the pointer; click an element, then choose **Zap this** or
+**Zap all related elements**. Press ⌘Z or use the Zap row's menu to undo, and press
+**Escape** to finish. Hidden-element rules also apply
 to content added later. A site's markup changes can require selecting an element again;
 iframes can be hidden as a whole, and shadow-root contents are not edited.
 
@@ -172,10 +174,9 @@ Subdomains have separate Boosts. Private tabs keep their own temporary changes.
 Search by site address or profile, open a site, or use a row's menu to enable, disable,
 or delete its Boost. The section is hidden in private windows.
 
-**Code → JavaScript** offers an explicit **Enable JavaScript** switch and **Apply Script**
-button. Enabled scripts run once after each new document loads; editing code alone does
+**Code → JS** offers an explicit **Run JavaScript** switch and **Run** button. Enabled scripts run once after each new document loads; editing code alone does
 not run it. Script errors appear in the editor. Disabling or resetting prevents future
-runs; reload the page to remove effects already made by a script. **Reset Boost**
+runs; reload the page to remove effects already made by a script. The header's reset button
 restores the site's visual defaults, and **Settings → Profiles → Site Permissions →
 Reset Boosts…** removes all Boosts in that profile. Reduce Motion and Battery Saver keep
 editor transitions immediate.

@@ -306,6 +306,8 @@ import XCTest
         // A framework can change the path between highlighting and clicking.
         document.getElementById('root').prepend(document.createElement('span'));
         __zapListeners.click(__trusted(document.getElementById('root').lastElementChild));
+        // The click opens the choice bubble; choosing "Zap this" picks the element.
+        __zapListeners.click(__trusted(document.querySelector('vane-boost-zap-button[data-action="this"]')));
         return true;
         """, world: SiteBoostScripts.world)
         let deadline = Date.now.addingTimeInterval(3)
