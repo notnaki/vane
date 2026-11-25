@@ -4196,6 +4196,19 @@ struct FolderDisclosure: View {
 /// A folder’s glyph in a favicon’s box, so its name lines up with the tab titles around it.
 /// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
 /// apart, and it does so by looking at the string rather than by a second stored field.
+/// The icon of the extension that made a folder, once that extension has loaded.
+private struct ExtensionFolderBadge: View {
+    let owner: String
+    @ObservedObject private var host = ExtensionHost.shared
+
+    var body: some View {
+        if let image = host.icon(owner: owner) {
+            Image(nsImage: image).resizable().interpolation(.high)
+                .frame(width: Look.sourceBadge, height: Look.sourceBadge).accessibilityHidden(true)
+        }
+    }
+}
+
 struct FolderGlyph: View {
     let folder: Folder
     @Environment(\.rowHovering) private var hovering
@@ -4251,10 +4264,9 @@ struct FolderGlyph: View {
                     LiveBadge(live: live, folder: folder.id)
                         .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                 }
-            } else if let owner = folder.extensionOwner, let image = ExtensionHost.shared.icon(owner: owner) {
+            } else if let owner = folder.extensionOwner {
                 // An extension's folder wears its icon, as a live folder wears GitHub's.
-                let badge = Image(nsImage: image).resizable().interpolation(.high)
-                    .frame(width: Look.sourceBadge, height: Look.sourceBadge).accessibilityHidden(true)
+                let badge = ExtensionFolderBadge(owner: owner)
                 if folder.icon == Folder.defaultIcon {
                     badge.opacity(arrivalMark ? 0 : 1)
                         .offset(FolderFace.badgeOffset)
