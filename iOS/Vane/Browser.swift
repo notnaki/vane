@@ -166,6 +166,8 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     enum Editing { case current, newTab }
     /// The address field is open: for the page on screen, or for a new tab.
     var editing: Editing?
+    /// What's typed in the address field while editing.
+    var query = ""
     var onTabsChanged: () -> Void = {}
     var onVisit: (Tab) -> Void = { _ in }
     /// History from other devices, when history sync is on.
@@ -228,6 +230,13 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     func switchSpace(_ id: UUID) {
         spaceID = id
         select(spaceTabs.last)
+    }
+
+    /// Opens what was picked or typed in the address field, then closes it.
+    func go(_ url: URL?) {
+        guard let url else { return }
+        open(url, newTab: editing == .newTab || selected == nil)
+        editing = nil
     }
 
     /// Text from the address field: a URL if it looks like one, otherwise a search.

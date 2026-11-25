@@ -27,12 +27,18 @@ struct RootView: View {
                 SpacesHome(openSettings: { settings = true })
                     .transition(.opacity)
             }
-            BottomBar(space: space, menu: menu)
             if browser.editing != nil {
-                AddressEditor(space: space).transition(.opacity)
+                // The page or Space stays in view, dimmed; a tap outside cancels.
+                Color.black.opacity(0.25).ignoresSafeArea()
+                    .onTapGesture { browser.editing = nil }
+                    .transition(.opacity)
+                Suggestions(space: space)
+                    .padding(.horizontal, 14).padding(.bottom, Look.barHeight + 12)
+                    .transition(.opacity.combined(with: .offset(y: 16)))
             }
+            BottomBar(space: space, menu: menu)
         }
-        .animation(.easeOut(duration: 0.18), value: browser.editing)
+        .animation(.smooth(duration: 0.28), value: browser.editing)
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
@@ -125,9 +131,24 @@ struct BottomBar<Menu: View>: View {
     let space: SpaceRow?
     let menu: Menu
     @State private var nudge: CGFloat = 0
+    @State private var selection: TextSelection?
+    @FocusState private var focused: Bool
+    private var editing: Bool { browser.editing != nil }
 
     var body: some View {
-        if let tab = browser.selected, tab.collapsed {
+        Group { content }
+            .onChange(of: browser.editing) { _, editing in
+                guard let editing else { focused = false; return }
+                // Editing the page you're on starts from its address, all selected so typing replaces it.
+                let query = editing == .newTab ? "" : browser.selected?.url.absoluteString ?? ""
+                browser.query = query
+                selection = TextSelection(range: query.startIndex..<query.endIndex)
+                focused = true
+            }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let tab = browser.selected, tab.collapsed, !editing {
             // Reading: just the site, small, out of the way. A tap brings the bar back.
             Button { withAnimation(.smooth(duration: 0.3)) { tab.collapsed = false } } label: {
                 HStack(spacing: 6) {
@@ -153,51 +174,18 @@ struct BottomBar<Menu: View>: View {
         let last = browser.spaceTabs.last
         // A capsule inside a capsule, so both ends sit concentric with the screen's corners.
         return HStack(spacing: 4) {
-            // On a page: the Space and its tabs. On the Space itself (which already shows them):
-            // back to the last tab, or nothing to do when there isn't one.
-            Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
-                    Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+            if !editing { tabsButton(tab: tab, last: last).transition(.scale(scale: 0.5).combined(with: .opacity)) }
+            pill(tab: tab)
+            if editing {
+                Button("Cancel") { browser.editing = nil }.fontWeight(.medium).padding(.horizontal, 10).frame(height: 44)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                SwiftUI.Menu { menu } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Circle())
                 }
-                .frame(width: 44, height: 44).contentShape(Circle())
+                .accessibilityLabel("More")
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
-            .disabled(tab == nil && last == nil)
-            .opacity(tab == nil && last == nil ? 0.35 : 1)
-            .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
-
-            Button { browser.editing = .current } label: {
-                HStack(spacing: 8) {
-                    if let tab {
-                        SiteIcon(url: tab.url, size: 16)
-                        Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
-                    } else {
-                        Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium))
-                        Text("Search or enter address").foregroundStyle(.secondary)
-                    }
-                }
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .frame(maxWidth: .infinity).frame(height: 40)
-                .background {
-                    // Loading fills the pill from the left, then fades.
-                    GeometryReader { geo in
-                        let loading = (tab?.progress ?? 1) < 1
-                        Capsule().fill(.primary.opacity(0.08))
-                            .frame(width: geo.size.width * (tab?.progress ?? 0))
-                            .opacity(loading ? 1 : 0)
-                            .animation(.easeOut(duration: loading ? 0.2 : 0.4), value: tab?.progress)
-                    }
-                }
-                .background(GroundFill(strength: 1.4), in: Capsule())
-                .clipShape(Capsule())
-            }
-            .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
-
-            SwiftUI.Menu { menu } label: {
-                Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Circle())
-            }
-            .accessibilityLabel("More")
         }
         .buttonStyle(.plain)
         .padding(4)
@@ -207,7 +195,7 @@ struct BottomBar<Menu: View>: View {
         .frame(maxWidth: 560)
         .padding(.horizontal, 14).padding(.bottom, 2)
         .offset(x: nudge)
-        .simultaneousGesture(DragGesture(minimumDistance: 24).onChanged { value in
+        .simultaneousGesture(editing ? nil : DragGesture(minimumDistance: 24).onChanged { value in
             nudge = value.translation.width * 0.12
         }.onEnded { value in
             let ids = library.spaces.map(\.id)
@@ -220,6 +208,71 @@ struct BottomBar<Menu: View>: View {
             }
             withAnimation(.spring(duration: 0.35, bounce: 0.3)) { nudge = 0 }
         })
+    }
+
+    private func tabsButton(tab: Tab?, last: Tab?) -> some View {
+            // On a page: the Space and its tabs. On the Space itself (which already shows them):
+            // back to the last tab, or nothing to do when there isn't one.
+            Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
+                    Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+                }
+                .frame(width: 44, height: 44).contentShape(Circle())
+            }
+            .disabled(tab == nil && last == nil)
+            .opacity(tab == nil && last == nil ? 0.35 : 1)
+            .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
+    }
+
+    /// The address pill; while editing, the same capsule holds the text field.
+    private func pill(tab: Tab?) -> some View {
+        ZStack {
+            if editing {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
+                    TextField("Search or enter address", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
+                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
+                    if !browser.query.isEmpty {
+                        Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
+                            .accessibilityLabel("Clear")
+                    }
+                }
+                .font(.subheadline)
+                .padding(.horizontal, 14)
+            } else {
+                Button { browser.editing = .current } label: {
+                HStack(spacing: 8) {
+                    if let tab {
+                        SiteIcon(url: tab.url, size: 16)
+                        Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
+                    } else {
+                        Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium))
+                        Text("Search or enter address").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Capsule())
+                }
+                .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
+            }
+        }
+        .frame(maxWidth: .infinity).frame(height: 40)
+                .background {
+                    // Loading fills the pill from the left, then fades.
+                    GeometryReader { geo in
+                        let loading = (tab?.progress ?? 1) < 1
+                        Capsule().fill(.primary.opacity(0.08))
+                            .frame(width: geo.size.width * (tab?.progress ?? 0))
+                            .opacity(loading ? 1 : 0)
+                            .animation(.easeOut(duration: loading ? 0.2 : 0.4), value: tab?.progress)
+                    }
+                }
+                .background(GroundFill(strength: editing ? 1.8 : 1.4), in: Capsule())
+                .clipShape(Capsule())
     }
 }
 
@@ -600,27 +653,28 @@ struct SpaceChip: View {
 /// The address field and what it finds, on the Space's colour.
 /// Typing an address, Safari-style: the field stays at the foot of the screen with the
 /// keyboard straight up under it, and suggestions stack upward from it, nearest first.
-struct AddressEditor: View {
+struct Suggestions: View {
     @Environment(Browser.self) private var browser
     @Environment(Library.self) private var library
     let space: SpaceRow?
-    @State private var text = ""
-    @State private var selection: TextSelection?
-    @FocusState private var focused: Bool
-    private var newTab: Bool { browser.editing == .newTab || browser.selected == nil }
+    private var text: String { browser.query }
     var body: some View {
-        VStack(spacing: 8) {
-            if idle { start } else { matches }
-            field
+        // As tall as what it holds, scrolling only once that's more than the room above the bar.
+        ViewThatFits(in: .vertical) {
+            list
+            ScrollView { list }.defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.never)
         }
-        .padding(.horizontal, Look.inset)
-        .background(Color(.systemBackground).ignoresSafeArea())
-        .onAppear {
-            // Editing the page you're on starts from its address, all selected so typing replaces it.
-            text = newTab ? "" : browser.selected?.url.absoluteString ?? ""
-            selection = TextSelection(range: text.startIndex..<text.endIndex)
-            focused = true
-        }
+            .frame(maxWidth: 560)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.18), radius: 16, y: 4)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .padding(.top, 60)
+    }
+
+    @ViewBuilder private var list: some View {
+        Group { if idle { start } else { matches } }
+            .padding(.horizontal, 10).padding(.vertical, 8)
     }
 
     /// Nothing typed yet (or only the page's own address).
@@ -631,8 +685,7 @@ struct AddressEditor: View {
         let favourites = space.flatMap { $0.isIncognito ? nil : library.favourites(profile: $0.profileID) } ?? []
         var seen = Set<URL>()
         let recent = browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(8)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+        return VStack(alignment: .leading, spacing: 22) {
                 if !favourites.isEmpty {
                     section("Favourites")
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
@@ -660,15 +713,11 @@ struct AddressEditor: View {
                     }
                 }
                 if favourites.isEmpty && recent.isEmpty {
-                    Text("Search the web or type an address.").font(.subheadline).foregroundStyle(.secondary).padding(.top, 40)
-                        .frame(maxWidth: .infinity)
+                    Text("Search the web or type an address.").font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 10)
                 }
             }
-            .padding(.top, 16)
-            .frame(maxWidth: 560)
-            .frame(maxWidth: .infinity)
-        }
-        .scrollDismissesKeyboard(.interactively)
+            .padding(.vertical, 6)
     }
 
     private func section(_ title: String) -> some View {
@@ -677,7 +726,6 @@ struct AddressEditor: View {
 
     /// While typing: matches stacked up from the field, nearest first.
     private var matches: some View {
-            ScrollView {
                 VStack(spacing: 2) {
                     ForEach(browser.suggestions(for: text).reversed(), id: \.self) { visit in
                         Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
@@ -690,38 +738,9 @@ struct AddressEditor: View {
                             icon: AnyView(Image(systemName: search ? "magnifyingglass" : "arrow.up.right"))) { go(destination) }
                     }
                 }
-                .frame(maxWidth: 560)
-                .frame(maxWidth: .infinity)
-            }
-            .defaultScrollAnchor(.bottom)
-            .scrollDismissesKeyboard(.never)
     }
 
-    private var field: some View {
-            HStack(spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
-                    TextField("Search or enter address", text: $text, selection: $selection)
-                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .submitLabel(.go).onSubmit { go(browser.destination(for: text)) }
-                    if !text.isEmpty {
-                        Button { text = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
-                            .buttonStyle(.plain).accessibilityLabel("Clear")
-                    }
-                }
-                .padding(.horizontal, 14).frame(height: 44)
-                .background(GroundFill(strength: 1.6), in: Capsule())
-                Button("Cancel") { browser.editing = nil }.fontWeight(.medium).padding(.horizontal, 8)
-            }
-            .frame(maxWidth: 560)
-            .padding(.bottom, 8)
-    }
-
-    private func go(_ url: URL?) {
-        guard let url else { return }
-        browser.open(url, newTab: newTab)
-        browser.editing = nil
-    }
+    private func go(_ url: URL?) { browser.go(url) }
 }
 
 struct SettingsView: View {
