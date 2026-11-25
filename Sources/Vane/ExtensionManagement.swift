@@ -28,6 +28,14 @@ import WebKit
         return VanePages.profile(page.selection.profileID, fallback: store.profileID).id
     }
 
+    /// "Manage Extension(s)…": the Extensions section of vane://settings, with one extension
+    /// selected when given — in the tab this opens, and a list left on another search or
+    /// filter is cleared for it.
+    static func openPage(for host: ExtensionHost, selecting path: String? = nil, from store: TabStore? = nil) {
+        let tab = VanePages.open(.extensions, profileID: host.profileID, from: store)
+        if let path { tab?.vanePage?.pendingExtension = path }
+    }
+
     static func show(for host: ExtensionHost = .shared) {
         if let window = windows[host.profileID] {
             window.makeKeyAndOrderFront(nil)
@@ -85,6 +93,8 @@ struct ExtensionManagementView: View {
     var inTab = false
     /// The tab's Chrome Web Store line: opens the store itself, like arc://extensions.
     var openStore: (() -> Void)? = nil
+    /// The tab's request to show one extension; taken and cleared on arrival.
+    var pending: Binding<String?>? = nil
     @State private var query = ""
     @State private var filter = ExtensionManagerModel.Filter.all
     @State private var selected: String?
@@ -142,7 +152,8 @@ struct ExtensionManagementView: View {
         Group {
             if inTab { tabPage } else { windowPage }
         }
-        .onAppear { refreshCatalog() }
+        .onAppear { refreshCatalog(); takePending() }
+        .onChange(of: pending?.wrappedValue) { _, _ in takePending() }
         .onDisappear { catalogRefresh?.cancel(); catalogRefresh = nil }
         .onReceive(host.objectWillChange) { _ in refreshCatalog() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -455,6 +466,16 @@ struct ExtensionManagementView: View {
             Text(detail).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 340)
         }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Show the extension "Manage Extension…" asked for, clearing a leftover search or
+    /// filter that would hide it.
+    private func takePending() {
+        guard let pending, let path = pending.wrappedValue else { return }
+        pending.wrappedValue = nil
+        query = ""
+        filter = .all
+        selected = path
     }
 
     private func refreshCatalog() {
