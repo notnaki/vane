@@ -400,10 +400,14 @@ import WebKit
         nonisolated init?(_ url: URL?, base: URL) {
             guard let url, url.scheme == base.scheme, url.host == base.host, url.port == base.port,
                   url.path == bridgePath,
-                  let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-                  let operation = items.first(where: { $0.name == "op" })?.value else { return nil }
+                  let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQueryItems else { return nil }
+            // `URLSearchParams` writes a space as `+`, which Foundation leaves alone.
+            func value(_ name: String) -> String? {
+                items.first { $0.name == name }?.value?.replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+            }
+            guard let operation = value("op") else { return nil }
             self.operation = operation
-            arguments = items.first { $0.name == "args" }?.value.flatMap {
+            arguments = value("args").flatMap {
                 try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
             } ?? [:]
         }

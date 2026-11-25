@@ -10,6 +10,11 @@ import XCTest
             URL(string: "webkit-extension://abc/__vane_gaps__?op=group&args=%7B%22tabIds%22%3A%5B4%5D%7D"), base: base))
         XCTAssertEqual(request.operation, "group")
         XCTAssertEqual(request.arguments["tabIds"] as? [Int], [4])
+        // As `URLSearchParams` writes it: a space is `+`, a plus `%2B`.
+        let spaced = try XCTUnwrap(ExtensionChromiumGaps.Request(
+            URL(string: "webkit-extension://abc/__vane_gaps__?op=ws.send&args=%7B%22data%22%3A%22a+b%2Bc%22%7D"), base: base))
+        XCTAssertEqual(spaced.operation, "ws.send")
+        XCTAssertEqual(spaced.arguments["data"] as? String, "a b+c")
         XCTAssertNil(ExtensionChromiumGaps.Request(URL(string: "webkit-extension://other/__vane_gaps__?op=groups"), base: base))
         XCTAssertNil(ExtensionChromiumGaps.Request(URL(string: "webkit-extension://abc/page.html?op=groups"), base: base))
         XCTAssertNil(ExtensionChromiumGaps.Request(URL(string: "webkit-extension://abc/__vane_gaps__"), base: base))
