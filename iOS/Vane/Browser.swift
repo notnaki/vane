@@ -76,9 +76,6 @@ import WebKit
             web.observe(\.underPageBackgroundColor) { [weak self] web, _ in MainActor.assumeIsolated { self?.pageColor = web.themeColor ?? web.underPageBackgroundColor } },
             web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded() } } },
         ]
-        // The floating bar covers the page's foot; let its last line scroll clear of it.
-        web.scrollView.contentInset.bottom = Look.barHeight
-        web.scrollView.verticalScrollIndicatorInsets.bottom = Look.barHeight
         web.load(URLRequest(url: url))
         view = web
         return web

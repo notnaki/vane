@@ -18,8 +18,11 @@ struct RootView: View {
         ZStack(alignment: .bottom) {
             Wash(space: space)
             if let tab = browser.selected {
+                Color(tab.pageColor ?? .systemBackground).ignoresSafeArea()
                 WebContainer(tab: tab).id(tab.id)
-                    .ignoresSafeArea()
+                    .ignoresSafeArea(edges: .top)
+                    .padding(.bottom, tab.collapsed && browser.editing == nil ? 0 : Look.barHeight + 8)
+                    .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 if let pull = tab.pull {
                     PullActions(pull: pull, color: tab.pageColor).frame(maxHeight: .infinity, alignment: .top)
@@ -176,19 +179,17 @@ struct BottomBar<Menu: View>: View {
 
     @ViewBuilder private var content: some View {
         if let tab = browser.selected, tab.collapsed, !editing {
-            // Reading: just the site, small, out of the way. A tap brings the bar back.
+            // Reading: just the site, small, down in the home-indicator strip. A tap brings the bar back.
             Button { withAnimation(.smooth(duration: 0.3)) { tab.collapsed = false } } label: {
                 HStack(spacing: 6) {
                     SiteIcon(url: tab.url, size: 12)
                     Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.caption.weight(.semibold)).lineLimit(1)
                 }
                 .padding(.horizontal, 12).frame(height: 28)
-                .background(.regularMaterial, in: Capsule())
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+                .glassEffect(.regular.interactive(), in: Capsule())
             }
             .buttonStyle(.plain)
-            .padding(.bottom, 2)
+            .padding(.bottom, -18)
             .accessibilityLabel("Show controls, \(tab.url.host() ?? "")")
             .transition(.scale(scale: 0.6, anchor: .bottom).combined(with: .opacity))
         } else {
@@ -196,29 +197,44 @@ struct BottomBar<Menu: View>: View {
         }
     }
 
+    /// Safari's bar: Back, the address in a glass capsule (page menu at its left, reload at its
+    /// right), and the tabs button, each its own piece of glass.
     private var bar: some View {
         let tab = browser.selected
         let last = browser.spaceTabs.last
-        // A capsule inside a capsule, so both ends sit concentric with the screen's corners.
-        return HStack(spacing: 4) {
-            if !editing { tabsButton(tab: tab, last: last).transition(.scale(scale: 0.5).combined(with: .opacity)) }
-            pill(tab: tab)
-            if editing {
-                Button("Cancel") { browser.editing = nil }.fontWeight(.medium).padding(.horizontal, 10).frame(height: 44)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                SwiftUI.Menu { menu } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Circle())
+        return GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                if !editing {
+                    Button { tab?.webView.goBack() } label: {
+                        Image(systemName: "chevron.backward").font(.system(size: 19, weight: .semibold)).frame(width: 48, height: 48)
+                    }
+                    .disabled(!(tab?.canGoBack ?? false))
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel("Back")
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
                 }
-                .accessibilityLabel("More")
-                .transition(.scale(scale: 0.5).combined(with: .opacity))
+                pill(tab: tab)
+                    .glassEffect(.regular.interactive(), in: Capsule())
+                if editing {
+                    Button { browser.editing = nil } label: {
+                        Image(systemName: "xmark").font(.system(size: 17, weight: .semibold)).frame(width: 48, height: 48)
+                    }
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel("Cancel")
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                } else {
+                    // On a page: the Space and its tabs. On the Space itself: back to the last tab.
+                    Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
+                        Image(systemName: "square.on.square").font(.system(size: 18, weight: .medium)).frame(width: 48, height: 48)
+                    }
+                    .disabled(tab == nil && last == nil)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                }
             }
         }
         .buttonStyle(.plain)
-        .padding(4)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.16), radius: 12, y: 3)
         .frame(maxWidth: 560)
         .padding(.horizontal, 14).padding(.bottom, 2)
         .offset(x: nudge)
@@ -237,72 +253,59 @@ struct BottomBar<Menu: View>: View {
         })
     }
 
-    private func tabsButton(tab: Tab?, last: Tab?) -> some View {
-            // On a page: the Space and its tabs. On the Space itself (which already shows them):
-            // back to the last tab, or nothing to do when there isn't one.
-            Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
-                    Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
-                }
-                .frame(width: 44, height: 44).contentShape(Circle())
-            }
-            .disabled(tab == nil && last == nil)
-            .opacity(tab == nil && last == nil ? 0.35 : 1)
-            .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
-    }
-
-    /// The address pill; while editing, the same capsule holds the text field.
+    /// The address capsule; while editing, the same capsule holds the text field.
     private func pill(tab: Tab?) -> some View {
-        ZStack {
+        HStack(spacing: 4) {
             if editing {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
-                    TextField("Search or enter address", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
-                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
-                    if !browser.query.isEmpty {
-                        Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
-                            .accessibilityLabel("Clear")
-                    }
+                Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6).padding(.leading, 14)
+                TextField("Search or enter address", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
+                    .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
+                if !browser.query.isEmpty {
+                    Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45).frame(width: 40, height: 48) }
+                        .accessibilityLabel("Clear")
                 }
-                .font(.subheadline)
-                .padding(.horizontal, 14)
             } else {
-                Button { browser.editing = .current } label: {
-                HStack(spacing: 8) {
-                    if let tab {
-                        if tab.reading != nil {
-                            Image(systemName: "doc.plaintext.fill").font(.subheadline).accessibilityLabel("Reader")
-                        }
-                        SiteIcon(url: tab.url, size: 16)
-                        Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
-                    } else {
-                        Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium))
-                        Text("Search or enter address").foregroundStyle(.secondary)
-                    }
+                SwiftUI.Menu { menu } label: {
+                    Image(systemName: tab?.reading == nil ? "line.3.horizontal" : "doc.plaintext.fill")
+                        .font(.system(size: 17, weight: .medium)).frame(width: 44, height: 48).contentShape(Rectangle())
                 }
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Capsule())
+                .accessibilityLabel("Page menu")
+                Button { browser.editing = .current } label: {
+                    HStack(spacing: 6) {
+                        if let tab {
+                            Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
+                        } else {
+                            Text("Search or enter address").foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .font(.body.weight(.medium))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
                 }
                 .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
+                if let tab {
+                    Button { if (tab.progress) < 1 && tab.progress > 0 { tab.webView.stopLoading() } else { tab.webView.reload() } } label: {
+                        Image(systemName: tab.progress > 0 && tab.progress < 1 ? "xmark" : "arrow.clockwise")
+                            .font(.system(size: 16, weight: .medium)).frame(width: 44, height: 48).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(tab.progress > 0 && tab.progress < 1 ? "Stop" : "Reload")
+                } else {
+                    Color.clear.frame(width: 44, height: 48)
+                }
             }
         }
-        .frame(maxWidth: .infinity).frame(height: 40)
-                .background {
-                    // Loading fills the pill from the left, then fades.
-                    GeometryReader { geo in
-                        let loading = (tab?.progress ?? 1) < 1
-                        Capsule().fill(.primary.opacity(0.08))
-                            .frame(width: geo.size.width * (tab?.progress ?? 0))
-                            .opacity(loading ? 1 : 0)
-                            .animation(.easeOut(duration: loading ? 0.2 : 0.4), value: tab?.progress)
-                    }
+        .frame(maxWidth: .infinity).frame(height: 48)
+        .overlay(alignment: .bottom) {
+            // Loading: a thin line along the capsule's foot, as in Safari.
+            if let tab, tab.progress > 0, tab.progress < 1, !editing {
+                GeometryReader { geo in
+                    Capsule().fill(Color.accentColor).frame(width: geo.size.width * tab.progress, height: 2.5)
                 }
-                .background(GroundFill(strength: editing ? 1.8 : 1.4), in: Capsule())
-                .clipShape(Capsule())
+                .frame(height: 2.5).padding(.horizontal, 22).padding(.bottom, 1)
+                .animation(.easeOut(duration: 0.2), value: tab.progress)
+            }
+        }
     }
 }
 
@@ -709,9 +712,7 @@ struct Suggestions: View {
             ScrollView { list }.defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.never)
         }
             .frame(maxWidth: 560)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.18), radius: 16, y: 4)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .frame(maxHeight: .infinity, alignment: .bottom)
             .padding(.top, 60)
     }
