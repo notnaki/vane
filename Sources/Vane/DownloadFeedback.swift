@@ -233,11 +233,10 @@ private struct DownloadArrow: View {
 struct DownloadBadge: View {
     let from: CGPoint
     let to: CGPoint
-    var still = false
     @State private var hopped: Bool
 
     init(from: CGPoint, to: CGPoint, still: Bool = false) {
-        self.from = from; self.to = to; self.still = still
+        self.from = from; self.to = to
         _hopped = State(initialValue: still)   // under Reduce Motion it starts settled
     }
 
