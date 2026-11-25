@@ -495,7 +495,7 @@ import XCTest
     }
 
     private func exerciseLandingOnSourceTab() async throws {
-        let (tab, sourceWindow) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let (tab, sourceWindow) = try await fixture("<video id='player' width='640' height='360' autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>")
         defer { tab.tearDown(); sourceWindow.close() }
         let store = TabStore(isPrivate: true)
         let trayWindow = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 250, height: 150),
@@ -693,7 +693,7 @@ import XCTest
 
     func testRestoringSelectedTabKeepsAutomaticPiPEnabled() async throws {
         try await withNativeMediaLoop {
-            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>")
             let store = TabStore(isPrivate: true)
             defer { TabStore.all.removeAll { $0 === store } }
             store.tabs = [tab]
@@ -853,7 +853,7 @@ import XCTest
 
     func testAutomaticCustomPiPReturnsInlineWithoutPausing() async throws {
         try await withNativeMediaLoop {
-            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>")
             window.makeKeyAndOrderFront(nil)
             try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
             PictureInPicture.enterIfPlaying(tab)
@@ -873,7 +873,7 @@ import XCTest
 
     func testImmediateReentryDuringReturnDoesNotLeaveAnEmptyPanel() async throws {
         try await withNativeMediaLoop {
-            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>")
             @MainActor func restore(_ view: NSView) -> NSButton? {
                 if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
                 return view.subviews.lazy.compactMap(restore).first
@@ -920,7 +920,7 @@ import XCTest
 
     func testTabSelectionDuringPiPReturnIsNotOverridden() async throws {
         try await withNativeMediaLoop {
-            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>")
             let store = TabStore(isPrivate: true)
             store.tabs = [tab]
             store.current = tab.id
@@ -951,7 +951,7 @@ import XCTest
 
     func testNavigationDuringPiPReturnDoesNotRevealReplacementPage() async throws {
         try await withNativeMediaLoop {
-            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+            let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>")
             let store = TabStore(isPrivate: true)
             store.tabs = [tab]
             store.current = tab.id
