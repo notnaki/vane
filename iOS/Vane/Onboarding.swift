@@ -85,10 +85,10 @@ struct Onboarding: View {
         case .theme:
             page("A space that feels like you.", "Pick a colour for your first Space. Every Space can have its own.") {
                 let chosen = color ?? library.spaces.first?.palette.first ?? "#6E7DD2"
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Wash.ground(Color(hex: chosen) ?? Look.vane, dark: dark, tint: Look.defaultTint).opacity(Wash.opacity(dark: dark, tint: Look.defaultTint)))
+                Wash(space: themed)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     .overlay(alignment: .bottom) {
-                        Capsule().fill(.white.opacity(dark ? 0.09 : 0.42)).frame(height: 30).padding(14)
+                        Capsule().fill(GroundFill()).frame(height: 30).padding(14)
                     }
                     .frame(height: 150)
                     .animation(.easeOut(duration: 0.3), value: chosen)
@@ -182,10 +182,15 @@ struct Onboarding: View {
         .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
     }
 
+    /// The first Space with the chosen colour: exactly what the preview shows and what's saved.
+    private var themed: SpaceRow? {
+        guard var space = library.spaces.first else { return nil }
+        if let color { space.colors = [color] }
+        return space
+    }
+
     private func move(_ next: Step) {
-        if step == .theme, let color, var space = library.spaces.first, space.palette.first != color {
-            space.colors = [color]; library.setTheme(space)
-        }
+        if step == .theme, color != nil, let space = themed, space != library.spaces.first { library.setTheme(space) }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { step = next }
     }
 

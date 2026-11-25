@@ -4,7 +4,6 @@ import LocalAuthentication
 struct RootView: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    @State private var spaces = false
     @State private var address = false
     @State private var settings = false
     @State private var reader: Article?
@@ -25,18 +24,16 @@ struct RootView: View {
                     .ignoresSafeArea()
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
-                SpaceColumn(space: space, close: {}, openSettings: { settings = true })
-                    .safeAreaPadding(.bottom, Look.barHeight)
+                // Home: every Space, full screen, swiped between like Arc on iPhone.
+                SpacesHome(openSettings: { settings = true })
+                    .safeAreaPadding(.bottom, Look.barHeight + 4)
                     .transition(.opacity)
             }
-            BottomBar(space: space, spaces: $spaces, address: $address, menu: menu)
+            BottomBar(space: space, address: $address, menu: menu)
         }
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
-        .sheet(isPresented: $spaces) {
-            SpacesPanel(close: { spaces = false }, openSettings: { spaces = false; settings = true })
-        }
         .sheet(isPresented: $address) { AddressSheet(space: space, dismiss: { address = false }) }
         .sheet(isPresented: $settings) { SettingsView().frostsBehind().presentationBackground { Wash(space: space) } }
         .sheet(item: $reader) { ReaderView(article: $0) }
@@ -108,7 +105,7 @@ struct RootView: View {
             Task { try? await Task.sleep(for: .seconds(5)); withAnimation { browser.selected?.collapsed = true } }
         }
         switch defaults.string(forKey: "demoPanel") {
-        case "spaces": spaces = true
+        case "spaces": browser.select(nil)
         case "settings": settings = true
         case "address": address = true
         case "theme": themeDemo = true
@@ -124,7 +121,6 @@ struct BottomBar<Menu: View>: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
     let space: SpaceRow?
-    @Binding var spaces: Bool
     @Binding var address: Bool
     let menu: Menu
     @State private var nudge: CGFloat = 0
@@ -158,7 +154,7 @@ struct BottomBar<Menu: View>: View {
         return HStack(spacing: 4) {
             // On a page: the Space and its tabs. On the Space itself (which already shows them):
             // back to the last tab, or nothing to do when there isn't one.
-            Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); spaces = true } } label: {
+            Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
                     Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
@@ -225,12 +221,11 @@ struct BottomBar<Menu: View>: View {
     }
 }
 
-/// Every Space side by side, swiped between like the Mac sidebar, over the current Space's
-/// colour. The footer holds the Space marks, as at the foot of the Mac sidebar.
-struct SpacesPanel: View {
+/// Home: every Space side by side, full screen, swiped between like Arc on iPhone. The
+/// Space marks under them work as page dots, as at the foot of the Mac sidebar.
+struct SpacesHome: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    let close: () -> Void
     let openSettings: () -> Void
     @State private var creating = false
     @State private var name = ""
@@ -241,44 +236,27 @@ struct SpacesPanel: View {
         VStack(spacing: 0) {
             TabView(selection: Binding(get: { browser.spaceID }, set: { browser.switchSpace($0) })) {
                 ForEach(pages) { space in
-                    SpaceColumn(space: space, close: close, openSettings: openSettings).tag(space.id)
+                    SpaceColumn(space: space, close: {}, openSettings: openSettings).tag(space.id)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            // The same capsule as the page bar, so the panel ends where the bar was.
-            HStack(spacing: 2) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 2) {
-                        ForEach(pages) { space in
-                            let current = space.id == browser.spaceID
-                            Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
-                                SpaceMark(space: space, size: 17)
-                                    .opacity(current ? 1 : 0.5)
-                                    .frame(width: 44, height: 44)
-                                    .background(current ? AnyShapeStyle(GroundFill(strength: 2)) : AnyShapeStyle(.clear), in: Circle())
-                            }
-                            .accessibilityLabel(space.name)
-                            .accessibilityAddTraits(current ? .isSelected : [])
-                        }
+            HStack(spacing: 0) {
+                ForEach(pages) { space in
+                    let here = space.id == browser.spaceID
+                    Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
+                        SpaceMark(space: space, size: 14).opacity(here ? 1 : 0.4).frame(width: 34, height: 34)
                     }
+                    .accessibilityLabel(space.name)
+                    .accessibilityAddTraits(here ? .isSelected : [])
                 }
-                .scrollIndicators(.hidden)
-                Button { name = ""; creating = true } label: { Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Circle()) }
-                    .accessibilityLabel("New Space")
-                Button(action: openSettings) { Image(systemName: "gearshape").frame(width: 44, height: 44).contentShape(Circle()) }
-                    .accessibilityLabel("Settings")
+                Button { name = ""; creating = true } label: {
+                    Image(systemName: "plus").font(.system(size: 13, weight: .semibold)).opacity(0.5).frame(width: 34, height: 34)
+                }
+                .accessibilityLabel("New Space")
             }
-            .font(.system(size: 17, weight: .medium))
             .buttonStyle(.plain)
-            .padding(4)
-            .background(GroundFill(), in: Capsule())
-            .padding(.horizontal, 14).padding(.bottom, -6)
+            .padding(.bottom, 2)
         }
-        .padding(.top, 8)
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
-        .frostsBehind()
-        .presentationBackground { Wash(space: current) }
         .alert("New Space", isPresented: $creating) {
             TextField("Name", text: $name)
             Button("Create") {
