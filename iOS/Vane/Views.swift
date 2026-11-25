@@ -25,7 +25,6 @@ struct RootView: View {
             } else {
                 // Home: every Space, full screen, swiped between like Arc on iPhone.
                 SpacesHome(openSettings: { settings = true })
-                    .safeAreaPadding(.bottom, Look.barHeight + 4)
                     .transition(.opacity)
             }
             BottomBar(space: space, menu: menu)
@@ -236,13 +235,25 @@ struct SpacesHome: View {
     var body: some View {
         let current = library.space(browser.spaceID)
         let pages = library.spaces + [.incognito]
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             TabView(selection: Binding(get: { browser.spaceID }, set: { browser.switchSpace($0) })) {
                 ForEach(pages) { space in
                     SpaceColumn(space: space, close: {}, openSettings: openSettings).tag(space.id)
+                        // Room to scroll the last card clear of the marks and the bar.
+                        .safeAreaPadding(.bottom, Look.barHeight + 46)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .ignoresSafeArea(edges: .bottom)
+            .mask {
+                // Content fades out under the marks and bar rather than being cut off.
+                VStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 120)
+                    Color.clear.frame(height: 40)
+                }
+                .ignoresSafeArea()
+            }
             HStack(spacing: 0) {
                 ForEach(pages) { space in
                     let here = space.id == browser.spaceID
@@ -258,7 +269,7 @@ struct SpacesHome: View {
                 .accessibilityLabel("New Space")
             }
             .buttonStyle(.plain)
-            .padding(.bottom, 2)
+            .padding(.bottom, Look.barHeight + 6)
         }
         .alert("New Space", isPresented: $creating) {
             TextField("Name", text: $name)
@@ -591,6 +602,7 @@ struct SpaceChip: View {
 /// keyboard straight up under it, and suggestions stack upward from it, nearest first.
 struct AddressEditor: View {
     @Environment(Browser.self) private var browser
+    @Environment(Library.self) private var library
     let space: SpaceRow?
     @State private var text = ""
     @State private var selection: TextSelection?
@@ -598,9 +610,76 @@ struct AddressEditor: View {
     private var newTab: Bool { browser.editing == .newTab || browser.selected == nil }
     var body: some View {
         VStack(spacing: 8) {
+            if idle { start } else { matches }
+            field
+        }
+        .padding(.horizontal, Look.inset)
+        .background(Color(.systemBackground).ignoresSafeArea())
+        .onAppear {
+            // Editing the page you're on starts from its address, all selected so typing replaces it.
+            text = newTab ? "" : browser.selected?.url.absoluteString ?? ""
+            selection = TextSelection(range: text.startIndex..<text.endIndex)
+            focused = true
+        }
+    }
+
+    /// Nothing typed yet (or only the page's own address).
+    private var idle: Bool { text.isEmpty || text == browser.selected?.url.absoluteString }
+
+    /// Before typing: the Space's favourites as icons, then where you've been lately.
+    private var start: some View {
+        let favourites = space.flatMap { $0.isIncognito ? nil : library.favourites(profile: $0.profileID) } ?? []
+        var seen = Set<URL>()
+        let recent = browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(8)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                if !favourites.isEmpty {
+                    section("Favourites")
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
+                        ForEach(favourites.prefix(12)) { link in
+                            Button { go(link.url) } label: {
+                                VStack(spacing: 6) {
+                                    SiteIcon(url: link.url, size: 28)
+                                        .frame(width: 60, height: 60)
+                                        .background(GroundFill(strength: 1.4), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    Text(link.title).font(.caption).lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if !recent.isEmpty {
+                    section("Recently Visited")
+                    VStack(spacing: 2) {
+                        ForEach(Array(recent), id: \.self) { visit in
+                            Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
+                                Text(visit.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                if favourites.isEmpty && recent.isEmpty {
+                    Text("Search the web or type an address.").font(.subheadline).foregroundStyle(.secondary).padding(.top, 40)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.top, 16)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private func section(_ title: String) -> some View {
+        Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 4)
+    }
+
+    /// While typing: matches stacked up from the field, nearest first.
+    private var matches: some View {
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(visits.reversed(), id: \.self) { visit in
+                    ForEach(browser.suggestions(for: text).reversed(), id: \.self) { visit in
                         Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
                             Text(visit.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                         }
@@ -616,6 +695,9 @@ struct AddressEditor: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.never)
+    }
+
+    private var field: some View {
             HStack(spacing: 6) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
@@ -633,21 +715,6 @@ struct AddressEditor: View {
             }
             .frame(maxWidth: 560)
             .padding(.bottom, 8)
-        }
-        .padding(.horizontal, Look.inset)
-        .background(Color(.systemBackground).ignoresSafeArea())
-        .onAppear {
-            // Editing the page you're on starts from its address, all selected so typing replaces it.
-            text = newTab ? "" : browser.selected?.url.absoluteString ?? ""
-            selection = TextSelection(range: text.startIndex..<text.endIndex)
-            focused = true
-        }
-    }
-    /// Matches while typing; before that, where you've been lately.
-    private var visits: [Visit] {
-        guard text.isEmpty || text == browser.selected?.url.absoluteString else { return browser.suggestions(for: text) }
-        var seen = Set<URL>()
-        return Array(browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(6))
     }
 
     private func go(_ url: URL?) {
