@@ -13,6 +13,9 @@ import WebKit
     var progress = 0.0
     var canGoBack = false
     var canGoForward = false
+    /// The bar shrinks while the page scrolls down, and returns when it scrolls back up.
+    var collapsed = false
+    private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
     var onChange: () -> Void = {}
@@ -39,11 +42,24 @@ import WebKit
             web.observe(\.estimatedProgress) { [weak self] web, _ in MainActor.assumeIsolated { self?.progress = web.estimatedProgress } },
             web.observe(\.canGoBack) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoBack = web.canGoBack } },
             web.observe(\.canGoForward) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoForward = web.canGoForward } },
+            web.scrollView.observe(\.contentOffset) { [weak self] scroll, _ in MainActor.assumeIsolated { self?.scrolled(scroll) } },
             web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded() } } },
         ]
+        // The floating bar covers the page's foot; let its last line scroll clear of it.
+        web.scrollView.contentInset.bottom = Look.barHeight
+        web.scrollView.verticalScrollIndicatorInsets.bottom = Look.barHeight
         web.load(URLRequest(url: url))
         view = web
         return web
+    }
+
+    private func scrolled(_ scroll: UIScrollView) {
+        let y = scroll.contentOffset.y + scroll.adjustedContentInset.top
+        defer { lastOffset = y }
+        guard scroll.isTracking || scroll.isDecelerating else { return }
+        let atEnd = y + scroll.bounds.height >= scroll.contentSize.height + scroll.adjustedContentInset.bottom - 4
+        let next = y < 40 || atEnd ? false : y - lastOffset > 6 ? true : y - lastOffset < -6 ? false : collapsed
+        if next != collapsed { withAnimation(.smooth(duration: 0.3)) { collapsed = next } }
     }
 
     /// The page's article as plain text blocks, or nil when there isn't one. The script runs

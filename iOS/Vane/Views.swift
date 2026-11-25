@@ -15,25 +15,22 @@ struct RootView: View {
     private var space: SpaceRow? { library.spaces.first { $0.id == browser.spaceID } }
 
     var body: some View {
-        ZStack {
+        // The page takes the whole screen; the controls float over its foot in the Space's
+        // colour, down in the home-indicator strip, and shrink away while you read.
+        ZStack(alignment: .bottom) {
             Wash(space: space)
-            VStack(spacing: 0) {
-                if let tab = browser.selected {
-                    // The page uses the whole width and runs up under the status bar; only its
-                    // foot rounds off onto the Space's ground, where the controls sit.
-                    WebContainer(tab: tab).id(tab.id)
-                        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: Look.pageRadius, bottomTrailingRadius: Look.pageRadius, style: .continuous))
-                        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
-                        .ignoresSafeArea(edges: .top)
-                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                } else {
-                    SpaceColumn(space: space, close: {}, openSettings: { settings = true })
-                        .transition(.opacity)
-                }
-                BottomBar(spaces: $spaces, address: $address, menu: menu)
+            if let tab = browser.selected {
+                WebContainer(tab: tab).id(tab.id)
+                    .ignoresSafeArea()
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            } else {
+                SpaceColumn(space: space, close: {}, openSettings: { settings = true })
+                    .safeAreaPadding(.bottom, Look.barHeight)
+                    .transition(.opacity)
             }
-            .animation(.smooth(duration: 0.3), value: browser.selectedID)
+            BottomBar(space: space, spaces: $spaces, address: $address, menu: menu)
         }
+        .animation(.smooth(duration: 0.3), value: browser.selectedID)
         .sheet(isPresented: $spaces) {
             SpacesPanel(close: { spaces = false }, openSettings: { spaces = false; settings = true })
         }
@@ -93,6 +90,9 @@ struct RootView: View {
             browser.select(nil)
         }
         if let raw = defaults.string(forKey: "demoOpen"), let url = URL(string: raw) { browser.open(url) }
+        if defaults.bool(forKey: "demoCollapsed") {
+            Task { try? await Task.sleep(for: .seconds(5)); withAnimation { browser.selected?.collapsed = true } }
+        }
         switch defaults.string(forKey: "demoPanel") {
         case "spaces": spaces = true
         case "settings": settings = true
@@ -109,14 +109,37 @@ struct RootView: View {
 struct BottomBar<Menu: View>: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
+    let space: SpaceRow?
     @Binding var spaces: Bool
     @Binding var address: Bool
     let menu: Menu
     @State private var nudge: CGFloat = 0
 
     var body: some View {
+        if let tab = browser.selected, tab.collapsed {
+            // Reading: just the site, small, out of the way. A tap brings the bar back.
+            Button { withAnimation(.smooth(duration: 0.3)) { tab.collapsed = false } } label: {
+                HStack(spacing: 6) {
+                    SiteIcon(url: tab.url, size: 12)
+                    Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.caption.weight(.semibold)).lineLimit(1)
+                }
+                .padding(.horizontal, 12).frame(height: 28)
+                .background { Wash(space: space).clipShape(Capsule()) }
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 2)
+            .accessibilityLabel("Show controls, \(tab.url.host() ?? "")")
+            .transition(.scale(scale: 0.6, anchor: .bottom).combined(with: .opacity))
+        } else {
+            bar.transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private var bar: some View {
         let tab = browser.selected
-        HStack(spacing: 10) {
+        return HStack(spacing: 6) {
             Button { spaces = true } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 22, height: 22)
@@ -157,7 +180,12 @@ struct BottomBar<Menu: View>: View {
             .accessibilityLabel("More")
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 8).padding(.top, 4)
+        .padding(4)
+        .background {
+            Wash(space: space).clipShape(RoundedRectangle(cornerRadius: Look.pillRadius + 4, style: .continuous))
+        }
+        .shadow(color: .black.opacity(0.16), radius: 12, y: 3)
+        .padding(.horizontal, 10).padding(.bottom, -8)
         .offset(x: nudge)
         .gesture(DragGesture(minimumDistance: 24).onChanged { value in
             nudge = value.translation.width * 0.12
