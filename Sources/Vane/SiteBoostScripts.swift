@@ -197,6 +197,8 @@ import WebKit
       const key = event => {
         if (!event.isTrusted) return;
         if (event.key === 'Escape') { block(event); if (pending) closeBubble(); else { zap(false); post('done'); } }
+        // Zapping keeps the page focused, so ⌘Z for the last Zap arrives here rather than in the panel.
+        else if (event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'z') { block(event); closeBubble(); post('undo'); }
       };
       const zap = on => {
         zapOff();

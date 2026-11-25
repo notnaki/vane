@@ -569,13 +569,24 @@ import Darwin
         for item in removed { try ICloudApplyContext.check(); try await remove(item, enabled: enabled) }
     }
 
+    private nonisolated static func boostDefaults(_ item: ICloudItem) -> ICloudItem {
+        var item = item
+        for key in ["contrast", "brightness", "saturation", "textCase", "fontName"] where item.fields[key] == nil {
+            item.fields[key] = Data("null".utf8)
+        }
+        return item
+    }
+
     private func mergeBoost(_ incoming: ICloudItem, origin: String, profile: UUID, baseline: [String: ICloudItem]) async throws {
         while true {
             try ICloudApplyContext.check()
             let snapshot = boosts.get(origin: origin, profile: profile)
             let updated = try await Task.detached(priority: .utility) {
-                let local = try Self.boostItem(snapshot, origin: origin, profile: profile)
-                let merged = Self.reconciled(incoming, current: local, baseline: baseline)
+                // Optional look fields are omitted at their defaults. A missing key must merge as
+                // "back to default", not "unchanged", on every side of the three-way merge.
+                let local = Self.boostDefaults(try Self.boostItem(snapshot, origin: origin, profile: profile))
+                var base = baseline; base[incoming.key] = base[incoming.key].map(Self.boostDefaults)
+                let merged = Self.reconciled(Self.boostDefaults(incoming), current: local, baseline: base)
                 guard case .boost(_, _, let value) = try Self.prepare(merged) else { throw ICloudFailure.invalid("Invalid synced Boost.") }
                 return value
             }.value

@@ -145,6 +145,22 @@ import XCTest
         XCTAssertEqual(fields["font"], Data("\"\"".utf8), "Older releases reject fonts they do not know")
         XCTAssertNil(fields["brightness"], "Default values stay off the wire")
     }
+    func testBoostLookResetToDefaultsSyncsOverOlderValues() async throws {
+        let source = try fixture(), target = try fixture()
+        let origin = "https://example.com", profile = ProfileManager.defaultID
+        var value = SiteBoost(); value.font = "Futura"; value.contrast = 1.2; value.textCase = "uppercase"
+        source.boosts.set(value, origin: origin, profile: profile)
+        target.boosts.set(value, origin: origin, profile: profile)
+        let baselineItems = try await target.adapter.capture([.boosts])
+        let baseline = Dictionary(uniqueKeysWithValues: baselineItems.map { ($0.key, $0) })
+        value.font = "Georgia"; value.contrast = 1; value.textCase = ""
+        source.boosts.set(value, origin: origin, profile: profile)
+        let incoming = try await source.adapter.capture([.boosts])
+        try await ICloudApplyContext.$baseline.withValue(baseline) {
+            try await target.adapter.apply(incoming, deleted: [], enabled: [.boosts])
+        }
+        XCTAssertEqual(target.boosts.get(origin: origin, profile: profile), value)
+    }
     func testDisabledCategoriesNeverReadOrApply() async throws {
         let source = try fixture(), target = try fixture()
         _ = try await source.easel.createAsync(title: "Private board")

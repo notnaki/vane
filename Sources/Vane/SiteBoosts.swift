@@ -296,6 +296,9 @@ extension SiteBoost {
                   let selector = body["selector"] as? String, !selector.isEmpty,
                   selector.utf8.count <= 4096, SiteBoostEditor.acceptsPick(tab: tab) else { return }
             SiteBoostEditor.pick(selector, tab: tab)
+        case "undo":
+            guard documents[tab.id]?.token == token, SiteBoostEditor.acceptsPick(tab: tab) else { return }
+            SiteBoostEditor.undo(tab: tab)
         case "done":
             guard documents[tab.id]?.token == token else { return }
             SiteBoostEditor.stopZap(tab: tab)

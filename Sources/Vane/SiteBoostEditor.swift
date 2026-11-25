@@ -218,7 +218,7 @@ private struct BoostEditorView: View {
                 }
                 row("Zap", trailing: AnyView(zapTrailing), inverted: session.zapping) { SiteBoostEditor.toggleZap(tab: session.tab) }
                     .contextMenu {
-                        Button("Undo Last Zap") { session.undoPick() }.keyboardShortcut("z").disabled(boost.hidden.isEmpty)
+                        Button("Undo Last Zap") { session.undoPick() }.disabled(boost.hidden.isEmpty)
                         Button("Restore All Zapped Elements") { session.change { $0.hidden = [] } }.disabled(boost.hidden.isEmpty)
                     }
                     .accessibilityLabel(session.zapping ? "Finish zapping" : "Zap elements")
@@ -257,6 +257,7 @@ private struct BoostEditorView: View {
         .padding(.horizontal, 12).frame(height: 38)
         .contentShape(.rect)
         .gesture(WindowDragGesture())  // move the overlay by its header; the color pad keeps its own drag
+        .allowsWindowActivationEvents(true)  // the first drag works even while Zap keeps the browser window key
     }
 
     private var adjustments: some View {
