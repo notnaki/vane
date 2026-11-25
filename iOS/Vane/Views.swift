@@ -53,25 +53,31 @@ struct RootView: View {
         .task { demo() }
     }
 
+    /// Short enough to open whole on any iPhone: actions sit in two rows of icons, and the
+    /// ways to keep a page share one submenu.
     @ViewBuilder private var menu: some View {
         if let tab = browser.selected, let space {
             ControlGroup {
                 Button("Back", systemImage: "chevron.backward") { tab.webView.goBack() }.disabled(!tab.canGoBack)
                 Button("Forward", systemImage: "chevron.forward") { tab.webView.goForward() }.disabled(!tab.canGoForward)
                 Button("Reload", systemImage: "arrow.clockwise") { tab.webView.reload() }
-                ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
             }
-            Button("Reader", systemImage: "doc.plaintext") { Task { reader = await tab.article(); noArticle = reader == nil } }
-            Button("Find on Page", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
-            if !space.isIncognito { Section {
-                Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
-                Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
-                if let key = library.bookmarked(tab.url, profile: space.profileID) {
-                    Button("Remove Bookmark", systemImage: "bookmark.slash") { library.remove(key) }
-                } else {
-                    Button("Bookmark", systemImage: "bookmark") { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
+            ControlGroup {
+                ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
+                Button("Find", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
+                Button("Reader", systemImage: "doc.plaintext") { Task { reader = await tab.article(); noArticle = reader == nil } }
+            }
+            if !space.isIncognito {
+                Menu("Keep This Page", systemImage: "star") {
+                    Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
+                    Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
+                    if let key = library.bookmarked(tab.url, profile: space.profileID) {
+                        Button("Remove Bookmark", systemImage: "bookmark.slash") { library.remove(key) }
+                    } else {
+                        Button("Bookmark", systemImage: "bookmark") { library.addBookmark(tab.url, title: tab.title, profile: space.profileID) }
+                    }
                 }
-            } }
+            }
             Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
         }
         Section {
@@ -81,6 +87,8 @@ struct RootView: View {
             } else {
                 Button("New Incognito Tab", systemImage: "eyeglasses") { browser.switchSpace(SpaceRow.incognito.id); browser.select(nil) }
             }
+        }
+        Section {
             Button("Bookmarks", systemImage: "book") { bookmarks = true }
             Button("Settings", systemImage: "gearshape") { settings = true }
         }
