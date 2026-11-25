@@ -468,7 +468,8 @@ struct SettingsSection<Content: View>: View {
 struct FullHeaderDisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: Configuration) -> some View {
         DisclosureGroup(isExpanded: configuration.$isExpanded) {
-            configuration.content
+            // Undo the `.automatic` below for disclosures nested in this one's content.
+            configuration.content.disclosureGroupStyle(FullHeaderDisclosureStyle())
         } label: {
             configuration.label
                 .frame(maxWidth: .infinity, alignment: .leading)
