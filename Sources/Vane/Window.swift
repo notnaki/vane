@@ -1118,7 +1118,7 @@ extension VaneWindow {
         // Do not claim their SharedTabs presentation lease or move an existing
         // page out of another window, and preserve recovery/authentication gates.
         for tab in arriving.onScreenTabs where !tab.tornDown && !tab.needsRecovery
-            && tab.easelSession == nil && !arriving.isTabLocked(tab.id) {
+            && tab.easelSession == nil && tab.vanePage == nil && !arriving.isTabLocked(tab.id) {
             tab.resume()
             if !tab.suspended { _ = tab.web }
         }

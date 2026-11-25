@@ -312,7 +312,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.importPasswords) { PasswordImport.chooseAndImport() },
         .separator(),
         item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },
-        item(.manageSavedPasswords) { SettingsWindow.show(tab: "passwords") },
+        item(.manageSavedPasswords) {
+            VanePages.open(.settings(.passwords), profileID: Windows.current?.profileID, from: Windows.current)
+        },
     ]
 }
 
@@ -962,7 +964,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     ]))
     let extensionHost = Windows.main?.extensions ?? ExtensionHost.shared
     root.addItem(menu("Extensions", [
-        item("Manage Extensions…", "") { ExtensionManagement.show(for: extensionHost) },
+        item("Manage Extensions…", "") {
+            VanePages.open(.extensions, profileID: extensionHost.profileID, from: Windows.main)
+        },
         validated(item("Install from Chrome Web Store…", "") { extensionHost.chooseStoreInstall(); rebuild() }) {
             extensionHost.profileID != Profile.incognito.id
         },

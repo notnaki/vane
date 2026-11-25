@@ -535,6 +535,9 @@ struct TitleReveal: Equatable, Sendable {
     @Published private(set) var easelSession: EaselSession?
     var easelID: UUID? { easelSession?.selected }
     private var easelObservation: AnyCancellable?
+    /// vane://settings or vane://extensions, drawn natively. See VanePages.swift.
+    @Published private(set) var vanePage: VanePageSession?
+    private var vanePageObservation: AnyCancellable?
     /// The page whose persisted title is standing in while a parked web view wakes. WebKit
     /// briefly reports an empty title during reconstruction; that is not a page title.
     private var titlePlaceholderURL: URL?
@@ -1145,7 +1148,8 @@ struct TitleReveal: Equatable, Sendable {
     /// the session, spaces — has to come through here, or a suspended tab quietly vanishes
     /// from all of them.
     var currentURL: URL? {
-        easelID.map(EaselAddress.url) ?? (existingWeb != nil ? committedURL ?? initialRequestedURL : parkedURL)
+        easelID.map(EaselAddress.url) ?? vanePage?.url
+            ?? (existingWeb != nil ? committedURL ?? initialRequestedURL : parkedURL)
     }
 
     /// The page actually on screen. WebKit's `url` already names a provisional destination
@@ -1213,6 +1217,7 @@ struct TitleReveal: Equatable, Sendable {
         guard let id = EaselAddress.boardID(url) else { return false }
         guard !isPrivate else { return true }
         release()
+        leaveVanePage()
         let repository = EaselStore.shared(profileID: profileID, directory: Store.directory)
         let session = EaselSession(repository)
         session.selected = id
@@ -1236,6 +1241,56 @@ struct TitleReveal: Equatable, Sendable {
                 ?? (loading ? "Loading Easel…" : "Easel unavailable")
         }
         return true
+    }
+
+    /// Vane's own pages never pass through WebKit or the history database either. Only app
+    /// code calls this — a typed address, the command bar, a menu, Settings, or a restore
+    /// from Vane's own saved state. `go(_:)`, which pages and links can reach, refuses them.
+    /// `profileID` is the profile whose data the page shows; nil keeps the current choice
+    /// (the tab's own profile on first showing).
+    @discardableResult func routeVanePage(_ page: VanePage, profileID shown: UUID? = nil,
+                                          parked: Bool = false) -> Bool {
+        guard !isPrivate else { return false }
+        if let session = vanePage, session.kind == page.kind {
+            session.show(page, profileID: shown)
+            if !parked { suspended = false }
+            return true
+        }
+        release()
+        leaveEasel()
+        let session = VanePageSession(page, profileID: shown ?? profileID)
+        vanePage = session
+        parkedState = nil
+        parkedURL = nil
+        suspended = parked
+        hasEverLoaded = true
+        progress = 0; loading = false
+        canGoBack = false; canGoForward = false
+        favicon = NSImage(systemSymbolName: page.icon, accessibilityDescription: page.title)
+        developer = false; readerAvailable = false
+        pendingSave = nil; passwordChoice = nil; passwordGeneration = nil
+        editableFrames.removeAll()
+        titlePlaceholderURL = nil
+        title = page.title
+        if stays, homeURL == nil { homeURL = session.url }
+        // A section change inside the page is a new address for the row and the pill.
+        vanePageObservation = session.selection.$id.sink { [weak self, weak session] _ in
+            DispatchQueue.main.async {
+                guard let self, let session, self.vanePage === session, !self.editing else { return }
+                self.address = session.url.absoluteString
+            }
+        }
+        address = session.url.absoluteString
+        return true
+    }
+
+    func leaveVanePage() {
+        guard vanePage != nil else { return }
+        vanePageObservation = nil
+        vanePage = nil
+        favicon = nil
+        suspended = false
+        parkedState = nil; parkedURL = nil
     }
 
     func leaveEasel() {
@@ -1273,6 +1328,7 @@ struct TitleReveal: Equatable, Sendable {
             suspended = true
             return
         }
+        if vanePage != nil { suspended = true; return }
         guard !suspended, let url = existingWeb?.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
@@ -1383,7 +1439,7 @@ struct TitleReveal: Equatable, Sendable {
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
         guard !tornDown, suspended, !needsRecovery else { return }
-        if easelSession != nil { suspended = false; return }
+        if easelSession != nil || vanePage != nil { suspended = false; return }
         Trace.span("resume") {
             suspended = false
             if let parkedState { web.interactionState = parkedState }
@@ -1417,6 +1473,7 @@ struct TitleReveal: Equatable, Sendable {
         windowSnapshot = nil
         easelSession?.liveItems.removeAll()
         easelObservation = nil
+        vanePageObservation = nil
         if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
@@ -1427,7 +1484,9 @@ struct TitleReveal: Equatable, Sendable {
     /// instead of thirty. The strip still has a title and a favicon.
     func park(url: URL, _ p: Parked) {
         if routeEasel(url, parked: true) { return }
+        if let page = VanePage(url) { routeVanePage(page, parked: true); return }
         leaveEasel()
+        leaveVanePage()
         parkedURL = url
         parkedState = p.state
         needsRecovery = p.needsRecovery
@@ -1493,6 +1552,8 @@ struct TitleReveal: Equatable, Sendable {
 
     /// Load it now, or park it if we know enough about it to draw it without loading.
     func open(_ url: URL, parked p: Parked?) {
+        // Vane's own saved state: an internal page has nothing to recover or replay.
+        if let page = VanePage(url) { routeVanePage(page, parked: p != nil && Prefs.suspendTabs); return }
         if Crash.didCrashLastLaunch || p?.needsRecovery == true {
             restore(url: url, home: homeURL, parked: p ?? Parked())
         } else if let p, Prefs.suspendTabs { park(url: url, p) } else { go(url) }
@@ -2828,9 +2889,11 @@ struct TitleReveal: Equatable, Sendable {
 
     func reload() {
         if needsRecovery, let url = currentURL { navigate(to: url) }
-        else if easelSession == nil { expectNavigation(existingWeb?.reload()) }
+        else if easelSession == nil, vanePage == nil { expectNavigation(existingWeb?.reload()) }
     }
-    func hardReload() { if easelSession == nil { expectNavigation(existingWeb?.reloadFromOrigin()) } }
+    func hardReload() {
+        if easelSession == nil, vanePage == nil { expectNavigation(existingWeb?.reloadFromOrigin()) }
+    }
     func stop() {
         navigationState.invalidate(preservingDocument: true)
         readingDocumentGeneration = UUID()

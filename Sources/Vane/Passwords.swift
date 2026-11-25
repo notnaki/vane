@@ -1259,6 +1259,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("history window", HistoryWindow.check),
                                ("library", Library.check),
                                ("easels", EaselChecks.check),
+                               ("internal pages", VanePages.check),
                                ("downloads", Downloads.check),
                                ("on-device ai", AppleAI.check),
                                ("cloud ai", CloudAI.check),

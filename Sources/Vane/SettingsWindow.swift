@@ -155,12 +155,9 @@ enum LinkTarget {
 
     /// Open straight at one pane — Help ▸ Keyboard Shortcuts, and anything else that means
     /// "the setting you are after is over there".
-    static func show(tab: String, profileID: UUID? = nil) {
-        // Select before installing or revealing the hosting view. A direct link should
-        // not briefly construct the previous pane (notably the Keychain-backed list).
-        if ["passwords", "privacy"].contains(tab) {
-            selection.profileID = profileID ?? ProfileManager.shared.active.id
-        }
+    /// Passwords, Privacy and Search live in a vane://settings tab — see VanePages.swift.
+    static func show(tab: String) {
+        // Select before installing or revealing the hosting view.
         selection.id = tab
         show()
     }
@@ -226,12 +223,6 @@ enum LinkTarget {
               pane: { AnyView(AdvancedPane(selection: $0)) }),
         .init(id: "animations", title: "UI Animations", icon: "waveform.path", parent: "advanced",
               pane: { _ in AnyView(UIAnimationsPane()) }),
-        .init(id: "passwords", title: "Passwords", icon: "key", parent: "profiles",
-              pane: { AnyView(PasswordsPane(settingsProfileID: $0.profileID)) }),
-        .init(id: "privacy", title: "Privacy and Security", icon: "lock", parent: "profiles",
-              pane: { AnyView(PrivacyPane(selection: $0)) }),
-        .init(id: "search", title: "Search Settings", icon: "magnifyingglass", parent: "profiles",
-              pane: { _ in AnyView(SearchPane()) }),
         .init(id: "previews", title: "Previews", icon: "rectangle.on.rectangle", parent: "general",
               pane: { _ in AnyView(PreviewsPane()) }),
     ]
@@ -248,6 +239,9 @@ enum LinkTarget {
         }
     }
     @Published var profileID: UUID?
+    /// A dialog Privacy and Security opens on arrival (vane://settings/clearBrowserData).
+    enum PrivacyRequest: Sendable { case clearData, websiteData }
+    @Published var privacyRequest: PrivacyRequest?
     weak var toolbar: NSToolbar?
 }
 
@@ -286,7 +280,7 @@ private struct SettingsView: View {
 
     var body: some View {
         Group {
-            if ["shortcuts", "passwords", "animations"].contains(current.id) {
+            if ["shortcuts", "animations"].contains(current.id) {
                 // This pane owns a bounded scrolling list, so its search and guidance
                 // stay in place while the rows scroll.
                 pane
@@ -313,11 +307,6 @@ private struct SettingsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
                 .padding(.top, 20)
-                if ["passwords", "privacy"].contains(current.id),
-                   let profile = ProfileManager.shared.profiles.first(where: { $0.id == selection.profileID }) {
-                    Text(profile.name).font(Look.caption).foregroundStyle(.secondary)
-                        .padding(.top, 8)
-                }
             }
             current.pane(selection)
         }
@@ -329,7 +318,7 @@ private struct SettingsView: View {
 
 }
 
-private struct SettingsToggleStyle: ToggleStyle {
+struct SettingsToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Toggle(configuration).toggleStyle(.switch).controlSize(.small)
     }
@@ -732,10 +721,6 @@ private struct ProfilesPane: View {
     @State private var archiveAfter = Prefs.archiveAfter
     /// Non-nil while a profile row is an editable field rather than a label.
     @State private var renaming: UUID?
-    /// The Clear Browsing Data dialog, which is a sheet rather than an alert: it has four
-    /// controls and a sentence, and an NSAlert accessory view is a worse way to draw those.
-    @State private var clearing: Profile?
-    @State private var managingData: Profile?
     @State private var draft = ""
     /// The right-hand name field. Separate from `draft` on purpose: focusing a TextField
     /// writes through its binding, so sharing one would put the list row into rename mode
@@ -788,12 +773,6 @@ private struct ProfilesPane: View {
             }
         }
         .onAppear { reload() }
-        .sheet(item: $clearing) { captured in
-            ClearDataSheet(profileID: captured.id, profileName: captured.name)
-        }
-        .sheet(item: $managingData) { captured in
-            WebsiteDataSheet(profileID: captured.id, profileName: captured.name)
-        }
         // Not `renaming = nil` here: creating a profile selects it *and* opens its row for
         // renaming, and this fires after both.
         .onChange(of: selected) { reload() }
@@ -968,7 +947,7 @@ private struct ProfilesPane: View {
                 .labelsHidden().frame(width: 145, alignment: .trailing)
             }
             SettingsRow("Manage search", icon: "slider.horizontal.3", tint: .blue) {
-                Button("Search Settings…") { selection.id = "search" }
+                Button("Search Settings…") { open(.search) }
             }
             SettingsRow("Include search engine suggestions", icon: "text.bubble.fill", tint: .blue) {
                 Toggle("Include search engine suggestions", isOn: $suggestions).labelsHidden()
@@ -1013,24 +992,20 @@ private struct ProfilesPane: View {
     private var data: some View {
         SettingsCard(divided: false) {
             VStack(spacing: 0) {
-                DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") {
-                    selection.profileID = profile.id
-                    selection.id = "privacy"
-                }
-                DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
-                    // The same place Menu.swift's Manage Saved Passwords… goes.
-                    selection.profileID = profile.id
-                    selection.id = "passwords"
-                }
-                DataRow(icon: "externaldrive.fill", tint: .blue, title: "Website Data") {
-                    managingData = profile
-                }
-                DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
-                    clearing = profile
-                }
+                // Arc's arrow rows open Chromium's pages in a tab; these open Vane's, for
+                // this profile even when no Space uses it (Arc's rows do nothing then).
+                DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") { open(.privacy) }
+                // The same place Menu.swift's Manage Saved Passwords… goes.
+                DataRow(icon: "key.fill", tint: .green, title: "Passwords") { open(.passwords) }
+                DataRow(icon: "externaldrive.fill", tint: .blue, title: "Website Data") { open(.siteData) }
+                DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") { open(.clearBrowserData) }
             }
             .padding(.vertical, Look.inset / 2)
         }
+    }
+
+    private func open(_ section: VaneSettingsSection) {
+        VanePages.open(.settings(section), profileID: profile.id)
     }
 
     private func reload() {
@@ -1146,7 +1121,7 @@ private struct LinksPane: View {
 
 // MARK: - Search Settings
 
-private struct SearchPane: View {
+struct SearchPane: View {
     // The key `Search.current` reads. AppStorage so the picker redraws itself.
     @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
     @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
@@ -1676,7 +1651,9 @@ private struct AdvancedPane: View {
                             .onChange(of: inspector) { Settings.apply(); rebuild() }
                     }
                     SettingsRow("Extensions", icon: "puzzlepiece.extension.fill", tint: .blue) {
-                        Button("Manage Extensions…") { ExtensionManagement.show() }
+                        Button("Manage Extensions…") {
+                            VanePages.open(.extensions, profileID: ProfileManager.shared.active.id)
+                        }
                         Button("Install from Chrome Web Store…") { ExtensionHost.shared.chooseStoreInstall(); rebuild() }
                         Button("Install Extension…") {
                             ExtensionHost.shared.chooseAndInstall(); rebuild()
@@ -1715,7 +1692,7 @@ private struct AdvancedPane: View {
 /// Arc's "Privacy and Security" row opens Chromium's privacy page. Vane has no Chromium, so
 /// this is the pane that row means: what is switched on to protect you, what has been
 /// answered on your behalf per site, and the one button that takes it all back.
-private struct PrivacyPane: View {
+struct PrivacyPane: View {
     @ObservedObject var selection: SettingsSelection
     @AppStorage("httpsOnly") private var httpsOnly = true
     @State private var blocking = true
@@ -1846,6 +1823,15 @@ private struct PrivacyPane: View {
         }
         .onAppear { reload() }
         .onChange(of: profile.id) { reload() }
+        // vane://settings/clearBrowserData and …/siteData arrive with their dialog asked for.
+        .onReceive(selection.$privacyRequest) { request in
+            guard let request else { return }
+            switch request {
+            case .clearData: clearing = profile
+            case .websiteData: managingData = profile
+            }
+            DispatchQueue.main.async { selection.privacyRequest = nil }
+        }
         .sheet(item: $clearing) { captured in
             ClearDataSheet(profileID: captured.id, profileName: captured.name)
         }

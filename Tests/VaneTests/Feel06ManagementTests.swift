@@ -178,31 +178,4 @@ import SwiftUI
         XCTAssertTrue(ExtensionManagement.isVisible(for: profile))
         XCTAssertTrue(window.isVisible, "Explicit reopening must reuse and refresh the retained manager")
     }
-
-    func testSwitchingSettingsToPasswordsDoesNotEnlargeTheRetainedWindow() async throws {
-        TestEnvironment.prepare()
-        _ = NSApplication.shared
-        // Measure the list, not the locked view: allow the pane's unlock prompt.
-        let denied = Passwords.authenticator
-        Passwords.authenticator = { _, done in done(true) }
-        // An offscreen test window may never be key; the pane starts its unlock anyway.
-        PasswordPaneLock.shared.mayPrompt = { true }
-        defer {
-            Passwords.authenticator = denied; PasswordPaneLock.shared.lock()
-            PasswordPaneLock.shared.mayPrompt = { SettingsWindow.isKey }
-        }
-        SettingsWindow.show(tab: "shortcuts")
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Shortcuts" && $0.isVisible })
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 760, height: 560))
-        window.contentView?.layoutSubtreeIfNeeded()
-        let before = window.frame
-        SettingsWindow.show(tab: "passwords")
-        try await compatibilityWait { window.title == "Passwords" }
-        try await compatibilityWait { PasswordPaneLock.shared.unlockedProfile != nil }
-        window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertLessThanOrEqual(window.frame.height, before.height + 1,
-            "Section presentation must not enlarge the user's retained Settings frame")
-        XCTAssertLessThanOrEqual(window.frame.width, before.width + 1)
-    }
 }

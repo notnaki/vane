@@ -558,11 +558,14 @@ private struct Pane: View {
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }
             .background {
-                if !tab.tornDown && !tab.suspended && tab.easelID == nil && !tab.needsRecovery {
+                if !tab.tornDown && !tab.suspended && tab.easelID == nil && tab.vanePage == nil
+                    && !tab.needsRecovery {
                     PaneFocus(web: tab.web, focus: focus)
                 }
             }
-            .simultaneousGesture(TapGesture().onEnded { if tab.easelID != nil { focus() } })
+            .simultaneousGesture(TapGesture().onEnded {
+                if tab.easelID != nil || tab.vanePage != nil { focus() }
+            })
     }
 }
 

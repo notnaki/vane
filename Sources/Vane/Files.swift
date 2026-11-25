@@ -249,7 +249,11 @@ extension Tab {
         if needsRecovery { navigate(to: url); return }
         if routeEasel(url) { return }
         if url.scheme?.lowercased() == "vane", url.host?.lowercased() == "easel" { return }
+        // Reachable from links and page-supplied URLs, so never an internal page — see
+        // `VanePage.route(_:from:)` and `Tab.routeVanePage`.
+        if VanePage.route(url, from: .web) == .refuse { return }
         leaveEasel()
+        leaveVanePage()
         // Before the load, not after it: `didStartProvisionalNavigation` is a runloop turn
         // away and `WKWebView.url` is further still, and the width of that gap is the whole
         // point of the flag. See `Tab.hasEverLoaded`.

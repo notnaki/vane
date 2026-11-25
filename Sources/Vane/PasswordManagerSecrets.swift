@@ -101,8 +101,11 @@ import LocalAuthentication
     var biometricsAvailable: @MainActor () -> Bool = {
         LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
     }
-    /// Starting on its own needs Settings in front; a test hosts the pane elsewhere.
-    var mayPrompt: @MainActor () -> Bool = { SettingsWindow.isKey }
+    /// Starting on its own needs Settings, or a window showing vane://settings/passwords,
+    /// in front; a test hosts the pane elsewhere.
+    var mayPrompt: @MainActor () -> Bool = {
+        SettingsWindow.isKey || VanePages.showsPasswords(in: NSApp.keyWindow)
+    }
     /// The profile the automatic attempt already ran for since the pane was presented.
     private var automaticProfile: UUID?
     private var request = UUID()
@@ -149,7 +152,9 @@ import LocalAuthentication
         if interaction == nil {
             interaction = NSEvent.addLocalMonitorForEvents(
                 matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
-                if SettingsWindow.holds(event.window) { self?.touch() }
+                if SettingsWindow.holds(event.window) || VanePages.showsPasswords(in: event.window) {
+                    self?.touch()
+                }
                 return event
             }
         }

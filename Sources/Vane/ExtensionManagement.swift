@@ -15,9 +15,17 @@ import WebKit
               event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
               event.charactersIgnoringModifiers?.lowercased() == "f",
               let window = event.window, window.attachedSheet == nil,
-              let profileID = windows.first(where: { $0.value === window })?.key else { return false }
+              let profileID = windows.first(where: { $0.value === window })?.key
+                ?? extensionsTabProfile(in: window) else { return false }
         NotificationCenter.default.post(name: searchRequest, object: profileID)
         return true
+    }
+
+    /// ⌘F over a vane://extensions tab searches its list, as it does in this window.
+    private static func extensionsTabProfile(in window: NSWindow) -> UUID? {
+        guard let store = TabStore.all.first(where: { $0.window === window && $0.palette == nil && !$0.findOpen }),
+              let page = store.active?.vanePage, page.kind == .extensions else { return nil }
+        return VanePages.profile(page.selection.profileID, fallback: store.profileID).id
     }
 
     static func show(for host: ExtensionHost = .shared) {
@@ -70,8 +78,12 @@ import WebKit
     }
 }
 
-private struct ExtensionManagementView: View {
+struct ExtensionManagementView: View {
     @ObservedObject var host: ExtensionHost
+    /// Hosted in a vane://extensions tab rather than this file's window.
+    var inTab = false
+    /// The tab's profile menu, in place of the window's fixed profile label.
+    var profileMenu: AnyView? = nil
     @State private var query = ""
     @State private var filter = ExtensionManagerModel.Filter.all
     @State private var selected: String?
@@ -195,10 +207,18 @@ private struct ExtensionManagementView: View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Extensions").font(.title2.weight(.semibold))
-                Label(profileName, systemImage: isPrivate ? "eyeglasses" : "person.crop.circle")
-                    .font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                    .accessibilityLabel("Profile: \(profileName)")
-                    .help("Extensions, permissions, and settings belong to this profile.")
+                if let profileMenu {
+                    HStack(spacing: 5) {
+                        Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        profileMenu
+                    }.font(.callout)
+                } else {
+                    Label(profileName, systemImage: isPrivate ? "eyeglasses" : "person.crop.circle")
+                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityLabel("Profile: \(profileName)")
+                        .help("Extensions, permissions, and settings belong to this profile.")
+                }
             }
             Spacer(minLength: 8)
             Feel06ActivityLine(busy: busy, text: "Checking…")
@@ -320,13 +340,13 @@ private struct ExtensionManagementView: View {
     }
 
     private func refreshCatalog() {
-        guard ExtensionManagement.isVisible(for: host.profileID) else { return }
+        guard inTab || ExtensionManagement.isVisible(for: host.profileID) else { return }
         catalogRefresh?.cancel()
         catalogRefresh = Task { @MainActor in
             // objectWillChange arrives before the new host values. Coalesce a burst
             // and read after the mutation without doing work from a hover callback.
             await Task.yield()
-            guard !Task.isCancelled, ExtensionManagement.isVisible(for: host.profileID) else { return }
+            guard !Task.isCancelled, inTab || ExtensionManagement.isVisible(for: host.profileID) else { return }
             catalog = host.entries
             catalogRefresh = nil
         }
