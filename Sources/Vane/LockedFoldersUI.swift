@@ -229,6 +229,7 @@ private struct EmbeddedFolderAuthentication: NSViewRepresentable {
         let laContext: LAContext
         var attached: () -> Void
         private var auth: LAAuthenticationView?
+        private var didAttach = false
         init(context: LAContext, attached: @escaping () -> Void) {
             laContext = context
             self.attached = attached
@@ -238,16 +239,20 @@ private struct EmbeddedFolderAuthentication: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard window != nil, auth == nil else { return }
-            let view = LAAuthenticationView(context: laContext, controlSize: .small)
-            view.frame = bounds
-            view.autoresizingMask = [.width, .height]
-            addSubview(view)
-            auth = view
+            guard window != nil, !didAttach else { return }
+            if auth == nil {
+                let view = LAAuthenticationView(context: laContext, controlSize: .small)
+                view.frame = bounds
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+                auth = view
+            }
             // After the view holds the context, as the old appearance task did; a turn later
             // so SwiftUI is not mid-update when the evaluation publishes.
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.window != nil else { return }
+                // Detached before this turn: the next window attach tries again.
+                guard let self, self.window != nil, !self.didAttach else { return }
+                self.didAttach = true
                 self.attached()
             }
         }

@@ -1273,6 +1273,9 @@ struct TitleReveal: Equatable, Sendable {
         titlePlaceholderURL = nil
         title = page.title
         if stays, homeURL == nil { homeURL = session.url }
+        // A home saved under the old vane://extensions alias reads as the address it opens,
+        // so the row is at home there rather than forever "wandered".
+        if let home = homeURL, let saved = VanePage(home), home != saved.url { homeURL = saved.url }
         // A section change inside the page is a new address for the row and the pill.
         vanePageObservation = session.selection.$id.sink { [weak self, weak session] _ in
             DispatchQueue.main.async {

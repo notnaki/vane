@@ -160,7 +160,8 @@ enum VanePage: Equatable, Sendable {
         let store = source.flatMap { ordinary($0) ? $0 : nil } ?? frontmost
             ?? Windows.open(profile: ProfileManager.shared.active)
         let shown = profileID.flatMap { id in ProfileManager.shared.profiles.first { $0.id == id }?.id }
-        let tab = store.tabs.first { $0.vanePage != nil }
+        // Only a Today row is reused: a pinned or favourite Settings row keeps its home section.
+        let tab = store.tabs.first { $0.vanePage != nil && $0.kind == .today }
             ?? store.newBlankTab(focus: false)
         guard tab.routeVanePage(page, profileID: shown) else { return nil }
         store.libraryOpen = false
