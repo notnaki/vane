@@ -8,6 +8,10 @@ struct FolderHoverList: View {
     let folder: Folder
     let tabs: [Tab]
     let close: () -> Void
+    /// The pointer over the panel, or the field holding focus: either keeps the panel open.
+    let holding: (Bool) -> Void
+    @FocusState private var typing: Bool
+    @State private var pointer = false
     @Environment(\.colorScheme) private var colorScheme
     @State private var query = ""
     @State private var visited: [Tab.ID: Date] = [:]
@@ -28,6 +32,7 @@ struct FolderHoverList: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(Look.inkSecondary)
                 TextField("Search \(folder.shownName)…", text: $query)
                     .textFieldStyle(.plain)
+                    .focused($typing)
                     .onSubmit { if let first = shown.first { open(first) } }
             }
             .font(Look.rowTitle)
@@ -48,10 +53,13 @@ struct FolderHoverList: View {
         .frame(width: 260)
         .background(colorScheme == .dark ? Color(white: 0.16) : Color(nsColor: .windowBackgroundColor))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.15), lineWidth: 0.5))
+        .onHover { pointer = $0; holding(pointer || typing) }
+        .onChange(of: typing) { _, _ in holding(pointer || typing) }
+        .onExitCommand { close() }
         .onAppear {
             // ponytail: one indexed lookup per tab on open; batch it if folders get huge.
             for tab in tabs {
-                if let url = tab.homeURL ?? tab.currentURL { visited[tab.id] = store.history.lastVisit(to: url) }
+                if let url = tab.currentURL ?? tab.homeURL { visited[tab.id] = store.history.lastVisit(to: url) }
             }
         }
         .accessibilityElement(children: .contain)

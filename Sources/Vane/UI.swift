@@ -4120,7 +4120,7 @@ private struct FolderRow: View {
         guard isEnabled, folder.collapsed, !locked, !dragging.active, store.renamingFolder != folder.id
         else { return [] }
         let ids = Set(store[keyPath: shape].tabs(in: folder.id))
-        return store.tabs.filter { ids.contains($0.id.uuidString) }
+        return store.accessibleTabs.filter { ids.contains($0.id.uuidString) }   // drops locked subfolders' tabs
     }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
     /// An extension's status, for VoiceOver: the sidebar shows it only on the icon.
@@ -4213,11 +4213,12 @@ private struct FolderRow: View {
         .background {
             let tabs = hover.isVisible ? hoverTabs : []
             FavouritePreviewPanel(visible: hover.isVisible && !tabs.isEmpty, keyboard: false,
-                content: AnyView(FolderHoverList(store: store, folder: folder, tabs: tabs) { hover.dismiss() }
-                    .onHover { hover.setHovered($0, over: .preview) }
+                content: AnyView(FolderHoverList(store: store, folder: folder, tabs: tabs, close: { hover.dismiss() },
+                                                 holding: { hover.setHovered($0, over: .preview) })
                     .environment(\.colorScheme, colorScheme)),
                 dismiss: { hover.dismiss() })
         }
+        .onChange(of: folder.collapsed) { _, _ in hover.dismiss() }
         .onChange(of: isEnabled) { _, enabled in if !enabled { zone = nil } }
         .onChange(of: dragging.active) { _, active in if !active { zone = nil } }
     }
