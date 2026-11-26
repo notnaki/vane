@@ -235,7 +235,21 @@ import WebKit
         loaded.first { $0.context.baseURL.host == owner }?.context.webExtension.icon(for: CGSize(width: 16, height: 16))
     }
 
-    struct Entry: Identifiable {
+    /// Equatable so the Extensions page can keep the list it has when a host change left it
+    /// alone. The context and the icon compare by identity; `entries` hands back the same
+    /// icon until the installation changes.
+    struct Entry: Identifiable, Equatable {
+        static func == (a: Entry, b: Entry) -> Bool {
+            a.path == b.path && a.name == b.name && a.context === b.context && a.status == b.status
+                && a.failure == b.failure && a.busy == b.busy && a.version == b.version
+                && a.summary == b.summary && a.icon === b.icon && a.enabled == b.enabled
+                && a.managed == b.managed && a.sourceAvailable == b.sourceAvailable
+                && a.sourcePath == b.sourcePath && a.safariApp == b.safariApp && a.storeID == b.storeID
+                && a.requiredAccess == b.requiredAccess && a.optionalAccess == b.optionalAccess
+                && a.compatibility == b.compatibility && a.runtimeDiagnostics == b.runtimeDiagnostics
+                && a.nativeMessagingErrorCompatibilityAvailable == b.nativeMessagingErrorCompatibilityAvailable
+                && a.nativeMessagingErrorCompatibilityEnabled == b.nativeMessagingErrorCompatibilityEnabled
+        }
         let path: String
         let name: String
         let context: WKWebExtensionContext?
@@ -273,6 +287,18 @@ import WebKit
     private var metadataFailure: String?
     private static let integratedCapabilities: Set<String> = ["contextMenus", "menus", ExtensionDebuggerAPI.permission]
     private var metadataIcons: [String: NSImage] = [:]
+    /// A running extension's own 40pt icon, kept per context: `icon(for:)` decodes a new
+    /// image on every call, which made every `entries` differ from the last.
+    private struct ContextIcon { weak var context: WKWebExtensionContext?; let icon: NSImage? }
+    private var contextIcons: [String: ContextIcon] = [:]
+
+    private func contextIcon(_ context: WKWebExtensionContext?, path: String) -> NSImage? {
+        guard let context else { contextIcons[path] = nil; return nil }
+        if let kept = contextIcons[path], kept.context === context { return kept.icon }
+        let icon = context.webExtension.icon(for: CGSize(width: 40, height: 40))
+        contextIcons[path] = ContextIcon(context: context, icon: icon)
+        return icon
+    }
     private struct LegacyMetadata {
         var version: String
         var summary: String
@@ -303,11 +329,12 @@ import WebKit
     }
 
     var entries: [Entry] {
-        folders.keys.sorted { (folders[$0] ?? "").localizedStandardCompare(folders[$1] ?? "") == .orderedAscending }.map { path in
+        let bookmarks = contextBookmarks
+        return folders.keys.sorted { (folders[$0] ?? "").localizedStandardCompare(folders[$1] ?? "") == .orderedAscending }.map { path in
             let context = loaded.first { $0.path == path }?.context
             let record = records[path]
             let storeSource = storeSource(for: path)
-            let source = sourceFolder(for: path)
+            let source = listedSourceFolder(for: path, bookmark: bookmarks[path])
             let busy = operations[path] != nil || restoring[path] != nil
             let blockingErrors = context.map { ExtensionDiagnostics.blockingErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
             let runtimeErrors = context.map { ExtensionDiagnostics.runtimeErrors($0.errors, manifest: $0.webExtension.manifest) } ?? []
@@ -318,7 +345,7 @@ import WebKit
                          failure: failure, busy: busy,
                          version: record?.version ?? context?.webExtension.version ?? legacyMetadata[path]?.version ?? "Unknown",
                          summary: record?.summary ?? context?.webExtension.displayDescription ?? legacyMetadata[path]?.summary ?? "",
-                         icon: metadataIcons[path] ?? context?.webExtension.icon(for: CGSize(width: 40, height: 40)),
+                         icon: metadataIcons[path] ?? contextIcon(context, path: path),
                          enabled: context != nil, managed: record != nil,
                          sourceAvailable: storeSource != nil || FileManager.default.isReadableFile(atPath: record?.safari != nil ? source.path : source.appendingPathComponent("manifest.json").path),
                          sourcePath: storeSource?.listingURL.absoluteString ?? source.path, safariApp: record?.safari != nil || path.hasPrefix("/safari-extension/"),
@@ -381,6 +408,9 @@ import WebKit
                     self.objectWillChange.send()
                 }.store(in: &metadataObservations)
         }
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.listedSources.removeAll() } }
+            .store(in: &metadataObservations)
         guard profileID != Profile.incognito.id else { return }
         do {
             records = try codeStore.records()
@@ -437,6 +467,24 @@ import WebKit
             return resolved.resolvingSymlinksInPath()
         }
         return URL(fileURLWithPath: records[path]?.sourcePath ?? path, isDirectory: true)
+    }
+
+    /// `entries` is read on every host change the Extensions page hears of, and resolving a
+    /// bookmark is file I/O for each extension, most of what that read cost. Where one led
+    /// is kept until the app is next activated (a folder is moved in another app), the
+    /// saved bookmark changes, or nothing is there any more.
+    private var listedSources: [String: (bookmark: Data, url: URL)] = [:]
+
+    private func listedSourceFolder(for path: String, bookmark: Data?) -> URL {
+        guard let bookmark, records[path]?.safari == nil else {
+            listedSources[path] = nil
+            return sourceFolder(for: path)
+        }
+        if let kept = listedSources[path], kept.bookmark == bookmark,
+           FileManager.default.fileExists(atPath: kept.url.path) { return kept.url }
+        let url = sourceFolder(for: path)
+        listedSources[path] = (bookmark, url)
+        return url
     }
 
     /// A retained reserved key can locate an authenticated replacement even when the
@@ -693,6 +741,8 @@ import WebKit
         failures[path] = nil
         limitations[path] = nil
         metadataIcons[path] = nil
+        contextIcons[path] = nil
+        listedSources[path] = nil
         legacyMetadata[path] = nil
         disabled.remove(path)
         saveManagement()
@@ -2231,8 +2281,14 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openOptionsPageFor context: WKWebExtensionContext) async throws {
         try requireActive(context)
-        guard let url = context.optionsPageURL, let cfg = context.webViewConfiguration else { return }
+        guard let url = context.optionsPageURL, let cfg = context.webViewConfiguration else {
+            // Silent before: the menu offered Options and nothing came up.
+            NSLog("[vane] extension options did not open: %@",
+                  context.optionsPageURL == nil ? "no options page" : "no web view configuration")
+            return
+        }
         if let existing = pages.first(where: { $0.context === context && $0.window.isVisible }) {
+            Trace.note("options window reused")
             existing.window.makeKeyAndOrderFront(nil)
             return
         }
@@ -2857,21 +2913,27 @@ import WebKit
     }
 
     private func present(_ url: URL, _ cfg: WKWebViewConfiguration, context: WKWebExtensionContext, title: String) {
-        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 780, height: 620), configuration: cfg)
+        // One span a step, so a slow options window says which step was slow.
+        let web = Trace.span("options web view") {
+            WKWebView(frame: NSRect(x: 0, y: 0, width: 780, height: 620), configuration: cfg)
+        }
         userAgent.track(web)
         web.isInspectable = Settings.inspectorEnabled
-        let window = NSWindow(contentRect: web.frame,
-                              styleMask: [.titled, .closable, .resizable],
-                              backing: .buffered, defer: false)
-        window.title = title
-        window.contentView = web
-        configurePageUI(web, context: context, window: window)
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+        let window = Trace.span("options window") {
+            let window = NSWindow(contentRect: web.frame,
+                                  styleMask: [.titled, .closable, .resizable],
+                                  backing: .buffered, defer: false)
+            window.title = title
+            window.contentView = web
+            configurePageUI(web, context: context, window: window)
+            window.isReleasedWhenClosed = false
+            window.center()
+            return window
+        }
+        Trace.span("options order front") { window.makeKeyAndOrderFront(nil) }
         pages.removeAll { !$0.window.isVisible }
         pages.append((context, window))
-        web.load(URLRequest(url: url))
+        Trace.span("options load") { _ = web.load(URLRequest(url: url)) }
     }
 
     /// Extensions speak web coordinates (origin top-left of the main screen); AppKit puts

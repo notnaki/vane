@@ -456,7 +456,7 @@ struct TabPage: View {
             if let session = tab.easelSession {
                 EaselTabPage(session: session, store: store).id(tab.id)
             } else if let page = tab.vanePage {
-                VanePageView(session: page, store: store).id(tab.id)
+                VanePageHost(session: page, store: store, tab: tab.id, pane: pane).id(tab.id)
             } else {
                 DeveloperFrame(tab: tab) {
                     // SwiftUI may evaluate an already-mounted child's content closure

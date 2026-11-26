@@ -98,6 +98,20 @@ import XCTest
         }
     }
 
+    /// The Extensions page keeps its list while the host publishes something else.
+    func testEntriesStayEqualUntilTheListItselfChanges() async throws {
+        let (host, context, _) = try await fixture()
+        let path = try XCTUnwrap(host.path(of: context))
+        let first = host.entries
+        XCTAssertEqual(first.map(\.path), [path])
+        XCTAssertEqual(first, host.entries, "Reading the list twice must not make a new one")
+        XCTAssertTrue(first[0].icon === host.entries[0].icon, "The icon is decoded once per installation")
+        host.togglePin(context)
+        XCTAssertEqual(first, host.entries, "A pin is not part of the list")
+        try await host.setEnabled(false, for: path)
+        XCTAssertNotEqual(first, host.entries, "Turning an extension off is")
+    }
+
     func testSidebarMenuDispatchesClickedUnselectedTabAfterSelectionChanges() async throws {
         let (host, context, page) = try await fixture()
         let store = browser()
