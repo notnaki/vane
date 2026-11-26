@@ -1,6 +1,6 @@
 # Website, search, and shared links
 
-[Documentation index](README.md) · [Current development](CURRENT-DEVELOPMENT.md)
+[Documentation index](README.md) · [Project README](../README.md)
 
 The public site uses **https://vane.so/**, set by the root `CNAME` on the
 [`website` branch](https://github.com/notnaki/vane/tree/website). Its five primary

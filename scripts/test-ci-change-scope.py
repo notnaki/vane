@@ -44,6 +44,20 @@ class ChangeScopeTests(unittest.TestCase):
         self.commit()
         self.scope(False)
 
+    def test_deleting_any_docs_file_skips_app_work(self):
+        (self.root / "docs/assets").mkdir(parents=True)
+        (self.root / "docs/assets/trace.json").write_text("{}\n")
+        (self.root / "docs/assets/clip.mov").write_text("movie\n")
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD")
+        (self.root / "docs/assets/trace.json").unlink()
+        (self.root / "docs/assets/clip.mov").unlink()
+        self.commit()
+        self.scope(False)
+        (self.root / "docs/assets/new.json").write_text("{}\n")
+        self.commit()
+        self.scope(True)
+
     def test_source_mixed_with_documentation_requires_app_work(self):
         (self.root / "README.md").write_text("Updated\n")
         (self.root / "App.swift").write_text("changed\n")

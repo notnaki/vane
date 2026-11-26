@@ -85,8 +85,13 @@ def main():
         result = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", *refs, "--"],
                                 check=True, capture_output=True)
         paths = [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
+        # Nothing builds from docs/, so removing any file there needs no app work.
+        deleted = subprocess.run(["git", "diff", "--name-only", "--no-renames", "--diff-filter=D",
+                                  "-z", *refs, "--"], check=True, capture_output=True).stdout
+        deleted_docs = {p for p in map(os.fsdecode, deleted.split(b"\0")) if p.startswith("docs/")}
         app_required = not paths or not all(
-            cheap_checks_only(path) or path == WORKFLOW and routing_only_workflow_change(*refs)
+            cheap_checks_only(path) or path in deleted_docs
+            or path == WORKFLOW and routing_only_workflow_change(*refs)
             for path in paths)
         subprocess.run(["git", "diff", "--check", *refs, "--"], check=True)
         print(f"Validated {len(paths)} changed paths", file=sys.stderr)

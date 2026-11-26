@@ -35,209 +35,114 @@
 
 <p align="center"><sub>Spaces, favourites, and the web in one native window. <a href="https://github.com/notnaki/vane/blob/website/media/README.md">About this screenshot</a>.</sub></p>
 
-Vane is built with Swift, SwiftUI, AppKit, and WebKit. Apple’s `WKWebView`
-renders pages; Vane adds tools to organize, read, and make the browser your own.
+Vane is a browser built with Swift, SwiftUI, AppKit, and Apple's WebKit. It keeps
+your tabs in a sidebar, sorts them into Spaces, and adds tools for reading,
+collecting, and reshaping the web.
 
-> **In active development.** Requires macOS 26 or later. Read the
-> [limitations](#limitations) before relying on Vane as your only browser.
-> The docs follow current `main`; the latest published build may lag behind.
-> See [current development and the upcoming release](docs/CURRENT-DEVELOPMENT.md).
+> **Vane is in active development.** These docs follow `main`, so a feature may
+> land here a little before it reaches a release. Check the
+> [limits](#limits) before making Vane your only browser.
 
-[Explore the features](#feature-overview) · [Get started](#start-browsing) ·
-[Build from source](#build-and-run) · [Privacy policy](PRIVACY.md)
+## Install
 
-## Download and install
+1. Download `Vane.dmg` from the [latest release](https://github.com/notnaki/vane/releases/latest).
+2. Open it and drag Vane to Applications.
+3. Open Vane. You can skip the welcome, or use it to import from another browser.
 
-1. Open the [latest GitHub release](https://github.com/notnaki/vane/releases/latest)
-   and read its notes and known issues.
-2. Download `Vane.dmg`, open it, and drag Vane to Applications.
-3. Open Vane from Applications. The first-run welcome is skippable.
+Vane updates itself. Choose **Vane → Check for Updates…** to check now. To try early
+builds, switch **Settings → General → Update channel** to **Nightly**; switching back
+to **Stable** waits for the next stable release rather than downgrading.
+[How releases work](docs/RELEASING.md#release-cadence).
 
-<details>
-<summary><strong>Updates, signing, and the default browser</strong></summary>
+## Features
 
-Published releases are built through the signing and notarization workflow.
-That does not establish compatibility with every site or complete clean-Mac
-installation/upgrade coverage. See [release validation](docs/RELEASING.md).
-
-Use **Vane → Check for Updates…** to check manually. Updates use **Stable** by
-default. Choose **Nightly** in **Settings → General → Update channel** to try early
-builds; these may have bugs. Switching back waits for a newer stable version and
-does not downgrade the app. Both channels use the same app and browsing data.
-Nightly publication is checked daily at 02:23 UTC; a build publishes only when
-`main` has a new revision with passing checks. Quiet or unready days produce no
-release. Stable releases are deliberate, with no fixed calendar. See the
-[release cadence and version-number guide](docs/RELEASING.md#release-cadence).
-
-Stable release bundles packaged with a Developer ID offer the default-browser
-prompt once. Local, debug, and prerelease builds skip it. The manual
-**Make Vane Default…** action remains available in Settings.
-
-</details>
-
-## Feature overview
-
-| Area | What is implemented |
+| | |
 | --- | --- |
-| Browsing | Sidebar tabs, Favourites, pinned tabs, folders, multiple windows, private windows, Split View, Peek, and Little Vane. |
-| Organization | Spaces, reusable Space templates, Tidy Tabs with review/undo, bulk tab organization, bookmarks, history search, and Library. |
-| Reading | Reader preferences, an offline article queue, find on page, and page capture. |
-| Media | Custom Picture in Picture, a minimized sidebar player, and embedded-player controls with native PiP fallback. |
-| Visual tools | Easels with notes, drawing, captures, live web views, and editable JSON or PNG export; per-site Boosts for styles, Zap, and opt-in scripts. |
-| Data | Separate profiles, Keychain passwords and account chooser, browser imports, exports, library backups, and local recovery points; optional per-category iCloud sync in provisioned builds. |
-| Controls | Custom search engines and site-search shortcuts, keyboard bindings, themes, app icons, Battery Saver, site controls, and searchable animation-speed settings. |
-| Integrations | Chrome Web Store extensions, unpacked WebExtensions and verified Safari extensions from apps, EasyList-subset blocking and HTTPS subscriptions, GitHub Live Folders, and multiple AI connections using your own keys or ChatGPT plan, with per-feature routing. |
+| **Browsing** | Sidebar tabs, Favourites, pinned tabs, nested folders, Split View, Peek, Little Vane, private windows, and Translate. |
+| **Organizing** | Spaces and Space templates, Tidy Tabs, Library, bookmarks, and searchable history. |
+| **Reading** | Reader, an offline reading queue, find on page, and page capture. |
+| **Media** | Picture in Picture, a sidebar mini-player, and Pause All Media. |
+| **Making it yours** | Easels, per-site Boosts, themes, app icons, the Streamlined style, custom search engines, and rebindable shortcuts. |
+| **Your data** | Profiles, Keychain passwords with Touch ID, passkeys, imports from Arc, Chrome and others, backups, and optional iCloud sync. |
+| **Extensions** | Chrome Web Store and Safari extensions, content blocking with filter lists, GitHub Live Folders, and AI features with your own keys or ChatGPT plan. |
 
-“Implemented” describes available behavior. Verification is scoped to the
-revision, macOS version, signing, and fixture or service recorded in each audit.
-It is not a guarantee of general website or extension compatibility.
-
-## Start browsing
+## Getting around
 
 | Action | Shortcut |
 | --- | --- |
-| Search for a new tab | <kbd>⌘</kbd> <kbd>T</kbd> |
-| Open the address bar | <kbd>⌘</kbd> <kbd>L</kbd> |
-| Reopen a closed tab | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> |
-| Find on the page | <kbd>⌘</kbd> <kbd>F</kbd> |
-| Open Library | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>L</kbd> |
-| Open History | <kbd>⌘</kbd> <kbd>Y</kbd> |
-| Move between the page and browser controls | <kbd>F6</kbd> / <kbd>⇧</kbd> <kbd>F6</kbd> |
+| New tab or search | <kbd>⌘</kbd> <kbd>T</kbd> |
+| Address bar | <kbd>⌘</kbd> <kbd>L</kbd> |
+| Reopen closed tab | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> |
+| Find on page | <kbd>⌘</kbd> <kbd>F</kbd> |
+| Library | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>L</kbd> |
+| History | <kbd>⌘</kbd> <kbd>Y</kbd> |
+| Show Toolbar | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>D</kbd> |
 
-Click a Space button or swipe horizontally over the sidebar to switch Spaces.
-Use **Shift+Return** for Instant Links, which opens a DuckDuckGo first result
-regardless of your selected search engine.
-[Details and exceptions](docs/BROWSING.md#search-and-history).
-
-Shortcuts can be changed in Settings; the menu bar shows current bindings.
-[Everyday browsing](docs/BROWSING.md) explains tab organization, shared windows,
-site search, keyboard navigation, downloads, and media.
+Swipe across the sidebar to change Spaces. Every shortcut can be changed in
+**Settings → Shortcuts**. The [browsing guide](docs/BROWSING.md) covers the rest.
 
 ## Documentation
-
-The [documentation index](docs/README.md) is the starting point for guides,
-troubleshooting, specialist audits, and recorded validation.
 
 | Guide | Covers |
 | --- | --- |
 | [Everyday browsing](docs/BROWSING.md) | Tabs, Spaces, windows, search, shortcuts, Library, downloads, and media. |
-| [Reading and customization](docs/FEATURES.md) | Reader, offline articles, Easels, capture, Boosts, templates, appearance, and Battery Saver. |
-| [Profiles, data, and privacy](docs/DATA-AND-PRIVACY.md) | Passwords, imports/exports, website data, backups, folder locks, and recovery boundaries. |
-| [Extensions and integrations](docs/INTEGRATIONS.md) | Profile extension manager, reviewed updates, access/diagnostics, content blocking, AI connections, and GitHub Live Folders. |
-| [Development](docs/DEVELOPMENT.md) | Setup, CLI, focused tests, graphical smoke checks, project structure, and contribution workflow. |
-| [Releases and distribution](docs/RELEASING.md) | Publishing, signing/notarization, updater checks, and candidate validation. |
+| [Reading and customization](docs/FEATURES.md) | Reader, Easels, capture, Boosts, templates, appearance, and Battery Saver. |
+| [Profiles, data, and privacy](docs/DATA-AND-PRIVACY.md) | Passwords, imports, backups, website data, iCloud, and private browsing. |
+| [Extensions and integrations](docs/INTEGRATIONS.md) | Extensions, content blocking, site permissions, AI, and GitHub Live Folders. |
+| [Development](docs/DEVELOPMENT.md) | Building, testing, and project structure. |
 
-Prefer a visual introduction? Browse the
-[website field guide](https://vane.so/docs.html).
-The Markdown guides above cover current controls and caveats in detail.
+The [documentation index](docs/README.md) lists everything, including the
+compatibility and reliability records. The [privacy policy](PRIVACY.md) explains
+what Vane stores and sends. There is also a visual
+[field guide](https://vane.so/docs.html) on the website.
 
-The [privacy policy](PRIVACY.md) explains local storage, network requests,
-optional services, and data controls. It is also available on the
-[website](https://vane.so/privacy.html).
+## Build from source
 
-## Build and run
-
-Use macOS 26 or later and Xcode 26 or later with its included Swift toolchain.
-From a checkout:
+You need macOS 26 or later and Xcode 26 or later.
 
 ```sh
 git clone https://github.com/notnaki/vane.git
 cd vane
-./make-app.sh
+./make-app.sh        # or ./make-app.sh debug for a faster build
 open Vane.app
 ```
 
-`make-app.sh` builds the release executable, assembles the app and its helpers,
-adds resources and icons, and signs the bundle ad hoc for local development.
-Use `./make-app.sh debug` for a faster development build.
+`make-app.sh` builds the app with its helpers, icons, and resources and signs it
+for local use. Local builds don't include iCloud sync or passkeys, which need
+Vane's provisioning profile. See [development](docs/DEVELOPMENT.md#setup-and-local-builds)
+for tests and the CLI.
 
-To build the executable and run checks that need no Keychain or window server:
+## Limits
 
-```sh
-swift build -c release
-./.build/release/vane selfcheck --pure
-```
+Vane renders pages with the system WebKit, so site support follows your macOS version.
 
-Use the assembled app for bundled icons and native sandbox/signing behavior.
-Vane-managed location decisions work on macOS 26 and later. Xcode 27 builds also
-use the public macOS 27 delegate. See [development setup](docs/DEVELOPMENT.md#setup-and-local-builds)
-and [release procedures](docs/RELEASING.md) for testing and distribution.
-
-## Limitations
-
-Vane uses the system WebKit engine. Support depends on the installed macOS and
-WebKit version, the website, and sometimes signing or Apple-managed capabilities.
-
-- **Compatibility is incomplete.** Scoped macOS 27 public-demo, local-fixture, and
-  [live streaming checks](docs/STREAMING-COMPATIBILITY.md) cover only their listed
-  environments and flows. Netflix 4K SDR/Dolby Vision, Spotify music, and Disney+
-  protected video at 720p were
-  observed on one signed, notarized nightly; this does not establish every service,
-  provider sign-in, cross-network call, hardware permission, or minimum-macOS setup.
-  See the [compatibility matrix](docs/REAL-SITE-COMPATIBILITY.md).
-- **Passkeys are pending** Apple managed browser entitlement approval, matching
-  provisioning, and registration/sign-in validation. Developer ID alone is insufficient.
-- **Folder uploads are blocked on macOS 27.0.x** because a standalone WebKit probe
-  reproduced a guard fault before submission. Ordinary files remain available;
-  directory submission on other versions is unverified. See the matrix’s
-  [directory investigation](docs/REAL-SITE-COMPATIBILITY.md#directory-form-root-cause-investigation--2026-10-08).
-- **Passwords and extensions have compatibility limits.** Autofill supports nested
-  open shadow roots and explicit multi-step username handoff, but remains heuristic;
-  closed roots and cross-origin frames remain inaccessible. Sidebar tab menus expose
-  available extension actions. Chrome Web Store installation and MV2/MV3 support
-  do not guarantee arbitrary extension API compatibility.
-- **Blocking supports part of EasyList.** Safe regular expressions and equivalent
-  `$badfilter` rules are supported; unsupported rules are reported. Linked local
-  files update automatically after opt-in linkage, can be checked manually, and
-  retain their last-good rules on failure. Disk imports remain fixed snapshots;
-  URL subscriptions also update automatically.
-- **iCloud sync requires a provisioned build.** Sync starts off, with individual category switches.
-  Downloaded files stay local; cross-Mac propagation is unverified. See
-  [iCloud setup and boundaries](docs/ICLOUD-PROVISIONING.md). Backup exports offer password encryption and exclude Keychain
-  secrets, cookies/site storage, downloaded files, and extension code/data.
-  Supported Chromium imports offer a separate, opt-in cookie/session copy;
-  unsupported encryption and device-bound credentials are excluded, and copied
-  cookies do not guarantee sign-in. Existing destination cookies are preserved.
-- **Live drafts are not recoverable backups.** Suspension protects detected or
-  uncertain drafts, but crashes, page closure, or locking can lose volatile work.
-  [Draft protection](docs/DRAFT-PROTECTION.md) and [crash recovery](docs/CRASH-RECOVERY.md)
-  describe what is preserved and what cannot be restored.
-- **Permissions and reliability remain bounded.** Embedded device requests fail
-  closed; macOS separately authorizes device access; screen sharing stays managed by
-  WebKit/macOS. Resume, physical storage failure, and every navigation failure are
-  not guaranteed by synthetic checks.
-- **Some features use private WebKit APIs**, including inspector integration and
-  a guarded page-shutdown fallback, which can change with macOS releases.
-
-Detailed evidence lives in the [audit index](docs/README.md#reliability-and-validation).
-[Browser readiness](docs/BROWSER-READINESS-TODO.md) separates completed work from
-remaining validation and engineering tasks. A real notarized candidate and
-clean-Mac install/upgrade checks are still required for distribution claims.
+- **Not every site works.** Netflix (4K and Dolby Vision), Spotify, and Disney+ (720p)
+  play, but some sites and sign-ins still break. See the
+  [compatibility record](docs/REAL-SITE-COMPATIBILITY.md).
+- **Extensions are WebKit extensions.** Vane installs from the Chrome Web Store
+  and fills in many Chrome-only APIs, but not every extension will work.
+- **Folder uploads are off on macOS 27.0.x** because of a WebKit crash.
+  Single files upload normally.
+- **Password autofill is heuristic.** It can't reach closed shadow roots or
+  cross-origin frames. iCloud Passwords aren't available to third-party browsers.
+- **Unsaved form text can be lost** in a crash. See
+  [draft protection](docs/DRAFT-PROTECTION.md) and [crash recovery](docs/CRASH-RECOVERY.md).
+- **Some features use private WebKit APIs**, which a macOS update can break.
 
 ## Contributing
 
-Bug reports, documentation fixes, and focused code contributions are welcome.
-Start with the [contributor guide](CONTRIBUTING.md) for setup, choosing relevant
-checks, and opening a pull request. The [development guide](docs/DEVELOPMENT.md)
-covers project structure, native fixtures, and CI details.
+Bug reports, documentation fixes, and focused code changes are welcome. Start
+with the [contributor guide](CONTRIBUTING.md).
 
-In Vane, choose **Help → Report a Problem…** or **Report a Problem** in the command
-bar. Describe the issue, then optionally include diagnostic events from the last
-30 seconds, minute, or 5 minutes. Logs are off by default; Vane keeps a bounded
-memory-only buffer of event names and numeric error codes, excluding page URLs,
-titles, content, and private-tab activity. The window captures a snapshot when
-opened and lets you preview, copy, or save the report. **Open GitHub Issue…**
-prefills a draft for you to review and submit; large reports offer a copy-and-paste
-handoff. Nothing is sent automatically.
-
-You can also use the [issue templates](https://github.com/notnaki/vane/issues/new/choose) to report
-a bug or suggest an improvement. Keep passwords, tokens, personal browsing data,
-and private documents out of reports. For vulnerabilities, follow the
-[security policy](SECURITY.md) and
-[report privately](https://github.com/notnaki/vane/security/advisories/new).
+To report a problem from inside Vane, choose **Help → Report a Problem…**. You
+can attach recent diagnostic events (event names and error codes only, never URLs
+or page content), preview the report, and open a prefilled GitHub issue. Nothing
+is sent without you. You can also use the
+[issue templates](https://github.com/notnaki/vane/issues/new/choose). Report
+security issues [privately](https://github.com/notnaki/vane/security/advisories/new)
+under the [security policy](SECURITY.md).
 
 ## License
 
-Vane is released under the MIT License. See [LICENSE](LICENSE).
-Bundled font attribution and licenses are in
+MIT. See [LICENSE](LICENSE). Bundled fonts are credited in
 [Sources/Vane/EaselFonts](Sources/Vane/EaselFonts/SOURCE.md).

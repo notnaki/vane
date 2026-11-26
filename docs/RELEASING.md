@@ -322,11 +322,6 @@ That script extracts with the production update reader, then checks bundle conte
 Gatekeeper assessment, and WebKit smoke test, and saves evidence. A clean Mac
 installation and upgrade still need to be exercised separately.
 
-The [updater recovery audit](UPDATER-RECOVERY-AUDIT.md) records confirmed fixes, signed
-native recovery, unchanged published-release acceptance, and simulated boundaries. Local
-Developer ID recovery fixtures simulate candidate notarization; they do not establish
-approval of the changed build.
-
 ## Release checklist
 
 - Read this document in full before choosing a release version, creating or pushing a release tag, dispatching the release workflow, or publishing a release. Follow the version format and bump policy above; do not rely on memory or prior releases.
@@ -334,7 +329,7 @@ approval of the changed build.
 - Confirm required PR checks and review passed for the source being released.
 - Validate the unchanged notarized archive with `scripts/check-release-candidate.sh`.
 - Exercise a clean-Mac install and upgrade/rollback separately. Retain the exact archive, revision, macOS version, signature, and results.
-- Review [compatibility evidence](REAL-SITE-COMPATIBILITY.md) and [remaining readiness work](BROWSER-READINESS-TODO.md); do not convert skipped/account/device checks into passes.
+- Review [compatibility evidence](REAL-SITE-COMPATIBILITY.md); do not convert skipped/account/device checks into passes.
 - Confirm all task-owned browser/helper processes exited and remove only owned test resources.
 
 Passkeys additionally need Apple’s managed browser entitlement approval, matching

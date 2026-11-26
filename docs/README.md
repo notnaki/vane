@@ -1,81 +1,48 @@
 # Vane documentation
 
-Start with the [project README](../README.md) for installation, a local build,
-and a compact overview. These Markdown guides describe current controls and
-limitations. The [website field guide](https://vane.so/docs.html)
-remains a separate visual introduction. Both describe current `main`; published
-releases can lag behind. Start with [current development and the upcoming
-release](CURRENT-DEVELOPMENT.md) for the feature overview and retained limits.
+New to Vane? Start with the [project README](../README.md). These guides follow
+`main`, so the latest release may be a little behind. For a visual tour, see the
+website's [field guide](https://vane.so/docs.html).
 
-## User guides
+## Using Vane
 
-Read the [privacy policy](../PRIVACY.md) for data handling and network disclosures,
-or its [website version](https://vane.so/privacy.html).
-
-| Guide | Find answers about |
+| Guide | Covers |
 | --- | --- |
-| [Everyday browsing](BROWSING.md) | Tabs, folders, Spaces, shared windows, search, keyboard navigation, Library, downloads, and Picture in Picture. |
-| [Reading and customization](FEATURES.md) | Reader, saved articles, Easels, capture, Boosts, Space templates, themes/icons, and Battery Saver. |
-| [Profiles, data, and privacy](DATA-AND-PRIVACY.md) | Passwords, opt-in iCloud choices, browser imports, exports, website data, backup/restore, save failures, private browsing, and folder locks. |
-| [Extensions and integrations](INTEGRATIONS.md) | Profile extension manager, managed updates, access/diagnostics, filter subscriptions, permissions, AI providers/keys, and GitHub Live Folders. |
+| [Everyday browsing](BROWSING.md) | Tabs, folders, Spaces, windows, search, shortcuts, Library, downloads, and media. |
+| [Reading and customization](FEATURES.md) | Reader, saved articles, Easels, capture, Boosts, Space templates, themes, and Battery Saver. |
+| [Profiles, data, and privacy](DATA-AND-PRIVACY.md) | Passwords, passkeys, imports, exports, backups, website data, iCloud, and private browsing. |
+| [Extensions and integrations](INTEGRATIONS.md) | Extensions, content blocking, site permissions, AI connections, and GitHub Live Folders. |
+| [Privacy policy](../PRIVACY.md) | What Vane stores, what it sends, and how to control it. |
 
-For a paused page after an interruption, read [crash recovery](CRASH-RECOVERY.md).
-For work that must stay live, read [draft-protection limits](DRAFT-PROTECTION.md).
-For an interrupted transfer, read [download behavior and limits](DOWNLOAD-RELIABILITY.md#behavior-and-limits).
-For blurry Google Docs canvases, read the [rendering investigation](GOOGLE-DOCS-RENDERING.md).
+When something goes wrong:
 
-## Developer guides
+- A page came back paused after a crash: [crash recovery](CRASH-RECOVERY.md).
+- You're worried about losing form text: [draft protection](DRAFT-PROTECTION.md).
+- A download stopped: [downloads](DOWNLOAD-RELIABILITY.md#behavior-and-limits).
+- A site doesn't work: [site compatibility](REAL-SITE-COMPATIBILITY.md).
 
-- [Contributing](../CONTRIBUTING.md): first changes, focused validation, and pull requests.
-- [Development](DEVELOPMENT.md): setup, CLI, focused validation, graphical smoke,
-  project structure, and contribution workflow.
-- [Releases and distribution](RELEASING.md): release cadence, version numbers and
-  controls, publishing, signing/notarization, updater timing and recovery checks,
-  and unchanged candidate verification.
-- [Browser readiness](BROWSER-READINESS-TODO.md): completed work with evidence and
-  remaining engineering or environment-dependent validation.
-- [App icon maintenance](../AppIcons/README.md) and
-  [screenshot provenance](https://github.com/notnaki/vane/blob/website/media/README.md).
-- [Website, search, and shared links](WEBSITE.md): canonical URLs, Google
-  discovery, Messages previews, the share banner, and deployment checks.
+## Reference
 
-## Reliability and validation
+Detailed records of how features behave, how they were tested, and where they stop.
 
-These specialist documents retain detailed reproductions, commands, recorded
-results, and caveats. A pass applies only to its stated flow, revision, and
-environment. A skipped check is unverified. Implemented behavior, deterministic
-fixtures, native observations, and real-service compatibility are distinct.
-Historical test counts are not a fresh validation of the current checkout.
-
-| Evidence | Scope |
+| Topic | Document |
 | --- | --- |
-| [Security review](SECURITY-AUDIT.md) | Website/native boundaries, restored consent, Reader isolation, update preparation, and remaining release gates. |
-| [Crash and session recovery](CRASH-RECOVERY.md) | Paused recovery, previous generations, preserved originals, multi-profile sessions, and interruption/storage fixtures. |
-| [Draft protection](DRAFT-PROTECTION.md) | Live-form retention, detection failures, suspension, and nonrecoverable draft boundaries. |
-| [Navigation reliability](NAVIGATION-RELIABILITY.md) | Ownership, history, cancellation, POST consent, and controlled network failures. |
-| [Download reliability](DOWNLOAD-RELIABILITY.md) | Exact-byte transfers, resume/retry, destinations, restart, and safe cleanup limits. |
-| [Data integration](DATA-INTEGRATION.md) | Populated cross-feature backup/restore, rollback, profile/private isolation, and storage failures. |
-| [Browser data fidelity](audits/browser-data-fidelity.md) | Import/export fields, normalization, duplicates, partial failures, and credential protections. |
-| [Site permissions](SITE-PERMISSIONS.md) | Document lifetimes, origin/profile scope, revocation, synthetic devices, and platform limits. |
-| [Extension validation](EXTENSION-VALIDATION.md) | Managed-code/identity regressions, exact third-party package provenance, runtime observations, ZIP and native-host boundaries. |
-| [Real-site compatibility](REAL-SITE-COMPATIBILITY.md) | Public demos, local fixtures, dated real-service observations, known directory-upload failure, and remaining account/device/provisioning coverage. |
-| [Subscription streaming](STREAMING-COMPATIBILITY.md) | Dated Netflix 4K SDR/Dolby Vision, Spotify local music, and Disney+ 720p observations, with exact environment and format limits. |
-| [iCloud validation](ICLOUD-VALIDATION.md) | One-Mac signed service checks, local fixtures, and unverified cross-Mac propagation. |
-| [Updater recovery](UPDATER-RECOVERY-AUDIT.md) | Transaction interruption, signed recovery, notarized release acceptance, and distribution gaps. |
-| [Lifecycle efficiency](LIFECYCLE-EFFICIENCY.md) | Ownership fixes, local cycle/RSS/CPU evidence, and remaining profiling work. |
-| [UI responsiveness](UI-RESPONSIVENESS.md) | History and Space measurements, interaction checks, and unproven frame/latency targets. |
-| [Google Docs rendering](GOOGLE-DOCS-RENDERING.md) | Safari identity and controlled canvas-density reproduction; authenticated live-document follow-up remains unverified. |
+| Passwords and Keychain | [Password manager](PASSWORD-MANAGER.md) |
+| Extensions | [Extension validation](EXTENSION-VALIDATION.md), [Manifest V2](MANIFEST-V2-COMPATIBILITY.md), [worker identity](EXTENSION-WORKER-IDENTITY.md) |
+| Sites and streaming | [Site compatibility](REAL-SITE-COMPATIBILITY.md), [streaming](STREAMING-COMPATIBILITY.md) |
+| Permissions | [Site permissions](SITE-PERMISSIONS.md) |
+| iCloud | [Provisioning](ICLOUD-PROVISIONING.md), [validation](ICLOUD-VALIDATION.md) |
+| Security | [Security review](SECURITY-AUDIT.md), [security policy](../SECURITY.md) |
+| Recovery | [Crash recovery](CRASH-RECOVERY.md), [draft protection](DRAFT-PROTECTION.md), [downloads](DOWNLOAD-RELIABILITY.md) |
+| Performance | [Startup](STARTUP-PERFORMANCE.md), [sidebar](SIDEBAR_PERFORMANCE.md), [UI responsiveness](UI-RESPONSIVENESS.md), [page scripts](PAGE-SCRIPT-PERFORMANCE.md), [CI](CI-PERFORMANCE.md) |
 
-## Historical plans and website assets
+## Working on Vane
 
-[Implementation plans](superpowers/plans/) and [design specifications](superpowers/specs/)
-record decisions at the time of their work. Open checklist items there may be
-superseded by merged fixes and later evidence; use the readiness tracker and audits
-above for current boundaries.
+- [Contributing](../CONTRIBUTING.md): your first change and pull request.
+- [Development](DEVELOPMENT.md): setup, CLI, tests, and project structure.
+- [Releasing](RELEASING.md): versions, signing, notarization, and publishing.
+- [Website](WEBSITE.md): the `website` branch, search, and shared-link previews.
+- [App icons](../AppIcons/README.md).
 
-The public site lives at the root of the dedicated
-[`website` branch](https://github.com/notnaki/vane/tree/website), including its
-HTML, CSS, scripts, fonts, screenshots, and `versions/` archives. Technical guides,
-audits, and application evidence stay on `main`. See [website maintenance](WEBSITE.md)
-for branch-specific checks and deployment. Historical commits still retain older
-website assets; moving the source does not rewrite Git history.
+Finished implementation plans, specs, and one-off investigations were removed from
+the tree; they're still in the Git history.
