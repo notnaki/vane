@@ -867,7 +867,7 @@ struct SiteControlPopover: View {
                 Button("Manage Extensions…") {
                     dismiss()
                     let host = tab.extensions, store = VanePages.store(of: tab)
-                    Task { @MainActor in ExtensionManagement.openPage(for: host, from: store) }
+                    ExtensionMenu.afterMenu { ExtensionManagement.openPage(for: host, from: store) }
                 }
                 if tab.extensions.profileID != Profile.incognito.id {
                     Button("Add Extension…") { addExtension() }
@@ -1124,7 +1124,7 @@ private struct OffExtensionTile: View {
         Button("Remove from Vane…") {
             dismiss()
             let host = host, entry = entry
-            Task { @MainActor in ExtensionMenu.confirmRemoval(name: entry.name) { host.remove(path: entry.path) } }
+            ExtensionMenu.afterMenu { ExtensionMenu.confirmRemoval(name: entry.name) { host.remove(path: entry.path) } }
         }
         Button("Manage Extension…", action: manage)
     }
@@ -1139,7 +1139,7 @@ private struct OffExtensionTile: View {
     private func manage() {
         dismiss()
         let host = host, path = entry.path, store = store
-        Task { @MainActor in ExtensionManagement.openPage(for: host, selecting: path, from: store) }
+        ExtensionMenu.afterMenu { ExtensionManagement.openPage(for: host, selecting: path, from: store) }
     }
 }
 
@@ -1212,6 +1212,8 @@ struct ExtensionMenu: View {
     /// mode resumes only once tracking has ended.
     static func afterMenu(_ work: @escaping @MainActor () -> Void) {
         RunLoop.main.perform(inModes: [.default]) { MainActor.assumeIsolated { work() } }
+        // perform does not wake a sleeping run loop by itself.
+        CFRunLoopWakeUp(CFRunLoopGetMain())
     }
 
     private var name: String { context.webExtension.displayName ?? "Extension" }
