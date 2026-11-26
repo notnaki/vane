@@ -24,48 +24,97 @@
     video.addEventListener('pause', syncVideo);
     button.addEventListener('click', () => (video.paused ? video.play() : video.pause()));
     syncVideo();
-    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) video.play().catch(() => {});
+    const saveData = navigator.connection && navigator.connection.saveData;
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches && !saveData) video.play().catch(() => {});
   }
 
-  // Homepage tour: one list of features, one capture at a time.
-  const tabs = [...document.querySelectorAll('.tour-tab')];
-  if (tabs.length) {
-    const panel = document.getElementById('tour-panel');
-    const select = tab => {
-      for (const other of tabs) {
-        other.setAttribute('aria-selected', String(other === tab));
-        other.tabIndex = other === tab ? 0 : -1;
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Hills: a soft grainy hill rises with scroll until its core fills the screen.
+  // Each .rise names a CSS custom property (data-ramp) holding its colours, outer to core, and gets --p (0…1).
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const modest = (navigator.hardwareConcurrency || 8) <= 4; // older and low-power devices draw a coarser hill
+  for (const section of document.querySelectorAll('.rise')) {
+    const canvas = section.querySelector('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.filter = 'blur(2px)';
+    const filters = ctx.filter === 'blur(2px)'; // older Safari has no canvas filters: blur the element instead
+    if (!filters) canvas.classList.add('soft');
+    const BANDS = modest ? 16 : 26, SCALE = modest ? 6 : 4;
+    let key = '', stops = [], lean = 0.5, target = 0.5, queued = false;
+    const ramp = t => {
+      const x = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x));
+      return `rgb(${mix(stops[i], stops[i + 1], x - i)})`;
+    };
+    const draw = () => {
+      queued = false;
+      const r = section.getBoundingClientRect();
+      const p = Math.min(1, Math.max(0, -r.top / (r.height - innerHeight)));
+      section.style.setProperty('--p', p.toFixed(3));
+      section.toggleAttribute('data-late-shown', p > (+section.dataset.late || 0.42));
+      if (r.bottom < 0 || r.top > innerHeight) return; // off screen: nothing to draw
+      const value = getComputedStyle(section).getPropertyValue('--' + section.dataset.ramp).trim();
+      if (value !== key) { key = value; stops = value.split(',').map(s => hex(s.trim())); }
+      if (stops.length < 2 || stops.some(s => s.some(Number.isNaN))) return;
+      lean += (target - lean) * 0.08;
+      const W = canvas.width = Math.ceil(innerWidth / SCALE), H = canvas.height = Math.ceil(innerHeight / SCALE);
+      const e = p * p * (3 - 2 * p); // smoothstep
+      const peak = H * (0.18 + 3.9 * e ** 1.35), half = W * (0.42 + 1.25 * e), cx = W * (0.5 + (lean - 0.5) * 0.18);
+      ctx.fillStyle = ramp(0);
+      ctx.fillRect(0, 0, W, H);
+      if (filters) ctx.filter = `blur(${(2 + 7 * e).toFixed(1)}px)`;
+      for (let b = 0; b < BANDS; b++) {
+        const t = b / (BANDS - 1), h = peak * (1 - 0.62 * t), w = half * (1 - 0.38 * t);
+        ctx.beginPath();
+        ctx.moveTo(-20, H + 20);
+        for (let x = -20; x <= W + 20; x += 2) ctx.lineTo(x, H - h * Math.exp(-2.1 * ((x - cx) / w) ** 2));
+        ctx.lineTo(W + 20, H + 20);
+        ctx.fillStyle = ramp(t);
+        ctx.fill();
       }
-      for (const image of panel.querySelectorAll('img')) image.hidden = image.dataset.tour !== tab.dataset.tour;
-      panel.setAttribute('aria-labelledby', tab.id);
+      if (filters) ctx.filter = 'none';
+      if (Math.abs(target - lean) > 0.002) queue();
     };
-    // Wide screens: the section stays put and scrolling walks through the list. Small screens: tap to switch.
-    const section = document.querySelector('.tour');
-    const wide = matchMedia('(min-width: 901px)');
-    const span = () => section.offsetHeight - innerHeight;
-    const onScroll = () => {
-      if (!wide.matches) return;
-      const progress = Math.min(0.999, Math.max(0, -section.getBoundingClientRect().top / span()));
-      const tab = tabs[Math.floor(progress * tabs.length)];
-      if (tab.getAttribute('aria-selected') !== 'true') select(tab);
-    };
-    addEventListener('scroll', onScroll, { passive: true });
-    const go = (tab, index) => {
-      if (!wide.matches) return select(tab);
-      const top = section.getBoundingClientRect().top + scrollY + ((index + 0.5) / tabs.length) * span();
-      scrollTo({ top, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-    };
-    for (const [index, tab] of tabs.entries()) {
-      tab.addEventListener('click', () => go(tab, index));
-      tab.addEventListener('keydown', event => {
-        const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
-        if (!step) return;
-        event.preventDefault();
-        const next = (index + step + tabs.length) % tabs.length;
-        tabs[next].focus({ preventScroll: true });
-        go(tabs[next], next);
-      });
+    const queue = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
+    addEventListener('scroll', queue, { passive: true });
+    addEventListener('resize', queue);
+    new MutationObserver(queue).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+    if (!still && matchMedia('(pointer: fine)').matches) addEventListener('pointermove', event => { target = event.clientX / innerWidth; queue(); }, { passive: true });
+    draw();
+  }
+
+  // Headline: each word rises out of a blur.
+  for (const heading of document.querySelectorAll('.reveal')) {
+    heading.innerHTML = heading.textContent.trim().split(/\s+/).map((word, i) => `<span class="w" style="--i:${i}">${word}</span>`).join(' ');
+  }
+
+  // Held sections expose their scroll progress as --p, and data-step when they step through items.
+  const tracks = [...document.querySelectorAll('.track')];
+  const sync = () => {
+    for (const t of tracks) {
+      const r = t.getBoundingClientRect();
+      const p = Math.min(1, Math.max(0, -r.top / Math.max(1, r.height - innerHeight)));
+      t.style.setProperty('--p', p.toFixed(4));
+      if (t.dataset.steps) t.dataset.step = Math.min(+t.dataset.steps - 1, Math.floor(p * t.dataset.steps));
     }
+  };
+  if (tracks.length) { addEventListener('scroll', () => requestAnimationFrame(sync), { passive: true }); addEventListener('resize', sync); sync(); }
+
+  // Manifesto: words fill in as you scroll.
+  for (const text of document.querySelectorAll('.fill-in')) {
+    const words = text.textContent.trim().split(/\s+/);
+    text.style.setProperty('--n', words.length);
+    text.innerHTML = words.map((word, i) => `<span style="--i:${i}">${word}</span>`).join(' ');
+  }
+
+  // Cards: a soft light follows the pointer.
+  for (const card of document.querySelectorAll('.spot')) {
+    card.addEventListener('pointermove', event => {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty('--x', `${event.clientX - r.left}px`);
+      card.style.setProperty('--y', `${event.clientY - r.top}px`);
+    });
   }
 
   // Guide and privacy: the contents list is collapsed on small screens.
@@ -76,6 +125,25 @@
     small.addEventListener('change', syncContents);
     syncContents();
     contents.addEventListener('click', event => { if (small.matches && event.target.closest('a')) contents.open = false; });
+
+    // Mark the section being read: the lowest heading that has passed the upper third of the screen.
+    const links = [...contents.querySelectorAll('nav a[href^="#"]')];
+    const targets = links.map(link => document.getElementById(decodeURIComponent(link.hash.slice(1))));
+    let current, queued = false;
+    const spy = () => {
+      queued = false;
+      const end = innerHeight + scrollY >= document.documentElement.scrollHeight - 2; // bottom reached: the lowest section
+      let i = 0, best = -Infinity; // the list isn't in page order, so compare positions
+      targets.forEach((t, k) => { const top = t ? t.getBoundingClientRect().top : -Infinity; if ((end || top < innerHeight / 3) && top > best) { best = top; i = k; } });
+      const link = links[i];
+      if (link === current) return;
+      current?.removeAttribute('aria-current');
+      (current = link).setAttribute('aria-current', 'location');
+      const box = contents.parentElement; // keep it visible in the sidebar's own scroll without moving the page
+      if (!small.matches && (link.offsetTop < box.scrollTop || link.offsetTop + link.offsetHeight > box.scrollTop + box.clientHeight)) box.scrollTop = link.offsetTop - box.clientHeight / 2;
+    };
+    addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(spy); } }, { passive: true });
+    spy();
   }
 
   // Guide: filter the shortcut tables.
