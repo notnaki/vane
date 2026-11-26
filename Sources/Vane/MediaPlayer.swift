@@ -735,6 +735,8 @@ struct MediaTrayView: View {
                !media.minimized.contains(tab.id) { media.returned(to: tab) }
         }
         .onChange(of: tab?.id) { hovered = false }
+        // The animations above check only Reduce Motion; this adds Battery Saver.
+        .vaneMotionPolicy()
         // Let the card's shadow extend beyond the tray's layout bounds, like the toast.
     }
 
@@ -768,7 +770,7 @@ struct MediaTrayView: View {
             // shrinking row prevents its text from sliding through the transport glyphs.
             .frame(height: Look.trayHeight)
             .opacity(expanded ? 1 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: expanded ? 0.18 : 0.10), value: expanded)
+            .animation(reduceMotion ? nil : .easeOut(duration: UIAnimation.surfaces.duration(expanded ? 0.18 : 0.10)), value: expanded)
             .frame(height: expanded ? Look.trayHeight : 0, alignment: .top)
             .clipped()
             .allowsHitTesting(expanded)

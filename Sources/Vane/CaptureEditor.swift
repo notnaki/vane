@@ -284,7 +284,7 @@ private struct CaptureEditorView: View {
                 HStack(spacing: 6) {
                     ForEach(Array(CaptureMarkupTool.allCases.enumerated()), id: \.element.id) { index, item in
                         Button {
-                            Motion.animate(.easeOut(duration: 0.15)) { tool = item }
+                            Motion.animate(Look.quick) { tool = item }
                         } label: {
                             Label(item.title, systemImage: item.symbol).padding(.horizontal, 5).padding(.vertical, 6)
                                 .background(tool == item ? Color.accentColor.opacity(0.14) : .clear,
