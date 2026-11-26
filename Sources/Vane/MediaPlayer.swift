@@ -848,6 +848,7 @@ struct MediaTrayView: View {
 private struct Marquee: View {
     let text: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var textWidth: CGFloat = 0
     @State private var boxWidth: CGFloat = 0
 
@@ -870,7 +871,7 @@ private struct Marquee: View {
             .lineLimit(1)
             .fixedSize()
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { textWidth = $0 }
-        if overflow > 0, !reduceMotion {
+        if overflow > 0, !reduceMotion, !batterySaver.isActive {
             title.phaseAnimator([false, true], trigger: text) { view, away in
                 view.offset(x: away ? -overflow : 0)
             } animation: { _ in
