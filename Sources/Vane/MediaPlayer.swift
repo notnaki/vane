@@ -735,6 +735,8 @@ struct MediaTrayView: View {
                !media.minimized.contains(tab.id) { media.returned(to: tab) }
         }
         .onChange(of: tab?.id) { hovered = false }
+        // The animations above check only Reduce Motion; this adds Battery Saver.
+        .vaneMotionPolicy()
         // Let the card's shadow extend beyond the tray's layout bounds, like the toast.
     }
 
@@ -768,7 +770,7 @@ struct MediaTrayView: View {
             // shrinking row prevents its text from sliding through the transport glyphs.
             .frame(height: Look.trayHeight)
             .opacity(expanded ? 1 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: expanded ? 0.18 : 0.10), value: expanded)
+            .animation(reduceMotion ? nil : .easeOut(duration: UIAnimation.surfaces.duration(expanded ? 0.18 : 0.10)), value: expanded)
             .frame(height: expanded ? Look.trayHeight : 0, alignment: .top)
             .clipped()
             .allowsHitTesting(expanded)
@@ -846,6 +848,7 @@ struct MediaTrayView: View {
 private struct Marquee: View {
     let text: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var textWidth: CGFloat = 0
     @State private var boxWidth: CGFloat = 0
 
@@ -868,7 +871,7 @@ private struct Marquee: View {
             .lineLimit(1)
             .fixedSize()
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { textWidth = $0 }
-        if overflow > 0, !reduceMotion {
+        if overflow > 0, !reduceMotion, !batterySaver.isActive {
             title.phaseAnimator([false, true], trigger: text) { view, away in
                 view.offset(x: away ? -overflow : 0)
             } animation: { _ in

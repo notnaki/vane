@@ -358,8 +358,8 @@ private struct EaselEditor: View {
                     .accessibilityLabel("Easel name")
                 if drawing || selected != nil {
                     ScrollView(.vertical) { properties }.scrollIndicators(.hidden)
-                        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: selected)
-                        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: drawing)
+                        .animation(reduceMotion || Motion.reduced ? nil : Look.feedback, value: selected)
+                        .animation(reduceMotion || Motion.reduced ? nil : Look.feedback, value: drawing)
                         .frame(maxHeight: max(100, viewportSize.height - (viewportSize.width < 960 ? 200 : 130)))
                 }
             }.frame(width: 190).padding(16).padding(.top, viewportSize.width < 960 ? 65 : 0)
@@ -778,7 +778,7 @@ private struct EaselCard: View {
             .overlay {
                 Rectangle().stroke(EaselColors.selection, lineWidth: manipulating ? 2 : 1)
                     .opacity(selected ? 1 : 0)
-                    .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: selected)
+                    .animation(reduceMotion || Motion.reduced ? nil : Look.feedback, value: selected)
                     .animation(reduceMotion || Motion.reduced ? nil : .spring(response: 0.24, dampingFraction: 0.85), value: manipulating)
                     .allowsHitTesting(false)
             }

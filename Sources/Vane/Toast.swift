@@ -260,7 +260,7 @@ struct ToastHost: View {
         // inside it; nothing here is a fixed height, so a two-line toast is taller and the
         // sidebar's overlay simply has more of it to draw.
         .padding(.horizontal, Look.inset)
-        .animation(reduced ? nil : .spring(duration: 0.22, bounce: 0.08), value: mine.map(\.id))
+        .animation(reduced ? nil : .spring(duration: UIAnimation.surfaces.duration(0.22), bounce: 0.08), value: mine.map(\.id))
         .vaneMotionPolicy()
         // Keep the shadow outside the stack's layout bounds. Clipping here cuts its
         // top and bottom flush with the pill, leaving a hard rectangular edge.

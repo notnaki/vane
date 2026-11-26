@@ -291,7 +291,7 @@ struct LibraryBucket: View {
             }
         }
         .frame(width: 24, height: 24)
-        .animation(reduceMotion || batterySaver.isActive ? nil : .spring(duration: 0.25, bounce: 0.25), value: hovered)
+        .animation(reduceMotion || batterySaver.isActive ? nil : .spring(duration: UIAnimation.feedback.duration(0.25), bounce: 0.25), value: hovered)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: filled)
         .accessibilityHidden(true)
     }

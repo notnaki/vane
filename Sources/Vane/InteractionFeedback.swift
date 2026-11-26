@@ -264,7 +264,7 @@ private struct TactileButtonBody: View {
                 scales: scales, pressed: configuration.isPressed && enabled))
             // The shape follows layout bounds, so pressing never shrinks the hit target.
             .contentShape(.rect)
-            .animation(configuration.isPressed || reduced ? nil : .spring(duration: 0.16, bounce: 0.08),
+            .animation(configuration.isPressed || reduced ? nil : .spring(duration: UIAnimation.feedback.duration(0.16), bounce: 0.08),
                        value: configuration.isPressed)
             .animation(reduced ? nil : Look.feedback, value: hovered)
             .transaction {
@@ -355,7 +355,7 @@ struct Feel09FeedbackHighlight: ViewModifier {
                         .strokeBorder(.tint.opacity(arrival ? 0.6 : 0.2), lineWidth: arrival ? 1.5 : 1)
                 }
                 .opacity(visible ? 1 : 0)
-                .animation(visible ? nil : .easeOut(duration: 0.18), value: visible)
+                .animation(visible ? nil : .easeOut(duration: UIAnimation.feedback.duration(0.18)), value: visible)
                 // Also mask an already-running fade whose target was zero before policy
                 // changed. Disabling its transaction alone cannot finish that fade.
                 .opacity(reduced || suppressedStamp == stamp ? 0 : 1)

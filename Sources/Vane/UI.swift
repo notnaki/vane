@@ -4649,7 +4649,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                 // Clear the old highlight promptly as the pointer moves to another row.
                 // Titles, inline editors and hit targets keep their final geometry.
                 .animation(reduceMotion || batterySaver.isActive ? nil
-                           : .easeOut(duration: highlightOpacity == 0 ? 0.08 : 0.12),
+                           : .easeOut(duration: UIAnimation.feedback.duration(highlightOpacity == 0 ? 0.08 : 0.12)),
                            value: highlightOpacity)
                 .id(reduceMotion || batterySaver.isActive)
         }

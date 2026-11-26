@@ -163,8 +163,8 @@ private struct PermissionButtonStyle: ButtonStyle {
                 }
                 .contentShape(.rect(cornerRadius: 6))
                 .onHover { hovering = $0 }
-                .animation(reduced ? nil : .easeOut(duration: 0.12), value: hovering)
-                .animation(reduced ? nil : .easeOut(duration: 0.08), value: pressed)
+                .animation(reduced ? nil : Look.feedback, value: hovering)
+                .animation(reduced ? nil : .easeOut(duration: UIAnimation.feedback.duration(0.08)), value: pressed)
                 .transaction { if reduced { $0.disablesAnimations = true } }
         }
     }
