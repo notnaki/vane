@@ -287,6 +287,16 @@ text-entry shortcuts. They do not establish Google or Reddit service acceptance.
 
 ### Specialist reliability fixtures
 
+Opt-in performance measurements and their scripts:
+
+- [Startup and session restoration](STARTUP-PERFORMANCE.md) (`scripts/profile-startup.py`).
+  Build first and use a quiet profiling window.
+- [Sidebar presentation](SIDEBAR_PERFORMANCE.md) (`scripts/profile-sidebar-presentation.py`).
+- [UI responsiveness](UI-RESPONSIVENESS.md) (`scripts/ui-responsiveness-fixture.py`).
+- [Injected page scripts](PAGE-SCRIPT-PERFORMANCE.md) (`VANE_PAGE_SCRIPT_PROFILE`).
+- [CI performance](CI-PERFORMANCE.md): shard balancing and native build reuse
+  (`scripts/ci-native-reuse.py`).
+
 For site-permission lifecycle fixtures and a fake display-capture check, see
 [Site permissions on macOS 26 and later](SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
 

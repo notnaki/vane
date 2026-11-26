@@ -34,6 +34,7 @@ Detailed records of how features behave, how they were tested, and where they st
 | iCloud | [Provisioning](ICLOUD-PROVISIONING.md), [validation](ICLOUD-VALIDATION.md) |
 | Security | [Security review](SECURITY-AUDIT.md), [security policy](../SECURITY.md) |
 | Recovery | [Crash recovery](CRASH-RECOVERY.md), [draft protection](DRAFT-PROTECTION.md), [downloads](DOWNLOAD-RELIABILITY.md) |
+| Performance | [Startup](STARTUP-PERFORMANCE.md), [sidebar](SIDEBAR_PERFORMANCE.md), [UI responsiveness](UI-RESPONSIVENESS.md), [page scripts](PAGE-SCRIPT-PERFORMANCE.md), [CI](CI-PERFORMANCE.md) |
 
 ## Working on Vane
 
@@ -43,5 +44,5 @@ Detailed records of how features behave, how they were tested, and where they st
 - [Website](WEBSITE.md): the `website` branch, search, and shared-link previews.
 - [App icons](../AppIcons/README.md).
 
-Older implementation plans, specs, and one-off investigations were removed from
+Finished implementation plans, specs, and one-off investigations were removed from
 the tree; they're still in the Git history.
