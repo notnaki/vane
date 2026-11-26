@@ -4222,6 +4222,9 @@ private struct FolderRow: View {
                 dismiss: { hover.dismiss() })
         }
         .onChange(of: folder.collapsed) { _, _ in hover.dismiss() }
+        // Locked, renamed, dragged or emptied while showing: the panel hides without a hover-out,
+        // so clear the hold too or it reopens later on its own.
+        .onChange(of: hover.isVisible && hoverTabs.isEmpty) { _, gone in if gone { hover.dismiss() } }
         .onChange(of: isEnabled) { _, enabled in if !enabled { zone = nil } }
         .onChange(of: dragging.active) { _, active in if !active { zone = nil } }
     }
