@@ -2,462 +2,295 @@
 
 [Documentation index](README.md) · [Project README](../README.md)
 
-Start here for tabs, Spaces, search, windows, downloads, and media. For saved reading
-and visual tools, see [Reading and customization](FEATURES.md).
-
-## Page captures
-
-Press **⌘⇧2** or choose **File → Capture a Portion of This Page**. Move over an element to
-highlight it, click to capture it, or drag a rectangle. **Return** captures the highlighted
-region or visible page; **Escape** cancels. Choose **Full Page** in capture mode or
-**File → Capture Full Page** to include the rendered document below the viewport.
-Infinite-scroll content that has not loaded is not included, and unusually large pages
-may need a smaller region.
-
-The compact capture menu offers **Copy**, **Save PNG…**, **Share…**, **Edit…**, **Retake**,
-and **Save to Library**. Normal windows also offer **New Easel** and existing Easels for
-web-page captures. Filter the menu with **Send To…**. Click outside the result or press
-**Escape** to dismiss it.
-
-In **Edit**, drag with **Crop**, **Pen**, **Arrow**, or **Rectangle**, or choose **Text** and
-click to place a label. Pick a color and stroke width; **Undo**, **Redo**, and **Reset**
-keep changes reversible. **Apply** returns to the capture menu with the edited image;
-**Cancel** keeps the original capture.
-
-Explicitly saved captures appear in **Library → Media**, with the other saved images, source search, preview, and the usual media actions.
-They use the existing saved-file history rather than a separate capture collection. Private-window captures stay temporary, with copy, PNG export, share and
-editing available; the saved capture library and Easels are unavailable there.
+Tabs, Spaces, windows, search, downloads, and media. For Reader, translation, Easels,
+captures, Boosts, and appearance, see [Reading and customization](FEATURES.md).
 
 ## First launch
 
-Fresh installations open with a short, skippable welcome to search and Spaces. Finishing
-or skipping it leads into browsing; existing installations skip it. Reduce Motion and
-Battery Saver keep the welcome still.
+A new installation opens with a short welcome to search and Spaces. Skip it at any time.
+Release builds offer once to make Vane your default browser; you can also do this later
+in **Settings → General → Default browser**.
 
-Local, debug, and prerelease builds skip the startup default-browser prompt. Stable
-release builds packaged with `SIGN_ID` offer it once. You can still use the manual “Make
-Vane Default…” action in Settings.
+## The sidebar
 
-## Tabs and the sidebar
+- **Favourites** belong to a profile and appear in every Space of that profile.
+- **Pinned** and **Today** tabs belong to a Space. Today tabs can archive themselves;
+  find them in **Library → Archived Tabs**. Right-click a row to pin or unpin it.
 
-Favourites belong to a profile; Pinned and Today tabs belong to a Space. Today tabs can
-auto-archive; find them in Library → Archived Tabs. Use the row’s context menu to pin or
-unpin a page.
+Press <kbd>⌘S</kbd> (**Toggle Sidebar**) to show or hide the sidebar. Each window
+remembers its own choice across all its Spaces. Hiding it also closes Library. In full
+screen, the sidebar button moves to the top-left corner.
 
-Showing or hiding the sidebar applies across all Spaces in that window, including Spaces
-in other profiles. Each window keeps its own sidebar visibility.
-**Toggle Sidebar** (`⌘S` by default) also closes Library when it is open. Showing the
-sidebar again returns to your tabs.
+Move the pointer over the sidebar to reveal the address pill's pinned extensions,
+**Copy Link**, and **Site Controls**, and Today's **Clear** button. Hover a tab to see its
+close button.
 
-**View › Show Toolbar** (`⇧⌘D` by default, as in Arc, or **Show Toolbar** in the command
-bar) adds a slim strip to the top of the page card with Back, Forward and Reload, the
-page's host in the middle, and Copy Link, pinned extensions and Page Actions on the right.
-In Split View each pane has its own strip for its own page. A long address is shortened
-so it never covers the buttons. Click the host to edit that page's address. The buttons and
-address move there from the top of the sidebar, which keeps its sidebar button. It
-applies to every browser window and is remembered after you quit. With the sidebar
-hidden, the strip in the window's top-left corner starts with the window's close,
-minimise, and zoom buttons and the sidebar button (in full screen macOS shows those
-buttons itself), and you can drag its empty space to move the window. Little Vane and
-Peek keep their own bar.
+Double-click a tab, favourite, or split pane to rename it. <kbd>Return</kbd> saves,
+<kbd>Esc</kbd> cancels, and an empty name restores the page title.
 
-Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
-The tab's close button appears at the end of the row while you hover; otherwise the
-title uses the row's full width.
-Double-click a Today tab, pinned tab, favourite, or split pane to edit its name in
-place. Press **Return** to save or **Escape** to cancel; an empty name restores the
-page’s title.
+A pinned tab keeps its name as you browse inside it. Once it leaves its saved page, the
+row shows `/` before the title; choose **Return to Pinned Tab** to go back.
 
-Pinned tabs keep their saved name as you navigate within them. When a pinned tab leaves
-its saved page, its sidebar row shows `/` before its title and offers **Return to Pinned
-Tab**; returning loads the pinned URL again. Favorites belong to a profile, while pinned
-and Today tabs belong to a Space. Library lists Spaces across all profiles.
+## The toolbar
+
+**View → Show Toolbar** (<kbd>⇧⌘D</kbd>) adds a slim strip to the top of the page with
+Back, Forward, Reload, the page's address, **Copy Link**, pinned extensions, and Page
+Actions. Click the address to edit it. In Split View each pane gets its own strip. With
+the sidebar hidden, the strip also holds the window buttons and the sidebar button, and
+you can drag it to move the window. The setting applies to every window.
+
+Little Vane and Peek keep their own bar. To hide it until you point at the top edge, turn
+on **Settings → Links → Auto-hide toolbar in Little Vane and Peek**.
+
+## Site Controls
+
+Click the Site Controls button in the address pill for quick actions on the current site:
+**Share**, **Boost**, **Capture**, and **Reader**, plus a tile for each installed
+extension (click a dimmed tile to turn it on). Below, a short **Settings** list shows only
+what this site has changed: permissions you answered, zoom, ad blocking, translation,
+apps it may open, and Developer Mode. Click a row to flip it.
+
+**⋯ → Site Settings…** lists every permission and site option. The **⋯** menu also has
+**Clear Site Data…**, **Translate Page**, extension management, and filter lists. Right-
+click an extension for its options, **Pin**/**Unpin**, or **Remove from Vane…**. See
+[site permissions](SITE-PERMISSIONS.md).
 
 ## Copy a clean link
 
-Press **⌘⇧C** (**View → Copy Page URL**) to copy the current page's URL with known
-tracking parameters removed, including `utm_*`, `fbclid`, and advertising click IDs.
-The address bar's **Copy Link** button uses the same cleanup. Page parameters such
-as searches and item IDs, URL encoding, and fragments are preserved. Copying does
-not navigate or change the page's address.
+<kbd>⇧⌘C</kbd> (**View → Copy Page URL**) or **Copy Link** copies the address with
+tracking parameters such as `utm_*` and `fbclid` removed. Search terms, item IDs, and
+fragments stay.
 
-## Reorder, group, and clean up tabs
+## Organise tabs
 
-Drag a sidebar tab to reorder it: the white line marks the nearest insertion gap, and
-the rows stay in place until you release. The line fades in once and stays visible while
-moving between gaps. The held ghost matches the tab row. Hold Option while dropping onto
-the middle of another tab to make a split view. Dropping into a closed folder highlights
-it and opens its icon while you hover.
+**Reorder.** Drag a tab; a white line shows where it will land. Hold <kbd>⌥</kbd> while
+dropping onto another tab to make a Split View. Drop onto a closed folder to put it
+inside.
 
-### Tidy Tabs
+**Folders.** Rest the pointer on a collapsed folder to see its tabs in a panel, each with
+when you last visited it. Type in **Search *folder*…** to filter, press <kbd>Return</kbd>
+to open the first match, or click a row. Locked folders don't preview. To move tabs out of
+a folder, drag them into the empty space below the last row, onto **New Tab** (top of
+Today), or choose **Remove from Folder**. Empty folders disappear. Drag the empty space
+below Today to move the window.
 
-**Tidy Tabs** first opens a review sheet. Rename its proposed folders and untick pages
-you want to leave loose, then choose **Apply Groups**. Turn off **Preview before tidying**
-in **Settings → Max** to apply groups immediately. A changed page or Space requires
-a fresh proposal. Tidy preserves pinned tabs, favourites, existing folders, split panes,
-and custom tab names; **Undo Tidy Tabs** takes the grouping back.
+**Favourites.** Drag a tab, or a link from a page or another app, onto the Favourites
+grid or the address pill. Neighbouring tiles move aside to show where it will go. Drag
+tiles to reorder them, back into Pinned or Today, or into another app to share the link.
 
-### Organize and remove duplicates
+**Tidy Tabs** (<kbd>⌃⌘T</kbd>) proposes folders for your Today tabs. Rename folders or
+untick pages, then choose **Apply Groups**. Pinned tabs, favourites, existing folders,
+split panes, and custom names are never moved. **Undo Tidy Tabs** reverts it. To skip the
+review, turn off **Settings → Max → Preview before tidying**.
 
-Choose **Tabs → Organize Tabs…** or the Space menu's **Organize Tabs…** to search and
-select Today tabs across the current profile's Spaces. Copy their links, move them to
-another Space as Today tabs, or archive the selection. **Duplicates only** compares
-complete URLs, including query strings and fragments. **Select Extras** offers a
-selection for review; pinned tabs, favourites, named tabs, and tabs in use are preferred
-as keepers. Untick or tick individual copies, then choose **Archive Selected Copies**.
-Cleanup requires at least one copy to remain. Locked-folder contents are hidden; pinned
-tabs, favourites, and split panes are protected from bulk moves and archives. **Undo**
-in the sheet, the toast, or **Tabs → Undo Tab Organization** restores the last action
-for that profile, including folder order and saved page state, while the affected tabs
-and folders have no later changes. Reduce Motion and Battery Saver keep list and
-selection changes immediate.
-
-### Move tabs out of folders
-
-After Tidy groups Today tabs into folders, drag a tab or selection into the blank space
-below the last row to move it outside the folders at the bottom of Today. That drop area
-remains available when the last row is a collapsed folder or the list fills the sidebar.
-Dropping onto **New Tab** moves tabs to the top of Today; right-click → **Remove from
-Folder** keeps tabs in their section. An empty Today folder disappears. Click and drag
-the blank area below Today tabs to move the window.
-
-### Favourites
-
-Drag a tab onto a favourite tile or into the gaps between tiles to add it to Favourites.
-Approaching Favourites reveals a drop tile when it is empty; the address pill also
-accepts the first favourite. Nearby tiles move aside and the drag preview takes its
-destination tile's shape, then transforms back into a row when dragged out. This
-previews placement; the order commits only on release. Drag tiles to reorder them or
-move them into Pinned or Today. Links dragged from a webpage or another app can be
-dropped onto the grid or address pill to save a favourite; dragging a tile into another
-app exports its page link.
+**Organize Tabs** (**Tabs → Organize Tabs…** or the Space menu) searches Today tabs across
+the profile's Spaces. Copy their links, move them to another Space, or archive them. Turn
+on **Duplicates only** and **Select Extras** to clean up copies; Vane keeps at least one
+and prefers pinned, favourite, named, and in-use tabs. Pinned tabs, favourites, split
+panes, and locked folders are protected. **Tabs → Undo Tab Organization** reverts the last
+action.
 
 ## Spaces
 
-Create a Space from **Spaces → New Space…** or the sidebar creation menu. Choose a name,
-profile, and appearance. Right-click its name or footer button to edit its theme.
-Choose **Icon** for a symbol grid or **Emoji** for searchable emoji and category buttons.
-The smiley beside search opens the macOS emoji picker; the trash control resets the icon.
-Emoji stay visible in the sidebar, footer, Library, search, and Space menus.
+Create a Space from **Spaces → New Space…** or the sidebar's creation menu, then choose a
+name, profile, and appearance. Right-click the Space to edit its theme or choose an
+**Icon** or **Emoji**.
 
-In **Spaces → Manage Spaces…**, click a card’s header or **Go to Space** to close
-Library and show that Space. Drag a card’s footer handle onto any other card to move its
-Space there, including beside another profile’s Spaces; dragging a Space button in the
-sidebar footer onto another does the same. Spaces have one order across all profiles,
-which swipes, the footer and this page follow. Reordering never changes which profile
-owns a Space. A new Space appears after its own profile’s Spaces. The order is saved
-with your profiles, included in backups, and synced over iCloud while both the **Spaces**
-and **Sidebar folders** categories are on; a Mac running an older version keeps each
-profile’s Spaces in order, one profile after another. Page rows can still be dragged
-between Spaces. A card’s `…` menu goes to the Space, renames it, or deletes it:
-**Delete Space…** asks first and archives its tabs.
+**Switch Spaces** by swiping horizontally over the sidebar, clicking a footer button, or
+pressing <kbd>⌃1</kbd>–<kbd>⌃9</kbd> or <kbd>⌥⌘←</kbd>/<kbd>⌥⌘→</kbd>. Pull past the last
+Space until the ring fills to start a new one. To show dots instead of icons in the
+footer, turn off **Settings → General → Space icons in the footer**.
 
-Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse or
-expand its pinned tabs; Today stays visible. Double-click its name to rename the Space.
-Each window remembers the collapsed state for each Space while open. Swipe horizontally
-over the sidebar to move between Spaces, including while the search bar (`⌘T`) is open.
-To open the creation form from the last Space, pull left deliberately until the ring and
-circle fill, then release. Short or quick swipes spring back; pull back before releasing
-to cancel. A Space is saved only after pressing **Create Space**.
-Click the Space buttons in the sidebar footer for the same sliding change, including
-between profiles. Each button shows a square, rounded highlight on hover. In
-**Settings → General**, turn **Show Space icons in the footer** off to use dots for
-inactive Spaces. The preference applies across windows, including when the strip
-scrolls. Swipe progress blends brightness; icon size changes in a quick animation when
-selection changes. Reduce Motion and Battery Saver keep decorative icon changes immediate.
+Click the Space card at the top of the sidebar to collapse its pinned tabs; double-click
+its name to rename it.
 
-For saved workspace layouts, see [Space templates](FEATURES.md#space-templates). To
-restrict access to a folder, see [folder locks](DATA-AND-PRIVACY.md#folder-locks).
+**Manage Spaces** (**Spaces → Manage Spaces…**) shows every Space across profiles. Click a
+card to go to it. Drag cards, or the footer buttons, to reorder. Spaces share one order
+across all profiles, kept in backups and synced over iCloud when **Spaces** and **Sidebar
+folders** sync are on. Reordering never changes a Space's profile. A card's **⋯** menu
+renames it or deletes it; **Delete Space…** asks first and archives its tabs.
 
-## Windows, Split View, Peek, and Little Vane
+See also [Space templates](FEATURES.md#space-templates) and
+[folder locks](DATA-AND-PRIVACY.md#folder-locks).
 
-Use **File → New Window** (`⌘N`) for a regular window, **New Private Window**
-(`⇧⌘N`) for private browsing, or **New Little Vane Window** (`⌥⌘N`) for a compact
-single-page window. These are the default bindings; Settings can change them.
+## Windows
 
-Right-click Vane’s Dock icon for **New Window**, **New Incognito Window**,
-**Show Little Vane Windows**, and **Close Little Vane Windows**. Show restores all
-compact windows without hiding any that are already visible; Close leaves regular
-browser windows open. Both compact-window commands are disabled when none are open.
-The native window list identifies each window by its active tab, rather than listing
-all Today tabs; private windows keep their generic titles.
+| Window | Shortcut |
+| --- | --- |
+| **File → New Window** | <kbd>⌘N</kbd> |
+| **File → New Private Window** | <kbd>⇧⌘N</kbd> |
+| **File → New Little Vane Window** (one compact page) | <kbd>⌥⌘N</kbd> |
 
-Regular window titles follow the active page: `Page title — Vane`, with the profile
-name appended for non-default profiles. This lets password managers and window tools
-identify the active page. Turn off **Settings → Advanced → Show page titles in window
-titles** to use generic titles instead. Private windows, including private Little Vane
-windows, always use generic titles and expose no page title or address through them.
+Right-click the Dock icon for **New Window**, **New Incognito Window**, **Show Little Vane
+Windows**, and **Close Little Vane Windows**.
 
-Windows in the same Space share tabs. When both show the same tab, the focused window
-holds its live page and the other shows a gray snapshot. Switching windows preserves
-input, scroll position, and history; closing a tab removes it from every window. Each
-window keeps its own selection. Private and Little Vane windows keep their own pages.
-Split View shows two to four pages side by side or stacked, with resizable dividers.
-Peek opens a link over the current page; Little Vane opens it in a separate compact
-window.
+Window titles follow the active page (`Page title — Vane`), which helps password managers
+and window tools. Turn this off in **Settings → Advanced → Windows and Tabs → Show page
+titles in window titles**. Private windows always use generic titles.
 
-Website sign-in and other small script-opened dialogs use a separate temporary window
-with a read-only website address and native close controls. They have no Little Vane
-branding, Open in Space action, sidebar row, or saved session entry. Closing the dialog
-leaves its originating tab open; ordinary `target="_blank"` links still open tabs.
+Windows on the same Space share its tabs but keep their own selection. If two windows show
+the same tab, the focused one has the live page and the other shows a snapshot. Private
+and Little Vane windows keep their own pages.
 
-A page's `alert()`, `confirm()`, and `prompt()` open as sheets on its window, naming the
-site that asked. A background tab can't open one and gets the Cancel answer. If a site
-repeats them quickly, the sheet offers to silence that site until the tab closes.
+Website sign-in pop-ups open in a small temporary window showing the site's address.
+`alert()`, `confirm()`, and `prompt()` appear as sheets naming the site; a site that keeps
+repeating them can be silenced until the tab closes.
 
-## Without an internet connection
+## Split View, Peek, and Little Vane
 
-Vane keeps local tools available while you are offline. You can organize tabs, Spaces,
-bookmarks, and history; edit Easel notes and drawings; open downloaded files; and read
-articles already saved in **Library → Reading Queue**. Saved articles include only the
-text and images captured when you saved them. Private windows cannot access that queue.
+- **Split View** shows two to four pages side by side or stacked, with dividers you can
+  drag. <kbd>⌥</kbd>-click a link, or press <kbd>⌃⇧=</kbd>.
+- **Peek** opens a link over the current page. <kbd>⇧</kbd>-click a link.
+- **Little Vane** opens a link in a compact separate window. <kbd>⌥⌘</kbd>-click a link.
 
-New websites, web searches, remote search suggestions, Instant Links, streaming media,
-new downloads, cloud AI, GitHub Live Folder refreshes, extension downloads, and online
-blocklist refreshes need a connection. A page already open may remain readable, but its
-forms, embedded content, and live features depend on the site. Restoring a tab or opening
-a bookmark does not create an offline copy. Easel live web views also need their sites.
-Local network sites may still work when the public internet is unavailable.
-
-When a page reports that you are offline, reconnect and choose **Try Again**. To keep an
-article for later, use **Save for Offline** while its readable content is available;
-see [offline reading](FEATURES.md#offline-reading-queue).
-
-**Vane → Check for Updates…** also needs internet. An offline check explains this and
-offers **Retry**; a dropped or timed-out connection offers another check too.
-Automatic check failures stay quiet and keep the previous release cache. If an update
-download loses its connection, **Retry** starts a fresh download after you reconnect;
-partial archives are removed rather than installed. An update already installed and
-waiting for **Restart** can finish without another update download. Manual checks and
-retries do not wait for the automatic check's backoff interval.
-
-The update status pill is shared across Spaces and profiles, including when the
-destination has an open command bar. Its current Update, Retry, or Restart action
-remains available there.
+See [link gestures](#link-gestures) for every modifier.
 
 ## Search and history
 
-**Instant Links** uses **Shift+Return** in the address or new-tab bar to open the
-first organic result from **DuckDuckGo**, regardless of your selected search engine.
-Comma-separated searches open one tab per query. Resolution sends each query to
-DuckDuckGo in a separate cookie-free session; if it fails, times out, or encounters
-a challenge, Vane opens DuckDuckGo’s results page instead. Explicit addresses,
-bangs, and active site searches keep their ordinary destinations. Private windows
-and disabled Instant Links use ordinary navigation with your selected engine.
-Change the toggle in **Settings → Max → Instant Links**. Plain **Return** continues
-to use your selected search engine. See the [privacy policy](../PRIVACY.md) for
-request and cookie details.
+Press <kbd>⌘T</kbd> or <kbd>⌘L</kbd> to open the search bar. Results grow below the field
+as you type.
 
-Type a site word such as `youtube`, `github`, or `twitter` in the search bar and press
-**Tab** (or click **Search …**) to turn it into a site search chip. Shortcut keywords
-such as `yt` and your custom bangs work too. Typing `!yt ` activates the chip directly.
-The selected result uses the site's chip color; **Return** searches that site, and an
-empty query opens its home page. **Escape**, clicking the chip, or **Backspace** with an
-empty query leaves site search. Words remain ordinary searches until activated. Tab
-still searches actions when no site shortcut matches. Built-in sites also include
-Twitch, TikTok, Pinterest, Bluesky, IMDb, SoundCloud, Vimeo, Letterboxd, Goodreads,
-Medium, Etsy, Target, Dribbble, Behance, Unsplash, Pexels, GitLab, and DEV.to. Full site
-names work with `!` too, such as `!youtube` and `!github`; `twitter` and `!twitter`
-search X. Some sites require sign-in.
+- **Autocomplete.** Typing the start of a site you've visited completes it. Press
+  <kbd>→</kbd> to accept and keep editing, or <kbd>Delete</kbd> to remove it.
+- **Site search.** Type a site name such as `youtube` or `github` and press
+  <kbd>Tab</kbd> to search that site. Keywords like `yt`, bangs like `!yt` or `!github`,
+  and your custom bangs work too. Built-in sites include Twitch, TikTok, Pinterest,
+  Bluesky, IMDb, SoundCloud, Vimeo, Letterboxd, Goodreads, Medium, Etsy, Target, Dribbble,
+  Behance, Unsplash, Pexels, GitLab, DEV.to, and X (`twitter`).
+- **Actions.** Commands such as **Pin Tab** appear when you type their name. Press
+  <kbd>Tab</kbd> (or click **⇥ Actions**) to search only actions.
+- **Instant Links.** <kbd>⇧Return</kbd> opens DuckDuckGo's first result directly, whatever
+  your search engine. Separate queries with commas to open several tabs. Turn it off in
+  **Settings → Max → Instant Links**. Not used in private windows. See the
+  [privacy policy](../PRIVACY.md).
+- **Tabs and history.** <kbd>⇧⌘A</kbd> searches open tabs, with an **All open Spaces**
+  filter. <kbd>⌘Y</kbd> opens History, filtered by profile and by Today, Yesterday,
+  Last 7 days, or Last 30 days.
 
-### The search bar
+Set the number of results, bar position, and animation in **Settings → Advanced → Command
+Bar**. Search engines open from **Settings → Profiles → Search Settings…**.
 
-The search bar (`⌘T`, `⌘L`) keeps its place in the window while you type: results grow
-and shrink below the field, and the previous results stay up until the next ones
-arrive. **Settings → Profiles → Search Settings** sets **Results shown** (6–12 before the
-list scrolls), **Bar position** (from near the top of the window to its middle), and
-**Animate results**. Reduce Motion and Battery Saver also turn the animation off.
+## Settings pages in a tab
 
-Typing the start of a site you have visited or have open completes its address in the
-field, with the added part selected, and **Return** opens it. Keep typing to narrow it,
-press **Delete** to remove the completion, or press **→** to accept it and keep editing.
-
-A strong action match, such as **Pin Tab** for `pin`, appears just after the typed
-search row. Queries of at least three characters can match the start of an action title
-or one of its words; weaker matches stay below browsing results. Press **Tab** or click
-**⇥ Actions** to search only actions when no site shortcut is offered. The typed search
-or navigation row stays ahead of the promoted action.
-
-### Tab and history results
-
-Search ranks exact page titles and addresses before prefixes, partial words, and fuzzy
-letter matches. Accents and case do not affect matching. Bookmarks, visit frequency, and
-recency break relevance ties. Tab search searches the current profile and offers an
-**All open Spaces** filter for the live tabs it can access. History (`⌘Y`) offers
-explicit profile selection and Today, Yesterday, Last 7 days, and Last 30 days filters.
-Search results show relevance first and include each visit's date; an empty search
-groups visits by day. History has no Space filter because visits do not store which
-Space they belonged to. Private windows show neither saved history nor other windows'
-tabs. Searches run off the input thread and discard superseded results.
+Passwords, Privacy and Security, Website Data, Clear Browsing Data, Search Engines, and
+Extensions open as a browser tab, like in Arc. Reach them from the arrow rows in
+**Settings → Profiles**, **Manage Extensions**, or by typing `vane://` in the command bar.
+Each page has a profile menu, so you can manage any profile, even one no Space uses.
+Typing `settings` still opens the Settings window.
 
 ## Library and downloads
 
-Hover the Library bucket in the sidebar footer to preview the last four downloads, with
-the newest at the bottom. Thumbnails, filenames, and relative times appear over the
-lower Today tabs; click a finished file to open it or right-click to show it in Finder.
-**Settings → General → Previews → Library hover preview** selects Downloads (the
-default), Media, Easels, Spaces, Archived Tabs, History, or Off. Each preview shows up
-to four items. Downloads and Media are shared across all regular profiles and windows;
-the other previews use this window's profile. Private windows show only their own
-downloads, media, and archived tabs. The bucket is empty when downloads, archived tabs,
-and the selected preview are empty, and always highlights on hover. A filled bucket
-lifts its contents without changing their shape; an empty one lifts its lid. Reduce
-Motion and Battery Saver keep these changes immediate. Click the bucket to open the full
-Library.
+Press <kbd>⇧⌘L</kbd> or click the bucket in the sidebar footer to open Library. It holds
+Downloads, Media, Easels, Boosts, Archived Tabs, and Reading Queue for every profile. You
+can also swipe past your first Space to reach it.
 
-Library's **Archived Tabs** section holds closed tabs you can restore. Browsing
-history remains available through **Archive → View History** or **⌘Y**. Regular
-windows share Library contents across all profiles and Spaces, including Easels,
-Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
-opening, restoring, and other actions; profile labels distinguish matching items.
+Hover the bucket to preview the last four downloads. Click one to open it, or right-click
+to show it in Finder. Choose what the preview shows in **Settings → General → Previews →
+Library hover preview**. New downloads fly into the bucket.
 
-In Downloads, Archived Tabs, and Reading Queue, **Filter** opens inline controls
-above the results. Select one or more profile chips to narrow the list; **All**
-clears the profile selection. Search and the section's other filters still apply.
-**Done** returns to search. Profile choices stay with each section while Library is
-open and reset when you reopen it. Private windows show only their own items and
-omit the regular profile controls. The filter panel's **…** menu holds additional
-filters such as Completed only and section actions such as Clear Downloads or
-Clear Archive.
+In Downloads, Archived Tabs, and Reading Queue, **Filter** narrows the list by profile.
+Its **⋯** menu has more filters and actions such as **Clear Downloads**.
 
-**Reopen Closed Tab** (`⇧⌘T`) remembers the last 32 closed regular tabs
-until Vane quits. Reopening in the same profile restores the page's Back/Forward
-history when WebKit state is available; another profile or a private window opens
-only its URL in the current context. Private tabs and script-closed popups do not
-enter this list. Unavailable or unusable state falls back to loading the URL.
+**Reopen Closed Tab** (<kbd>⇧⌘T</kbd>) brings back any of the last 32 closed tabs until
+you quit, with their Back/Forward history.
 
-Starting a download sends a small marker from the page into the Library bucket. The
-bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery Saver
-show the icon immediately without the flight.
-
-Library sits one step before the first Space. From the leftmost Space, swipe toward the
-previous Space over the sidebar to open it; swipe toward the next Space within the panel,
-or use Escape or its back button, to close it. Both follow the macOS scrolling direction,
-like Space swipes. Library opens at its last-used section. Swipes over page content
-stay with the page, including back and forward navigation. Vertical scrolling still scrolls the Library.
-
-Downloads can be paused, resumed, or retried when supported. Resume depends on the
-server, WebKit resume data, authentication, and destination access. Fresh Retry requires
-a recorded GET; POST exports and blob/data downloads need the source page again. See
-[download reliability](DOWNLOAD-RELIABILITY.md) for behavior, troubleshooting, and
-byte-level validation.
+Downloads can be paused, resumed, or retried where the server allows. See
+[download reliability](DOWNLOAD-RELIABILITY.md).
 
 ## Picture in Picture and media
 
-Picture in Picture uses a custom floating window that you can drag anywhere and resize,
-with Back to Tab, minimize, close, play/pause, 15-second skips, and a seek bar. Hold the
-seek knob and drag upward for finer horizontal seeking; the center shows the current
-precision (2×, 4×, 8× and up) while you scrub. The corners have larger resize targets
-that preserve the video's proportions and opposite corner. It remembers its last
-position and size when reopened. Entry moves the live video from its on-page position to
-the saved placement in one short motion. Back to Tab reveals the source tab and moves
-the live video back to its current on-page position. Reduce Motion keeps these
-transitions in place. Minimize hides it while playback continues. The sidebar video
-player appears after minimizing PiP. It stays available across this window's Spaces,
-including Spaces in other profiles. Returning to its source Space keeps the minimized
-player visible until you open its tab, restore Picture in Picture, or close the player.
-It keeps the site icon and transport controls visible; hover over it to see the title,
-restore Picture in Picture, or close the player and pause. Embedded players use their
-own frame and Media Session play/pause and skip handlers. The custom window keeps
-WebKit's original live video presentation, including embedded players; when its
-presentation view cannot be safely attached, Vane keeps the native Picture in Picture
-window as a fallback.
+Press <kbd>⌥⌘P</kbd> to pop a video out. The floating player can be moved and resized and
+has play/pause, 15-second skips, a seek bar, and **Back to Tab**. Drag the seek knob
+upward for finer scrubbing. Minimise it to keep listening from a small player in the
+sidebar.
 
-**Pause All Media** (View menu or command bar; assign a key in Settings ▸ Shortcuts)
-pauses every playing player in every loaded tab, across windows, Spaces, profiles,
-Little Vane and private windows. It only pauses: running it again never resumes
-anything. It does not switch tabs, raise windows, or wake sleeping tabs, and Picture in
-Picture stays open, paused. Live calls are left alone: Meet tabs, and any player fed by a
-camera or call stream. Players Vane cannot see, such as Web Audio without a media
-element, are not covered; the toast counts them as still playing. There is no AppleScript or URL-scheme entry for it yet.
+Leaving a tab with a playing video pops it out automatically. Muted videos, such as
+decorative background loops, are skipped. Turn this off in **Settings → Advanced → Media
+and Notifications → Automatically enter Picture in Picture**.
 
-Google Meet calls use a floating window containing the existing live page, keeping
-participants, shared screens, and Meet's own call controls together. Leaving the tab
-or minimizing its browser window opens it when automatic Picture in Picture is enabled.
-Calls also follow you out of a split, Space, or profile; a call still visible in another
-browser window stays there.
-Returning to the tab, or choosing **Back to Tab**, puts the page back. **Close** hides
-the floating window without leaving the call; automatic pop-out stays suppressed until
-you return to that tab. The sidebar shows a yellow camera and a pulsing red call-status
-dot while Meet's in-call controls are present. The dot is steady with Reduce Motion or
-Battery Saver. Lobby camera previews do not activate this behavior.
+**Pause All Media** (**View** menu or command bar) pauses everything playing in every
+window, Space, and profile, without switching tabs or waking sleeping ones. It never
+resumes anything and leaves calls alone. Assign it a key in **Settings → Shortcuts**.
 
-This is Vane's native Meet adapter, rather than the site's Document Picture-in-Picture
-API. Detection depends on Meet's call controls and can need updates when Google changes
-them. Local synthetic call tests cover document identity, controls, playback, and cleanup;
-they do not establish live Google Meet account or screen-sharing compatibility.
+**Google Meet** calls float in their own window when you leave the tab, with Meet's own
+controls. **Close** hides the window without leaving the call. The sidebar shows a camera
+and a red dot while you're in a call.
 
-Protected playback depends on the system WebKit engine and the service. Public FairPlay
-demo checks do not establish subscription-service compatibility. Separate
-[live streaming checks](STREAMING-COMPATIBILITY.md) verified Netflix 4K SDR and Dolby
-Vision, Spotify music, and Disney+ protected video at 720p on one signed nightly/macOS
-27.0.1 setup; see that report
-for measured quality and unverified limits. The earlier [compatibility
-evidence](REAL-SITE-COMPATIBILITY.md) covers public demos and native fixtures.
+Protected streaming (Netflix, Spotify, Disney+) depends on the service; see
+[streaming compatibility](STREAMING-COMPATIBILITY.md).
+
+## Offline
+
+Without a connection you can still organise tabs and Spaces, browse bookmarks and
+history, edit Easels, open downloads, and read articles saved in **Library → Reading
+Queue** (see [offline reading](FEATURES.md#offline-reading-queue)). When a page says
+you're offline, reconnect and choose **Try Again**.
+
+## Updates
+
+Choose **Vane → Check for Updates…**. If a check or download fails, choose **Retry**. A
+downloaded update installs when you choose **Restart** in the update pill, which appears in
+every Space.
 
 ## Shortcuts and keyboard navigation
 
-| Action | Default shortcut |
+| Action | Shortcut |
 | --- | --- |
-| New tab | `⌘T` |
-| Reopen closed tab | `⇧⌘T` |
-| Find on page | `⌘F` |
-| Move between page and browser controls | `F6` or `⇧F6` |
-| Search tabs | `⇧⌘A` |
-| Search commands | `⇧⌘P` |
-| Open Library | `⇧⌘L` |
-| Show Toolbar | `⇧⌘D` |
+| New tab / search | <kbd>⌘T</kbd> |
+| Reopen closed tab | <kbd>⇧⌘T</kbd> |
+| Find on page | <kbd>⌘F</kbd> |
+| Search tabs | <kbd>⇧⌘A</kbd> |
+| Search commands | <kbd>⇧⌘P</kbd> |
+| History | <kbd>⌘Y</kbd> |
+| Library | <kbd>⇧⌘L</kbd> |
+| Toggle sidebar | <kbd>⌘S</kbd> |
+| Show toolbar | <kbd>⇧⌘D</kbd> |
+| Copy clean link | <kbd>⇧⌘C</kbd> |
+| Capture part of the page | <kbd>⇧⌘2</kbd> |
+| Picture in Picture | <kbd>⌥⌘P</kbd> |
+| Move between page and browser | <kbd>F6</kbd> / <kbd>⇧F6</kbd> |
 
-Shortcuts can be changed in Settings. The menu bar shows the current bindings, including
-numbered tab selection and search commands. Choose **Prefer Website** for a shortcut to
-leave it with a focused webpage; the command remains available from the menu and while
-browser controls have focus. Option-only shortcuts also leave character entry and caret
-movement with a focused text editor.
+Change any shortcut in **Settings → Shortcuts**. Choose **Prefer Website** to let a
+focused page keep a key.
 
-Use **F6** (or **Shift-F6**) to move between the page and browser controls, revealing
-the sidebar if needed. Use **Tab** and **Shift-Tab** to move through browser controls.
-Sidebar tabs, favourites, folders, Spaces, split panes, and the address pill show a
-focus outline; **Return** or **Space** activates the focused control. Enable macOS
-**Keyboard navigation** to include native buttons and menus in Tab navigation. Search
-results use **Up/Down** and **Return**; **Tab** keeps its site-search and actions
-behavior. **Escape** dismisses search or Find and returns focus to the page when no
-other control has taken it. **⌘F** refocuses an already-open Find field. VoiceOver can
-activate sidebar items directly and use their Actions menu for secondary commands.
+<kbd>Tab</kbd> and <kbd>⇧Tab</kbd> move through browser controls; <kbd>Return</kbd> or
+<kbd>Space</kbd> activates them. <kbd>Esc</kbd> closes search or Find and returns to the
+page. VoiceOver can use each sidebar item's Actions menu.
 
 ### Link gestures
 
-While hovering a webpage link, hold a modifier to see where clicking will open it:
+Hold a modifier over a link to see where it will open.
 
-| Link gesture | Result |
+| Gesture | Opens in |
 | --- | --- |
-| `⌘`-click or middle-click | New background tab |
-| `⇧⌘`-click | New tab, focused immediately |
-| `⌥`-click (also `⌥⇧`) | Split View beside the source page, up to four panes |
-| `⌥⌘`-click (also `⌥⇧⌘`) | Little Vane |
-| `⇧`-click | Peek, including from pinned and favorite tabs |
+| <kbd>⌘</kbd>-click or middle-click | New background tab |
+| <kbd>⇧⌘</kbd>-click | New tab, focused |
+| <kbd>⌥</kbd>-click | Split View, up to four panes |
+| <kbd>⌥⌘</kbd>-click | Little Vane |
+| <kbd>⇧</kbd>-click | Peek |
 
-Settings › Links can disable the Little Vane and Shift-click Peek gestures. With Little
-Vane disabled, `⌥⌘` follows the normal Command-click tab behavior. The automatic Peek
-preference for links leaving pinned sites is independent. Shift-hover previews still
-require Previews to be enabled; holding Command or Option hides the preview so it does
-not cover the opening hint. Floating windows keep their existing one-page behavior and
-do not grow Split Views.
+Turn off the Little Vane and Peek gestures in **Settings → Links**.
 
 ## Unfinished work and recovery
 
-Unfinished form work stays in the live page across tab, Space and shared-window
-switches. Automatic suspension, Battery Saver and memory pressure defer unloading
-pages with detected drafts or uncertain detection. Draft contents are not saved to
-disk and cannot be recovered reliably after a process crash. See
-[unfinished work and suspension](DRAFT-PROTECTION.md) for coverage and limits.
+Pages with unsaved form input are not put to sleep, so drafts survive switching tabs and
+Spaces. To keep specific sites always loaded, add them in **Settings → Advanced →
+Performance → Keep these sites loaded** (optionally with subdomains). This applies to
+every profile.
 
-After a restart, restored pages load when shown; background tabs stay unloaded until
-selected. Recovery opens a fresh URL without replaying a saved form submission. A
-webpage-process termination during browsing still pauses that page with an
-**Open Page** action until you retry it or restart Vane. Session files retain a validated previous generation and preserve damaged
-originals before replacement. See [crash and session recovery](CRASH-RECOVERY.md) for
-saved-state boundaries, storage failures, and the isolated macOS checks.
+After a restart, tabs load when you open them. If a page crashes, choose **Open Page** to
+reload it.
 
-Navigation and form-resubmission fixes have [local WebKit
-evidence](NAVIGATION-RELIABILITY.md). These fixtures do not establish every remote-site
-or network failure scenario.
+## Limits
+
+- Drafts live only in the open page and are lost if Vane crashes. See
+  [unfinished work](DRAFT-PROTECTION.md) and [crash recovery](CRASH-RECOVERY.md).
+- History has no Space filter; private windows show no history and no other windows' tabs.
+- Restored tabs and bookmarks are not offline copies. New pages, searches, streaming,
+  downloads, cloud AI, and extension or filter updates need a connection.
+- Resuming a download depends on the server; some exports need the source page again.
+- Pause All Media can't pause Web Audio that has no media element.
+- Meet detection depends on Google's page and may need updates when it changes.
+- Protected video quality depends on the service. See
+  [streaming](STREAMING-COMPATIBILITY.md) and
+  [real-site compatibility](REAL-SITE-COMPATIBILITY.md).

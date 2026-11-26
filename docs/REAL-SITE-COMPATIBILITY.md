@@ -396,7 +396,12 @@ left running. Earlier failing attempts remain scored above.
 
 ### Known pending: authentication and compatibility
 
-Passkeys remain **pending Apple approval and provisioning** for
+> **Update, 25 November 2026:** Apple approved the passkey entitlement, and release
+> builds signed with the updated profile (0.2.4 onward) carry it
+> ([#785](https://github.com/notnaki/vane/pull/785)). Passkey sign-in works in those
+> builds. The paragraphs below record the October state.
+
+Passkeys were **pending Apple approval and provisioning** for
 `com.apple.developer.web-browser.public-key-credential`. The follow-up inspection
 on 2026-10-06 found a valid Developer ID signing identity on the test Mac, but no
 provisioning profile in Xcode's or MobileDevice's standard profile directories.

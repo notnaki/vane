@@ -2,263 +2,172 @@
 
 [Documentation index](README.md) · [Project README](../README.md)
 
-Use these tools to read, collect, and adapt pages. [Browsing](BROWSING.md) covers
-everyday navigation; [integrations](INTEGRATIONS.md) covers blocking, extensions, and
-AI.
+Read, collect, and reshape pages. [Browsing](BROWSING.md) covers everyday navigation;
+[integrations](INTEGRATIONS.md) covers extensions, blocking, and AI.
 
 ## Reader
 
-Enter Reader from Page Actions or **View → Reader Mode**. **Page Actions → Reading
-Preferences** offers text size (13–32 pt), serif type, compact/standard/relaxed line
-spacing, and narrow/standard/wide reading columns. Spacing and width are also in **View
-→ Reading Preferences**. Preferences save locally and apply immediately to the current
-Reader; new Reader views use the saved choices. These preferences are shared across
-profiles and private Reader views and included in complete backups. Changes animate
-briefly unless Reduce Motion or Battery Saver is active. The header links to the source
-article, and article links remain usable.
-
-Extraction retains scored sibling sections, prose in legacy table layouts, technical
-data tables, code indentation, and lazy image captions while omitting hidden content and
-navigation. It remains heuristic: unavailable/paywalled text, embedded frames, and
-articles below the 140-word threshold are not recovered. Exit Reader reloads the
-original page; it does not add a history entry.
+Choose **View → Reader Mode** (<kbd>⌥⌘R</kbd>) or Reader in Page Actions or Site Controls
+to read an article without clutter. **Page Actions → Reading Preferences** sets text size,
+serif type, line spacing, and column width. Your choices apply to every Reader view.
+Exiting Reader reloads the original page.
 
 ## Translate Page
 
-Choose **Translate Page** from Page Actions, Site Controls, **View → Translate Page**,
-or the command bar to translate the page in place into your first preferred macOS
-language. Translation runs on this Mac through Apple's Translation framework; no page
-text is sent to a translation service. The page language is detected from its text, with
-its `lang` attribute as a fallback. If the language pair is not downloaded yet, macOS asks
-before downloading it. A page already in your language shows a notice instead.
+Choose **View → Translate Page**, or Translate in Page Actions, Site Controls, or the
+command bar, to translate the page in place into your preferred macOS language.
+Translation runs on your Mac with Apple's Translation; page text never leaves it. If a
+language isn't downloaded yet, macOS asks first. Form fields and code are left alone.
+Choose **Show Original** to undo.
 
-Vane rewrites only visible text. Form fields, code, hidden text, and anything the page
-marks `translate="no"` or `notranslate` stay unchanged, so layout and typing are not
-affected. **Show Original**, in the same places, restores the original text. Opening
-another page in the tab ends the translation, and going back shows the page's original
-text; a link that starts a download leaves the translated page as it is. Translating a
-second tab in the same window while the first is still filling in stops the first and
-restores its text. Translation in private windows works the same way and saves nothing.
+When a page loads in another language, Vane offers **Translate this page?** under the
+address bar: **Translate**, **Not now**, or **Never Translate This Site**. After you
+translate, later pages on that site in the same tab translate automatically. To be
+offered again on a site, turn on **Offer to Translate** in Site Controls.
 
-When a page finishes loading in a language other than yours, and macOS can translate it,
-a small **Translate this page?** card appears under the address bar: **Translate**,
-**Not now** (×), or **Never Translate This Site**. After Not now it is not offered again
-while the tab stays on that site; after Translate, later pages on that site in the tab
-translate themselves. Never in private windows, nor on pages marked not to translate. The never list is per profile and covers subdomains
-(`google.com` covers `mail.google.com`). To offer again on a site, turn **Offer to
-Translate** back on in Site Controls; turning it off there adds the site.
+## Ask on Page
 
-Limits: text is translated one text node at a time, so a sentence split by a link or bold
-text loses some context. At most 5,000 text nodes are translated per page. Text inside
-iframes and shadow DOM is not translated. Text the page adds after translating, such as
-more items in a feed, is not translated; choose Show Original and translate again.
+Ask a question about the page you're reading. Press <kbd>⌘F</kbd> and click the sparkles
+button, or choose **Ask on Page** in the command bar. Ask follow-ups in the same field.
+It uses Apple's on-device model by default; see
+[Ask on Page](INTEGRATIONS.md#ask-on-page) for routes and privacy.
 
 ## Offline reading queue
 
-Choose **Page Actions → Save for Offline** or **View → Save for Offline** on a readable
-article. **Library → Reading Queue** holds all profiles' saved copies, searches their
-article text as well as titles and links, and offers All, Unread, and Read filters. Open
-a saved copy without a connection, explicitly mark it read or unread, or remove it to
-reclaim storage. The queue shows its article count and storage usage. Opening does not
-automatically mark an article read. Saving an already saved URL keeps the existing copy;
-remove it and save again to capture a newer version.
+Choose **Save for Offline** in Page Actions or the **View** menu to keep an article.
+**Library → Reading Queue** holds saved copies from every profile. Search titles, links,
+and article text, filter by **All**, **Unread**, or **Read**, and mark or remove items.
+The queue shows how much storage it uses.
 
-Saved Reader labels the **Saved copy**, capture date, and source, reuses Reader's
-reading preferences, and offers **Open Live Page** separately. Saves publish atomically
-in local profile storage and participate in complete backups and restore. Private
-browsing cannot persist or access the queue. Unsupported pages and failed saves explain
-the problem. Images are captured where practical through anonymous requests;
-authentication, size limits, or failed downloads can leave a text-only copy with a
-missing-image notice. Saved views never fetch missing images from the live site. The
-queue focuses on article text rather than interactive pages or PDFs; it supports up to
-1,000 articles per profile and 20 MiB per article. Backup exports retain their 512 MiB
-total limit and report a failure without omitting saved content.
+A saved copy opens in Reader with its capture date and an **Open Live Page** button.
+Saving the same address again keeps the first copy; remove it and save again to refresh.
 
 ## Easels
 
-Easels open as native tabs inside the browser. Choose **New Easel** from the sidebar's
-**+** menu, type **New Easel** in the command palette (`⌘T`), or use **File → New
-Easel** (`⌥⌘E`). New boards are pinned in the current Space and return after relaunch.
-Find all saved boards under **Library → Easels** or **Window → Show Easels**; opening a
-board already in this Space focuses its existing tab. Closing or unpinning a tab keeps
-its board in Library. **File → Capture Page to Easel** (`⇧⌘E`) collects the visible
-webpage into the most recently used Easel in this Space, or the latest saved board, with
-its source link. Boards belong to the browser window's profile and save locally after
-each edit. Private windows cannot create boards or save captures. To move a Space to
-another profile, remove its Easel tabs first; their boards stay owned by the original
-profile and visible in the shared Library. Export/import a board to copy it to another
-profile.
+Easels are freeform boards for notes, drawings, and captures. Create one with **File →
+New Easel** (<kbd>⌥⌘E</kbd>), the sidebar's **+** menu, or the command bar. New boards are
+pinned in the current Space. Find every board in **Library → Easels** or **Window → Show
+Easels**. Closing a tab keeps its board.
+
+**File → Capture Page to Easel** (<kbd>⇧⌘E</kbd>) adds the visible page, with its link, to
+your most recent Easel.
 
 ### Tools and annotations
 
-The centered toolbar follows Excalidraw's tool order: selection, rectangle, diamond,
-ellipse, arrow, line, drawing, text, and image. Click an object once to select it; drag
-anywhere inside its box to move it, including the empty interior of an outlined shape.
-All four corner handles resize. Double-click text to edit it inline, or a rectangle,
-diamond, or ellipse to add its label. With the Text tool, drag out the text box before
-typing, or click for a default size. Colors, shape fills, stroke widths, and text sizes
-live in the left panel. Text supports Excalidraw's bundled Excalifont, normal and code
-faces, and left/center/right alignment. Shapes offer sharp/rounded edges,
-solid/dashed/dotted strokes, solid/hachure/crosshatch fills, three sloppiness levels,
-and opacity. The hand tool pans the canvas; the lock keeps a drawing tool active. Tool
-shortcuts are shown in the toolbar. Arrow keys nudge a selected item (Shift moves ten
-points), Enter edits its text, and ⌘D duplicates it. Notes, links, and clipboard paste
-are in the **…** menu. New captures are selected when their board opens. Click an
-image's pencil, **Annotate Image** in its context menu, or the selected image's
-properties to pause its live source and activate the existing drawing tool with the tool
-lock on. Draw on the saved capture, or choose arrows, shapes, and text in the same
-toolbar. Choose Select or press Escape to move items afterwards. Double-click an image
-to edit its caption or crop it. Undo/redo and zoom controls sit at the bottom left.
-Choose Select to move items after drawing. Scroll in either direction and choose a zoom
-level. New items appear near the current canvas viewport. Standard Undo/Redo work on the
-board and inside its text editors. Annotations remain independent editable objects;
-moving or cropping an image does not transform its annotations with it. Image import
-preserves the available pixel resolution while keeping the canvas card compact; images
-beyond 8 MiB PNG, 16,000 pixels on either side, or 32 million pixels are refused rather
-than silently downsampled. Board PNG export still uses the 4,096-pixel limit below.
+The toolbar has selection, rectangle, diamond, ellipse, arrow, line, drawing, text, and
+image tools, in Excalidraw's order. The left panel sets colour, fill, stroke, sloppiness,
+opacity, font, and alignment. The hand tool pans; the lock keeps a tool active.
+
+- Drag to move, use the corner handles to resize, and double-click text or a shape to
+  edit its label.
+- Arrow keys nudge (<kbd>⇧</kbd> for ten points), <kbd>Return</kbd> edits text, and
+  <kbd>⌘D</kbd> duplicates.
+- Click an image's pencil, or choose **Annotate Image**, to draw on it. Double-click an
+  image to edit its caption or crop it.
+- Notes, links, and paste are in the **⋯** menu. Undo, redo, and zoom sit at the bottom
+  left.
 
 ### Live web captures
 
-A web capture's play button opens its source page as an interactive live view using that
-profile's cookies and content blocker. Pause returns to the saved image. Live views are
-temporary, limited to four at once, and stop when switching boards or leaving the Easel
-tab or closing the window. They show the source page rather than a live cropped region;
-permission prompts, popups, password autofill, and downloads belong in browser tabs.
+Click a web capture's play button to turn it into a live, interactive view of the page.
+Pause returns to the saved image. Up to four live views run at a time, and they stop when
+you leave the board.
 
 ### Library, export, and limits
 
-The `…` menu duplicates or deletes a board, exports a PNG, or exports an editable JSON
-document with embedded images. **Library → Easels** shows a searchable card grid; each
-card’s **… → Delete Easel…** removes the local board after confirmation. Import JSON
-from the Library’s bottom **…** menu. The canvas is 6,000 × 4,000 points; a board holds
-up to 256 items, and PNG export scales the entire occupied canvas to at most 4,096
-pixels. Easels do not include cloud sharing or collaboration.
+A board's **⋯** menu duplicates or deletes it and exports a PNG or an editable JSON file.
+Import JSON from the bottom **⋯** menu in **Library → Easels**.
+
+A board is 6,000 × 4,000 points and holds up to 256 items. PNG exports are at most 4,096
+pixels on the long side. Easels are local; there is no sharing or collaboration.
 
 ## Page capture
 
-Press **⌘⇧2**, choose **File → Capture a Portion of This Page**, use the camera row in
-Site Controls, or search for **Capture** in the command palette. Click a highlighted
-element or drag a rectangle; **Return** captures the highlight or visible page and
-**Escape** cancels. **Full Page** captures the rendered document, including content
-below the viewport, without scrolling the live tab. Unloaded infinite-scroll content
-is not included, and very large pages may require a smaller region.
+Press <kbd>⇧⌘2</kbd>, choose **File → Capture a Portion of This Page**, or click Capture in
+Site Controls. Click a highlighted element or drag a rectangle; <kbd>Return</kbd> captures
+the visible page and <kbd>Esc</kbd> cancels. Choose **Full Page** (or **File → Capture
+Full Page**) to include everything below the fold.
 
-A compact menu beside the capture offers **Copy**, **Save PNG…**, **Share…**, **Edit…**,
-**Retake**, and **Save to Library**. Normal browser windows also offer a new or existing
-Easel, preserving the source link. The editor supports crop, pen, arrows, rectangles,
-text, color and thickness, with undo/redo and reset. Apply returns the edited image to
-the action menu; Cancel keeps the original. Fit, 100% and 200% zoom make long captures
-practical to edit.
-
-Explicitly saved captures appear in **Library → Media**, searchable by page title
-or source, with preview, copy and delete actions. Captures use the existing saved-file history, storage and media actions. Private captures support temporary editing, copy, PNG export
-and sharing; the persistent capture library and Easels are unavailable there. WebKit
-supplies the pixels at display resolution, so no screen-recording permission is needed.
-Embedded frames are selected whole; custom drags can crop inside them.
+The menu beside the capture offers **Copy**, **Save PNG…**, **Share…**, **Edit…**,
+**Retake**, **Save to Library**, and sending to a new or existing Easel. **Edit** adds
+crop, pen, arrows, rectangles, and text. Saved captures appear in **Library → Media**. No
+screen-recording permission is needed.
 
 ## Site Boosts
 
-Choose **Site Controls → Boost This Site** to customize a website while viewing it. The
-Boost panel floats over the page's right edge (drag its header to move it) and previews
-as you edit: a color pad with light/dark, contrast, brightness, and saturation, a font
-grid, **Size** and **Case**, and custom CSS (CSS `@import` is not supported). **Zap**
-highlights what is under the pointer; click an element, then choose **Zap this** or
-**Zap all related elements**. Press ⌘Z or use the Zap row's menu to undo, and press
-**Escape** to finish. Hidden-element rules also apply
-to content added later. A site's markup changes can require selecting an element again;
-iframes can be hidden as a whole, and shadow-root contents are not edited.
+Click **Boost** in Site Controls to restyle a site. The Boost panel floats over the page
+(drag it to move) and previews as you go:
 
-Boosts save locally per profile and exact website origin (scheme, host, and port).
-Subdomains have separate Boosts. Private tabs keep their own temporary changes.
-**Library → Boosts** lists all profiles' saved Boosts, including disabled ones.
-Search by site address or profile, open a site, or use a row's menu to enable, disable,
-or delete its Boost. The section is hidden in private windows.
+- **Colours.** A colour pad with light/dark, contrast, brightness, and saturation.
+- **Type.** A font grid, **Size**, and **Case**.
+- **Zap.** Click an element, then choose **Zap this** or **Zap all related elements** to
+  hide it. <kbd>⌘Z</kbd> undoes; <kbd>Esc</kbd> finishes.
+- **Code.** Custom CSS, and JavaScript that runs on each page load once you turn on **Run
+  JavaScript**.
 
-**Code → JS** offers an explicit **Run JavaScript** switch and **Run** button. Enabled scripts run once after each new document loads; editing code alone does
-not run it. Script errors appear in the editor. Disabling or resetting prevents future
-runs; reload the page to remove effects already made by a script. The header's reset button
-restores the site's visual defaults, and **Settings → Profiles → Site Permissions →
-Reset Boosts…** removes all Boosts in that profile. Reduce Motion and Battery Saver keep
-editor transitions immediate.
+Boosts are saved per profile and per site; subdomains have their own. Manage them in
+**Library → Boosts**. To remove every Boost in a profile, use **Settings → Profiles →
+Site Permissions → Reset Boosts…**.
 
 ## Space templates
 
-Choose the Space menu → **Save Space as Template…** to save a named workspace. **Space
-Templates…**, also available through **New Space → Use Template**,
-previews the current profile’s saved setups and creates a new Space. Templates preserve
-pinned and Today tab order, duplicate pages, custom names, nested folders, Space
-appearance, and supported split layouts including divider sizes. Rename a template,
-update it from the current Space after reviewing its contents, or delete it; already
-created Spaces keep their own contents.
+Choose **Save Space as Template…** from the Space menu. To use one, choose **Space
+Templates…** or **New Space → Use Template**, preview it, and create a Space. Templates
+keep tab order, names, nested folders, split layouts, and the Space's look. You can
+rename, update, or delete a template; Spaces already made from it don't change.
 
-Locked-folder contents require macOS authentication before saving, previewing, or
-recreating them. New folders retain their locks and receive fresh identities. Templates
-save addresses and layout without cookies, credentials, website storage, or WebKit
-navigation state; pages can still use their profile’s existing sign-ins. Credential-like
-URL parameters and URL userinfo are removed. Blank tabs, files, and local Easel
-documents are excluded and counted in the preview. Live folders become ordinary folder
-snapshots, and Favourites remain shared by the profile. Private and Little Vane windows
-cannot save templates. A failed save leaves the previous version safe, and a failed
-creation leaves no partial Space. Template files use the same atomic persistence and
-profile filename conventions as Spaces for backup/restore.
+Templates save addresses and layout only, never cookies or passwords. Locked folders need
+Touch ID or your password to save or use, and stay locked in the new Space.
 
-## Appearance and icons
+## Appearance
 
-Space themes control colors, gradients, grain, and light/dark appearance. Open the theme
-editor from a Space’s context menu. Keyboard bindings and website priority are in
-[shortcut settings](BROWSING.md#shortcuts-and-keyboard-navigation).
+**Themes.** Right-click a Space to edit its colours, gradient, grain, and light/dark
+appearance.
 
-Settings → Icon offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass, Fluted Glass
-Dark, Schoolbook, and Luminous. The choice persists across launches and changes the
-running app's Dock and Finder icons, including while Vane is quit. Minimized-window
-previews also use the selected icon and update when the choice changes. A signed helper
-stamps the containing app bundle outside the browser sandbox; read-only or translocated
-copies retain the live Dock choice and restore it on launch. The bare SwiftPM executable
-has no bundled icon catalogue; build `Vane.app` to use these finishes.
+**Interface style.** **Settings → General → Interface style** offers **Default** and
+**Streamlined**. Streamlined tightens the sidebar and command bar. It takes effect the
+next time Vane opens.
 
-Icon asset maintenance is documented in [AppIcons](../AppIcons/README.md).
+**App icon.** **Settings → Icon** offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass,
+Fluted Glass Dark, Schoolbook, and Luminous. The Dock and Finder update right away. Icon
+maintenance is in [AppIcons](../AppIcons/README.md).
+
+Shortcuts are covered in [shortcut settings](BROWSING.md#shortcuts-and-keyboard-navigation).
 
 ## Settings
 
-General starts with everyday preferences and links to Previews and Profile settings.
-Expand **Updates** for automatic checks and release channels. Colored icon tiles
-help identify related controls without changing their behavior.
+Press <kbd>⌘,</kbd>. Click any card's header to expand it. **General** holds everyday
+choices, **Updates**, and **Previews**; **Advanced** groups Interface, Performance,
+Windows and Tabs, Media, Developer, and Backup and Restore.
 
-Advanced starts with a compact list of categories. Expand a category to see its
-controls and explanations, including **Windows and Tabs**, **Developer**, and
-**Backup and Restore**. Categories open with brief motion and respect Reduce Motion
-and Battery Saver.
+Passwords, privacy, website data, search engines, and extensions open in a browser tab
+instead; see [Settings pages in a tab](BROWSING.md#settings-pages-in-a-tab).
 
-## Battery Saver and motion
+## Animation and Battery Saver
 
-**Settings → Advanced → Interface → UI Animations** adjusts the speed of sidebar reveals,
-tab and folder movement, tab closing, floating panels, hover feedback, and link-status
-fades. Search by animation name or description. Speeds below **1×** slow animations
-down; speeds above **1×** make them faster. Each row has **Reset**, and **Reset All**
-restores every animation, including rows hidden by search. Changes apply to the next
-animation and persist across launches. Website animations and gesture tracking are
-unaffected; system Reduce Motion and Battery Saver still take priority.
+**Settings → Advanced → UI Animations** sets the speed of each interface animation. Search
+by name, reset one row, or **Reset All**. System Reduce Motion always wins.
 
-Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**,
-**Automatic** (below 20% battery while unplugged), or **Always On**. While active,
-eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar
-motion is reduced. Space switching stays smoothly animated in Battery Saver and still
-respects system Reduce Motion. Active pages, pinned tabs, media/Picture in Picture, private tabs,
-and unfinished forms keep their existing suspension protections. State changes show a
-temporary green lightning popup at the page's top right, with an **Edit this setting**
-button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode
-respects the existing idle-suspension preference and preserves an already shorter
-timeout.
+**Settings → Advanced → Performance → Battery Saver** can be **Off**, **Automatic** (below
+20% while unplugged), or **Always On**. When active, idle tabs sleep after five minutes,
+link previews pause, and sidebar motion is reduced. Active, pinned, playing, private, and
+unsaved tabs stay awake, as do sites in **Keep these sites loaded**. A small lightning
+popup shows when Battery Saver turns on or off.
 
-New tabs and popup pages request the display's refresh rate for web animations,
-including ProMotion displays, when Battery Saver and system Reduce Motion are off.
-When either is active at page creation, they keep WebKit's preference for updates near
-60 fps. This uses a guarded private WebKit feature and falls back to system defaults
-when unavailable; WebKit still controls OS power-saving and background throttling.
-Changing the policy affects newly created web views, including sleeping tabs when
-they resume, rather than rebuilding already-open pages and losing their state.
+Web pages animate at your display's full refresh rate, including ProMotion, unless Battery
+Saver or Reduce Motion is on.
 
-UI transitions respect system Reduce Motion and Battery Saver. [Responsiveness
-evidence](UI-RESPONSIVENESS.md) records measured improvements and unproven frame/latency
-targets. [Lifecycle evidence](LIFECYCLE-EFFICIENCY.md) records ownership fixes and the
-limits of local resource measurements.
+## Limits
+
+- Reader and offline saves work on articles. Very short, paywalled, or embedded content
+  isn't captured. The queue holds up to 1,000 articles per profile, 20 MB each; some
+  images may be missing.
+- Private windows can't save to the Reading Queue, create Easels, or save captures to
+  Library.
+- Translation works one text block at a time (up to 5,000 per page) and skips iframes,
+  shadow DOM, and text added after translating.
+- Full-page captures skip infinite-scroll content that hasn't loaded.
+- Easel images over 8 MB, 16,000 pixels on a side, or 32 megapixels are refused.
+- Boost changes may need redoing when a site changes its markup. CSS `@import` isn't
+  supported, and shadow-root contents can't be zapped.
+- Moving a Space to another profile leaves its Easels with the original profile.

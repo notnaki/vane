@@ -140,8 +140,7 @@ helpers only when their contents, flags, packaging policy and toolchain match; r
 and normal local packaging always compile them. Successful aggregate checks retain the two newest
 Swift debug caches. Superseded runs on the same branch or PR are cancelled. The release
 workflow builds and smoke-tests the optimized app separately; its products are never
-cached because they can contain the OAuth secret. The [November CI analysis](CI-PERFORMANCE.md)
-records measured bottlenecks, shard rebalancing and cache migration limits.
+cached because they can contain the OAuth secret.
 
 ### Native fixture execution
 
@@ -288,18 +287,11 @@ text-entry shortcuts. They do not establish Google or Reddit service acceptance.
 
 ### Specialist reliability fixtures
 
-For opt-in cold/warm startup, large-session restoration and parked/sleeping tab
-measurements, see [Startup performance](STARTUP-PERFORMANCE.md). Build first and
-reserve a quiet profiling window before collecting timings.
-
 For site-permission lifecycle fixtures and a fake display-capture check, see
 [Site permissions on macOS 26 and later](SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
 
 For download interruption, resume, destination and process-restart fixtures, see
 [Download reliability on macOS 27](DOWNLOAD-RELIABILITY.md).
-
-For navigation identity, history, cancellation, form resubmission and local WebKit
-fixtures, see [Navigation correctness on macOS 27](NAVIGATION-RELIABILITY.md).
 
 `swift test` covers search typing and cancellation, link gestures and previews, Space
 switching and deletion, tab ordering, Battery Saver, media permission popups and grant
@@ -566,9 +558,7 @@ and packaging support.
 
 The public website is maintained at the root of the separate
 [`website` branch](https://github.com/notnaki/vane/tree/website) in this repository.
-Markdown topic guides, [audit evidence](README.md#reliability-and-validation), and
-historical [plans](superpowers/plans/) / [specifications](superpowers/specs/) stay
-on `main`. App [screenshot provenance](https://github.com/notnaki/vane/blob/website/media/README.md)
+Markdown guides and [reference records](README.md#reference) stay on `main`. App [screenshot provenance](https://github.com/notnaki/vane/blob/website/media/README.md)
 and public media live with the website source.
 
 ### Website rendering checks
