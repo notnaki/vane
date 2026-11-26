@@ -153,7 +153,7 @@ Vane can't override a macOS denial. See [Site permissions](SITE-PERMISSIONS.md).
 AI features are off until you turn them on in onboarding or **Settings → Max**. Apple's
 on-device model is always available and needs no account.
 
-**Add a connection** with **Add Connection**: ChatGPT, Groq, OpenAI, OpenRouter, or any
+**Add a connection** with **Add** in **Settings → Max**: ChatGPT, Groq, OpenAI, OpenRouter, or any
 OpenAI-compatible HTTPS API. Then choose a connection for each feature: **Tab titles**,
 **Tab grouping**, **Download names**, **Page summaries** and **Ask on Page**. Adding a
 connection doesn't change any route. Summaries and Ask on Page stay on device until you

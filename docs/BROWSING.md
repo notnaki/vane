@@ -29,7 +29,7 @@ Double-click a tab, favourite, or split pane to rename it. <kbd>Return</kbd> sav
 <kbd>Esc</kbd> cancels, and an empty name restores the page title.
 
 A pinned tab keeps its name as you browse inside it. Once it leaves its saved page, the
-row shows `/` before the title; choose **Return to Pinned Tab** to go back.
+row shows `/` before the title; choose **Back to Pinned URL** to go back.
 
 ## The toolbar
 
@@ -212,7 +212,7 @@ and Notifications → Automatically enter Picture in Picture**.
 window, Space, and profile, without switching tabs or waking sleeping ones. It never
 resumes anything and leaves calls alone. Assign it a key in **Settings → Shortcuts**.
 
-**Google Meet** calls float in their own window when you leave the tab, with Meet's own
+**Google Meet** calls float in their own window when you leave the tab (when automatic Picture in Picture is on), with Meet's own
 controls. **Close** hides the window without leaving the call. The sidebar shows a camera
 and a red dot while you're in a call.
 

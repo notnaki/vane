@@ -7,7 +7,7 @@ Read, collect, and reshape pages. [Browsing](BROWSING.md) covers everyday naviga
 
 ## Reader
 
-Choose **View → Reader Mode** (<kbd>⌥⌘R</kbd>) or Reader in Page Actions or Site Controls
+Choose **View → Show Reader** (<kbd>⌥⌘R</kbd>) or Reader in Page Actions or Site Controls
 to read an article without clutter. **Page Actions → Reading Preferences** sets text size,
 serif type, line spacing, and column width. Your choices apply to every Reader view.
 Exiting Reader reloads the original page.
@@ -107,7 +107,7 @@ Click **Boost** in Site Controls to restyle a site. The Boost panel floats over 
 
 Boosts are saved per profile and per site; subdomains have their own. Manage them in
 **Library → Boosts**. To remove every Boost in a profile, use **Settings → Profiles →
-Site Permissions → Reset Boosts…**.
+Privacy and Security → Site Permissions → Reset Boosts…**.
 
 ## Space templates
 

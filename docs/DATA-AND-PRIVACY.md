@@ -178,7 +178,7 @@ saves a local recovery point and merges, so nothing is replaced.
 
 - **Off until you choose them:** history, passwords, AI API keys and extension sync data.
 - **Always local:** private browsing, cookies and website sign-ins, website storage,
-  passkeys, GitHub sign-in, downloaded files, file and permission grants, and unsaved
+  passkeys, ChatGPT sign-ins, GitHub sign-in, downloaded files, file and permission grants, and unsaved
   forms.
 - **Other Macs** lists open tabs and recently closed pages from your other Macs, plus
   completed-download details (source URL, filename, size, date). Opening one makes a

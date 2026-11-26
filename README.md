@@ -116,7 +116,7 @@ for tests and the CLI.
 
 Vane renders pages with the system WebKit, so site support follows your macOS version.
 
-- **Not every site works.** Netflix (4K and Dolby Vision), Spotify, and Disney+
+- **Not every site works.** Netflix (4K and Dolby Vision), Spotify, and Disney+ (720p)
   play, but some sites and sign-ins still break. See the
   [compatibility record](docs/REAL-SITE-COMPATIBILITY.md).
 - **Extensions are WebKit extensions.** Vane installs from the Chrome Web Store
