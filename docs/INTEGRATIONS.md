@@ -97,7 +97,10 @@ These extensions were checked with unmodified packages; see
 | `chrome.tabGroups` | A group is a folder in Today. Extensions can read your folders but change only folders an extension made. Pinned tabs and Favourites can't be grouped. |
 | `chrome.identity` | `launchWebAuthFlow` opens a sign-in window titled with the extension's name and the site, using the profile's cookies. |
 | Chromium-only names | `notifications`, `downloads`, `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start, but `notifications` and `downloads` don't do anything. Chrome's enums and constants are filled in too. |
-| Native messaging | Requests to a desktop app fail with Chrome's "host not found" error, so extensions that expect one (like Bitwarden) carry on. No desktop app is contacted. Turn it off with **Disable Error-Only Mode** in Manage Extensions. |
+| Native messaging | Extensions that declare `nativeMessaging` get Chrome's "Specified native messaging host not found." error, so ones that expect a desktop app (like Bitwarden) carry on. No desktop app is contacted. Turn it off with **Disable Error-Only Mode** in Manage Extensions → Compatibility. |
+
+These additions apply to Chrome Web Store and folder packages. Safari app extensions get
+none of them, and get the native messaging error only after **Review Error-Only Mode…**.
 
 Large rule sets take a while: WebKit compiles an extension's rules in the background, and
 pages load unfiltered until it finishes. Later launches reuse the result.
