@@ -605,6 +605,7 @@ struct BookmarkImportResult: Equatable, Sendable {
         return mutate(true, rejected: false, operation: { $0.deleteBookmarks(ids) }, immediate: { $0.deleteBookmarks(ids) })
     }
     func title(for url: URL) -> String? { connection.title(for: url) }
+    func lastVisit(to url: URL) -> Date? { connection.lastVisit(to: url) }
     func recent(limit: Int = 100) -> [Suggestion] { connection.recent(limit: limit) }
     func history(matching query: String = "", limit: Int = 500, interval: DateInterval? = nil) -> [Visit] {
         connection.history(matching: query, limit: limit, interval: interval)
@@ -839,6 +840,15 @@ private final class StoreConnection {
         var out: String?
         run("SELECT title FROM visits WHERE url = ? AND title <> '' ORDER BY at DESC LIMIT 1",
             [url.absoluteString]) { out = self.text($0, 0) }
+        return out
+    }
+
+    /// When this profile last visited a page — the folder hover's "1 year ago". nil if never.
+    func lastVisit(to url: URL) -> Date? {
+        var out: Date?
+        run("SELECT MAX(at) FROM visits WHERE url = ?", [url.absoluteString]) {
+            if sqlite3_column_type($0, 0) != SQLITE_NULL { out = Date(timeIntervalSince1970: sqlite3_column_double($0, 0)) }
+        }
         return out
     }
 

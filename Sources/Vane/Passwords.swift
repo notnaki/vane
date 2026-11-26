@@ -1286,6 +1286,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("self-update", Release.check),
                                ("bundle replacement", BundleReplacement.check),
                                ("pinned folders", Pins.check),
+                               ("folder hover list", FolderHoverList.check),
                                ("the pages the card holds", WebHost.check),
                                ("split view", Split.check),
                                ("mini audio player", MediaTray.check),
