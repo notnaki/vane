@@ -4110,9 +4110,18 @@ private struct FolderRow: View {
     @State private var zone: FolderZone?
     @State private var icons = false
     @State private var editing = false
+    @StateObject private var hover = DownloadsHover()
 
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
+    /// Arc's hover list: only on a closed, unlocked folder that holds tabs, and never mid-drag
+    /// or mid-rename.
+    private var hoverTabs: [Tab] {
+        guard isEnabled, folder.collapsed, !locked, !dragging.active, store.renamingFolder != folder.id
+        else { return [] }
+        let ids = Set(store[keyPath: shape].tabs(in: folder.id))
+        return store.accessibleTabs.filter { ids.contains($0.id.uuidString) }   // drops locked subfolders' tabs
+    }
     private var receiving: Bool { isEnabled && dragging.active && zone == .inside }
     /// An extension's status, for VoiceOver: the sidebar shows it only on the icon.
     static func status(_ folder: Folder) -> String {
@@ -4200,6 +4209,22 @@ private struct FolderRow: View {
         .onDrop(of: [.plainText],
                 delegate: FolderDrop(store: store, folder: folder, shape: shape, marker: dropMarker, zone: $zone))
         .padding(.vertical, -Look.rowGap / 2)
+        .onHover { hover.setHovered($0, over: .button) }
+        .background {
+            let tabs = hover.isVisible ? hoverTabs : []
+            FavouritePreviewPanel(visible: hover.isVisible && !tabs.isEmpty, keyboard: false,
+                content: AnyView(FolderHoverList(store: store, folder: folder, tabs: tabs, close: { hover.dismiss() },
+                                                 holding: {
+                    // A fading or torn-down list can still report "held"; only a showing panel may hold.
+                    if !$0 || hover.isVisible { hover.setHovered($0, over: .preview) }
+                })
+                    .environment(\.colorScheme, colorScheme)),
+                dismiss: { hover.dismiss() })
+        }
+        .onChange(of: folder.collapsed) { _, _ in hover.dismiss() }
+        // Locked, renamed, dragged or emptied while showing: the panel hides without a hover-out,
+        // so clear the hold too or it reopens later on its own.
+        .onChange(of: hover.isVisible && hoverTabs.isEmpty) { _, gone in if gone { hover.dismiss() } }
         .onChange(of: isEnabled) { _, enabled in if !enabled { zone = nil } }
         .onChange(of: dragging.active) { _, active in if !active { zone = nil } }
     }
