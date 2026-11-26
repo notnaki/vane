@@ -4214,7 +4214,10 @@ private struct FolderRow: View {
             let tabs = hover.isVisible ? hoverTabs : []
             FavouritePreviewPanel(visible: hover.isVisible && !tabs.isEmpty, keyboard: false,
                 content: AnyView(FolderHoverList(store: store, folder: folder, tabs: tabs, close: { hover.dismiss() },
-                                                 holding: { hover.setHovered($0, over: .preview) })
+                                                 holding: {
+                    // A fading or torn-down list can still report "held"; only a showing panel may hold.
+                    if !$0 || hover.isVisible { hover.setHovered($0, over: .preview) }
+                })
                     .environment(\.colorScheme, colorScheme)),
                 dismiss: { hover.dismiss() })
         }
