@@ -592,4 +592,3 @@ import WebKit
         workers[owner] = nil
     }
 }
-

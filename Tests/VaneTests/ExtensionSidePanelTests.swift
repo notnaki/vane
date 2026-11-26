@@ -619,4 +619,3 @@ private final class LoopbackWebSocketEcho: @unchecked Sendable {
 
     func stop() { listener.cancel() }
 }
-
