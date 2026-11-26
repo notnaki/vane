@@ -40,6 +40,16 @@
 </ul>
 </section>
 
+<section id="arc"><h2>Import from Arc</h2>
+<p>Choose <strong>Vane → Import from Arc…</strong> for the dedicated local migration. Review the detected source and destination before confirming. Supported imports include Spaces, folders, favourites, pinned tabs and split layouts, history, bookmarks, passwords, and cookies. Recognized Arc Space icons are preserved.</p>
+<p>Supported credentials and sessions may need access to Arc’s Safe Storage key in macOS Keychain. Existing Vane credentials and cookies are kept. Damaged or unsupported items are reported; available pages from unsupported split layouts are kept as ordinary tabs. Supported Air Traffic Control rules can be reviewed with the import.</p>
+<p>The source is read-only. Copied cookies do not guarantee sign-in: site storage, device-bound credentials, passkeys, or the website itself may require another login. Keep the original data until you have checked your sites. The <a href="https://github.com/notnaki/vane/blob/main/docs/DATA-AND-PRIVACY.md#imports-and-exports">import guide</a> records supported formats and limits.</p></section>
+
+<section id="import"><h2>Other imports</h2>
+<p><strong>Vane → Import History &amp; Bookmarks…</strong> finds supported Chrome, Chromium, Edge, Brave, Vivaldi, Opera, Arc, Firefox, and Safari profiles. Review the discovered source before confirming. macOS privacy controls can block a location; unavailable sources are reported.</p>
+<p>The menu importer offers <strong>Also copy cookies / sessions</strong>, off by default, for supported Chromium profiles. Onboarding’s general-browser route copies bookmarks and history; use the menu importer for optional sessions. Supported macOS <code>v10</code> cookie encryption can require that browser’s Keychain consent. Firefox and Safari session extraction are not supported; unsupported encryption is reported.</p>
+<p>Use <strong>Import Passwords…</strong> in the Passwords UI for supported browser or password-manager CSV exports. CSV files contain plaintext secrets: protect the export and remove it when no longer needed. See <a href="https://github.com/notnaki/vane/blob/main/docs/DATA-AND-PRIVACY.md#imports-and-exports">all import and export details</a>.</p></section>
+
 <section id="sidebar">
 <h2>The sidebar</h2>
 <p>Top to bottom: the address pill, the Favourites grid, the Space's name, its Pinned section, the Tidy | Clear divider, the Today tabs, and the footer with the Space dots.</p>
@@ -75,40 +85,6 @@
   <li><strong>Make one</strong> from the Space name's menu or the dot's menu: New Live Folder…. The first time, Vane signs you in to GitHub in a tab; one click, no token to paste. A build from source without the OAuth secret asks for a personal access token instead.</li>
   <li><strong>What it shows.</strong> Every open pull request you are involved in, or one repository's, optionally only the recent ones. Rows appear and vanish as pull requests open and close; a row you take out stays out. Each row is named after its pull request.</li>
   <li><strong>Refresh.</strong> Every five minutes, when the folder is unfolded, and on Refresh Now. A folder that GitHub refuses says so in a toast; if GitHub has revoked the sign-in Vane forgets it and Edit Live Folder offers to connect again.</li>
-</ul>
-</section>
-
-<section id="arc"><h2>Import from Arc</h2>
-<p>Choose <strong>Vane → Import from Arc…</strong> for the dedicated local migration. Review the detected source and destination before confirming. Supported imports include Spaces, folders, favourites, pinned tabs and split layouts, history, bookmarks, passwords, and cookies. Recognized Arc Space icons are preserved.</p>
-<p>Supported credentials and sessions may need access to Arc’s Safe Storage key in macOS Keychain. Existing Vane credentials and cookies are kept. Damaged or unsupported items are reported; available pages from unsupported split layouts are kept as ordinary tabs. Supported Air Traffic Control rules can be reviewed with the import.</p>
-<p>The source is read-only. Copied cookies do not guarantee sign-in: site storage, device-bound credentials, passkeys, or the website itself may require another login. Keep the original data until you have checked your sites. The <a href="https://github.com/notnaki/vane/blob/main/docs/DATA-AND-PRIVACY.md#imports-and-exports">import guide</a> records supported formats and limits.</p></section>
-
-<section id="import"><h2>Other imports</h2>
-<p><strong>Vane → Import History &amp; Bookmarks…</strong> finds supported Chrome, Chromium, Edge, Brave, Vivaldi, Opera, Arc, Firefox, and Safari profiles. Review the discovered source before confirming. macOS privacy controls can block a location; unavailable sources are reported.</p>
-<p>The menu importer offers <strong>Also copy cookies / sessions</strong>, off by default, for supported Chromium profiles. Onboarding’s general-browser route copies bookmarks and history; use the menu importer for optional sessions. Supported macOS <code>v10</code> cookie encryption can require that browser’s Keychain consent. Firefox and Safari session extraction are not supported; unsupported encryption is reported.</p>
-<p>Use <strong>Import Passwords…</strong> in the Passwords UI for supported browser or password-manager CSV exports. CSV files contain plaintext secrets: protect the export and remove it when no longer needed. See <a href="https://github.com/notnaki/vane/blob/main/docs/DATA-AND-PRIVACY.md#imports-and-exports">all import and export details</a>.</p></section>
-
-<section id="passwords"><h2>Passwords</h2>
-<p>Manage saved accounts on the <strong>Passwords</strong> settings page, which opens in a tab. Choose <strong>Vane → Passwords → Manage Saved Passwords…</strong>, the Passwords row in <strong>Settings → Profiles</strong>, or type <code>vane://settings/passwords</code>. Its profile menu picks whose accounts it shows. Search, sort, add, edit, reveal, copy, or delete credentials and generate passwords. macOS authentication protects sensitive actions. Each regular profile keeps its own local Keychain credentials; private windows do not use or save them.</p>
-<p><strong>Require Touch ID to view passwords</strong> is on to start with. The page opens with Touch ID, the way a locked folder does; <strong>Use Password…</strong> asks for your Mac login password instead. It locks again after five minutes without use, when you leave the page or close its tab, and when the screen locks or the Mac sleeps. Deleting an account shows Undo for five seconds; <kbd>⌘Z</kbd> works too.</p>
-<p>Autofill works on matching HTTPS forms and never submits them. <kbd>⌥⌘L</kbd> fills the focused form; a chooser appears when several accounts match. Filling a password asks for Touch ID or your login password first; one prompt covers every tab for five minutes. To stop asking, turn off <strong>Require Touch ID to fill passwords</strong> on the Passwords page; it applies to the whole app. Dynamic and username-first forms are supported within the documented origin and field checks. Saving a submitted password is a reviewable suggestion, not proof of a successful login.</p>
-<p><strong>Offer to save passwords</strong> can be turned off per profile without disabling saved-password autofill or manual imports. Provisioned builds offer a separate, initially unselected iCloud Keychain control. Passkeys use the macOS passkey sheet in builds signed with Apple’s passkey entitlement; the ⓘ beside the Password Manager heading says whether your build has it. Sign in with a passkey using Touch ID, the same way as in Safari. Read the <a href="https://github.com/notnaki/vane/blob/main/docs/PASSWORD-MANAGER.md">password manager guide</a>.</p></section>
-
-<section id="icloud"><h2>iCloud choices</h2>
-<p>In an explicitly provisioned build, open <strong>Settings → iCloud</strong>, review the categories, then enable sync on that Mac. Sync starts off. Ordinary local builds keep it unavailable. Profiles, Spaces, bookmarks, selected saved content, preferences, and other chosen library categories use your Apple Account’s private CloudKit database.</p>
-<p>History, extension sync data, passwords, and API keys start unselected; Select All explicitly includes them. Passwords and API keys use separate iCloud Keychain mirrors. Private browsing, website cookies and sign-ins, GitHub credentials, ChatGPT tokens, permissions, and file grants remain local. Download history can sync; downloaded file bytes, paths, and resume data do not.</p>
-<p>Other Macs’ tabs appear as device-labelled lists; opening one creates a local tab. Turning sync off keeps existing local and cloud copies. <strong>Remove iCloud Data</strong> is a separate confirmed action. Account changes pause sync until you approve merging. Cross-Mac convergence and Keychain propagation remain unverified. Read the <a href="privacy.html#optional-icloud-sync">privacy boundaries</a> and <a href="https://github.com/notnaki/vane/blob/main/docs/ICLOUD-PROVISIONING.md">provisioning requirements</a>.</p></section>
-
-<section id="privacy">
-<h2>Privacy and blocking</h2>
-<p>Read the <a href="privacy.html">privacy policy</a> for local data, outgoing requests, optional services, retention, and contact information.</p>
-<ul>
-  <li><strong>Ad and tracker blocking</strong> uses WebKit rules and a supported subset of EasyList. It starts on per profile. The Content Blocking section of the <strong>Privacy and Security</strong> settings page (<code>vane://settings/privacy</code>) offers disk imports, opt-in linked local files, and HTTPS subscriptions. Unsupported rules are reported; failed updates keep the last accepted list. <strong>Filter Lists and Diagnostics…</strong> in Site Controls' ⋯ menu opens it, and <strong>Block Ads</strong> in Site Settings turns blocking off for one site.</li>
-  <li><strong>Website data.</strong> <strong>Website Data</strong> and <strong>Clear Browsing Data</strong> are on the Privacy and Security page and in <strong>Settings → Profiles</strong>. <strong>Clear Site Data…</strong> in Site Controls' ⋯ menu clears only the current site.</li>
-  <li><strong>Private windows</strong> (<kbd>⇧⌘N</kbd>) get a data store that is never written to disk.</li>
-  <li><strong>Camera and microphone</strong> are asked per site and remembered per origin and profile; Reset Camera &amp; Microphone Permissions… forgets them.</li>
-  <li><strong>Certificates.</strong> A bad certificate shows a two-step alert with the fingerprint; an exception is tied to that exact certificate, so a swapped one asks again.</li>
-  <li><strong>Profiles</strong> separate website stores, history, bookmarks, saved passwords, extensions, and Spaces. Download and media records are shared across regular profiles; Library labels preserve item ownership. Private windows keep their own temporary context. Saving or exporting a file still writes the output you choose.</li>
 </ul>
 </section>
 
@@ -206,6 +182,30 @@
 <tr><td>Show JavaScript Console</td><td><kbd>⌥⌘C</kbd></td></tr>
 <tr><td>View Source</td><td><kbd>⌥⌘U</kbd></td></tr>
 </table>
+</section>
+
+<section id="passwords"><h2>Passwords</h2>
+<p>Manage saved accounts on the <strong>Passwords</strong> settings page, which opens in a tab. Choose <strong>Vane → Passwords → Manage Saved Passwords…</strong>, the Passwords row in <strong>Settings → Profiles</strong>, or type <code>vane://settings/passwords</code>. Its profile menu picks whose accounts it shows. Search, sort, add, edit, reveal, copy, or delete credentials and generate passwords. macOS authentication protects sensitive actions. Each regular profile keeps its own local Keychain credentials; private windows do not use or save them.</p>
+<p><strong>Require Touch ID to view passwords</strong> is on to start with. The page opens with Touch ID, the way a locked folder does; <strong>Use Password…</strong> asks for your Mac login password instead. It locks again after five minutes without use, when you leave the page or close its tab, and when the screen locks or the Mac sleeps. Deleting an account shows Undo for five seconds; <kbd>⌘Z</kbd> works too.</p>
+<p>Autofill works on matching HTTPS forms and never submits them. <kbd>⌥⌘L</kbd> fills the focused form; a chooser appears when several accounts match. Filling a password asks for Touch ID or your login password first; one prompt covers every tab for five minutes. To stop asking, turn off <strong>Require Touch ID to fill passwords</strong> on the Passwords page; it applies to the whole app. Dynamic and username-first forms are supported within the documented origin and field checks. Saving a submitted password is a reviewable suggestion, not proof of a successful login.</p>
+<p><strong>Offer to save passwords</strong> can be turned off per profile without disabling saved-password autofill or manual imports. Provisioned builds offer a separate, initially unselected iCloud Keychain control. Passkeys use the macOS passkey sheet in builds signed with Apple’s passkey entitlement; the ⓘ beside the Password Manager heading says whether your build has it. Sign in with a passkey using Touch ID, the same way as in Safari. Read the <a href="https://github.com/notnaki/vane/blob/main/docs/PASSWORD-MANAGER.md">password manager guide</a>.</p></section>
+
+<section id="icloud"><h2>iCloud choices</h2>
+<p>In an explicitly provisioned build, open <strong>Settings → iCloud</strong>, review the categories, then enable sync on that Mac. Sync starts off. Ordinary local builds keep it unavailable. Profiles, Spaces, bookmarks, selected saved content, preferences, and other chosen library categories use your Apple Account’s private CloudKit database.</p>
+<p>History, extension sync data, passwords, and API keys start unselected; Select All explicitly includes them. Passwords and API keys use separate iCloud Keychain mirrors. Private browsing, website cookies and sign-ins, GitHub credentials, ChatGPT tokens, permissions, and file grants remain local. Download history can sync; downloaded file bytes, paths, and resume data do not.</p>
+<p>Other Macs’ tabs appear as device-labelled lists; opening one creates a local tab. Turning sync off keeps existing local and cloud copies. <strong>Remove iCloud Data</strong> is a separate confirmed action. Account changes pause sync until you approve merging. Cross-Mac convergence and Keychain propagation remain unverified. Read the <a href="privacy.html#optional-icloud-sync">privacy boundaries</a> and <a href="https://github.com/notnaki/vane/blob/main/docs/ICLOUD-PROVISIONING.md">provisioning requirements</a>.</p></section>
+
+<section id="privacy">
+<h2>Privacy and blocking</h2>
+<p>Read the <a href="privacy.html">privacy policy</a> for local data, outgoing requests, optional services, retention, and contact information.</p>
+<ul>
+  <li><strong>Ad and tracker blocking</strong> uses WebKit rules and a supported subset of EasyList. It starts on per profile. The Content Blocking section of the <strong>Privacy and Security</strong> settings page (<code>vane://settings/privacy</code>) offers disk imports, opt-in linked local files, and HTTPS subscriptions. Unsupported rules are reported; failed updates keep the last accepted list. <strong>Filter Lists and Diagnostics…</strong> in Site Controls' ⋯ menu opens it, and <strong>Block Ads</strong> in Site Settings turns blocking off for one site.</li>
+  <li><strong>Website data.</strong> <strong>Website Data</strong> and <strong>Clear Browsing Data</strong> are on the Privacy and Security page and in <strong>Settings → Profiles</strong>. <strong>Clear Site Data…</strong> in Site Controls' ⋯ menu clears only the current site.</li>
+  <li><strong>Private windows</strong> (<kbd>⇧⌘N</kbd>) get a data store that is never written to disk.</li>
+  <li><strong>Camera and microphone</strong> are asked per site and remembered per origin and profile; Reset Camera &amp; Microphone Permissions… forgets them.</li>
+  <li><strong>Certificates.</strong> A bad certificate shows a two-step alert with the fingerprint; an exception is tied to that exact certificate, so a swapped one asks again.</li>
+  <li><strong>Profiles</strong> separate website stores, history, bookmarks, saved passwords, extensions, and Spaces. Download and media records are shared across regular profiles; Library labels preserve item ownership. Private windows keep their own temporary context. Saving or exporting a file still writes the output you choose.</li>
+</ul>
 </section>
 
 <section id="develop">
