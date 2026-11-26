@@ -45,6 +45,27 @@ The website uses brief transitions and disables them with Reduce Motion. No gene
 or reconstructed app interface is used in these assets.
 
 
+## Website captures — 25 November 2026
+
+These replace the command bar, Split View and Library captures from 10 November,
+so NASA's Mars page no longer repeats across the homepage and the selected Space
+matches the site's iris palette. Same rules as below: full, unretouched 2560 × 1680
+native window PNGs with transparent corners, dark appearance.
+
+| Capture | Content |
+| --- | --- |
+| `vane-command-v2.png` | Vane's command bar searching "news" over [Wikipedia: Aurora](https://en.wikipedia.org/wiki/Aurora). |
+| `vane-split-v2.png` | [Wikipedia: Aurora](https://en.wikipedia.org/wiki/Aurora) and the [Quanta Magazine](https://www.quantamagazine.org/) homepage side by side. |
+| `vane-library-v2.png` | Native Library with three disposable demo Spaces: Explore (#453C8E), Reading (#26456B) and Studio (#4E3A5A), beside Quanta Magazine. |
+
+Built from source revision `14bef08` with `./make-app.sh release`, run as a uniquely
+named copy with a disposable `VANE_DATA_DIR` profile and no signed-in accounts; the
+copy, its profile and its Launch Services registration were removed afterwards.
+Wikipedia text is available under CC BY-SA 4.0. Quanta Magazine's lead illustration
+is by Ada Zejun Shen for Quanta Magazine. Apple Newsroom, MDN and GitHub appear
+only as tab titles or favourite icons. These sites retain their own branding and
+content; their appearance does not imply endorsement.
+
 ## Current website captures — 10 November 2026
 
 The five primary website pages use these actual native captures:
@@ -81,6 +102,12 @@ appearance demonstrates ordinary browsing and does not imply endorsement.
 The self-hosted Cormorant Garamond variable font comes from the Google Fonts
 repository (`ofl/cormorantgaramond`). Its SIL Open Font License is preserved in
 `../fonts/OFL.txt`.
+
+The website headings use Averia Serif Libre (regular and italic, Latin subset)
+from the Google Fonts repository (`ofl/averiaseriflibre`), self-hosted as
+`../fonts/averia-serif-libre-latin.woff2` and
+`../fonts/averia-serif-libre-italic-latin.woff2`. Its SIL Open Font License is in
+`../fonts/Averia-OFL.txt`. Cormorant and Pinyon remain for `share-card.html`.
 
 
 ## Website identity
