@@ -1,4 +1,5 @@
 import AppKit
+import JavaScriptCore
 import WebKit
 import XCTest
 @testable import vane
@@ -68,16 +69,16 @@ import XCTest
         }
     }
 
-    private func write(version: String, permissions: [String] = ["storage"], worker: Bool = false) throws {
+    private func write(version: String, permissions: [String] = ["storage"], worker: Bool = false, workerScript: String? = nil) throws {
         let resources = appex.appendingPathComponent("Contents/Resources")
         let background: [String: Any] = worker ? ["service_worker": "background.js"] : ["scripts": ["background.js"], "persistent": false]
         let manifest: [String: Any] = ["manifest_version": 3, "name": "Signed Safari Fixture", "version": version,
             "permissions": permissions, "background": background,
             "options_ui": ["page": "options.html"], "externally_connectable": ["matches": ["https://handoff.example.test/*"]]]
         try JSONSerialization.data(withJSONObject: manifest).write(to: resources.appendingPathComponent("manifest.json"))
-        let script = worker
+        let script = workerScript ?? (worker
             ? "const startup = navigator.userAgent; browser.runtime.onMessage.addListener(() => Promise.resolve({ua:startup, id:browser.runtime.id}));"
-            : "browser.runtime.onMessageExternal.addListener((message, sender, reply) => { reply({received:message.nonce, id:browser.runtime.id}); });"
+            : "browser.runtime.onMessageExternal.addListener((message, sender, reply) => { reply({received:message.nonce, id:browser.runtime.id}); });")
         try Data(script.utf8)
             .write(to: resources.appendingPathComponent("background.js"))
         try Data("<title>Signed Safari fixture</title>".utf8).write(to: resources.appendingPathComponent("options.html"))
@@ -133,6 +134,29 @@ import XCTest
         XCTAssertEqual(reply?["id"], extensionID + " (\(team!))")
         XCTAssertEqual(try store.resources(in: resourceURL), resources, "Signed source bytes must remain unchanged")
         XCTAssertNoThrow(try SafariExtensionSource.verify(appex))
+    }
+
+    func testSafariAppExtensionGetsNoChromiumStandInsOrChromeNativeMessagingDefault() async throws {
+        // Vane's Chromium layer is for Chrome packages. A Safari app extension sees what
+        // Safari offers: no stand-in namespaces, no added symbols, and native messaging only
+        // after the explicit error-only review.
+        let probe = "[typeof globalThis.chrome?.notifications, typeof globalThis.chrome?.tabGroups, typeof globalThis.chrome?.management, typeof Symbol.dispose].join(',')"
+        // What the system's JavaScriptCore has on its own (none on macOS 27.0).
+        let plain = JSContext()!.evaluateScript("typeof Symbol.dispose")!.toString()!
+        try write(version: "1.0", permissions: ["storage", "notifications", "tabGroups", "nativeMessaging"], worker: true,
+                  workerScript: "const startup = \(probe); browser.runtime.onMessage.addListener(() => Promise.resolve(startup));")
+        let host = ExtensionHost.host(for: profile)
+        let accepted = try await host.load(app, installing: true) { _ in true }
+        XCTAssertTrue(accepted)
+        let context = try XCTUnwrap(host.installed.first)
+        XCTAssertTrue(context.unsupportedAPIs.contains("browser.runtime.sendNativeMessage"))
+        XCTAssertFalse(try XCTUnwrap(host.entries.first).nativeMessagingErrorCompatibilityEnabled)
+        let web = try await options(context)
+        let page = try await web.callAsyncJavaScript("return \(probe);", arguments: [:], in: nil, contentWorld: .page) as? String
+        let worker = try await web.callAsyncJavaScript("return await browser.runtime.sendMessage('probe');",
+                                                      arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(page, "undefined,undefined,undefined," + plain)
+        XCTAssertEqual(worker, "undefined,undefined,undefined," + plain)
     }
 
     func testSignedSafariAppLoadsReviewedIdentityAndRoutesExternalHandoffInRealTab() async throws {

@@ -194,11 +194,16 @@ injected provider of generated in-memory identities.
 
 ### Extension desktop error compatibility
 
-Extensions that declare `nativeMessaging` can offer **Review Error-Only Mode…**
-in Manage Extensions → Compatibility. Installation approval leaves this mode off.
-The separate review persists only for that accepted installation in its profile;
-**Disable Error-Only Mode** revokes it. Removing the permission declaration clears
-approval, and adding it back requires a fresh review. A disabled extension stays disabled.
+Web extensions (Chrome Web Store or folder packages) that declare `nativeMessaging` have
+this mode on from installation, as Chrome answers when no desktop app is installed.
+**Disable Error-Only Mode** in Manage Extensions → Compatibility turns it off; that choice
+is stored (`nativeMessagingErrorCompatibilityVersion` 0) and survives updates while the
+declaration remains. A record with no stored choice follows the default.
+
+A Safari app extension keeps the explicit opt-in: **Review Error-Only Mode…** turns it on
+for that accepted installation in its profile and **Disable Error-Only Mode** revokes it.
+Removing the permission declaration clears approval, and adding it back requires a fresh
+review. A disabled extension stays disabled.
 
 This mode exposes WebKit’s real `runtime.sendNativeMessage` and `runtime.connectNative`
 APIs by granting the SDK permission before context loading. Both public native-message

@@ -172,10 +172,11 @@ import XCTest
             return true
         }
         let context = try XCTUnwrap(host.installed.first)
-        XCTAssertFalse(context.hasPermission(WKWebExtension.Permission(rawValue: "nativeMessaging")))
+        // As in Chrome, the API exists and fails with "host not found" (`ExtensionNativeMessagingErrors`).
+        XCTAssertTrue(context.hasPermission(WKWebExtension.Permission(rawValue: "nativeMessaging")))
         let web = try await options(context)
-        let hidden = try await web.evaluateJavaScript("typeof browser.runtime.sendNativeMessage + ':' + typeof browser.contextMenus")
-        XCTAssertEqual(hidden as? String, "undefined:object")
+        let shown = try await web.evaluateJavaScript("typeof browser.runtime.sendNativeMessage + ':' + typeof browser.contextMenus")
+        XCTAssertEqual(shown as? String, "function:object")
         let (granted, _) = await host.webExtensionController(host.controller,
             promptForPermissions: [WKWebExtension.Permission(rawValue: "nativeMessaging")], in: nil, for: context)
         XCTAssertTrue(granted.isEmpty)

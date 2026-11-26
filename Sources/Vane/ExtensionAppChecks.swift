@@ -6,7 +6,8 @@ import WebKit
 /// Opt-in checks against unmodified upstream packages in an isolated signed app.
 /// Run: VANE_DATA_DIR=~/Downloads/<isolated-folder> Vane.app/Contents/MacOS/vane extensioncheck
 /// An optional fixtures/bitwarden-account.json (scripts/seed-extensioncheck-vault.mjs) adds
-/// vault unlock and autofill against a disposable self-hosted server.
+/// vault unlock and autofill against a disposable self-hosted server. `--bitwarden-store` checks
+/// the Chrome Web Store Bitwarden (what a store user installs) instead of the Firefox fixture.
 /// The fixture folders and accepted installation records are retained for restart checks.
 @MainActor enum ExtensionAppChecks {
     private static var runner: Runner?
@@ -31,7 +32,8 @@ import WebKit
         // the selector counts the extension's own injected elements there.
         let store = arguments.indices.filter { arguments[$0] == "--store" && $0 + 1 < arguments.count }.map { arguments[$0 + 1] }
         let syntheticOnly = arguments.contains("--synthetic-only") || !store.isEmpty
-        for name in (syntheticOnly ? [] : ["darkreader-mv3", "ubolite-safari", "bitwarden-firefox"]) {
+        let bitwardenStore = arguments.contains("--bitwarden-store")
+        for name in (syntheticOnly ? [] : ["darkreader-mv3", "ubolite-safari"] + (bitwardenStore ? [] : ["bitwarden-firefox"])) {
             let fixture = directory.appendingPathComponent("fixtures/" + name)
             guard fixture.resolvingSymlinksInPath().path.hasPrefix(directory.path + "/"),
                   manager.fileExists(atPath: fixture.appendingPathComponent("manifest.json").path) else {
@@ -60,7 +62,7 @@ import WebKit
                 try JSONEncoder().encode(identity).write(to: marker, options: .withoutOverwriting)
             } catch { refuse("Could not mint the isolated fixture-directory marker.") }
         }
-        let check = Runner(directory: directory, syntheticOnly: syntheticOnly, store: store)
+        let check = Runner(directory: directory, syntheticOnly: syntheticOnly, store: store, bitwardenStore: bitwardenStore)
         runner = check
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) {
             check.record("overall deadline", .failed, "Exceeded 240 seconds; a platform callback did not finish.")
@@ -103,6 +105,7 @@ import WebKit
         let directory: URL
         let syntheticOnly: Bool
         let storeItems: [String]
+        let bitwardenStore: Bool
         var profileID: UUID?
         var store: TabStore?
         var server: Server?
@@ -110,8 +113,8 @@ import WebKit
         var permissionTimer: Timer?
         var popupAnchors: [NSView] = []
 
-        init(directory: URL, syntheticOnly: Bool, store: [String]) {
-            self.directory = directory; self.syntheticOnly = syntheticOnly; storeItems = store
+        init(directory: URL, syntheticOnly: Bool, store: [String], bitwardenStore: Bool) {
+            self.directory = directory; self.syntheticOnly = syntheticOnly; storeItems = store; self.bitwardenStore = bitwardenStore
         }
 
         func record(_ workflow: String, _ result: Result, _ detail: String) {
@@ -165,6 +168,29 @@ import WebKit
                 record("harness setup", .failed, error.localizedDescription)
             }
             finish()
+        }
+
+        /// Production download, CRX verification, review and activation; a restart restores it.
+        private func installStore(_ source: ChromeWebStore, label: String) async throws -> WKWebExtensionContext {
+            guard let profileID else { throw Failure("No isolated profile.") }
+            let host = ExtensionHost.host(for: profileID)
+            try await wait("prior extension operations settle", seconds: 25) { !host.isBusy }
+            if let existing = host.loaded.first(where: { $0.path == source.key })?.context {
+                record(label + " restore", .verified, "Accepted installation restored with its existing identity.")
+                return existing
+            }
+            let accepted = try await host.installStore(source, review: { [weak self] _ in
+                self?.record(label + " review", .verified, "Explicit test acceptance of the store package before activation.")
+                return true
+            })
+            guard let loaded = host.loaded.first(where: { $0.path == source.key })?.context else {
+                let failure = host.entries.first(where: { $0.path == source.key })?.failure
+                throw Failure(failure ?? "Not activated (accepted=\(accepted)).")
+            }
+            for limitation in host.entries.first(where: { $0.path == source.key })?.compatibility ?? [] {
+                record(label + " compatibility", .unavailable, limitation)
+            }
+            return loaded
         }
 
         private func install(_ fixture: String) async throws -> WKWebExtensionContext {
@@ -286,7 +312,9 @@ import WebKit
         private func passwordManager(tab: Tab, base: String) async {
             var authenticated = false
             do {
-                var context = try await install("bitwarden-firefox")
+                // Bitwarden's Chrome Web Store listing: the MV3 package a store user installs.
+                let storeSource = bitwardenStore ? try ChromeWebStore(input: "nngceckbapebfimnlniiiahkandclblb") : nil
+                var context = if let storeSource { try await installStore(storeSource, label: "Bitwarden store package") } else { try await install("bitwarden-firefox") }
                 let version = context.webExtension.version ?? "unknown"
                 let accountURL = directory.appendingPathComponent("fixtures/bitwarden-account.json")
                 guard FileManager.default.fileExists(atPath: accountURL.path), let profileID else {
@@ -315,29 +343,34 @@ import WebKit
                     throw Failure("bitwarden-account.json must name an https loopback server.")
                 }
                 // Bitwarden selects its Safari code on WebKit and retries a missing desktop
-                // "sleep" request without yielding. The user-facing remedy is the explicit
-                // error-only mode in the extension manager; accept that same review here.
+                // "sleep" request without yielding. Like Chrome, Vane answers such requests
+                // with "host not found" by default; nothing is switched on here.
                 let host = ExtensionHost.host(for: profileID)
-                let path = directory.appendingPathComponent("fixtures/bitwarden-firefox").resolvingSymlinksInPath().path
-                guard try await host.setNativeMessagingErrorCompatibility(true, for: path, review: { _ in true }),
+                let path = storeSource?.key ?? directory.appendingPathComponent("fixtures/bitwarden-firefox").resolvingSymlinksInPath().path
+                guard let entry = host.entries.first(where: { $0.path == path }), entry.nativeMessagingErrorCompatibilityEnabled,
                       let current = host.loaded.first(where: { $0.path == path })?.context else {
-                    throw Failure("Error-only desktop compatibility could not be enabled.")
+                    throw Failure("Chrome-like native messaging errors are not on by default.")
                 }
                 context = current
-                record("Bitwarden error-only desktop compatibility", .verified,
-                       "Explicit review accepted; desktop requests receive paced errors and no desktop app is contacted.")
+                record("Bitwarden default native messaging", .verified,
+                       "On without any setting: desktop requests fail with Chrome's \"host not found\"; no desktop app is contacted.")
                 guard let popup = await popup(context, tab: tab, label: "Bitwarden \(version) popup",
                     expected: "/^#\\/(intro-carousel|login|lock|tabs\\/)/.test(location.hash) && document.body.innerText.trim().length > 20") else {
                     throw Failure("The Bitwarden popup did not become usable.")
                 }
                 let helpers = """
+                    if (!window.__vaneLog) {
+                      window.__vaneLog = [];
+                      for (const level of ['error', 'warn']) { const original = console[level]; console[level] = (...args) => { window.__vaneLog.push(level + ': ' + args.map(a => a instanceof Error ? a.name + ': ' + a.message + ' @ ' + String(a.stack).split('\\n')[0] : typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ').slice(0, 400)); original.apply(console, args); }; }
+                      addEventListener('unhandledrejection', event => window.__vaneLog.push('rejection: ' + (event.reason?.message ?? String(event.reason)).slice(0, 400)));
+                    }
                     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
                     const control = text => [...document.querySelectorAll('button,a')]
                       .filter(e => e.getClientRects().length > 0 && e.innerText.trim() === text).pop();
                     const until = async (what, probe, ms = 10000, every = 100) => {
                       for (const end = Date.now() + ms;;) {
                         const value = probe(); if (value) return value;
-                        if (Date.now() > end) throw new Error('Timed out: ' + what + ' at ' + location.hash + ' showing: ' + document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 160));
+                        if (Date.now() > end) throw new Error('Timed out: ' + what + ' at ' + location.hash + ' showing: ' + document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 160) + ' console: ' + window.__vaneLog.slice(-12).join(' | '));
                         await sleep(every);
                       }
                     };
@@ -431,7 +464,12 @@ import WebKit
                 record("Bitwarden \(version) popup autofill", filled ? .verified : .failed,
                        "Fill for the matching vault item on a loopback login form in a new tab: username matches=\(values.first == account.username), password matches=\(values.last == account.password)\(toast.isEmpty ? "" : "; popup message: " + toast).")
                 record("Bitwarden desktop integration", .unavailable, "Biometric unlock and other desktop-app features need native messaging, which Vane does not provide.")
-            } catch { record("Bitwarden package", authenticated ? .failed : .unavailable, error.localizedDescription) }
+            } catch {
+                record("Bitwarden package", authenticated ? .failed : .unavailable, error.localizedDescription)
+                if let profileID, let context = ExtensionHost.host(for: profileID).loaded.first(where: { $0.context.webExtension.displayName?.hasPrefix("Bitwarden") == true })?.context, !context.errors.isEmpty {
+                    record("Bitwarden context errors", .unavailable, ExtensionDiagnostics.describe(context.errors))
+                }
+            }
         }
 
         private func syntheticRuntime(tab: Tab) async {
@@ -506,24 +544,9 @@ import WebKit
                 record("package " + item, .failed, "Expected --store <32-letter ID or fixtures/ folder>[,URL[,CSS selector]]."); return
             }
             let label = "package " + (source?.id ?? parts[0])
-            let host = ExtensionHost.host(for: profileID)
             do {
                 let context: WKWebExtensionContext
-                if let source {
-                    try await wait("prior extension operations settle", seconds: 25) { !host.isBusy }
-                    let accepted = try await host.installStore(source, review: { [weak self] _ in
-                        self?.record(label + " review", .verified, "Explicit test acceptance of the store package before activation.")
-                        return true
-                    })
-                    guard let loaded = host.loaded.first(where: { $0.path == source.key })?.context else {
-                        let failure = host.entries.first(where: { $0.path == source.key })?.failure
-                        throw Failure(failure ?? "Not activated (accepted=\(accepted)).")
-                    }
-                    context = loaded
-                    for limitation in host.entries.first(where: { $0.path == source.key })?.compatibility ?? [] {
-                        record(label + " compatibility", .unavailable, limitation)
-                    }
-                } else { context = try await install(parts[0]) }
+                if let source { context = try await installStore(source, label: label) } else { context = try await install(parts[0]) }
                 record(label + " install", .verified, "\(context.webExtension.displayName ?? "?") \(context.webExtension.version ?? "?") MV\(context.webExtension.manifestVersion) activated.")
                 try? await Task.sleep(for: .seconds(4))
                 record(label + " background", context.errors.isEmpty ? .verified : .unavailable,
@@ -533,7 +556,9 @@ import WebKit
                 try await wait("store page loads") { !tab.web.isLoading && tab.web.url?.path == "/page" }
                 if let web = await popup(context, tab: tab, label: label + " popup",
                                          expected: "[...document.querySelectorAll('button,input,a,h1,h2,p,img,svg')].some(e => e.getClientRects().length > 0)") {
-                    let text = (try? await evaluate("return document.body.innerText.replace(/\\s+/g, ' ').slice(0, 300);", in: web)) ?? ""
+                    // VANE_EXTENSIONCHECK_TEXT=<characters> reports more, e.g. an API probe's results.
+                    let limit = ProcessInfo.processInfo.environment["VANE_EXTENSIONCHECK_TEXT"].flatMap(Int.init).map { max(1, $0) } ?? 300
+                    let text = (try? await evaluate("return document.body.innerText.replace(/\\s+/g, ' ').slice(0, limit);", in: web, arguments: ["limit": limit])) ?? ""
                     record(label + " popup text", .verified, text)
                 }
                 for window in NSApp.windows where window !== store.window && window.isVisible && window.styleMask.contains(.titled)

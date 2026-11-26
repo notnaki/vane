@@ -45,8 +45,9 @@ import WebKit
         }
     }
 
+    /// `safari`: a Safari app extension, whose worker gets no Chromium API scripts.
     static func prepare(_ original: WKWebExtension, resources originalResources: [String: Data],
-                        manifest: [String: Any], userAgent: String) throws -> WKWebExtension {
+                        manifest: [String: Any], userAgent: String, safari: Bool = false) throws -> WKWebExtension {
         guard usesWorker(original) else { return original }
         guard let manifestBytes = originalResources["manifest.json"],
               let snapshotManifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any],
@@ -77,7 +78,7 @@ import WebKit
         // Adjacent explicit wrappers preserve the worker's API base directory for
         // relative importScripts. Generated workers retain their virtual root.
         // Canonical vendor URLs preserve module identity, including entry cycles.
-        let template = try bootstrap(userAgent: userAgent, token: "")
+        let template = try bootstrap(userAgent: userAgent, token: "", safari: safari)
         let templateEntry = try entrySource(bootstrap: template, modulePath: modules ? "__VANE_IDENTITY_MODULE__" : nil, scripts: paths)
         var digest = SHA256()
         func include(_ data: Data) {
@@ -96,7 +97,7 @@ import WebKit
         guard resources[entryPath] == nil, !modules || resources[modulePath] == nil else {
             throw ExtensionHost.Failure("The extension conflicts with its worker identity resources.")
         }
-        let shim = try bootstrap(userAgent: userAgent, token: token)
+        let shim = try bootstrap(userAgent: userAgent, token: token, safari: safari)
         if modules { resources[modulePath] = Data(shim.utf8) }
         resources[entryPath] = Data(try entrySource(bootstrap: shim, modulePath: modules ? modulePath : nil, scripts: paths).utf8)
         var runtimeManifest = manifest, runtimeBackground = background
@@ -111,7 +112,7 @@ import WebKit
         func isolated(_ group: [String: Any]) -> Bool {
             (group["world"] as? String)?.uppercased() != "MAIN" && !((group["js"] as? [String])?.isEmpty ?? true)
         }
-        if var groups = manifest["content_scripts"] as? [[String: Any]], groups.contains(where: isolated) {
+        if !safari, var groups = manifest["content_scripts"] as? [[String: Any]], groups.contains(where: isolated) {
             let gapsPath = "__vane_content_gaps_" + token + ".js"
             guard resources[gapsPath] == nil else {
                 throw ExtensionHost.Failure("The extension conflicts with its worker identity resources.")
@@ -144,7 +145,7 @@ import WebKit
         return bootstrap + "\nimportScripts(...\(String(decoding: paths, as: UTF8.self)));\n"
     }
 
-    static func bootstrap(userAgent: String, token: String) throws -> String {
+    static func bootstrap(userAgent: String, token: String, safari: Bool = false) throws -> String {
         let config = try JSONSerialization.data(withJSONObject: ["ua": userAgent, "token": token], options: [.sortedKeys])
         return """
         ;(() => {
@@ -162,7 +163,7 @@ import WebKit
           }
           if (navigator.userAgent !== config.ua) throw new Error('Vane worker identity bootstrap failed');
         })();
-        """ + "\n" + ExtensionIdentityAPI.script + "\n" + ExtensionDebuggerAPI.script + "\n" + ExtensionTabGroupsAPI.script
+        """ + "\n" + (safari ? ExtensionChromiumGaps.safariFlag + "\n" : "") + ExtensionIdentityAPI.script + "\n" + ExtensionDebuggerAPI.script + "\n" + ExtensionTabGroupsAPI.script
             + "\n" + ExtensionChromiumGaps.script + "\n" + ExtensionSidePanelAPI.script
     }
 

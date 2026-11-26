@@ -171,6 +171,10 @@ import WebKit
 
     let profileID: UUID
     let controller: WKWebExtensionController
+    /// Shared by every extension page (WebKit copies the configuration, not this controller).
+    private let pageScripts: WKUserContentController
+    private var safariHosts: Set<String> = []
+    private var safariFlag: WKUserScript?
     private let userAgent = ExtensionUserAgent()
     private let backgroundViews = NSMapTable<WKWebExtensionContext, WKWebView>(keyOptions: .weakMemory, valueOptions: .weakMemory)
     private var filterBridges: [ObjectIdentifier: ExtensionFilterBridge] = [:]
@@ -361,7 +365,7 @@ import WebKit
                                 required: $0.required, optional: $0.optional) } == true,
                          nativeMessagingErrorCompatibilityEnabled: record.map {
                             ExtensionNativeMessagingErrors.isApproved(version: $0.nativeMessagingErrorCompatibilityVersion,
-                                required: $0.required, optional: $0.optional) } == true)
+                                required: $0.required, optional: $0.optional, safari: $0.safari != nil) } == true)
         }
     }
 
@@ -386,6 +390,7 @@ import WebKit
         // Ahead of the stand-ins, which leave a namespace that is already there alone.
         ExtensionTabGroupsAPI.configure(webConfiguration)
         ExtensionChromiumGaps.configure(webConfiguration)
+        pageScripts = webConfiguration.userContentController
         ExtensionSidePanelAPI.configure(webConfiguration)
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
@@ -531,8 +536,8 @@ import WebKit
         guard operations[path] == nil, restoring[path] == nil else { return false }
         try Task.checkCancellation()
         let approved = ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
-            required: record.required, optional: record.optional)
-        if enabled && approved || !enabled && record.nativeMessagingErrorCompatibilityVersion == nil { return true }
+            required: record.required, optional: record.optional, safari: record.safari != nil)
+        if enabled == approved { return true }
         let generation = installationGenerations()[path]
         let wasActive = loaded.contains { $0.path == path }
         let shouldActivate = !disabled.contains(path)
@@ -553,7 +558,7 @@ import WebKit
         }
         try checkLifetime()
         var revised = record
-        revised.nativeMessagingErrorCompatibilityVersion = enabled ? ExtensionNativeMessagingErrors.currentVersion : nil
+        revised.nativeMessagingErrorCompatibilityVersion = enabled ? ExtensionNativeMessagingErrors.currentVersion : ExtensionNativeMessagingErrors.disabledVersion
         var replacement: WKWebExtensionContext?
         var replaced = false
         do {
@@ -1232,11 +1237,11 @@ import WebKit
             record.iCloudIdentity = oldRecord?.iCloudIdentity
             record.iCloudStoreID = oldRecord?.iCloudStoreID
             record.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: oldRecord,
-                for: record.required, optional: record.optional)
+                for: record.required, optional: record.optional, safari: true)
             if enable {
                 try deactivate(path); replaced = true
                 let context = try makeContext(ext, identity: identity, runtimeID: candidate.source.runtimeID,
-                    nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
+                    nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion, safari: true)
                 candidates[path] = context
                 try await waitForDataPurge(candidate.source.runtimeID, checkLifetime: checkLifetime)
                 if oldRecord == nil && folders[path] == nil {
@@ -1406,11 +1411,26 @@ import WebKit
             }
             return resources
         }.value
-        return try ExtensionWorkerIdentity.prepare(original, resources: resources, manifest: manifest, userAgent: userAgent.effective)
+        return try ExtensionWorkerIdentity.prepare(original, resources: resources, manifest: manifest, userAgent: userAgent.effective,
+                                                   safari: appBundle != nil)
+    }
+
+    /// A Safari app extension's pages get Safari's APIs, not Vane's Chromium ones. Set before
+    /// its context exists, so its first page already has the flag; a host is never reused.
+    private func markSafariPages(host: String) {
+        guard safariHosts.insert(host).inserted else { return }
+        let others = pageScripts.userScripts.filter { $0 !== safariFlag }
+        let flag = WKUserScript(source: ExtensionChromiumGaps.safariPageFlag(hosts: safariHosts), injectionTime: .atDocumentStart,
+                                forMainFrameOnly: true, in: .page)
+        pageScripts.removeAllUserScripts()
+        pageScripts.addUserScript(flag)
+        others.forEach(pageScripts.addUserScript)
+        safariFlag = flag
     }
 
     private func makeContext(_ ext: WKWebExtension, identity: String, runtimeID: String? = nil,
-                             nativeMessagingErrorCompatibilityVersion: Int? = nil) throws -> WKWebExtensionContext {
+                             nativeMessagingErrorCompatibilityVersion: Int? = nil, safari: Bool = false) throws -> WKWebExtensionContext {
+        if safari { markSafariPages(host: identity.lowercased()) }
         let context = WKWebExtensionContext(for: ext)
         context.uniqueIdentifier = runtimeID ?? identity.lowercased()
         context.baseURL = URL(string: "webkit-extension://\(identity.lowercased())/")!
@@ -1421,7 +1441,7 @@ import WebKit
         let optional = ExtensionAccess(permissions: Set(ext.optionalPermissions.map(\.rawValue)),
             sites: Set(ext.optionalPermissionMatchPatterns.map(\.string)))
         let approved = ExtensionNativeMessagingErrors.isApproved(version: nativeMessagingErrorCompatibilityVersion,
-            required: ExtensionAccess(ext), optional: optional)
+            required: ExtensionAccess(ext), optional: optional, safari: safari)
         if approved {
             // Signed Safari sources otherwise have an automatic NSExtension
             // fallback. Exposing either API requires our permanent denial owner.
@@ -1467,7 +1487,7 @@ import WebKit
         guard ExtensionAccess(ext) == record.required else { throw Failure("The accepted extension files changed. Choose " + (record.safari == nil ? "Update from Folder" : "Update from App") + " to validate and review a fresh copy.") }
         try checkLifetime()
         let context = try makeContext(ext, identity: record.identity, runtimeID: record.safari?.runtimeID ?? record.store?.id,
-            nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion)
+            nativeMessagingErrorCompatibilityVersion: record.nativeMessagingErrorCompatibilityVersion, safari: record.safari != nil)
         access?.apply(to: context)
         candidates[path] = context
         do {
@@ -2855,7 +2875,7 @@ import WebKit
         if let path = loaded.first(where: { $0.context === context })?.path,
            let record = records[path],
            ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
-               required: record.required, optional: record.optional) {
+               required: record.required, optional: record.optional, safari: record.safari != nil) {
             retained.insert(WKWebExtension.Permission(rawValue: "nativeMessaging"))
         }
         let patterns = context.webExtension.requestedPermissionMatchPatterns.union(context.webExtension.allRequestedMatchPatterns)

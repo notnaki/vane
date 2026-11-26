@@ -21,6 +21,8 @@ import WebKit
     // nothing of another context's session until it sends a command or adds a listener.
     nonisolated static let script = #"""
         ;(() => {
+          // Chrome's API: Safari app extensions get Safari's (`ExtensionChromiumGaps.safariFlag`).
+          if (globalThis[Symbol.for('vane.safari.extension')] === true) return;
           const listeners = {event: new Set(), detach: new Set()};
           let port = null, polling = false, cursor;
           const event = set => Object.freeze({
@@ -68,6 +70,8 @@ import WebKit
           const tabOf = target => Number.isInteger(target?.tabId) ? target.tabId
             : /^vane-tab-\d+$/.test(target?.targetId ?? '') ? Number(target.targetId.slice(9)) : NaN;
           const api = Object.freeze({
+            DetachReason: Object.freeze({CANCELED_BY_USER: 'canceled_by_user', TARGET_CLOSED: 'target_closed'}),
+            TargetInfoType: Object.freeze({BACKGROUND_PAGE: 'background_page', OTHER: 'other', PAGE: 'page', WORKER: 'worker'}),
             attach(target, version, callback) {
               const tabId = tabOf(target);
               return call('attach', tabId, {tabId: String(tabId)}, callback, result => { cursor ??= result.cursor; poll(); });

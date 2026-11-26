@@ -56,26 +56,25 @@ final class ExtensionCodeStoreTests: XCTestCase {
     func testNativeErrorModeRequiresKnownApprovalAndDeclaredPermission() {
         let native = ExtensionAccess(permissions: ["nativeMessaging"], sites: [])
         let empty = ExtensionAccess(permissions: [], sites: [])
-        for version: Int? in [nil, -1, 0, 2] {
+        for version: Int? in [-1, 0, 2] {
             XCTAssertFalse(ExtensionNativeMessagingErrors.isApproved(version: version, required: native, optional: empty))
         }
+        XCTAssertTrue(ExtensionNativeMessagingErrors.isApproved(version: nil, required: native, optional: empty), "On by default, as in Chrome")
+        XCTAssertFalse(ExtensionNativeMessagingErrors.isApproved(version: nil, required: empty, optional: empty))
         XCTAssertTrue(ExtensionNativeMessagingErrors.isApproved(version: 1, required: native, optional: empty))
         XCTAssertTrue(ExtensionNativeMessagingErrors.isApproved(version: 1, required: empty, optional: native))
         XCTAssertFalse(ExtensionNativeMessagingErrors.isApproved(version: 1, required: empty, optional: empty))
     }
 
-    func testRemovingThenReaddingNativeDeclarationRequiresNewApproval() {
+    func testOnlyTheOffChoiceCarriesAcrossUpdates() {
         let native = ExtensionAccess(permissions: ["nativeMessaging"], sites: [])
         let empty = ExtensionAccess(permissions: [], sites: [])
         var old = ExtensionCodeStore.Record(identity: UUID().uuidString, revision: UUID().uuidString,
             sourcePath: source.path, name: "Native fixture", version: "1", summary: "", required: native,
             optional: empty, compatibility: [], nativeMessagingErrorCompatibilityVersion: 1)
-        XCTAssertEqual(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty), 1)
-        old.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.retainedVersion(from: old, for: empty, optional: empty)
-        old.required = empty
-        XCTAssertNil(old.nativeMessagingErrorCompatibilityVersion)
-        XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty))
-        old.required = native
+        XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty), "On is the default; nothing to keep")
+        old.nativeMessagingErrorCompatibilityVersion = ExtensionNativeMessagingErrors.disabledVersion
+        XCTAssertEqual(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty), ExtensionNativeMessagingErrors.disabledVersion)
         old.nativeMessagingErrorCompatibilityVersion = 2
         XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: old, for: native, optional: empty))
         XCTAssertNil(ExtensionNativeMessagingErrors.retainedVersion(from: nil, for: native, optional: empty))

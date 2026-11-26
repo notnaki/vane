@@ -59,7 +59,7 @@ import XCTest
         defer { denial.cancelAll(); gate.releaseAll(); requests.forEach { $0.cancel() } }
         try await until("context pending budget populated", seconds: 1) { gate.pending == requests.count }
         do { try await denial.wait(contextID: ObjectIdentifier(context)); XCTFail("Overflow must fail without retaining more work") }
-        catch { XCTAssertEqual((error as NSError).localizedDescription, "Native messaging hosts are unavailable in Vane.") }
+        catch { XCTAssertEqual((error as NSError).localizedDescription, "Specified native messaging host not found.") }
         XCTAssertEqual(denial.pendingCount, requests.count)
         let independent = Task { try await denial.wait(contextID: ObjectIdentifier(other)) }
         try await until("another context can enter", seconds: 1) { gate.pending == requests.count + 1 }
@@ -91,7 +91,7 @@ import XCTest
         defer { denial.cancelAll(); gate.releaseAll(); requests.forEach { $0.cancel() } }
         try await until("global pending budget populated", seconds: 1) { gate.pending == ExtensionNativeMessagingDenial.totalLimit }
         do { try await denial.wait(contextID: ObjectIdentifier(excess)); XCTFail("Total overflow must not retain another request") }
-        catch { XCTAssertEqual((error as NSError).localizedDescription, "Native messaging hosts are unavailable in Vane.") }
+        catch { XCTAssertEqual((error as NSError).localizedDescription, "Specified native messaging host not found.") }
         XCTAssertEqual(denial.pendingCount, ExtensionNativeMessagingDenial.totalLimit)
         gate.releaseAll()
         for request in requests { try await request.value }
@@ -154,7 +154,7 @@ import XCTest
             XCTAssertEqual(values["disconnects"] as? Int, 1)
             for key in ["callbackError", "promiseError", "portError"] {
                 let error = try XCTUnwrap(values[key] as? String)
-                XCTAssertTrue(error.contains("Native messaging hosts are unavailable in Vane."), "\(key): \(error)")
+                XCTAssertTrue(error.contains("Specified native messaging host not found."), "\(key): \(error)")
                 XCTAssertFalse(error.contains("must-not-be-echoed"))
             }
             #if DEBUG

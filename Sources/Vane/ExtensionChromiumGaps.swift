@@ -1,3 +1,4 @@
+import os
 import WebKit
 
 /// Chromium namespaces an MV3 extension has requested and system WebKit does not have.
@@ -27,6 +28,26 @@ import WebKit
         ContextType: {TAB: 'TAB', POPUP: 'POPUP', BACKGROUND: 'BACKGROUND', OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT', SIDE_PANEL: 'SIDE_PANEL', DEVELOPER_TOOLS: 'DEVELOPER_TOOLS'}}
         """
 
+    /// Chrome 134+ has explicit resource management; JavaScriptCore on macOS 27.0 does not.
+    /// TypeScript's `using` helper throws "Symbol.dispose is not defined." without these
+    /// symbols (Bitwarden's popup stops after sign-in); it needs nothing else from them.
+    // ponytail: the symbols only. Add `DisposableStack` if an extension calls it directly.
+    nonisolated static let disposeSymbols = """
+        for (const key of ['dispose', 'asyncDispose'])
+          if (typeof Symbol[key] !== 'symbol') Object.defineProperty(Symbol, key, {value: Symbol('Symbol.' + key)});
+        """
+
+    /// Set ahead of the Chromium scripts in a Safari app extension's worker and pages, whose
+    /// code expects Safari's APIs. Those scripts then add nothing; the WebKit repairs in
+    /// `script` (worker sockets, credentialed requests) still apply.
+    nonisolated static let safariFlag = "globalThis[Symbol.for('vane.safari.extension')] = true;"
+
+    /// Pages share one user content controller, so the flag goes by the page's extension host.
+    nonisolated static func safariPageFlag(hosts: Set<String>) -> String {
+        let list = (try? JSONSerialization.data(withJSONObject: hosts.sorted())).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
+        return "if (\(list).includes(location.host)) " + safariFlag
+    }
+
     /// What a content script sees of the above: `chrome.runtime`'s constants, which
     /// Chrome exposes there too and scripts read at their top level. Run ahead of the
     /// extension's own content scripts by `ExtensionWorkerIdentity.prepare`.
@@ -35,6 +56,7 @@ import WebKit
     // calls if an extension needs the constants there.
     nonisolated static let contentScript = #"""
         ;(() => {
+          \#(disposeSymbols)
           for (const api of new Set([globalThis.chrome, globalThis.browser])) {
             try {
               const runtime = api?.runtime;
@@ -50,6 +72,11 @@ import WebKit
 
     nonisolated static let script = #"""
         ;(() => {
+          // A Safari app extension gets Safari's APIs: only the WebKit repairs below apply.
+          const safari = globalThis[Symbol.for('vane.safari.extension')] === true;
+          if (!safari) {
+            \#(disposeSymbols)
+          }
           const event = () => Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false});
           const namespace = () => new Proxy({}, {get(target, key) {
             if (typeof key !== 'string') return undefined;
@@ -101,7 +128,7 @@ import WebKit
               const manifest = api.runtime.getManifest();
               if (manifest.manifest_version !== 3) continue;
               const declared = new Set(manifest.permissions ?? []);
-              for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace());
+              if (!safari) for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace());
               // WebKit weakly caches nested API wrappers. Keep the real ones alive so
               // the members added below survive garbage collection.
               const owners = ['runtime', 'storage', 'tabs', 'declarativeNetRequest', 'webRequest', 'scripting', 'webNavigation', 'alarms', 'action']
@@ -120,7 +147,7 @@ import WebKit
               // extension origin, so WebKit blanks the frame and the panel waits on it for
               // ever. Tell the panel what the frame would have: its framed chat is unavailable.
               // Claude then shows its own built-in chat.
-              if (globalThis.document && !globalThis.document.vaneClaudeFrame) {
+              if (!safari && globalThis.document && !globalThis.document.vaneClaudeFrame) {
                 globalThis.document.vaneClaudeFrame = true;
                 const origin = 'https://claude.ai';
                 const watch = frame => {
@@ -171,6 +198,9 @@ import WebKit
               if (typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope
                   && !globalThis.WebSocket?.vane) {
                 const states = {CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3};
+                // Binary frames cross the bridge as base64.
+                const toBase64 = bytes => { let text = ''; for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000)); return btoa(text); };
+                const fromBase64 = text => Uint8Array.from(atob(text), character => character.charCodeAt(0));
                 class WebSocket extends EventTarget {
                   static vane = true;
                   #socket; #sending = Promise.resolve();
@@ -200,20 +230,29 @@ import WebKit
                       fire('open');
                       for (;;) {
                         const next = await ask('ws.next', {id});
-                        if (!('data' in next)) return closed(next.code, next.reason, next.clean);
-                        if (this.readyState === 1) fire('message', {data: next.data});
+                        if (!('data' in next) && !('binary' in next)) return closed(next.code, next.reason, next.clean);
+                        if (this.readyState !== 1) continue;
+                        if ('binary' in next) {
+                          const bytes = fromBase64(next.binary);
+                          fire('message', {data: this.binaryType === 'arraybuffer' ? bytes.buffer : new Blob([bytes])});
+                        } else fire('message', {data: next.data});
                       }
                     }).catch(() => closed());
                   }
                   send(data) {
                     if (this.readyState === 0) throw new DOMException('WebSocket is still connecting.', 'InvalidStateError');
                     if (this.readyState !== 1) return;
-                    // ponytail: text frames only; binary data is sent as its string form.
-                    // Carry bytes as base64 over the bridge if an extension ever sends them.
-                    const text = String(data), id = this.#socket;
-                    this.bufferedAmount += text.length;
-                    this.#sending = this.#sending.then(() => ask('ws.send', {id, data: text})).catch(() => {})
-                      .finally(() => { this.bufferedAmount -= text.length; });
+                    const id = this.#socket;
+                    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
+                      : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
+                    const blob = data instanceof Blob ? data : null;
+                    const size = bytes?.byteLength ?? blob?.size ?? String(data).length;
+                    // Copied now: the caller may reuse its buffer before the send goes out.
+                    const frame = bytes ? Promise.resolve({binary: toBase64(bytes)})
+                      : blob ? blob.arrayBuffer().then(buffer => ({binary: toBase64(new Uint8Array(buffer))})) : Promise.resolve({data: String(data)});
+                    this.bufferedAmount += size;
+                    this.#sending = this.#sending.then(() => frame).then(fields => ask('ws.send', {id, ...fields})).catch(() => {})
+                      .finally(() => { this.bufferedAmount -= size; });
                   }
                   close(code, reason = '') {
                     if (this.readyState >= 2) return;
@@ -226,6 +265,8 @@ import WebKit
                 for (const [key, value] of Object.entries(states)) { Object.defineProperty(WebSocket, key, {value}); Object.defineProperty(WebSocket.prototype, key, {value}); }
                 Object.defineProperty(globalThis, 'WebSocket', {configurable: true, writable: true, value: WebSocket});
               }
+              // Everything below is Chrome's API.
+              if (safari) continue;
               // Outside a tab WebKit answers getCurrent with null; Chrome with undefined, which
               // extensions test for (`getCurrent() === undefined` means a side panel or popup).
               if (typeof api.tabs?.getCurrent === 'function') {
@@ -325,6 +366,25 @@ import WebKit
               define(rules, 'getAvailableStaticRuleCount', callback => reply(callback, 30000));
               define(rules, 'HeaderOperation', Object.freeze({APPEND: 'append', SET: 'set', REMOVE: 'remove'}));
               define(rules, 'ResourceType', Object.freeze({MAIN_FRAME: 'main_frame', SUB_FRAME: 'sub_frame', STYLESHEET: 'stylesheet', SCRIPT: 'script', IMAGE: 'image', FONT: 'font', OBJECT: 'object', XMLHTTPREQUEST: 'xmlhttprequest', PING: 'ping', CSP_REPORT: 'csp_report', MEDIA: 'media', WEBSOCKET: 'websocket', WEBTRANSPORT: 'webtransport', WEBBUNDLE: 'webbundle', OTHER: 'other'}));
+              // The rest of Chrome's shape, last so the answers above win: enums, constants and
+              // events (which never fire) of each namespace the extension already has, WebKit's
+              // or a stand-in. Code that reads them at its top level no longer stops there.
+              // No namespace is invented: `chrome.offscreen` or `chrome.userScripts` existing is
+              // how extensions choose what to call, and an empty one would mislead them.
+              for (const [path, {enums = {}, constants: values = {}, events = []}] of Object.entries(\#(shape))) {
+                const owner = path.split('.').reduce((parent, key) => parent?.[key], api);
+                // A frozen stand-in (identity, tabGroups) is complete as it is.
+                if (owner === undefined || owner === null || typeof owner !== 'object' && typeof owner !== 'function' || !Object.isExtensible(owner)) continue;
+                owners.push(owner);
+                for (const [key, value] of Object.entries(enums)) constants(owner, key, value);
+                for (const [key, value] of Object.entries(values)) {
+                  const current = owner[key];
+                  // A stand-in answers any capitalised key with an empty enum; a constant replaces it.
+                  if (current === undefined || typeof current === 'object' && current !== null && !Object.keys(current).length)
+                    Object.defineProperty(owner, key, {configurable: true, value});
+                }
+                for (const key of events) define(owner, key, event());
+              }
             } catch (error) { console.error(error); }
           }
         })();
@@ -443,8 +503,9 @@ import WebKit
     private var workers: [ObjectIdentifier: String] = [:]
     private static let perExtension = 32
 
-    /// `ws.open` → `{id, protocol}` once connected; `ws.next` → `{data}` or, once, the close
-    /// `{code, reason, clean}`; `ws.send` and `ws.close` → null.
+    /// `ws.open` → `{id, protocol}` once connected; `ws.next` → `{data}` (text), `{binary}`
+    /// (base64) or, once, the close `{code, reason, clean}`; `ws.send` (`data` or `binary`)
+    /// and `ws.close` → null.
     // ponytail: the extension's cookies stay behind; its own token travels in its messages.
     func answer(_ operation: String, _ arguments: [String: Any], origin: String, owner: ObjectIdentifier) async throws -> Any? {
         if operation == "ws.open" {
@@ -472,8 +533,15 @@ import WebKit
             task.resume()
             // The first pong proves the handshake is done: the open event.
             do {
+                // Foundation can call a ping's handler twice when the connection drops while
+                // it waits (seen: a pong, then "Software caused connection abort"). Only the
+                // first call counts.
+                let once = OSAllocatedUnfairLock(initialState: false)
                 try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, any Error>) in
-                    task.sendPing { error in if let error { done.resume(throwing: error) } else { done.resume() } }
+                    task.sendPing { error in
+                        guard once.withLock({ called in defer { called = true }; return !called }) else { return }
+                        if let error { done.resume(throwing: error) } else { done.resume() }
+                    }
                 }
             } catch { sockets[id] = nil; task.cancel(); throw error }
             let accepted = (task.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Sec-WebSocket-Protocol") ?? ""
@@ -484,7 +552,12 @@ import WebKit
         }
         switch operation {
         case "ws.send":
-            try await socket.task.send(.string(arguments["data"] as? String ?? ""))
+            if let binary = arguments["binary"] as? String {
+                guard let data = Data(base64Encoded: binary) else { throw ExtensionHost.Failure("Invalid WebSocket frame.") }
+                try await socket.task.send(.data(data))
+            } else {
+                try await socket.task.send(.string(arguments["data"] as? String ?? ""))
+            }
             return NSNull()
         case "ws.close":
             let code = URLSessionWebSocketTask.CloseCode(rawValue: (arguments["code"] as? NSNumber)?.intValue ?? 1000) ?? .normalClosure
@@ -496,7 +569,7 @@ import WebKit
             do {
                 switch try await socket.task.receive() {
                 case .string(let text): return ["data": text]
-                case .data(let data): return ["data": String(decoding: data, as: UTF8.self)]
+                case .data(let data): return ["binary": data.base64EncodedString()]
                 @unknown default: return ["data": ""]
                 }
             } catch {
