@@ -363,6 +363,33 @@ by another tab appears, with the opener as `sourceTabId` and `sourceFrameId` 0.
 never fires. A `webRequest` listener filter with `ws://` or `wss://` URL patterns, which
 WebKit refuses as a whole, is registered without those patterns.
 
+**The rest of Chrome's API shape.** Every namespace an MV3 extension already has, WebKit's
+own or one of Vane's stand-ins, also gets Chrome's enums with their real values (for
+example `webRequest.OnBeforeSendHeadersOptions.EXTRA_HEADERS`), its scalar constants
+(`tabs.TAB_ID_NONE`, `windows.WINDOW_ID_CURRENT`) and its events, which never fire where
+Vane has nothing to report. The table comes from Chromium 159's own API schemas
+(`scripts/chromium-api-shape/`). Values WebKit or Vane already define win. No namespace
+is invented this way: extensions test for `chrome.offscreen` or `chrome.userScripts` to
+choose what to call, and an empty one would mislead them. JavaScriptCore on macOS 27.0 has
+no `Symbol.dispose`, which TypeScript's compiled `using` needs, so Vane defines
+`Symbol.dispose` and `Symbol.asyncDispose` too (Bitwarden's Chrome popup stopped after
+sign-in without them). Measured with a probe extension that requests every stable
+permission, 270 of Chrome's 610 stable MV3 members exist in Vane's workers and pages, up
+from 214; most of the rest are methods of namespaces WebKit lacks (bookmarks, history,
+downloads, contentSettings and others).
+
+**Desktop apps fail as in Chrome.** A web extension (from the Chrome Web Store or a
+folder) that declares `nativeMessaging` gets `runtime.sendNativeMessage` and
+`connectNative`, which fail with Chrome's “Specified native messaging host not found.”
+after 100 ms. No desktop app is contacted. Bitwarden needs this: without it its popup
+never answers. **Disable Error-Only Mode** in Manage Extensions turns it off.
+
+**Chrome packages only.** A Safari app extension gets none of the above: no stand-in
+namespaces, no added members or symbols, and native messaging only after **Review
+Error-Only Mode…**, as before. Its code is written for Safari's APIs. Two WebKit repairs
+apply to every extension: a worker's `WebSocket` (WebKit's own never connects in an
+extension worker) and site cookies on credentialed requests.
+
 **Large rule sets take a while to start blocking.** WebKit compiles every enabled
 declarative rule of an extension into one content-blocker list, in the background, after
 activation and again after each rule change. It caps that list at 150,000 entries after

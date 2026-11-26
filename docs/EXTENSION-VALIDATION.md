@@ -4,6 +4,62 @@
 
 This record separates implementation, automated regressions, metadata parsing, and assembled-app observations. A successful manifest parse does not establish that background code, website injection, blocking, autofill, or every declared API works. No Chrome Web Store installation or full Chromium compatibility is claimed.
 
+## Chrome Web Store Bitwarden and Chrome's API shape — 2026-11-26
+
+The unmodified **Bitwarden** from the Chrome Web Store (`nngceckbapebfimnlniiiahkandclblb`, **2026.11.0**, MV3), the package a store user installs, signs in to a vault, unlocks it again after a restart and fills a login form in Vane. No setting was changed by hand. Before this change its popup stopped after the server sign-in.
+
+**Build.** macOS **27.0.1 (26A434)**, Vane **0.2.5-nightly.20261126.1 (790)**, debug configuration from this change, assembled by `./make-app.sh debug` and re-signed ad hoc with Vane's sandbox entitlements under its own bundle identifier (executable SHA-256 `73360b754bfc6bceffeb577c394a0313cd4a1885a0eeb1cf391009558415292e`). Each run had a new `VANE_DATA_DIR`. The package came through Vane's own store installer: Google's update endpoint, CRX signature check, review, activation.
+
+**Account.** As on 2026-11-21: a disposable Vaultwarden 1.37.5 on loopback with the public `*.local-ip.sh` certificate, and a throwaway account seeded by `scripts/seed-extensioncheck-vault.mjs`. No real account or credential.
+
+**Run.** `extensioncheck --bitwarden-store`, new here, installs the store package in place of the Firefox fixture and runs the same sign-in, restart-unlock and fill checks. It also checks that native messaging is on without any setting.
+
+| Workflow | Observed |
+| --- | --- |
+| Install | Store download, signature check, review and activation. |
+| Desktop requests | Answered with Chrome's “Specified native messaging host not found.” by default (see below). No desktop app was contacted. |
+| Sign-in | Server URL, email and master password in Bitwarden's own popup; the server logged the token grant and the vault sync, and the popup showed the vault. |
+| Unlock after restart | A new process restored the installation with its vault locked; the master password opened it. |
+| Autofill | **Fill** in the popup set the loopback form's username and password exactly, in both processes. |
+| Dark Reader 4.9.135, uBO Lite 2026.1116.1650 | Unchanged from 2026-11-21: page restyled and option kept across the restart; controlled request blocked. |
+
+Both full runs (install, then restart) passed with no failed finding, on the final build and on an earlier one.
+
+**What was wrong, and the fixes.**
+
+- **`Symbol.dispose`.** JavaScriptCore on macOS 27.0.1 has no explicit resource management: the system `jsc` answers `undefined` for `Symbol.dispose`, `Symbol.asyncDispose` and `DisposableStack`. Chrome has had them since version 134. Bitwarden's Chrome build compiles `using` with TypeScript's helper, which throws “Symbol.dispose is not defined.” In the popup that throw came after the token grant and before the vault sync, so sign-in never finished. Vane now defines both symbols in a Chrome package's worker and pages, and in the content scripts its manifest declares.
+- **Native messaging on by default.** On WebKit Bitwarden runs its Safari code, which retries a missing desktop API at once and never yields. A store user would have had to find **Review Error-Only Mode…** first. Chrome exposes the API and fails each call when no desktop app is installed; Vane now does the same for web extensions from installation. **Disable Error-Only Mode** still turns it off. Safari app extensions keep the explicit opt-in (see [Extensions and integrations](INTEGRATIONS.md#compatibility-and-validation)).
+- **Binary WebSocket frames.** Vane's worker `WebSocket` carried text only. It now carries binary frames both ways (`ArrayBuffer`, typed arrays and `Blob`, received per `binaryType`). The first version of this change treated an incoming binary frame as a close; the new regression caught it.
+- **A crash.** Foundation called a WebSocket ping's handler twice when the server dropped the connection while it waited, and the bridge resumed its continuation twice. Vane crashed at the end of the first run. Only the first call counts now.
+
+**Not working or not tested.** Bitwarden's live sync socket is closed by the server 30 seconds after it opens, so sync notifications do not arrive; the vault still syncs on unlock. Two-step login, the inline autofill menu, save prompts, passkeys and cloud accounts were not tested. Biometric unlock needs the desktop app.
+
+### Chrome's API shape
+
+A probe extension (made for this audit, not committed) requests every stable MV3 permission and records `typeof` for each member of Chrome's stable API surface: 610 members in 60 namespaces, from Chromium **159.0.8154.34**'s schemas. It ran through `extensioncheck --store` in both builds; worker and pages gave the same counts.
+
+| Build | Present | Missing |
+| --- | --- | --- |
+| `main` at `67d08db7` | 214 | 396 |
+| This change | 270 | 340 |
+
+The gain is Chrome's enums, scalar constants and events, filled into every namespace an extension already has. `scripts/chromium-api-shape/` generates the table from Chromium's schemas. What remains is almost all methods: 278 members in 35 namespaces WebKit lacks entirely (`contentSettings`, `bookmarks`, `fontSettings`, `system.display`, `browsingData`, `history`, `tts`, `userScripts`, `omnibox`, `offscreen` and others), and 55 functions in namespaces that exist, among them `downloads.*`, `notifications.create`, `management.getAll` and `tabs.discard`. Each needs a real host feature, not a stand-in. Vane invents no namespace: extensions test `chrome.offscreen` or `chrome.userScripts` to choose what to call.
+
+**Safari app extensions are left alone.** A signed Safari fixture (`SafariAppExtensionTests`) declaring `notifications`, `tabGroups` and `nativeMessaging` sees no stand-in namespace, no added `Symbol.dispose` and native messaging off, in its worker and its page, after this change.
+
+**Regression sweep of earlier store packages.** Each in a new data directory, unmodified, on the final build:
+
+| Extension | Result |
+| --- | --- |
+| Claude 1.0.109 | Installs and starts. Its worker now logs its own failed attempt to reach the Claude desktop app (“Specified native messaging host not found.”), as Chrome without Claude Desktop does. |
+| Copyleaks 5.1.0 | No context errors; content script injected on example.com. |
+| Revision History 1.14.1 | Popup shows its Log in / Sign up page; only the known partly unsupported `externally_connectable` note. |
+| GPTZero 2026.11.6 | Popup “Log in to start scanning”; only the known `cookies.onChanged` error. |
+| uBlock 25.5.1 | No context errors; `/88/tag.min.js` not requested on `/ad-check` (120-second settle). |
+| AdBlock 6.55.0 | Popup works; `/88/tag.min.js` not requested (120-second settle); only the known “No remote configuration” message. |
+
+Automated coverage: `ExtensionSidePanelTests.testWorkerAndPageHaveDisposeSymbolsAndWorkerSocketsCarryBinaryFrames` (symbols in worker and page, TypeScript's downlevel `using`, Chrome's enums and constants read at a worker's top level, no invented `offscreen` or `userScripts`, text, `ArrayBuffer` and `Blob` echoes through a loopback WebSocket server); `ExtensionNativeMessagingErrorTests.testNativeMessagingFailsLikeChromeByDefault` and the updated mode tests; `SafariAppExtensionTests.testSafariAppExtensionGetsNoChromiumStandInsOrChromeNativeMessagingDefault`. Logs and the probe's results are kept locally under `~/.cache/vane-bw-check-2026-11-26/`.
+
 ## Tab groups as Today folders (`chrome.tabGroups`) — 2026-11-23
 
 Vane now provides `chrome.tabGroups` and `tabs.group`/`tabs.ungroup`, mapped onto folders in Today. The rules are in [Tab groups](INTEGRATIONS.md#compatibility-and-validation). The user approved that extensions, notably Claude, may create and delete sidebar folders this way, limited to folders an extension made.
@@ -238,8 +294,8 @@ Without `fixtures/bitwarden-account.json` the harness keeps its earlier signed-o
 
 ### What does not work, and what was not tested
 
-- **Error-only mode is required.** On WebKit Bitwarden runs its Safari code, which asks a desktop app to `sleep` between vault-timeout checks. Vane hides the native-messaging functions by default, so the call throws, Bitwarden retries at once, and its background page never yields: the popup did not reply and the earlier harness ran into its 240-second deadline. With **Review Error-Only Mode…** accepted in the extension manager, those requests receive paced errors and the popup works. The mode stays off after installation until it is turned on in Manage Extensions → Compatibility.
-- **The Chrome (MV3) package still fails.** `bit-dist-chrome-2026.11.0.zip` (SHA-256 `07cf19b8f79e649005fdeee67c85d3cf31c735449a01a37a5b9f0287732605a5`) installs, shows its popup in error-only mode, and completes the server sign-in. The popup then stops answering. A sample of the extension's web process shows its main thread parked in `WebCore::WorkerThreadableWebSocketChannel`'s constructor, called from the service worker's `new WebSocket` on the worker's main-thread run loop, in every sample of that capture. Bitwarden opens a notifications socket after sign-in. The capture comes from one run; the popup also stopped answering after sign-in or restart in two other processes. No synthetic extension was used to confirm it, so this is an observation about this package on this WebKit, not an established general rule.
+- **Error-only mode is required.** (Since 2026-11-26 it is on by default for web extensions; see [the store Bitwarden section](#chrome-web-store-bitwarden-and-chromes-api-shape--2026-11-26).) On WebKit Bitwarden runs its Safari code, which asks a desktop app to `sleep` between vault-timeout checks. Vane hides the native-messaging functions by default, so the call throws, Bitwarden retries at once, and its background page never yields: the popup did not reply and the earlier harness ran into its 240-second deadline. With **Review Error-Only Mode…** accepted in the extension manager, those requests receive paced errors and the popup works. The mode stays off after installation until it is turned on in Manage Extensions → Compatibility.
+- **The Chrome (MV3) package still fails.** (Fixed since: it signs in, unlocks and fills; see [the store Bitwarden section](#chrome-web-store-bitwarden-and-chromes-api-shape--2026-11-26). The cause was the missing `Symbol.dispose`, not the socket.) `bit-dist-chrome-2026.11.0.zip` (SHA-256 `07cf19b8f79e649005fdeee67c85d3cf31c735449a01a37a5b9f0287732605a5`) installs, shows its popup in error-only mode, and completes the server sign-in. The popup then stops answering. A sample of the extension's web process shows its main thread parked in `WebCore::WorkerThreadableWebSocketChannel`'s constructor, called from the service worker's `new WebSocket` on the worker's main-thread run loop, in every sample of that capture. Bitwarden opens a notifications socket after sign-in. The capture comes from one run; the popup also stopped answering after sign-in or restart in two other processes. No synthetic extension was used to confirm it, so this is an observation about this package on this WebKit, not an established general rule.
 - **A tab that was open before the install can miss the extension's messages.** In several exploratory runs in the same session as the install, Bitwarden's `tabs.sendMessage` got no answer from its form reader in the tab that predated the install, and **Fill** reported “Unable to autofill the selected item on this page”. In two instrumented runs reloading that tab did not help while a new tab answered at once; two later runs did not reproduce it. It was not seen in three runs after a restart. A synthetic extension installed without a later reload answered in the old tab. The cause is not established, so the verified path opens the form in a new tab.
 - **The fill shortcut is taken.** Bitwarden's ⇧⌘L “autofill login” command collides with Vane's Show Library shortcut, which takes precedence. Filling from the popup is the verified path.
 - **Desktop integration is unavailable**: biometric unlock and anything else that needs the Bitwarden desktop app, because Vane has no native-messaging hosts.
