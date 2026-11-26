@@ -37,6 +37,17 @@ import WebKit
           if (typeof Symbol[key] !== 'symbol') Object.defineProperty(Symbol, key, {value: Symbol('Symbol.' + key)});
         """
 
+    /// Set ahead of the Chromium scripts in a Safari app extension's worker and pages, whose
+    /// code expects Safari's APIs. Those scripts then add nothing; the WebKit repairs in
+    /// `script` (worker sockets, credentialed requests) still apply.
+    nonisolated static let safariFlag = "globalThis[Symbol.for('vane.safari.extension')] = true;"
+
+    /// Pages share one user content controller, so the flag goes by the page's extension host.
+    nonisolated static func safariPageFlag(hosts: Set<String>) -> String {
+        let list = (try? JSONSerialization.data(withJSONObject: hosts.sorted())).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
+        return "if (\(list).includes(location.host)) " + safariFlag
+    }
+
     /// What a content script sees of the above: `chrome.runtime`'s constants, which
     /// Chrome exposes there too and scripts read at their top level. Run ahead of the
     /// extension's own content scripts by `ExtensionWorkerIdentity.prepare`.
@@ -61,7 +72,11 @@ import WebKit
 
     nonisolated static let script = #"""
         ;(() => {
-          \#(disposeSymbols)
+          // A Safari app extension gets Safari's APIs: only the WebKit repairs below apply.
+          const safari = globalThis[Symbol.for('vane.safari.extension')] === true;
+          if (!safari) {
+            \#(disposeSymbols)
+          }
           const event = () => Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false});
           const namespace = () => new Proxy({}, {get(target, key) {
             if (typeof key !== 'string') return undefined;
@@ -113,7 +128,7 @@ import WebKit
               const manifest = api.runtime.getManifest();
               if (manifest.manifest_version !== 3) continue;
               const declared = new Set(manifest.permissions ?? []);
-              for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace());
+              if (!safari) for (const name of \#(namespaces)) if (declared.has(name)) define(api, name, namespace());
               // WebKit weakly caches nested API wrappers. Keep the real ones alive so
               // the members added below survive garbage collection.
               const owners = ['runtime', 'storage', 'tabs', 'declarativeNetRequest', 'webRequest', 'scripting', 'webNavigation', 'alarms', 'action']
@@ -132,7 +147,7 @@ import WebKit
               // extension origin, so WebKit blanks the frame and the panel waits on it for
               // ever. Tell the panel what the frame would have: its framed chat is unavailable.
               // Claude then shows its own built-in chat.
-              if (globalThis.document && !globalThis.document.vaneClaudeFrame) {
+              if (!safari && globalThis.document && !globalThis.document.vaneClaudeFrame) {
                 globalThis.document.vaneClaudeFrame = true;
                 const origin = 'https://claude.ai';
                 const watch = frame => {
@@ -215,7 +230,7 @@ import WebKit
                       fire('open');
                       for (;;) {
                         const next = await ask('ws.next', {id});
-                        if (!('data' in next)) return closed(next.code, next.reason, next.clean);
+                        if (!('data' in next) && !('binary' in next)) return closed(next.code, next.reason, next.clean);
                         if (this.readyState !== 1) continue;
                         if ('binary' in next) {
                           const bytes = fromBase64(next.binary);
@@ -250,6 +265,8 @@ import WebKit
                 for (const [key, value] of Object.entries(states)) { Object.defineProperty(WebSocket, key, {value}); Object.defineProperty(WebSocket.prototype, key, {value}); }
                 Object.defineProperty(globalThis, 'WebSocket', {configurable: true, writable: true, value: WebSocket});
               }
+              // Everything below is Chrome's API.
+              if (safari) continue;
               // Outside a tab WebKit answers getCurrent with null; Chrome with undefined, which
               // extensions test for (`getCurrent() === undefined` means a side panel or popup).
               if (typeof api.tabs?.getCurrent === 'function') {
@@ -349,6 +366,25 @@ import WebKit
               define(rules, 'getAvailableStaticRuleCount', callback => reply(callback, 30000));
               define(rules, 'HeaderOperation', Object.freeze({APPEND: 'append', SET: 'set', REMOVE: 'remove'}));
               define(rules, 'ResourceType', Object.freeze({MAIN_FRAME: 'main_frame', SUB_FRAME: 'sub_frame', STYLESHEET: 'stylesheet', SCRIPT: 'script', IMAGE: 'image', FONT: 'font', OBJECT: 'object', XMLHTTPREQUEST: 'xmlhttprequest', PING: 'ping', CSP_REPORT: 'csp_report', MEDIA: 'media', WEBSOCKET: 'websocket', WEBTRANSPORT: 'webtransport', WEBBUNDLE: 'webbundle', OTHER: 'other'}));
+              // The rest of Chrome's shape, last so the answers above win: enums, constants and
+              // events (which never fire) of each namespace the extension already has, WebKit's
+              // or a stand-in. Code that reads them at its top level no longer stops there.
+              // No namespace is invented: `chrome.offscreen` or `chrome.userScripts` existing is
+              // how extensions choose what to call, and an empty one would mislead them.
+              for (const [path, {enums = {}, constants: values = {}, events = []}] of Object.entries(\#(shape))) {
+                const owner = path.split('.').reduce((parent, key) => parent?.[key], api);
+                // A frozen stand-in (identity, tabGroups) is complete as it is.
+                if (owner === undefined || owner === null || typeof owner !== 'object' && typeof owner !== 'function' || !Object.isExtensible(owner)) continue;
+                owners.push(owner);
+                for (const [key, value] of Object.entries(enums)) constants(owner, key, value);
+                for (const [key, value] of Object.entries(values)) {
+                  const current = owner[key];
+                  // A stand-in answers any capitalised key with an empty enum; a constant replaces it.
+                  if (current === undefined || typeof current === 'object' && current !== null && !Object.keys(current).length)
+                    Object.defineProperty(owner, key, {configurable: true, value});
+                }
+                for (const key of events) define(owner, key, event());
+              }
             } catch (error) { console.error(error); }
           }
         })();
@@ -556,3 +592,4 @@ import WebKit
         workers[owner] = nil
     }
 }
+

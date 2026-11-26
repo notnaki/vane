@@ -556,7 +556,9 @@ import WebKit
                 try await wait("store page loads") { !tab.web.isLoading && tab.web.url?.path == "/page" }
                 if let web = await popup(context, tab: tab, label: label + " popup",
                                          expected: "[...document.querySelectorAll('button,input,a,h1,h2,p,img,svg')].some(e => e.getClientRects().length > 0)") {
-                    let text = (try? await evaluate("return document.body.innerText.replace(/\\s+/g, ' ').slice(0, 300);", in: web)) ?? ""
+                    // VANE_EXTENSIONCHECK_TEXT=<characters> reports more, e.g. an API probe's results.
+                    let limit = ProcessInfo.processInfo.environment["VANE_EXTENSIONCHECK_TEXT"].flatMap(Int.init).map { max(1, $0) } ?? 300
+                    let text = (try? await evaluate("return document.body.innerText.replace(/\\s+/g, ' ').slice(0, limit);", in: web, arguments: ["limit": limit])) ?? ""
                     record(label + " popup text", .verified, text)
                 }
                 for window in NSApp.windows where window !== store.window && window.isVisible && window.styleMask.contains(.titled)

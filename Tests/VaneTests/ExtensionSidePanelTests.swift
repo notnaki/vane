@@ -496,10 +496,14 @@ import XCTest
         // "Symbol.dispose is not defined." on JavaScriptCore; its notifications are binary.
         let server = try LoopbackWebSocketEcho()
         defer { server.stop() }
-        try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["storage"],"background":{"service_worker":"worker.js"},"action":{}}"#.utf8)
+        try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["storage","webRequest","tabs","contextMenus"],"background":{"service_worker":"worker.js"},"action":{}}"#.utf8)
             .write(to: folder.appendingPathComponent("manifest.json"))
         try Data("""
             const symbols = [typeof Symbol.dispose, typeof Symbol.asyncDispose].join(',');
+            // Chrome's shape, read at the top level as extensions do; no namespace is invented.
+            const shape = [chrome.webRequest.OnBeforeSendHeadersOptions.EXTRA_HEADERS, chrome.tabs.TAB_ID_NONE, chrome.windows.WINDOW_ID_CURRENT,
+                           chrome.contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT, chrome.contextMenus.ContextType.ACTION,
+                           typeof chrome.runtime.onSuspend.addListener, typeof chrome.offscreen, typeof chrome.userScripts].join(',');
             const echo = (send, binaryType) => new Promise((resolve, reject) => {
                 const socket = new WebSocket('ws://127.0.0.1:\(server.port)/');
                 if (binaryType) socket.binaryType = binaryType;
@@ -516,7 +520,7 @@ import XCTest
                 };
             });
             chrome.runtime.onMessage.addListener((message, sender, respond) => {
-                (async () => respond([symbols, await echo('hello'), await echo(new Uint8Array([0, 1, 254, 255]), 'arraybuffer'),
+                (async () => respond([symbols, shape, await echo('hello'), await echo(new Uint8Array([0, 1, 254, 255]), 'arraybuffer'),
                                       await echo(new Blob([new Uint8Array([7, 8])]))].join('|')))()
                     .catch(error => respond('failed: ' + error.message));
                 return true;
@@ -539,7 +543,7 @@ import XCTest
                 """, in: page)
             XCTAssertEqual(disposed, "symbol,symbol,true")
             let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)
-            XCTAssertEqual(answer, "symbol,symbol|text:hello|buffer:0,1,254,255|blob:7,8")
+            XCTAssertEqual(answer, "symbol,symbol|extraHeaders,-1,-2,6,action,function,undefined,undefined|text:hello|buffer:0,1,254,255|blob:7,8")
         }
     }
 
