@@ -1175,7 +1175,13 @@ struct ExtensionMenu: View {
             Button("Options") {
                 leave()
                 let host = host, context = context
-                Task { @MainActor in try? await host.webExtensionController(host.controller, openOptionsPageFor: context) }
+                Trace.note("options chosen")
+                ExtensionMenu.afterMenu {
+                    Task { @MainActor in
+                        do { try await host.webExtensionController(host.controller, openOptionsPageFor: context) }
+                        catch { NSLog("[vane] extension options did not open: %@", error.localizedDescription) }
+                    }
+                }
             }
         }
         let pinned = host.isPinned(context)
@@ -1189,15 +1195,23 @@ struct ExtensionMenu: View {
             Button("Remove from Vane…") {
                 leave()
                 let host = host, context = context, name = name
-                Task { @MainActor in ExtensionMenu.confirmRemoval(name: name) { host.remove(context) } }
+                ExtensionMenu.afterMenu { ExtensionMenu.confirmRemoval(name: name) { host.remove(context) } }
             }
         }
         Divider()
         Button("Manage Extension…") {
             leave()
             let host = host, path = host.path(of: context), store = tab.flatMap(VanePages.store(of:))
-            Task { @MainActor in ExtensionManagement.openPage(for: host, selecting: path, from: store) }
+            ExtensionMenu.afterMenu { ExtensionManagement.openPage(for: host, selecting: path, from: store) }
         }
+    }
+
+    /// What an item opens waits for the menu to be gone. A `Task` is not enough: Dispatch's
+    /// main queue also runs inside AppKit's menu tracking loop, where building a window and
+    /// its web view held the menu on screen, highlighted, until that work was done. Default
+    /// mode resumes only once tracking has ended.
+    static func afterMenu(_ work: @escaping @MainActor () -> Void) {
+        RunLoop.main.perform(inModes: [.default]) { MainActor.assumeIsolated { work() } }
     }
 
     private var name: String { context.webExtension.displayName ?? "Extension" }

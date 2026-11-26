@@ -87,7 +87,9 @@ import WebKit
 }
 
 struct ExtensionManagementView: View {
-    @ObservedObject var host: ExtensionHost
+    /// Not observed: the host publishes for every badge, pin and popup, and what this view
+    /// draws of it is the two snapshots `refreshCatalog` takes.
+    let host: ExtensionHost
     /// The Extensions section of a vane://settings tab rather than this file's window. The
     /// tab draws the page around it, with the section's heading and profile menu.
     var inTab = false
@@ -103,6 +105,7 @@ struct ExtensionManagementView: View {
     // after host mutations, rather than repeating that work on search/focus redraws.
     @State private var catalog: [ExtensionHost.Entry] = []
     @State private var catalogRefresh: Task<Void, Never>?
+    @State private var hostBusy = false
     @State private var presentation = Feel06PresentationCache<PresentationKey, Presentation>()
     private struct PresentationKey: Equatable {
         let items: [ExtensionManagerModel.Item]
@@ -123,7 +126,7 @@ struct ExtensionManagementView: View {
             ?? (host.profileID == Profile.incognito.id ? "Private" : "Profile")
     }
     private var isPrivate: Bool { host.profileID == Profile.incognito.id }
-    private var busy: Bool { importBusy || host.isBusy }
+    private var busy: Bool { importBusy || hostBusy }
     private var items: [ExtensionManagerModel.Item] {
         catalog.map { entry in
             .init(id: entry.path, name: entry.name, version: entry.version, summary: entry.summary,
@@ -307,6 +310,7 @@ struct ExtensionManagementView: View {
                           alignment: .leading, spacing: 12) {
                     ForEach(entries) { entry in
                         ExtensionCard(host: host, entry: entry) { Motion.list { selected = entry.path } }
+                            .equatable()
                     }
                 }
                 .accessibilityElement(children: .contain)
@@ -486,7 +490,11 @@ struct ExtensionManagementView: View {
             // and read after the mutation without doing work from a hover callback.
             await Task.yield()
             guard !Task.isCancelled, inTab || ExtensionManagement.isVisible(for: host.profileID) else { return }
-            catalog = host.entries
+            // Most host changes are not about this list (a badge, a pin, a popup). Keeping
+            // the value it has spares the page a pass over every card.
+            let entries = host.entries
+            if entries != catalog { catalog = entries }
+            if host.isBusy != hostBusy { hostBusy = host.isBusy }
             catalogRefresh = nil
         }
     }
@@ -569,10 +577,13 @@ private struct ExtensionListRow: View {
 
 /// One extension on vane://settings/extensions, as Chromium draws it: icon, name and description,
 /// Details and Remove, and its switch.
-private struct ExtensionCard: View {
-    @ObservedObject var host: ExtensionHost
+/// Drawn from its entry alone: it only sends the host commands, so it neither observes the
+/// host nor redraws for a page pass that left its entry as it was.
+private struct ExtensionCard: View, Equatable {
+    let host: ExtensionHost
     let entry: ExtensionHost.Entry
     let details: () -> Void
+    nonisolated static func == (a: ExtensionCard, b: ExtensionCard) -> Bool { a.host === b.host && a.entry == b.entry }
     @State private var error: String?
     @State private var confirmingRemoval = false
 

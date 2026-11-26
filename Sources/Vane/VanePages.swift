@@ -273,6 +273,72 @@ enum VanePage: Equatable, Sendable {
 
 // MARK: - The page
 
+/// A settings page in its own hosting view, as a web page is its own NSView. Drawn inline it
+/// shared the window's one SwiftUI graph: every publish and layout of the window measured the
+/// whole page, and every update of the page laid the window out again.
+///
+/// The root is set once and again only when what it is built from changes, so a window
+/// update costs the page nothing. That is also why the page gets its window context here
+/// rather than from the environment it is mounted in: the objects, and the Space's theme
+/// the way a floating panel takes it. Appearance and the system's settings reach a hosting
+/// view by themselves.
+struct VanePageHost: NSViewRepresentable {
+    let session: VanePageSession
+    let store: TabStore
+    let tab: Tab.ID
+    /// In a split, where the pane's own click-to-focus is on the window's side of this view.
+    var pane = false
+
+    fileprivate struct Key: Equatable {
+        let session: ObjectIdentifier, store: ObjectIdentifier, tab: Tab.ID, pane: Bool
+    }
+    final class Coordinator { fileprivate var shown: Key? }
+
+    private var key: Key {
+        Key(session: ObjectIdentifier(session), store: ObjectIdentifier(store), tab: tab, pane: pane)
+    }
+
+    private var root: AnyView {
+        let store = store, tab = tab
+        let page = VanePageView(session: session, store: store)
+        let focusing = pane
+            ? AnyView(page.simultaneousGesture(TapGesture().onEnded { store.focusPane(tab) }))
+            : AnyView(page)
+        return AnyView(focusing
+            .spaceChrome(store)
+            .environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NativeContentBoundaryAnchor {
+        context.coordinator.shown = key
+        let host = NativeContentBoundaryHostingView(rootView: root)
+        // The page card is already clear of the title bar. A hosting view of its own would
+        // inset its content for it a second time.
+        host.safeAreaRegions = []
+        return NativeContentBoundaryAnchor(host: host)
+    }
+
+    func updateNSView(_ view: NativeContentBoundaryAnchor, context: Context) {
+        guard context.coordinator.shown != key else { return }
+        context.coordinator.shown = key
+        view.updateRoot { _ in root }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeContentBoundaryAnchor,
+                      context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: max(0, width), height: max(0, height))
+    }
+
+    static func dismantleNSView(_ view: NativeContentBoundaryAnchor, coordinator: Coordinator) {
+        view.dismantle()
+    }
+}
+
 /// vane://settings in a tab: arc://settings' layout — the app's mark and the page title
 /// across the top; a left nav whose selected row is Chromium's pill; the section in rounded
 /// cards beside it — built from the Settings window's own panes and, for Extensions, the
