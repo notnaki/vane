@@ -21,6 +21,8 @@ import WebKit
     // nothing of another context's session until it sends a command or adds a listener.
     nonisolated static let script = #"""
         ;(() => {
+          // Chrome's API: Safari app extensions get Safari's (`ExtensionChromiumGaps.safariFlag`).
+          if (globalThis[Symbol.for('vane.safari.extension')] === true) return;
           const listeners = {event: new Set(), detach: new Set()};
           let port = null, polling = false, cursor;
           const event = set => Object.freeze({

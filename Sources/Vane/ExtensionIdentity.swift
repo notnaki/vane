@@ -18,6 +18,8 @@ import WebKit
     // result but no `runtime.lastError`, which only WebKit can set; promises reject.
     nonisolated static let script = #"""
         ;(() => {
+          // Chrome's API: Safari app extensions get Safari's (`ExtensionChromiumGaps.safariFlag`).
+          if (globalThis[Symbol.for('vane.safari.extension')] === true) return;
           for (const api of new Set([globalThis.chrome, globalThis.browser])) {
             try {
               if (!api?.tabs?.create || !api.runtime?.getManifest || api.identity !== undefined) continue;

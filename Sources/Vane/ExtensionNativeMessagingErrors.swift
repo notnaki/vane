@@ -1,9 +1,11 @@
 import Foundation
 
 /// Chrome's answer when no desktop app is installed: the API exists and every request fails.
-/// On by default for extensions that declare `nativeMessaging`, as in Chrome; no desktop app
-/// is ever contacted. `nil` (never changed) and `currentVersion` mean on, `disabledVersion` off.
-/// Bitwarden on WebKit retries a missing API at once and never yields, so off can hang it.
+/// On by default for web extensions (Chrome or folder packages) that declare `nativeMessaging`,
+/// as in Chrome; no desktop app is ever contacted. For them `nil` (never changed) and
+/// `currentVersion` mean on, `disabledVersion` off. Bitwarden on WebKit retries a missing API
+/// at once and never yields, so off can hang it. A Safari app extension talks to its own app
+/// over these APIs in Safari: for it the mode stays an explicit opt-in (`currentVersion` only).
 enum ExtensionNativeMessagingErrors {
     static let currentVersion = 1
     static let disabledVersion = 0
@@ -14,15 +16,21 @@ enum ExtensionNativeMessagingErrors {
                 userInfo: [NSLocalizedDescriptionKey: "Specified native messaging host not found."])
     }
 
-    static func isApproved(version: Int?, required: ExtensionAccess, optional: ExtensionAccess) -> Bool {
-        (version == nil || version == currentVersion) &&
+    static func isApproved(version: Int?, required: ExtensionAccess, optional: ExtensionAccess, safari: Bool = false) -> Bool {
+        (version == currentVersion || version == nil && !safari) &&
             (required.permissions.contains("nativeMessaging") || optional.permissions.contains("nativeMessaging"))
     }
 
     static func retainedVersion(from old: ExtensionCodeStore.Record?,
-                                for required: ExtensionAccess, optional: ExtensionAccess) -> Int? {
-        // Only an explicit choice to turn it off carries over; anything else is the default.
-        old?.nativeMessagingErrorCompatibilityVersion == disabledVersion ? disabledVersion : nil
+                                for required: ExtensionAccess, optional: ExtensionAccess, safari: Bool = false) -> Int? {
+        guard safari else {
+            // Only an explicit choice to turn it off carries over; anything else is the default.
+            return old?.nativeMessagingErrorCompatibilityVersion == disabledVersion ? disabledVersion : nil
+        }
+        guard let old,
+              isApproved(version: old.nativeMessagingErrorCompatibilityVersion, required: old.required, optional: old.optional, safari: true),
+              isApproved(version: currentVersion, required: required, optional: optional, safari: true) else { return nil }
+        return currentVersion
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import WebKit
 import XCTest
 @testable import vane
@@ -490,6 +491,58 @@ import XCTest
         }
     }
 
+    func testWorkerAndPageHaveDisposeSymbolsAndWorkerSocketsCarryBinaryFrames() async throws {
+        // Bitwarden's Chrome build compiles `using` with TypeScript's helper, which throws
+        // "Symbol.dispose is not defined." on JavaScriptCore; its notifications are binary.
+        let server = try LoopbackWebSocketEcho()
+        defer { server.stop() }
+        try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["storage"],"background":{"service_worker":"worker.js"},"action":{}}"#.utf8)
+            .write(to: folder.appendingPathComponent("manifest.json"))
+        try Data("""
+            const symbols = [typeof Symbol.dispose, typeof Symbol.asyncDispose].join(',');
+            const echo = (send, binaryType) => new Promise((resolve, reject) => {
+                const socket = new WebSocket('ws://127.0.0.1:\(server.port)/');
+                if (binaryType) socket.binaryType = binaryType;
+                socket.onopen = () => socket.send(send);
+                const seen = [];
+                for (const type of ['open', 'message', 'error', 'close']) socket.addEventListener(type, event => seen.push(type + (event.code ? ':' + event.code + ':' + event.wasClean : '')));
+                socket.onerror = () => setTimeout(() => reject(new Error('socket error: ' + seen.join(','))));
+                socket.onmessage = async event => {
+                    socket.close();
+                    const data = event.data;
+                    resolve(typeof data === 'string' ? 'text:' + data
+                        : data instanceof ArrayBuffer ? 'buffer:' + [...new Uint8Array(data)].join(',')
+                        : data instanceof Blob ? 'blob:' + [...new Uint8Array(await data.arrayBuffer())].join(',') : 'other');
+                };
+            });
+            chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                (async () => respond([symbols, await echo('hello'), await echo(new Uint8Array([0, 1, 254, 255]), 'arraybuffer'),
+                                      await echo(new Blob([new Uint8Array([7, 8])]))].join('|')))()
+                    .catch(error => respond('failed: ' + error.message));
+                return true;
+            });
+            """.utf8).write(to: folder.appendingPathComponent("worker.js"))
+        try await withNativeWindowLoop {
+            let host = ExtensionHost.host(for: profile)
+            _ = try await host.load(folder, installing: true) { _ in true }
+            let context = try XCTUnwrap(host.installed.first)
+            XCTAssertTrue(context.errors.isEmpty, ExtensionDiagnostics.describe(context.errors))
+            let page = try await page(context)
+            defer { page.stopLoading() }
+            // TypeScript's downlevel `using`, as Bitwarden's popup ships it.
+            let disposed = try await run("""
+                if (!Symbol.dispose) throw new TypeError('Symbol.dispose is not defined.');
+                let closed = false;
+                const resource = {[Symbol.dispose]() { closed = true; }};
+                resource[Symbol.dispose]();
+                return [typeof Symbol.dispose, typeof Symbol.asyncDispose, closed].join(',');
+                """, in: page)
+            XCTAssertEqual(disposed, "symbol,symbol,true")
+            let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)
+            XCTAssertEqual(answer, "symbol,symbol|text:hello|buffer:0,1,254,255|blob:7,8")
+        }
+    }
+
     func testWorkerGetsPromisedAlarmsAndContextsFromTheHost() async throws {
         // Claude's worker chains `alarms.create(…).catch` and asks getContexts which panels
         // are open. `offscreen` stays absent: a hidden extension page gets the worker's
@@ -526,3 +579,40 @@ import XCTest
         }
     }
 }
+
+/// Echoes each WebSocket message back as it came: text as text, binary as binary.
+private final class LoopbackWebSocketEcho: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "loopback-websocket-echo")
+    let port: UInt16
+
+    init() throws {
+        let parameters = NWParameters.tcp
+        // Vane's bridge treats the first pong as the open event.
+        let options = NWProtocolWebSocket.Options()
+        options.autoReplyPing = true
+        parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        listener = try NWListener(using: parameters)
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+        listener.newConnectionHandler = { [queue] connection in
+            connection.start(queue: queue)
+            func receive() {
+                connection.receiveMessage { data, context, _, error in
+                    guard error == nil, let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata else { return }
+                    guard let data, [.text, .binary].contains(metadata.opcode) else { return receive() }
+                    let reply = NWProtocolWebSocket.Metadata(opcode: metadata.opcode)
+                    connection.send(content: data, contentContext: .init(identifier: "echo", metadata: [reply]), isComplete: true, completion: .contentProcessed { _ in receive() })
+                }
+            }
+            receive()
+        }
+        listener.start(queue: queue)
+        guard ready.wait(timeout: .now() + 5) == .success, let port = listener.port?.rawValue else { throw ExtensionHost.Failure("WebSocket echo did not start.") }
+        self.port = port
+    }
+
+    func stop() { listener.cancel() }
+}
+

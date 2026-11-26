@@ -67,7 +67,7 @@ extension ExtensionNativeMessagingErrorTests {
                 XCTFail("Revocation cannot require access-expanding approval"); return false
             }
             XCTAssertTrue(revoked)
-            XCTAssertNil(try fixture.record().nativeMessagingErrorCompatibilityVersion)
+            XCTAssertEqual(try fixture.record().nativeMessagingErrorCompatibilityVersion, ExtensionNativeMessagingErrors.disabledVersion)
             try await fixture.restart()
             let restored = try XCTUnwrap(fixture.host.installed.first)
             XCTAssertFalse(restored.hasPermission(Self.nativePermission))
@@ -119,7 +119,7 @@ extension ExtensionNativeMessagingErrorTests {
             }
             XCTAssertTrue(revoked)
             XCTAssertTrue(fixture.host.installed.isEmpty)
-            XCTAssertNil(try fixture.record().nativeMessagingErrorCompatibilityVersion)
+            XCTAssertEqual(try fixture.record().nativeMessagingErrorCompatibilityVersion, ExtensionNativeMessagingErrors.disabledVersion)
         }
     }
 
@@ -170,7 +170,8 @@ extension ExtensionNativeMessagingErrorTests {
                 } catch { XCTAssertTrue(error is CancellationError) }
                 XCTAssertFalse(original.isLoaded)
                 XCTAssertFalse(fixture.host.installed.contains { $0.hasPermission(Self.nativePermission) })
-                XCTAssertNil(try fixture.store.records()[fixture.folder.path]?.nativeMessagingErrorCompatibilityVersion)
+                XCTAssertNotEqual(try fixture.store.records()[fixture.folder.path]?.nativeMessagingErrorCompatibilityVersion,
+                                  ExtensionNativeMessagingErrors.currentVersion)
             }
         }
     }
@@ -248,22 +249,34 @@ extension ExtensionNativeMessagingErrorTests {
     }
     #endif
 
-    func testUpdateRetainsApprovalOnlyWhileNativeRemainsDeclared() async throws {
+    func testUpdateKeepsTheOffChoiceAndOtherwiseFollowsChromesDefault() async throws {
         try await withNativeModeFixture { fixture in
-            let accepted = try await fixture.host.setNativeMessagingErrorCompatibility(true, for: fixture.folder.path) { _ in true }
-            XCTAssertTrue(accepted)
             try fixture.write(version: "2", required: ["storage", "nativeMessaging"], optional: ["cookies"])
             let updated = try await fixture.host.refresh(fixture.folder.path) { _ in true }
             XCTAssertTrue(updated)
-            XCTAssertEqual(try fixture.record().nativeMessagingErrorCompatibilityVersion, 1)
-            XCTAssertTrue(try XCTUnwrap(fixture.host.installed.first).hasPermission(Self.nativePermission))
-            try fixture.write(version: "3", required: ["storage"], optional: ["cookies"])
-            _ = try await fixture.host.refresh(fixture.folder.path) { _ in true }
-            XCTAssertNil(try fixture.record().nativeMessagingErrorCompatibilityVersion)
-            try fixture.write(version: "4", required: ["storage", "nativeMessaging"], optional: ["cookies"])
-            _ = try await fixture.host.refresh(fixture.folder.path) { _ in true }
-            XCTAssertNil(try fixture.record().nativeMessagingErrorCompatibilityVersion)
+            XCTAssertEqual(try fixture.record().nativeMessagingErrorCompatibilityVersion, ExtensionNativeMessagingErrors.disabledVersion)
             XCTAssertFalse(try XCTUnwrap(fixture.host.installed.first).hasPermission(Self.nativePermission))
+            let accepted = try await fixture.host.setNativeMessagingErrorCompatibility(true, for: fixture.folder.path) { _ in true }
+            XCTAssertTrue(accepted)
+            try fixture.write(version: "3", required: ["storage", "nativeMessaging"], optional: ["cookies"])
+            _ = try await fixture.host.refresh(fixture.folder.path) { _ in true }
+            XCTAssertNil(try fixture.record().nativeMessagingErrorCompatibilityVersion)
+            XCTAssertTrue(try XCTUnwrap(fixture.host.installed.first).hasPermission(Self.nativePermission))
+            try fixture.write(version: "4", required: ["storage"], optional: ["cookies"])
+            _ = try await fixture.host.refresh(fixture.folder.path) { _ in true }
+            XCTAssertFalse(try XCTUnwrap(fixture.host.installed.first).hasPermission(Self.nativePermission))
+        }
+    }
+
+    func testNativeMessagingFailsLikeChromeByDefault() async throws {
+        try await withNativeModeFixture(startOff: false) { fixture in
+            let context = try XCTUnwrap(fixture.host.installed.first)
+            XCTAssertTrue(context.hasPermission(Self.nativePermission))
+            XCTAssertFalse(context.unsupportedAPIs.contains("browser.runtime.sendNativeMessage"))
+            XCTAssertFalse(context.unsupportedAPIs.contains("browser.runtime.connectNative"))
+            XCTAssertNil(try fixture.record().nativeMessagingErrorCompatibilityVersion, "No choice is stored for the default")
+            XCTAssertTrue(try XCTUnwrap(fixture.host.entries.first).nativeMessagingErrorCompatibilityEnabled)
+            XCTAssertEqual(ExtensionNativeMessagingErrors.unavailable().localizedDescription, "Specified native messaging host not found.")
         }
     }
 
@@ -275,8 +288,7 @@ extension ExtensionNativeMessagingErrorTests {
             let installed = try await other.load(fixture.folder, installing: true) { _ in true }
             XCTAssertTrue(installed)
             let context = try XCTUnwrap(other.installed.first)
-            XCTAssertFalse(context.hasPermission(Self.nativePermission))
-            XCTAssertTrue(context.unsupportedAPIs.contains("browser.runtime.sendNativeMessage"))
+            XCTAssertTrue(context.hasPermission(Self.nativePermission), "Another profile starts from Chrome's default")
             let otherStore = ExtensionCodeStore(profileID: other.profileID)
             XCTAssertNil(try otherStore.records()[fixture.folder.path]?.nativeMessagingErrorCompatibilityVersion)
             XCTAssertNotEqual(context.baseURL, fixture.host.installed.first?.baseURL)
@@ -644,7 +656,7 @@ extension ExtensionNativeMessagingErrorTests {
 
     private static let nativePermission = WKWebExtension.Permission(rawValue: "nativeMessaging")
 
-    private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], hasBackground: Bool = false, retryPage: Bool = false, lifecycleTrace: NativeModePageTrace? = nil,
+    private func withNativeModeFixture(required: [String] = ["storage", "nativeMessaging"], optional: [String] = ["cookies"], startOff: Bool = true, hasBackground: Bool = false, retryPage: Bool = false, lifecycleTrace: NativeModePageTrace? = nil,
         launchReadiness: @escaping @MainActor @Sendable () -> Bool = { true },
         _ body: @MainActor (NativeModeFixture) async throws -> Void) async throws {
         TestEnvironment.prepare()
@@ -680,6 +692,10 @@ extension ExtensionNativeMessagingErrorTests {
             try fixture.write(version: "1", required: required, optional: optional)
             let accepted = try await fixture.host.load(fixture.folder, installing: true) { _ in true }
             XCTAssertTrue(accepted)
+            // On by default, as in Chrome. These tests start from an explicit choice to turn it off.
+            if startOff && required.contains("nativeMessaging") || startOff && optional.contains("nativeMessaging") {
+                _ = try await fixture.host.setNativeMessagingErrorCompatibility(false, for: fixture.folder.path) { _ in false }
+            }
             try await body(fixture)
         } catch { failure = error }
         // Body defers close the exact presentation before restoring its injected
@@ -783,7 +799,7 @@ extension ExtensionNativeMessagingErrorTests {
         try { await send(); replies++; }
         catch (error) {
           errors++;
-          if (String(error.message).includes('Native messaging hosts are unavailable in Vane.')) unavailableErrors++;
+          if (String(error.message).includes('Specified native messaging host not found.')) unavailableErrors++;
         }
       }
       const ticksAtCompletion = ticks;

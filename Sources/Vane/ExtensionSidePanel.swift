@@ -16,6 +16,8 @@ import WebKit
     // needs another context's options, `runtime.getContexts` or `onOpened`/`onClosed`.
     nonisolated static let script = #"""
         ;(() => {
+          // Chrome's API: Safari app extensions get Safari's (`ExtensionChromiumGaps.safariFlag`).
+          if (globalThis[Symbol.for('vane.safari.extension')] === true) return;
           for (const api of new Set([globalThis.chrome, globalThis.browser])) {
             try {
               if (!api?.tabs?.create || !api.runtime?.getManifest || api.sidePanel !== undefined) continue;
