@@ -94,3 +94,14 @@ for n in inv:
                  "events": [e for e in events if e in names]}
 json.dump(shape, open(os.path.join(A, "shape.json"), "w"), indent=1, sort_keys=True)
 print(len(shape), "namespaces;", sum(len(v["enums"]) for v in shape.values()), "enums;", sum(len(v["constants"]) for v in shape.values()), "constants;", sum(len(v["events"]) for v in shape.values()), "events")
+
+# The form ExtensionChromiumShape.swift embeds: scalar constants only (others are setting
+# descriptors), no devtools or mimeHandler (their pages are not Vane's), empty parts dropped.
+compact = {}
+for ns, v in sorted(shape.items()):
+    if ns.startswith("devtools") or ns == "mimeHandler": continue
+    part = {"enums": v["enums"], "constants": {k: c for k, c in v["constants"].items() if isinstance(c, (int, float, str, bool))},
+            "events": v["events"]}
+    part = {k: x for k, x in part.items() if x}
+    if part: compact[ns] = part
+open(os.path.join(A, "shape-compact.json"), "w").write(json.dumps(compact, separators=(",", ":"), sort_keys=True))
