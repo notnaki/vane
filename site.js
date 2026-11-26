@@ -133,7 +133,7 @@
     const spy = () => {
       queued = false;
       const end = innerHeight + scrollY >= document.documentElement.scrollHeight - 2; // bottom reached: the lowest section
-      let i = 0, best = -Infinity; // the list isn't in page order, so compare positions
+      let i = 0, best = -Infinity; // compare positions so a reordered list stays correct
       targets.forEach((t, k) => { const top = t ? t.getBoundingClientRect().top : -Infinity; if ((end || top < innerHeight / 3) && top > best) { best = top; i = k; } });
       const link = links[i];
       if (link === current) return;
