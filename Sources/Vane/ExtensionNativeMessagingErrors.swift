@@ -1,26 +1,28 @@
 import Foundation
 
-/// Explicit consent for real API error callbacks, with no native transport.
+/// Chrome's answer when no desktop app is installed: the API exists and every request fails.
+/// On by default for extensions that declare `nativeMessaging`, as in Chrome; no desktop app
+/// is ever contacted. `nil` (never changed) and `currentVersion` mean on, `disabledVersion` off.
+/// Bitwarden on WebKit retries a missing API at once and never yields, so off can hang it.
 enum ExtensionNativeMessagingErrors {
     static let currentVersion = 1
+    static let disabledVersion = 0
     static let apiNames: Set<String> = ["browser.runtime.sendNativeMessage", "browser.runtime.connectNative"]
 
     static func unavailable() -> NSError {
         NSError(domain: "VaneNativeMessagingUnavailable", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Native messaging hosts are unavailable in Vane."])
+                userInfo: [NSLocalizedDescriptionKey: "Specified native messaging host not found."])
     }
 
     static func isApproved(version: Int?, required: ExtensionAccess, optional: ExtensionAccess) -> Bool {
-        version == currentVersion &&
+        (version == nil || version == currentVersion) &&
             (required.permissions.contains("nativeMessaging") || optional.permissions.contains("nativeMessaging"))
     }
 
     static func retainedVersion(from old: ExtensionCodeStore.Record?,
                                 for required: ExtensionAccess, optional: ExtensionAccess) -> Int? {
-        guard let old,
-              isApproved(version: old.nativeMessagingErrorCompatibilityVersion, required: old.required, optional: old.optional),
-              isApproved(version: currentVersion, required: required, optional: optional) else { return nil }
-        return currentVersion
+        // Only an explicit choice to turn it off carries over; anything else is the default.
+        old?.nativeMessagingErrorCompatibilityVersion == disabledVersion ? disabledVersion : nil
     }
 }
 

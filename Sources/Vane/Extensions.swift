@@ -532,7 +532,7 @@ import WebKit
         try Task.checkCancellation()
         let approved = ExtensionNativeMessagingErrors.isApproved(version: record.nativeMessagingErrorCompatibilityVersion,
             required: record.required, optional: record.optional)
-        if enabled && approved || !enabled && record.nativeMessagingErrorCompatibilityVersion == nil { return true }
+        if enabled == approved { return true }
         let generation = installationGenerations()[path]
         let wasActive = loaded.contains { $0.path == path }
         let shouldActivate = !disabled.contains(path)
@@ -553,7 +553,7 @@ import WebKit
         }
         try checkLifetime()
         var revised = record
-        revised.nativeMessagingErrorCompatibilityVersion = enabled ? ExtensionNativeMessagingErrors.currentVersion : nil
+        revised.nativeMessagingErrorCompatibilityVersion = enabled ? ExtensionNativeMessagingErrors.currentVersion : ExtensionNativeMessagingErrors.disabledVersion
         var replacement: WKWebExtensionContext?
         var replaced = false
         do {
