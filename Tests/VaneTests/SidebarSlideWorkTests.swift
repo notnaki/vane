@@ -115,8 +115,11 @@ private struct SidebarSlideFixture: View {
         print("SIDEBAR_SLIDE_WORK placements=\(placements) samples=\(samples)")
         XCTAssertTrue(samples.contains { $0 > -220 && $0 < -5 }, "The probe must observe actual intermediate sidebar travel")
         XCTAssertEqual(try XCTUnwrap(samples.last), 5, accuracy: 0.5, "The slide must reach the visible endpoint")
-        // Allow endpoint reconciliation, but never work proportional to display ticks.
-        XCTAssertLessThanOrEqual(placements, 2,
+        // Allow endpoint reconciliation and one stray relayout burst, but never work
+        // proportional to display ticks. Healthy runs place 0; CI runners sometimes add
+        // one burst of 4 from window/app settling (runs 45787227551, 45805536641). Per-frame
+        // relayout over this 0.4 s slide places ~24 at 60 Hz, so 6 still catches it.
+        XCTAssertLessThanOrEqual(placements, 6,
             "A fixed-size sidebar must translate without laying out its unchanged content for every animation step")
     }
 }
