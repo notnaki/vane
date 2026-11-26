@@ -43,6 +43,11 @@ import WebKit
                 return result;
               };
               Object.defineProperty(api, 'sidePanel', {configurable: true, value: Object.freeze({
+                Side: Object.freeze({LEFT: 'left', RIGHT: 'right'}),
+                // ponytail: never fire. The panel's host knows when it opens and closes; send
+                // those over the bridge if an extension's behaviour depends on them.
+                onOpened: Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false}),
+                onClosed: Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false}),
                 setOptions(details, callback) {
                   const {tabId, path, enabled} = details ?? {}, own = {...options.get(tabId)}, values = {};
                   if (typeof path === 'string') own.path = values.path = path;

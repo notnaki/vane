@@ -70,6 +70,8 @@ import WebKit
           const tabOf = target => Number.isInteger(target?.tabId) ? target.tabId
             : /^vane-tab-\d+$/.test(target?.targetId ?? '') ? Number(target.targetId.slice(9)) : NaN;
           const api = Object.freeze({
+            DetachReason: Object.freeze({CANCELED_BY_USER: 'canceled_by_user', TARGET_CLOSED: 'target_closed'}),
+            TargetInfoType: Object.freeze({BACKGROUND_PAGE: 'background_page', OTHER: 'other', PAGE: 'page', WORKER: 'worker'}),
             attach(target, version, callback) {
               const tabId = tabOf(target);
               return call('attach', tabId, {tabId: String(tabId)}, callback, result => { cursor ??= result.cursor; poll(); });

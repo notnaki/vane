@@ -61,6 +61,7 @@ import WebKit
               const marker = '[vane-identity] ';
               const event = Object.freeze({addListener() {}, removeListener() {}, hasListener: () => false, hasListeners: () => false});
               Object.defineProperty(api, 'identity', {configurable: true, value: Object.freeze({
+                AccountStatus: Object.freeze({ANY: 'ANY', SYNC: 'SYNC'}),
                 getRedirectURL(path) { return base + String(path ?? '').replace(/^\/?/, ''); },
                 launchWebAuthFlow(details, callback) {
                   const values = {url: String(details?.url ?? ''), interactive: String(details?.interactive === true)};
