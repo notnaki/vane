@@ -30,7 +30,7 @@ struct RootView: View {
                 WebContainer(tab: tab).id(tab.id)
                     .ignoresSafeArea(edges: .top)
                     // Ends above the bar (or the small capsule while reading) so nothing on the page hides behind it.
-                    .padding(.bottom, tab.collapsed ? 12 : Look.barHeight)
+                    .padding(.bottom, tab.collapsed ? 12 : Look.barRoom)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 if let pull = tab.pull {
@@ -38,12 +38,12 @@ struct RootView: View {
                 }
                 // Reader is a mode of the tab: the article takes the page's place, under the same bar.
                 if let article = tab.reading {
-                    ReaderView(article: article).padding(.bottom, Look.barHeight).transition(.opacity)
+                    ReaderView(article: article).padding(.bottom, Look.barRoom).transition(.opacity)
                 }
             } else {
                 Wash(space: space, full: true)
                 TabSwitcher(openArchive: { archive = true })
-                    .padding(.bottom, Look.barHeight)
+                    .padding(.bottom, Look.barRoom)
                     .transition(.opacity.combined(with: .scale(scale: 1.04)))
             }
             if menu, let tab = browser.selected, let space = space ?? library.spaces.first {
@@ -51,7 +51,7 @@ struct RootView: View {
                     .onTapGesture { menu = false }
                     .transition(.opacity)
                 PageMenu(tab: tab, space: space, close: { menu = false }, noArticle: $noArticle)
-                    .padding(.horizontal, 10).padding(.bottom, Look.barHeight + 6)
+                    .padding(.horizontal, 10).padding(.bottom, Look.barRoom + 6)
                     .transition(.scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity))
             }
             BottomBar(space: space, menu: $menu, openSettings: { settings = true }, openMac: { mac = true })
@@ -198,16 +198,16 @@ struct BottomBar: View {
             .frame(width: 52, alignment: .leading)
             Spacer()
             Button { browser.editing = .newTab } label: {
-                Image(systemName: "plus").font(.system(size: 19, weight: .regular))
-                    .frame(width: 84, height: 36).background(BarFill(), in: Capsule()).contentShape(Capsule())
+                Image(systemName: "plus").font(.system(size: 17, weight: .regular))
+                    .frame(width: 72, height: 32).background(BarFill(), in: Capsule()).contentShape(Capsule())
             }
             .accessibilityLabel("New Search")
             Spacer()
             Group {
                 if tab != nil {
-                    Image(systemName: "chevron.up").font(.system(size: 14, weight: .semibold))
+                    Image(systemName: "chevron.up").font(.system(size: 13, weight: .semibold))
                         .rotationEffect(.degrees(menu ? 180 : 0))
-                        .frame(width: 36, height: 36)
+                        .frame(width: 32, height: 32)
                         .background(menu ? AnyShapeStyle(Color(.systemBackground)) : AnyShapeStyle(BarFill()), in: Circle())
                         .contentShape(Circle())
                         .onTapGesture { menu.toggle() }
@@ -227,6 +227,7 @@ struct BottomBar: View {
         .frame(height: Look.barHeight)
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
+        .padding(.bottom, -Look.barSink)
         .overlay(alignment: .top) {
             // Loading: a thin line along the bar's top edge.
             if let tab, tab.progress > 0, tab.progress < 1 {
@@ -243,8 +244,8 @@ struct BottomBar: View {
 
     private func round(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 14, weight: .medium))
-                .frame(width: 36, height: 36).background(BarFill(), in: Circle()).contentShape(Circle())
+            Image(systemName: symbol).font(.system(size: 13, weight: .medium))
+                .frame(width: 32, height: 32).background(BarFill(), in: Circle()).contentShape(Circle())
         }
         .accessibilityLabel(label)
     }
@@ -263,7 +264,7 @@ struct TabStack: View {
             if let previous { card(previous).rotationEffect(.degrees(-12)).offset(x: -6, y: 2) }
             card(tab).rotationEffect(.degrees(6)).offset(x: 5, y: lift)
         }
-        .frame(width: 44, height: 44)
+        .frame(width: 44, height: Look.barHeight)
         .contentShape(Rectangle())
         .onTapGesture { tab.takeSnapshot(); browser.select(nil) }
         .gesture(DragGesture(minimumDistance: 8).onChanged { value in
@@ -285,9 +286,9 @@ struct TabStack: View {
     private func card(_ tab: Tab) -> some View {
         Group {
             if let snapshot = tab.snapshot {
-                Image(uiImage: snapshot).resizable().scaledToFill().frame(width: 22, height: 30, alignment: .top)
+                Image(uiImage: snapshot).resizable().scaledToFill().frame(width: 19, height: 26, alignment: .top)
             } else {
-                SiteIcon(url: tab.url, size: 12).frame(width: 22, height: 30)
+                SiteIcon(url: tab.url, size: 11).frame(width: 19, height: 26)
             }
         }
         .background(Color(.systemBackground))
