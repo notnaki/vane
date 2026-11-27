@@ -895,16 +895,17 @@ enum Look {
     /// that holding does not feel like waiting for something broken.
     static let holdDelay: Double = 0.4
 
-    // The mini audio player: a pill above the sidebar's footer, a shade taller than a row
-    // so the artwork and the transport glyphs sit in it without crowding.
-    static let trayHeight: CGFloat = 40
-    /// Its transport glyphs — a step under a row's, because there are three of them in a
-    /// strip the width of a sidebar.
-    static let trayGlyph = Font.system(size: 12, weight: .semibold)
-    /// A title too long for the tray scrolls: points per second, and how long it rests at
-    /// each end before turning round.
-    static let marqueeSpeed: Double = 22
-    static let marqueePause: Double = 1.2
+    // The mini audio player: Arc's black 210×32 pill above the sidebar's footer, measured
+    // off Arc's own screenshots — five equal columns, 15pt glyphs, no stroke or shadow.
+    static let trayHeight: CGFloat = 32
+    /// The hover row holding the title, picture-in-picture and close; a point taller than
+    /// the transport row in Arc.
+    static let trayTitleHeight: CGFloat = 33
+    static let trayRadius: CGFloat = 7.5
+    static let trayGlyph = Font.system(size: 15)
+    static let trayTitle = Font.system(size: 14)
+    /// A hovered button's square: Arc's is 24pt, white at 8% on the black pill.
+    static let trayHover = Color.white.opacity(0.08)
     /// Smaller than this on screen and a video is a thumbnail, a hero loop or an ad, not
     /// what the user was watching: auto picture-in-picture leaves those alone rather than
     /// filling the corner of the screen with junk on every tab switch. Arc's rule by eye.
@@ -1125,12 +1126,9 @@ extension Look {
         out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == (streamlined ? 40 : 50)))
         // The mini audio player. It sits above the footer inside the sidebar's own padding,
         // so its height is what decides whether the list is ever covered by it.
-        out.append(("the media tray is taller than a row but shorter than a tile",
-                    trayHeight > rowHeight && trayHeight < tileHeight))
+        out.append(("the media tray is shorter than a tile", trayHeight < tileHeight))
         out.append(("the tray and the footer both fit above the window's bottom edge",
                     trayHeight + footer + footerInset * 2 + inset < 120))
-        out.append(("a title scrolls at a readable pace and rests at each end",
-                    marqueeSpeed > 10 && marqueeSpeed < 60 && marqueePause >= 1))
         out.append(("a thumbnail video is below the auto picture-in-picture floor",
                     minAutoPiP.width >= 200 && minAutoPiP.height >= 120))
         out.append(("the bar's icon column is centred at 30",

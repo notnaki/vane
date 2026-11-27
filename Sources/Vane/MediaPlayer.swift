@@ -4,7 +4,7 @@ import SwiftUI
 import WebKit
 
 /// Arc's Mini Audio Player: leave a tab that is playing and a small player docks into the
-/// bottom of the sidebar, just above the footer — artwork, a title that scrolls if it does
+/// bottom of the sidebar, just above the footer — artwork, a title that truncates if it does
 /// not fit, transport buttons, and a title you can click to go back to what is playing.
 /// Return to the tab and it goes away again, because the page's own player is right there.
 ///
@@ -688,7 +688,6 @@ struct OffscreenPages: View {
 /// The player itself. Sits in the sidebar's bottom overlay under the toast, and draws
 /// nothing at all unless there is a tab to draw.
 struct MediaTrayView: View {
-    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @ObservedObject private var media = MediaState.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -753,56 +752,68 @@ struct MediaTrayView: View {
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
         let expanded = hovered || focused
         return VStack(spacing: 0) {
-            HStack(spacing: Look.rowSpacing) {
+            HStack(spacing: 0) {
                 Button {
                     open(tab)
                 } label: {
-                    Marquee(text: title).foregroundStyle(Look.barText)
+                    Text(title)
+                        .font(Look.trayTitle)
+                        .foregroundStyle(Look.barText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open \(title)")
                 if info.video {
-                    glyph("pip", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
+                    glyph("rectangle.on.rectangle", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
+                        .frame(width: Look.control)
                 }
                 glyph("xmark", "Close player and pause") { media.dismiss(tab) }
+                    .frame(width: Look.control)
             }
+            // Arc: title 15pt in, the close glyph centred over the speaker's column.
+            .padding(.leading, 15)
+            .padding(.trailing, 9)
             // Keep the title's layout stable as its available space grows. Clipping the
             // shrinking row prevents its text from sliding through the transport glyphs.
-            .frame(height: Look.trayHeight)
+            .frame(height: Look.trayTitleHeight)
             .opacity(expanded ? 1 : 0)
             .animation(reduceMotion ? nil : .easeOut(duration: UIAnimation.surfaces.duration(expanded ? 0.18 : 0.10)), value: expanded)
-            .frame(height: expanded ? Look.trayHeight : 0, alignment: .top)
+            .frame(height: expanded ? Look.trayTitleHeight : 0, alignment: .top)
             .clipped()
             .allowsHitTesting(expanded)
             .disabled(!expanded)
             .accessibilityHidden(!expanded)
+            // Five equal columns across the pill, as Arc lays them out.
             HStack(spacing: 0) {
                 Button {
                     open(tab)
                 } label: {
                     SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
                         .frame(width: Look.control, height: Look.control)
+                        .modifier(TrayHover())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open \(title)")
-                Spacer(minLength: 0)
-                glyph("backward.fill", "Previous", enabled: info.prev) { media.send(.prev, to: tab) }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity)
+                glyph("backward.end.fill", "Previous", enabled: info.prev) { media.send(.prev, to: tab) }
+                    .frame(maxWidth: .infinity)
                 glyph(info.playing ? "pause.fill" : "play.fill", info.playing ? "Pause" : "Play") {
                     media.send(.playpause, to: tab)
                 }
-                Spacer(minLength: 0)
-                glyph("forward.fill", "Next", enabled: info.next) { media.send(.next, to: tab) }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity)
+                glyph("forward.end.fill", "Next", enabled: info.next) { media.send(.next, to: tab) }
+                    .frame(maxWidth: .infinity)
                 glyph(TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill",
                       TabAudio.isMuted(tab) ? "Unmute" : "Mute") { TabAudio.toggleMute(tab) }
+                    .frame(maxWidth: .infinity)
             }
             .frame(height: Look.trayHeight)
         }
-        .padding(.horizontal, Look.rowInset)
-        .background(chromeTheme.barFill, in: RoundedRectangle(cornerRadius: Look.pillRadius))
-        .hairline(radius: Look.pillRadius, Look.barStroke)
-        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
+        // Arc's pill is plain black in every Space and appearance: no stroke, no shadow.
+        .background(.black, in: RoundedRectangle(cornerRadius: Look.trayRadius))
         .onHover { hovered = $0 }
         .animation(reduceMotion ? nil : Look.list, value: expanded)
         .transition(.opacity)
@@ -825,61 +836,27 @@ struct MediaTrayView: View {
             Image(systemName: name)
                 .font(Look.trayGlyph)
                 .foregroundStyle(Look.barGlyph)
+                .opacity(enabled ? 1 : 0.33)
                 .frame(width: Look.control, height: Look.control)
                 .contentShape(.rect)
+                .modifier(TrayHover(enabled: enabled))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .help(label)
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.35)
     }
 }
 
-/// A title too long for the tray scrolls back and forth rather than truncating — Arc's
-/// mini player does, and a track name is exactly the string whose *end* matters.
-///
-/// ponytail: an offset on one `Text`, not two copies chasing each other round a loop, and
-/// SwiftUI's own phase animator rather than a `repeatForever` started by hand — a hand-rolled
-/// one is re-started on every layout pass that changes the width, and the overlapping
-/// animations stack until the title is dragged clean out of the pill. It reverses instead of
-/// wrapping, which is what a 250pt strip can read anyway. Ceiling: a seamless loop, which
-/// needs the string measured and duplicated.
-private struct Marquee: View {
-    let text: String
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ObservedObject private var batterySaver = BatterySaver.shared
-    @State private var textWidth: CGFloat = 0
-    @State private var boxWidth: CGFloat = 0
+/// Arc's hovered button: a 24pt rounded square of white at 8% behind the glyph.
+private struct TrayHover: ViewModifier {
+    var enabled = true
+    @State private var hovering = false
 
-    private var overflow: CGFloat { max(0, textWidth - boxWidth) }
-
-    var body: some View {
-        // The text goes in an *overlay* on a `Color.clear`, not in the layout: a title long
-        // enough to be worth scrolling would otherwise report its full width to the HStack
-        // and push the transport buttons off the end of the sidebar.
-        Color.clear
-            .frame(maxWidth: .infinity)
-            .overlay(alignment: .leading) { label }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
-            .clipped()
-    }
-
-    @ViewBuilder private var label: some View {
-        let title = Text(text)
-            .font(Look.rowText)
-            .lineLimit(1)
-            .fixedSize()
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { textWidth = $0 }
-        if overflow > 0, !reduceMotion, !batterySaver.isActive {
-            title.phaseAnimator([false, true], trigger: text) { view, away in
-                view.offset(x: away ? -overflow : 0)
-            } animation: { _ in
-                .linear(duration: Double(overflow) / Look.marqueeSpeed).delay(Look.marqueePause)
-            }
-        } else {
-            title
-        }
+    func body(content: Content) -> some View {
+        content
+            .background(hovering && enabled ? Look.trayHover : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .onHover { hovering = $0 }
     }
 }
 
