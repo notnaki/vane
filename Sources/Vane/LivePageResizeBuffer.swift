@@ -659,7 +659,16 @@ struct LivePageResizeAnchor {
     }
 
     private func sizes(_ request: Request) -> [NSSize] {
-        let desired = nominalSizes(request)
+        var desired = nominalSizes(request)
+        if frameDriver != nil, published?.frame == request.frame {
+            // A split pane's installed clip can round half a point off its nominal share.
+            // Fill that clip, or the seam shows a sub-point strip for the whole drag.
+            desired = zip(pages, desired).map { page, size in
+                let visible = page.currentVisibleSize
+                return NSSize(width: abs(visible.width - size.width) < 1 ? visible.width : size.width,
+                              height: abs(visible.height - size.height) < 1 ? visible.height : size.height)
+            }
+        }
         let visible = pages.map(\.currentVisibleSize)
         guard desired != visible, published?.frame == request.frame,
               published?.sidebar == request.sidebar, navigationParentSizesMatch(desired),
@@ -689,6 +698,11 @@ struct LivePageResizeAnchor {
         guard stagesExactNavigation, let leading = request.sidebar,
               let installed = navigation?.layoutLeading?() else { return false }
         return abs(installed - leading) < 0.001
+    }
+
+    private static func between(_ size: NSSize, _ a: NSSize, _ b: NSSize) -> Bool {
+        size.width >= min(a.width, b.width) && size.width <= max(a.width, b.width)
+            && size.height >= min(a.height, b.height) && size.height <= max(a.height, b.height)
     }
 
     private func covered(_ sizes: [NSSize]) -> Bool {
@@ -930,8 +944,11 @@ struct LivePageResizeAnchor {
             trace("buffer.paint.acknowledged", token: token, page: page)
 #endif
             if covered(sizes(latest)) { publish() }
-            else if frameDriver != nil, !ending, let preparedRequest, covered(sizes(preparedRequest)) {
+            else if frameDriver != nil, let preparedRequest,
+                    covered(sizes(preparedRequest)),
+                    Self.between(preparedRequest.frame.size, (published?.frame ?? baselineFrame).size, latest.frame.size) {
                 // The pointer moved on during the paint: show the painted size, then chase it.
+                // Never past the latest input: a reversal waits for its own paint.
                 publish(preparedRequest)
             }
             else if stagesExactNavigation, !ending, let preparedRequest,

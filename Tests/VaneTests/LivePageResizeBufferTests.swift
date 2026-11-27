@@ -406,20 +406,20 @@ import XCTest
         XCTAssertEqual(f.commits.count, 1, "An idle frame must not dirty the unchanged window")
     }
 
-    func testWindowDragShrinkKeepsThePaintedChildUntilItsSmallerPaint() {
+    func testWindowDragShrinkKeepsThePaintedChildUntilItsSmallerPaint() throws {
         var frame: (@MainActor () -> Void)?
         let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
         f.buffer.start(); nextPaint(&f.paints)()
-        let child = f.web.subviews.first
-        let childWidth = child?.frame.width
+        let child = try XCTUnwrap(f.web.subviews.first, "WebKit's native child must exist to prove the hold")
+        let childWidth = child.frame.width
         f.request(560)
         frame?()
         XCTAssertEqual(f.window.frame.width, 600, "Shrink waits for the smaller paint instead of clipping")
         XCTAssertEqual(f.web.frame.width, 560)
-        XCTAssertEqual(child?.frame.width, childWidth, "The painted child keeps its size meanwhile")
+        XCTAssertEqual(child.frame.width, childWidth, "The painted child keeps its size meanwhile")
         nextPaint(&f.paints)()
         XCTAssertEqual(f.window.frame.width, 560)
-        if let childWidth { XCTAssertEqual(child?.frame.width, childWidth - 40) }
+        XCTAssertEqual(child.frame.width, childWidth - 40)
         XCTAssertTrue(f.web.autoresizesSubviews)
         f.buffer.finish()
         for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
