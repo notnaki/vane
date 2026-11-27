@@ -35,8 +35,16 @@
        whatever the device's transport. Measured on macOS 27 with a probe signed with these
        entitlements: without it IOHIDDeviceOpen fails with kIOReturnNotPermitted; with it
        the open works. device.bluetooth alone does not unlock it. Listing devices and
-       reading report descriptors only reads the IOKit registry and needs no entitlement. -->
+       reading report descriptors only reads the IOKit registry and needs no entitlement.
+       WebUSB (WebUSB.swift) needs the same one: macOS 27's application.sb allows
+       IOUSBDeviceUserClientV2 and IOUSBInterfaceUserClientV3, the IOUSBLib user clients
+       USBDevice.swift opens, only under it. -->
   <key>com.apple.security.device.usb</key><true/>
+  <!-- Web Bluetooth (WebBluetooth.swift): CoreBluetooth. application.sb's (bluetooth) rule,
+       which reaches bluetoothd and the LE ATT service, is granted only under this. macOS
+       also asks the user once (NSBluetoothAlwaysUsageDescription), the first time a site
+       asks to pick a device; nothing touches CoreBluetooth before that. -->
+  <key>com.apple.security.device.bluetooth</key><true/>
 
   <!-- ⌘P on a page. -->
   <key>com.apple.security.print</key><true/>

@@ -236,10 +236,10 @@ import WebKit
             symbol: symbol)
     }
 
-    /// The serial port and HID device choosers and file access questions are these bubbles too, and nothing may stack on them.
+    /// The device choosers (DeviceAccess) and file access questions are these bubbles too, and nothing may stack on them.
     static func activePrompt(in window: NSWindow) -> SitePermissionPrompt? {
-        pending.values.first { $0.window === window }?.presentation ?? WebSerial.chooser(in: window)
-            ?? WebHID.chooser(in: window) ?? FileSystemAccess.prompt(in: window)
+        pending.values.first { $0.window === window }?.presentation ?? DeviceAccess.chooser(in: window)
+            ?? FileSystemAccess.prompt(in: window)
     }
 
     /// Capture public lifecycle identity synchronously at the delegate boundary. A

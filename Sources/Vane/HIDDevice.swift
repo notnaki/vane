@@ -295,8 +295,9 @@ enum HIDBlocklist {
         var type: HIDReportType?
     }
 
-    /// Security keys and password devices, by vendor and product, and one vendor report.
-    static let entries: [Entry] = ([
+    /// Security keys and password devices, by vendor and product. WebUSB refuses the same
+    /// ones (Chromium's `usb_blocklist.cc` lists these keys too).
+    static let securityKeys: [(vendorID: Int, productID: Int)] = [
         (0x096e, 0x0850), (0x096e, 0x0852), (0x096e, 0x0853), (0x096e, 0x0854), (0x096e, 0x0856), (0x096e, 0x0858),
         (0x096e, 0x085a), (0x096e, 0x085b), (0x096e, 0x0880),                                    // KEY-ID, Feitian, HyperFIDO
         (0x09c3, 0x0023),                                                                        // HID Global BlueTrust
@@ -316,7 +317,10 @@ enum HIDBlocklist {
         (0x2581, 0xf1d0),                                                                        // Happlink
         (0x2abe, 0x1002),                                                                        // Bluink
         (0x2ccf, 0x0880),                                                                        // Feitian USB, HyperFIDO
-    ] as [(Int, Int)]).map { Entry(vendorID: $0.0, productID: $0.1) } + [
+    ]
+
+    /// The security keys, and one vendor report.
+    static let entries: [Entry] = securityKeys.map { Entry(vendorID: $0.vendorID, productID: $0.productID) } + [
         // Jabra's proprietary firmware channel.
         Entry(vendorID: 0x0b0e, usagePage: 0xff00, reportID: 0x05, type: .output),
     ]

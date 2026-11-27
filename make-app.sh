@@ -210,6 +210,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSMicrophoneUsageDescription</key> <string>Websites you visit can ask to use your microphone.</string>
   <key>NSLocationUsageDescription</key> <string>Websites you visit can ask for your location.</string>
   <key>NSLocationWhenInUseUsageDescription</key> <string>Websites you visit can ask for your location.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key> <string>Websites you visit can ask to connect to Bluetooth devices.</string>
 </dict>
 </plist>
 PLIST

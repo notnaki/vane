@@ -448,15 +448,7 @@ import WebKit
 
     /// HTTPS, or HTTP to this Mac itself. Mirrors the page's `isSecureContext`, so not
     /// `DeveloperMode.isLocal`: that one also takes `0.0.0.0`, which is no loopback address and no secure context.
-    nonisolated static func isSecure(_ scope: Scope) -> Bool {
-        if scope.scheme == "https" { return true }
-        let host = scope.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if host == "localhost" { return true }    // as WebKit: not *.localhost
-        // inet_pton, not a resolver: a name is never looked up to decide this.
-        var v4 = in_addr(), v6 = in6_addr()
-        if inet_pton(AF_INET, host, &v4) == 1 { return v4.s_addr & 0xff == 127 }    // network order: first octet
-        return inet_pton(AF_INET6, host, &v6) == 1 && withUnsafeBytes(of: &v6) { $0.dropLast().allSatisfy { $0 == 0 } && $0.last == 1 }
-    }
+    nonisolated static func isSecure(_ scope: Scope) -> Bool { DeviceAccess.isSecure(scope) }
 
     // MARK: - One document's ports
 
@@ -704,60 +696,13 @@ private struct SerialChooser: View {
     let filters: [WebSerial.Filter]
     let respond: (SerialDevice?) -> Void
     @ObservedObject private var devices = SerialDevices.shared
-    @State private var selection: SerialDevice?
 
     var body: some View {
         let candidates = WebSerial.Filter.candidates(devices.devices, filters: filters)
-        let picked = selection.flatMap { candidates.contains($0) ? $0 : nil }
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "cable.connector")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 32, height: 32)
-                    .background(.quaternary, in: .circle)
-                    .accessibilityHidden(true)
-                Text("\(site) wants to connect to a serial port")
-                    .font(.system(size: 14, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            // One height whatever is plugged in, so the bubble does not resize under the pointer.
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(candidates, id: \.path) { device in
-                        Button { selection = device } label: {
-                            Text(device.label).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8).padding(.vertical, 6)
-                                .background(.primary.opacity(picked == device ? 0.21 : 0.04), in: .rect(cornerRadius: 6))
-                                .contentShape(.rect(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(picked == device ? .isSelected : [])
-                    }
-                }
-            }
-            .frame(height: 120)
-            .overlay {
-                if candidates.isEmpty {
-                    Text("No compatible devices found.").font(.system(size: 13)).foregroundStyle(.secondary)
-                }
-            }
-            HStack(spacing: 8) {
-                Button { respond(nil) } label: { Text("Cancel") }
-                    .buttonStyle(PermissionButtonStyle())
-                    .keyboardShortcut(.cancelAction)
-                // No default key: a keystroke meant for the page must not be able to grant.
-                Button { respond(picked) } label: { Text("Connect") }
-                    .buttonStyle(PermissionButtonStyle(emphasized: true))
-                    .disabled(picked == nil)
-                    .opacity(picked == nil ? 0.5 : 1)
-            }
-            .font(.system(size: 14, weight: .semibold))
+        DeviceChooserList(symbol: "cable.connector", title: "\(site) wants to connect to a serial port",
+                          rows: candidates.map { .init(id: $0.path, label: $0.label) },
+                          accessibility: "Serial port request from \(site)") { path in
+            respond(path.flatMap { path in candidates.first { $0.path == path } })
         }
-        .foregroundStyle(.primary.opacity(0.8))
-        .padding(10)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Serial port request from \(site)")
     }
 }

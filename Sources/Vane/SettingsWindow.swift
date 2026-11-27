@@ -1728,6 +1728,7 @@ struct PrivacyPane: View {
     @State private var httpExceptions: [String] = []
     @State private var hidGrants: [(scope: SitePermissions.Scope, grant: WebHID.Grant)] = []
     @State private var serialGrants: [(scope: SitePermissions.Scope, grant: WebSerial.Grant)] = []
+    @State private var deviceGrants: [DeviceAccess.Listed] = []
     @State private var clearing: Profile?
     @State private var managingData: Profile?
 
@@ -1806,6 +1807,18 @@ struct PrivacyPane: View {
                                 .accessibilityLabel("Forget \(entry.grant.name) for \(entry.scope.origin)")
                         }
                     }
+                    ForEach(deviceGrants) { entry in
+                        SettingsRow(entry.origin) {
+                            Text(entry.text)
+                                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                            Button {
+                                entry.forget()
+                                reload()
+                            } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .accessibilityLabel("Forget \(entry.name) for \(entry.origin)")
+                        }
+                    }
                     ForEach(httpExceptions, id: \.self) { host in
                         SettingsRow(host) {
                             Text("Allowed without encryption")
@@ -1820,16 +1833,15 @@ struct PrivacyPane: View {
                     }
                     SettingsRow("Site permissions", icon: "checkmark.shield.fill", tint: .green) {
                         Button("Reset Permissions…") {
-                            if confirm("Forget camera, microphone, location, notification, serial port and HID device permissions for every site in this profile?",
+                            if confirm("Forget camera, microphone, location, notification, serial port, HID, USB and Bluetooth device permissions for every site in this profile?",
                                        "Reset") {
                                 SitePermissions.resetAll(profileID: profile.id)
-                                WebHID.forgetAll(profileID: profile.id)
-                                WebSerial.forgetAll(profileID: profile.id)
+                                DeviceAccess.forgetAll(profileID: profile.id)
                                 SiteChanges.shared.bump()
                                 reload()
                             }
                         }
-                        .disabled(grants.isEmpty && hidGrants.isEmpty && serialGrants.isEmpty)
+                        .disabled(grants.isEmpty && hidGrants.isEmpty && serialGrants.isEmpty && deviceGrants.isEmpty)
                     }
                     SettingsRow("Website Boosts", icon: "paintbrush.fill", tint: .purple) {
                         Button("Reset Boosts…") {
@@ -1894,6 +1906,7 @@ struct PrivacyPane: View {
         httpExceptions = HTTPSOnly.exceptions(profileID: profile.id)
         hidGrants = WebHID.all(profileID: profile.id)
         serialGrants = WebSerial.all(profileID: profile.id)
+        deviceGrants = DeviceAccess.listed(profileID: profile.id)
     }
 }
 
