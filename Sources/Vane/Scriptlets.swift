@@ -67,6 +67,11 @@ enum Scriptlets {
             // limits them to its own lists, and a user-added list is not that.
             guard let canonical = names[name] else { return .unsupported("Unsupported scriptlet") }
             call = [canonical] + args.dropFirst()
+            // An argument the library would ignore can be one that narrows the filter, so
+            // running without it would do more than the list asked. Exceptions match by text.
+            if !exception, !understood(canonical, Array(args.dropFirst())) {
+                return .unsupported("Unsupported scriptlet arguments")
+            }
         } else if !exception {
             return .unsupported("Unsupported scriptlet")
         }
@@ -85,6 +90,48 @@ enum Scriptlets {
             return .unsupported("Generic or negated scriptlet exception")
         }
         return .rule(Rule(include: include, exclude: exclude, call: call, exception: exception))
+    }
+
+    /// `set-constant` values the library knows, besides small integers.
+    nonisolated static let constants: Set<String> = [
+        "undefined", "false", "true", "null", "", "emptyStr", "noopFunc", "trueFunc", "falseFunc",
+        "throwFunc", "emptyObj", "{}", "emptyArr", "[]", "noopPromiseResolve", "noopPromiseReject",
+    ]
+
+    /// Whether the library implements every argument of this call as uBlock means it.
+    private nonisolated static func understood(_ name: String, _ a: [String]) -> Bool {
+        func at(_ i: Int) -> String { i < a.count ? a[i] : "" }
+        /// Trailing `key, value` pairs, each key in `keys`; `values` limits a key's value.
+        func pairs(from i: Int, _ keys: Set<String>, _ values: [String: Set<String>] = [:]) -> Bool {
+            guard a.count >= i else { return true }
+            let rest = Array(a[i...])
+            guard rest.count % 2 == 0 else { return false }
+            return stride(from: 0, to: rest.count, by: 2).allSatisfy {
+                keys.contains(rest[$0]) && values[rest[$0]].map { [v = rest[$0 + 1]] in $0.contains(v) } != false
+            }
+        }
+        let bodies: Set<String> = ["", "emptyObj", "emptyArr", "emptyStr", "true", "false"]
+        // `[-]` and `{-}` are uBlock's array-element and recursive-key path forms.
+        let plainPaths = { (s: String) in !s.contains("[-]") && !s.contains("{-}") }
+        switch name {
+        case "set-constant":
+            let value = at(1)
+            let number = value.wholeMatch(of: /-?\d+/) != nil && abs(Int(value) ?? .max) <= 0x7fff
+            return !at(0).isEmpty && (constants.contains(value) || number)
+                && pairs(from: 2, ["as"], ["as": ["function", "callback", "resolved", "rejected"]])
+        case "abort-on-property-read", "abort-on-property-write": return !at(0).isEmpty && a.count <= 1
+        case "abort-current-script": return !at(0).isEmpty && a.count <= 3
+        case "no-setTimeout-if", "no-setInterval-if": return a.count <= 2 && at(1).wholeMatch(of: /!?\d*/) != nil
+        case "prevent-fetch", "prevent-xhr": return a.count <= 2 && bodies.contains(at(1))
+        case "remove-attr", "remove-class":
+            return a.count <= 3 && at(2).split(separator: " ").allSatisfy { ["stay", "complete", "interactive"].contains($0) }
+        case "addEventListener-defuser": return pairs(from: 2, ["elements"])
+        case "window.open-defuser": return a.count <= 1 || (a.count == 2 && ["0", "1"].contains(at(0)))
+        case "json-prune": return a.count <= 2 && plainPaths(at(0)) && plainPaths(at(1))
+        case "json-prune-fetch-response", "json-prune-xhr-response":
+            return plainPaths(at(0)) && plainPaths(at(1)) && pairs(from: 2, ["propsToMatch"])
+        default: return false
+        }
     }
 
     /// Comma-separated, `\,` escapes a comma, and a value wrapped in matching quotes is
@@ -139,21 +186,34 @@ enum Scriptlets {
         private var apply: [String: [Int]] = [:]
         private var except: [String: [Int]] = [:]
         private(set) var count = 0
+        /// Running estimate of `text`'s UTF-8 size.
+        private var bytes = 0
+        /// Every frame receives the whole table, so it stops growing at about this size.
+        nonisolated static let limit = 1_500_000
 
-        mutating func add(_ rule: Rule) {
-            count += 1
+        /// False, and nothing added, when the rule would take the table past `limit`.
+        @discardableResult
+        mutating func add(_ rule: Rule) -> Bool {
             let call = rule.call ?? []
             let id = index[call] ?? calls.count
+            let keys = rule.exception ? rule.include : (rule.include.isEmpty ? [""] : rule.include) + rule.exclude
+            // A row is `\n<key>\t[[ids],[ids]]`; a call is `\n#<id>\t<json>`. Counted as if new.
+            var cost = keys.reduce(0) { $0 + $1.utf8.count + 16 }
+            if id == calls.count { cost += call.reduce(16) { $0 + $1.utf8.count + 3 } }
+            guard bytes + cost <= Self.limit else { return false }
+            bytes += cost
+            count += 1
             if id == calls.count { calls.append(call); index[call] = id }
             func insert(_ key: String, _ map: inout [String: [Int]]) {
                 if map[key]?.contains(id) != true { map[key, default: []].append(id) }
             }
             if rule.exception {
                 rule.include.forEach { insert($0, &except) }
-                return
+                return true
             }
             (rule.include.isEmpty ? [""] : rule.include).forEach { insert($0, &apply) }
             rule.exclude.forEach { insert($0, &except) }
+            return true
         }
 
         /// `buckets` texts joined by U+0001. Each holds `\n<key>\t<json [apply, except]>` for
@@ -207,8 +267,11 @@ enum Scriptlets {
     private nonisolated static let library = #"""
     let host, top;
     try {
-      host = location.hostname; top = host;
       const a = location.ancestorOrigins;
+      host = location.hostname;
+      // about:blank and srcdoc frames have no host of their own; they run as their parent.
+      if (!host && a && a.length) host = new URL(a[0]).hostname;
+      top = host;
       if (a && a.length) top = new URL(a[a.length - 1]).hostname;
     } catch (e) { return; }
     if (!host || X.includes(top)) return;
@@ -252,7 +315,16 @@ enum Scriptlets {
     const parse = JSON.parse, stringify = JSON.stringify, own = Object.prototype.hasOwnProperty;
     const later = W.setTimeout && W.setTimeout.bind(W);
     const listen = W.EventTarget && EventTarget.prototype.addEventListener;
-    const magic = 'vane' + Math.random().toString(36).slice(2);
+    const magic = Math.random().toString(36).slice(2);
+    // Keep the abort scriptlets' errors out of the console and the page's error handlers.
+    let quiet = false;
+    const abort = () => {
+      if (!quiet && listen) {
+        quiet = true;
+        R.apply(listen, W, ['error', e => { if (String(e.message).includes(magic)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true]);
+      }
+      return new ReferenceError(magic);
+    };
 
     // Patched functions are Proxies; toString answers for the original so a page
     // comparing `fetch.toString()` against native code sees native code.
@@ -353,9 +425,10 @@ enum Scriptlets {
         if (d && !d.configurable) return;
         let value;
         Object.defineProperty(owner, prop, {
-          configurable: true, enumerable: true,
+          configurable: true, enumerable: !!(d && d.enumerable),
           get() { return value; },
-          set(n) { value = n; if (n !== null && (typeof n === 'object' || typeof n === 'function')) step(n, rest); },
+          // A frozen or odd page value must not make the page's own assignment throw.
+          set(n) { value = n; try { if (n !== null && (typeof n === 'object' || typeof n === 'function')) step(n, rest); } catch (e) {} },
         });
       };
       if (!chain) throw new Error('no property');
@@ -387,28 +460,31 @@ enum Scriptlets {
     };
 
     const S = {
-      'set-constant'(chain, raw = '', mode = '') {
+      'set-constant'(chain, raw = '', ...rest) {
         const values = {
-          undefined: undefined, false: false, true: true, null: null, '': '', "''": '', emptyStr: '',
+          undefined: undefined, false: false, true: true, null: null, '': '', emptyStr: '',
           noopFunc: function () {}, trueFunc: () => true, falseFunc: () => false,
-          throwFunc: () => { throw new Error(); }, emptyObj: {}, emptyArr: [],
+          throwFunc: () => { throw new Error(); }, emptyObj: {}, '{}': {}, emptyArr: [], '[]': [],
           noopPromiseResolve: () => Promise.resolve(), noopPromiseReject: () => Promise.reject(),
         };
         let value;
         if (own.call(values, raw)) value = values[raw];
         else if (/^-?\d+$/.test(raw) && Math.abs(Number(raw)) <= 0x7fff) value = Number(raw);
         else return;
-        if (mode === 'asFunction') { const v = value; value = () => v; }
-        else if (mode === 'asCallback') { const v = value; value = () => () => v; }
-        else if (mode === 'asResolved') value = Promise.resolve(value);
-        else if (mode === 'asRejected') { value = Promise.reject(value); value.catch(() => {}); }
+        const as = pairs(rest).as;
+        if (as === 'function') { const v = value; value = () => v; }
+        else if (as === 'callback') { const v = value; value = () => () => v; }
+        else if (as === 'resolved') value = Promise.resolve(value);
+        else if (as === 'rejected') { value = Promise.reject(value); value.catch(() => {}); }
         // A page value of a different type means the filter is stale; stop enforcing it.
         let gaveUp = false, pageValue;
         const stale = v => gaveUp || (v !== undefined && v !== null && value !== undefined && value !== null && typeof v !== typeof value);
         trap(chain, (owner, prop) => {
-          if (!replaceable(owner, prop) || stale(owner[prop])) return;
+          const d = replaceable(owner, prop);
+          if (!d || stale(owner[prop])) return;
+          // Not configurable, so a page cannot quietly define the property back.
           Object.defineProperty(owner, prop, {
-            configurable: true, enumerable: true,
+            configurable: false, enumerable: !!d.enumerable,
             get() { return gaveUp ? pageValue : value; },
             set(v) { if (stale(v)) { gaveUp = true; pageValue = v; } },
           });
@@ -416,18 +492,30 @@ enum Scriptlets {
       },
       'abort-on-property-read'(chain) {
         trap(chain, (owner, prop) => {
-          if (!replaceable(owner, prop)) return;
-          Object.defineProperty(owner, prop, { configurable: true, get() { throw new ReferenceError(magic); }, set() {} });
+          const d = replaceable(owner, prop);
+          if (!d) return;
+          Object.defineProperty(owner, prop, { configurable: true, enumerable: !!d.enumerable, get() { throw abort(); }, set() {} });
         });
       },
       'abort-on-property-write'(chain) {
         trap(chain, (owner, prop) => {
-          if (!replaceable(owner, prop)) return;
-          Object.defineProperty(owner, prop, { configurable: true, get() { return undefined; }, set() { throw new ReferenceError(magic); } });
+          const d = replaceable(owner, prop);
+          if (!d) return;
+          Object.defineProperty(owner, prop, { configurable: true, enumerable: !!d.enumerable, get() { return undefined; }, set() { throw abort(); } });
         });
       },
-      'abort-current-script'(chain, needle = '') {
-        const match = matcher(needle);
+      'abort-current-script'(chain, needle = '', context = '') {
+        const match = matcher(needle), inContext = matcher(context);
+        // The script's own text: inline, or a `data:` URL's payload. An external file's text
+        // is not readable here, so a needle never matches one.
+        const text = s => {
+          const t = s.text;
+          if (t.trim() || !s.src.startsWith('data:')) return t;
+          const comma = s.src.indexOf(',');
+          if (comma < 0) return '';
+          const head = s.src.slice(5, comma), body = s.src.slice(comma + 1);
+          try { return /;base64$/i.test(head) ? atob(body) : decodeURIComponent(body); } catch (e) { return ''; }
+        };
         trap(chain, (owner, prop) => {
           const d = replaceable(owner, prop);
           if (!d) return;
@@ -435,11 +523,10 @@ enum Scriptlets {
           const check = () => {
             const s = document.currentScript;
             if (!(s instanceof HTMLScriptElement)) return;
-            // Inline scripts by default; an external one only when the needle names its URL.
-            if (s.src ? needle && match(s.src) : match(s.text)) throw new ReferenceError(magic);
+            if (inContext(s.src || '') && match(text(s))) throw abort();
           };
           Object.defineProperty(owner, prop, {
-            configurable: true, enumerable: d.enumerable !== false,
+            configurable: true, enumerable: !!d.enumerable,
             get() { check(); return d.get ? R.apply(d.get, this, []) : value; },
             set(v) { check(); if (d.set) R.apply(d.set, this, [v]); else value = v; },
           });
@@ -447,7 +534,7 @@ enum Scriptlets {
       },
       'no-setTimeout-if': timer('setTimeout'),
       'no-setInterval-if': timer('setInterval'),
-      'prevent-fetch'(raw = '', body = '', type = '') {
+      'prevent-fetch'(raw = '', body = '') {
         const want = props(raw);
         if (!want) return;
         wrap(W, 'fetch', (t, self, a) => {
@@ -455,7 +542,6 @@ enum Scriptlets {
           if (!matches(want, d)) return R.apply(t, self, a);
           const response = new Response(bodyText(body), { status: 200, statusText: 'OK' });
           Object.defineProperty(response, 'url', { value: d.url });
-          if (['basic', 'cors', 'opaque'].includes(type)) Object.defineProperty(response, 'type', { value: type });
           return Promise.resolve(response);
         });
       },
@@ -484,10 +570,15 @@ enum Scriptlets {
         (el, t) => { for (const a of t) el.removeAttribute(a); }),
       'remove-class': domEdit(t => t.map(c => '.' + CSS.escape(c)).join(','), () => ['class'],
         (el, t) => el.classList.remove(...t)),
-      'addEventListener-defuser'(type = '', needle = '') {
-        const mt = matcher(type), mn = matcher(needle);
+      'addEventListener-defuser'(type = '', needle = '', ...rest) {
+        const mt = matcher(type), mn = matcher(needle), elements = pairs(rest).elements || '';
+        // `elements`: only listeners on these targets (`window`, `document` or a selector).
+        const on = self => !elements || (elements === 'window' ? self === W : elements === 'document' ? self === document
+          : !!self && typeof self.matches === 'function' && self.matches(elements));
         wrap(EventTarget.prototype, 'addEventListener', (t, self, a) => {
-          if (mt(a[0]) && mn(fnText(a[1]))) return undefined;
+          let hit = false;
+          try { hit = mt(a[0]) && mn(fnText(a[1])) && on(self); } catch (e) {}
+          if (hit) return undefined;
           return R.apply(t, self, a);
         });
       },

@@ -46,6 +46,9 @@ final class ScriptletTests: XCTestCase {
     function open(url) { return 'opened ' + url; }
     class EventTarget { addEventListener(type, fn) { log.push(['listen', type]); } }
     var target = new EventTarget();
+    window.EventTarget = EventTarget;
+    class Element extends EventTarget { constructor(c) { super(); this.c = c; } matches(s) { return s === '.' + this.c; } }
+    function atob(s) { return s === 'YWRibG9jaw==' ? 'adblock' : ''; }
     class Headers { constructor(h) { this.m = {}; } delete(k) {} }
     class Response {
       constructor(body, init) { this.body = body; this.status = init.status; this.statusText = init.statusText; this.headers = new Headers(); }
@@ -60,6 +63,40 @@ final class ScriptletTests: XCTestCase {
     function URL(u) { this.hostname = u.replace(/^[a-z]+:\/\//, '').split(/[\/:]/)[0]; }
     var originalToString = setTimeout.toString(), nativeToString = Function.prototype.toString.toString();
     """#
+
+    func testArgumentsTheLibraryWouldIgnoreAreUnsupported() {
+        let unsupported = [
+            "set, a, bogus", "set, a, 1, asFunction", "set, a, 1, 3", "set, , true", "set", "set, a, 99999",
+            "aopr, a, b", "acs, a, b, c, d", "nostif, a, soon", "nowoif, ad, 10, obj",
+            "no-fetch-if, ads, length:10", "no-fetch-if, ads, , opaque", "no-xhr-if, ads, bogus",
+            "json-prune, a.[-].b", "json-prune, a.{-}.b", "json-prune, a, b, stack",
+            "json-prune-fetch-response, a, , propsToMatch", "aeld, click, x, protect, 1", "rc, a, , later",
+        ]
+        for args in unsupported {
+            XCTAssertEqual(Scriptlets.parse("example.com##+js(\(args))"), .unsupported("Unsupported scriptlet arguments"), args)
+        }
+        let supported = [
+            "set, a, {}", "set, a, [], as, function", "set, a, -3", "set, a, ''", "acs, a, b, /cdn/",
+            "nosiif, x, !1000", "nowoif, 0, ad", "no-fetch-if, ads, emptyArr", "aeld, click, x, elements, .ad",
+            "json-prune-xhr-response, a, , propsToMatch, /api/", "ra, href, a.ad, stay",
+        ]
+        for args in supported {
+            if case .unsupported(let why) = Scriptlets.parse("example.com##+js(\(args))") { XCTFail("\(args): \(why)") }
+        }
+        // An exception names a filter by its text, so its arguments are not checked.
+        XCTAssertEqual(Scriptlets.parse("example.com#@#+js(set, a, bogus)"),
+                       .rule(.init(include: ["example.com"], exclude: [], call: ["set-constant", "a", "bogus"], exception: true)))
+    }
+
+    func testTableStopsGrowingAtItsLimit() {
+        let pad = String(repeating: "x", count: 1000)
+        let filters = (0..<2000).map { "site\($0).test##+js(set, v\($0)\(pad), true)" }.joined(separator: "\n")
+        let result = Blocker.convert(filters)
+        XCTAssertGreaterThan(result.reasonCounts["Scriptlet table full"] ?? 0, 0)
+        XCTAssertEqual((result.reasonCounts["Scriptlet table full"] ?? 0) + result.rules, 2000)
+        XCTAssertLessThanOrEqual(result.scriptlets.utf8.count, Scriptlets.Table.limit)
+        XCTAssertGreaterThan(result.scriptlets.utf8.count, Scriptlets.Table.limit * 9 / 10)
+    }
 
     private func context(_ filters: String, host: String = "example.com", top: String? = nil,
                          siteExceptions: [String] = []) throws -> JSContext {
@@ -113,6 +150,56 @@ final class ScriptletTests: XCTestCase {
         XCTAssertTrue(eval(c, "typeof fn === 'function' && fn() === undefined").toBool())
     }
 
+    func testTrappedPropertiesStayHiddenFromEnumerationAndPageRedefinition() throws {
+        let c = try context("example.com##+js(set, Object.prototype.adsOff, true)\nexample.com##+js(set, cfg.ads, false)\n"
+            + "example.com##+js(set, frozen.x, true)\nexample.com##+js(set, fixed, 1)\nexample.com##+js(aopr, readTrap)")
+        XCTAssertTrue(eval(c, "({}).adsOff === true && Object.keys({}).length === 0 && (() => { for (const k in {}) return false; return true })()").toBool())
+        XCTAssertTrue(eval(c, "!Object.keys(globalThis).some(k => ['cfg', 'frozen', 'fixed', 'readTrap'].includes(k))").toBool())
+        XCTAssertTrue(eval(c, "window.cfg = { ads: true, other: 1 }; cfg.ads === false && Object.keys(cfg).join() === 'ads,other'").toBool())
+        XCTAssertTrue(eval(c, "try { Object.defineProperty(window, 'fixed', { value: 2 }) } catch (e) {} fixed === 1").toBool())
+        // An intermediate link the trap cannot extend must not break the page's assignment.
+        XCTAssertTrue(eval(c, "try { window.frozen = Object.freeze({}); frozen.x === undefined } catch (e) { false }").toBool())
+    }
+
+    func testSetConstantObjectArrayAndAsValues() throws {
+        let c = try context("example.com##+js(set, o, {})\nexample.com##+js(set, arr, [])\nexample.com##+js(set, f, true, as, function)\n"
+            + "example.com##+js(set, cb, 1, as, callback)")
+        XCTAssertTrue(eval(c, "typeof o === 'object' && Object.keys(o).length === 0 && Array.isArray(arr) && arr.length === 0").toBool())
+        XCTAssertTrue(eval(c, "f() === true && cb()() === 1").toBool())
+    }
+
+    func testAbortCurrentScriptMatchesScriptTextAndContext() throws {
+        let c = try context("example.com##+js(acs, any)\nexample.com##+js(acs, byText, adblock)\nexample.com##+js(acs, byContext, , /cdn\\.test/)")
+        _ = eval(c, "window.any = 1; window.byText = 2; window.byContext = 3;")
+        func aborts(_ src: String, _ text: String, _ prop: String) -> Bool {
+            eval(c, """
+                (() => { const s = new HTMLScriptElement(); s.src = '\(src)'; s.text = '\(text)'; document.currentScript = s;
+                try { \(prop); return false } catch (e) { return true } finally { document.currentScript = null } })()
+                """).toBool()
+        }
+        XCTAssertTrue(aborts("https://ads.test/x.js", "", "any"), "an empty needle matches external scripts")
+        XCTAssertTrue(aborts("", "harmless", "any"))
+        XCTAssertFalse(aborts("https://adblock.test/x.js", "", "byText"), "the needle never tests the URL")
+        XCTAssertTrue(aborts("", "detect adblock", "byText"))
+        XCTAssertTrue(aborts("data:text/javascript;base64,YWRibG9jaw==", "", "byText"))
+        XCTAssertTrue(aborts("data:text/javascript,detect%20adblock", "", "byText"))
+        XCTAssertTrue(aborts("https://cdn.test/a.js", "", "byContext"))
+        XCTAssertFalse(aborts("https://other.test/a.js", "", "byContext"))
+        XCTAssertFalse(aborts("", "inline", "byContext"))
+        XCTAssertTrue(eval(c, "any === 1").toBool(), "no current script: no abort")
+    }
+
+    func testAbortErrorsAreUnbrandedAndSwallowed() throws {
+        let c = try context("example.com##+js(aopr, trap)")
+        XCTAssertTrue(eval(c, "try { trap; '' } catch (e) { e.message }").toString().allSatisfy { $0.isLetter || $0.isNumber })
+        XCTAssertFalse(eval(c, "try { trap; '' } catch (e) { e.message }").toString().hasPrefix("vane"))
+        XCTAssertTrue(eval(c, "log.some(e => e[0] === 'listen' && e[1] === 'error')").toBool())
+    }
+
+    func testFramesWithoutAHostUseTheirParent() throws {
+        XCTAssertTrue(eval(try context("example.com##+js(set, hit, true)", host: "", top: "www.example.com"), "window.hit === true").toBool())
+    }
+
     func testAbortScriptletsThrowOnTheirTrigger() throws {
         let c = try context("example.com##+js(aopr, ads.read)\nexample.com##+js(aopw, written)\nexample.com##+js(acs, guarded, adblock)")
         XCTAssertTrue(eval(c, "window.ads = {}; try { ads.read; false } catch (e) { e instanceof ReferenceError }").toBool())
@@ -137,6 +224,8 @@ final class ScriptletTests: XCTestCase {
         XCTAssertFalse(log[2].contains("gone"))
         XCTAssertTrue(log[3].contains("kept"))
         XCTAssertTrue(eval(c, "log = []; target.addEventListener('scroll', function () { track() }); target.addEventListener('scroll', function () {}); log.length === 1").toBool())
+        let e = try context("example.com##+js(aeld, click, , elements, .ad)")
+        XCTAssertTrue(eval(e, "log = []; new Element('ad').addEventListener('click', () => {}); new Element('nav').addEventListener('click', () => {}); target.addEventListener('click', () => {}); log.length === 2").toBool())
         XCTAssertTrue(eval(c, "open('https://x.test/popunder') === null && open('https://x.test/ok') === 'opened https://x.test/ok'").toBool())
         XCTAssertTrue(eval(c, "setTimeout.toString() === originalToString && Function.prototype.toString.toString() === nativeToString").toBool())
         XCTAssertEqual(eval(c, "setTimeout.name").toString(), "setTimeout")

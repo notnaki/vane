@@ -134,11 +134,11 @@ private struct BlockRule: Codable, Equatable {
         let script = on ? scriptletScript(for: profileID) : nil
         if script !== previous?.script {
             // No public API removes one user script. Keep the others and their order, and put
-            // the scriptlets first so they run before every other page-world script.
+            // the scriptlets last so Vane's own page-world scripts start with unpatched globals.
             let others = controller.userScripts.filter { $0 !== previous?.script }
             controller.removeAllUserScripts()
-            if let script { controller.addUserScript(script) }
             others.forEach(controller.addUserScript)
+            if let script { controller.addUserScript(script) }
         }
         controllers.setObject(Attachment(profileID: profileID, list: next, script: script), forKey: controller)
         ExtensionFilterBridge.apply(to: controller, profileID: profileID)
@@ -166,7 +166,7 @@ private struct BlockRule: Codable, Equatable {
                     try await writeSnapshot(snapshot, generation: generation)
                     guard refreshState.finish(.success(fresh.base), generation: generation) else { return }
                     profileLists = fresh.profiles
-                    if scriptletTable != fresh.scriptlets { scriptletTable = fresh.scriptlets; scriptletScripts = [:] }
+                    setScriptletTable(fresh.scriptlets)
                     UserDefaults.vane.set(fresh.base.identifier, forKey: "blockerLastGoodList")
                     let saved = fresh.profiles.filter { !$0.key.hasPrefix(Profile.incognito.id.uuidString + ":") }
                     UserDefaults.vane.set(saved.mapValues { $0.identifier! }, forKey: "blockerLastGoodProfiles")
@@ -188,8 +188,12 @@ private struct BlockRule: Codable, Equatable {
                         for (key, identifier) in UserDefaults.vane.dictionary(forKey: "blockerLastGoodProfiles") as? [String: String] ?? [:] {
                             if let list = try? await store.contentRuleList(forIdentifier: identifier) { recovered[key] = list }
                         }
+                        let snapshot = try? await Task.detached(priority: .utility, operation: {
+                            try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL))
+                        }).value
                         guard refreshState.finish(.success(previous), generation: generation) else { return }
                         profileLists = recovered
+                        setScriptletTable(snapshot?.scriptlets ?? "")
                     }
                     guard refreshState.finish(.failure(error), generation: generation) else { return }
                     let detail = error.localizedDescription
@@ -321,9 +325,15 @@ private struct BlockRule: Codable, Equatable {
     /// Scriptlet table from the last good compile, and one script per site-exception set.
     private static var scriptletTable = ""
     private static var scriptletScripts: [[String]: WKUserScript] = [:]
+    private static func setScriptletTable(_ table: String) {
+        if scriptletTable != table { scriptletTable = table; scriptletScripts = [:] }
+    }
     private static func scriptletScript(for profileID: UUID) -> WKUserScript? {
         let hosts = siteExceptions(for: profileID).sorted()
         if let cached = scriptletScripts[hosts] { return cached }
+        // Drop sets no profile has any more, such as before a site exception was added.
+        let inUse = Set((ProfileManager.shared.profiles.map(\.id) + [Profile.incognito.id]).map { siteExceptions(for: $0).sorted() })
+        scriptletScripts = scriptletScripts.filter { inUse.contains($0.key) }
         guard let source = Scriptlets.source(table: scriptletTable, siteExceptions: hosts) else { return nil }
         // Page world, every frame, document start: before the page's own first script.
         let script = WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)
@@ -619,10 +629,12 @@ private struct BlockRule: Codable, Equatable {
                 if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
                 if conditionalDepth == 0, badfilterTarget(line) != nil { continue }
                 if conditionalDepth == 0, disabled.contains(networkIdentity(line)), !line.contains("#") { continue }
-                let scriptlet = conditionalDepth == 0 ? Scriptlets.parse(line) : nil
+                var scriptlet = conditionalDepth == 0 ? Scriptlets.parse(line) : nil
                 if case .rule(let parsed) = scriptlet {
-                    scriptlets.add(parsed)
-                } else if conditionalDepth == 0, scriptlet == nil, var rule = rule(for: line) {
+                    if scriptlets.add(parsed) { continue }
+                    scriptlet = .unsupported("Scriptlet table full")
+                }
+                if conditionalDepth == 0, scriptlet == nil, var rule = rule(for: line) {
                     if !excludingHosts.isEmpty, !rule.isException {
                         rule.trigger.unlessTopURL = excludingHosts.sorted().map {
                             "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/"
