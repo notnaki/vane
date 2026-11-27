@@ -396,14 +396,20 @@ import WebKit
         web.configuration.userContentController.removeScriptMessageHandler(forName: gestureName, contentWorld: gestureWorld)
     }
 
-    @MainActor private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
+    /// Synchronous form, as Web Serial and WebHID: WebKit calls it on the main thread in the
+    /// order the page sent its messages, and each task is queued in that order.
+    private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         private weak var tab: Tab?
         init(_ tab: Tab) { self.tab = tab }
 
-        func userContentController(_ controller: WKUserContentController,
-                                   didReceive message: WKScriptMessage) async -> (Any?, String?) {
-            do throws(BluetoothError) { return (["value": try await WebBluetooth.handle(message, tab: tab) ?? NSNull()], nil) }
-            catch { return (["error": [error.name, error.message]], nil) }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                                   replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+            MainActor.assumeIsolated {
+                _ = Task { @MainActor [tab] in
+                    do throws(BluetoothError) { replyHandler(["value": try await WebBluetooth.handle(message, tab: tab) ?? NSNull()], nil) }
+                    catch { replyHandler(["error": [error.name, error.message]], nil) }
+                }
+            }
         }
     }
 
