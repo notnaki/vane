@@ -11,7 +11,15 @@ enum Look {
     static let pageGap: CGFloat = 6
     static let pillRadius: CGFloat = 14
     /// The floating bar's height over a page; pages scroll their last line above it.
-    static let barHeight: CGFloat = 48
+    static let barHeight: CGFloat = 42
+    /// Phones with a home indicator have a strip under the bar the buttons can sit down into.
+    @MainActor static var homeStrip: Bool {
+        ((UIApplication.shared.connectedScenes.first as? UIWindowScene)?.keyWindow?.safeAreaInsets.bottom ?? 0) > 0
+    }
+    /// How far the bar's buttons sit down into the home-indicator strip, as in Arc Search.
+    @MainActor static var barSink: CGFloat { homeStrip ? 9 : 0 }
+    /// The room a page leaves at its foot for the bar.
+    @MainActor static var barRoom: CGFloat { barHeight - (homeStrip ? 4 : 0) }
     static let rowRadius: CGFloat = 12
     /// "Streamlined" is the Mac's denser interface style; read at launch, as there.
     static let streamlined = UserDefaults.standard.string(forKey: "interfaceStyle") == "streamlined"
@@ -66,11 +74,25 @@ struct Wash: View {
                 .opacity(full ? Self.opacity(dark: dark, tint: tint) : dark ? 0.16 : 0.12)
             // The Mac's grain: white noise (stronger than the Mac's 0.05, as the phone's wash is lighter), plain blend (overlay vanished on dark grounds).
             if let grain = space?.grain, grain > 0 {
-                Image(uiImage: Grain.tile).resizable(resizingMode: .tile).interpolation(.none).opacity(grain * 0.14)
+                Image(uiImage: Grain.tile).resizable(resizingMode: .tile).interpolation(.none).opacity(grain * (full ? 0.22 : 0.14))
             }
         }
         .ignoresSafeArea()
         .animation(.easeOut(duration: 0.35), value: space)
+    }
+    /// Whether the full wash comes out dark (a near-black theme in light mode, say), so what
+    /// sits on it should switch to light text.
+    static func isDark(_ space: SpaceRow?, dark: Bool) -> Bool {
+        guard !dark else { return true }
+        let tint = space?.tint ?? Look.defaultTint
+        let palette = space?.palette.compactMap { Color(hex: $0) } ?? []
+        let grounds = (palette.isEmpty ? [Look.vane] : palette).map { ground($0, dark: false, tint: tint) }
+        let luma = grounds.map { color -> Double in
+            let c = UIColor(color).cgColor.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)?.components ?? [1, 1, 1]
+            return 0.2126 * Double(c[0]) + 0.7152 * Double(c[1]) + 0.0722 * Double(c[2])
+        }.reduce(0, +) / Double(grounds.count)
+        let opacity = Self.opacity(dark: false, tint: tint)
+        return (1 - opacity) + opacity * luma < 0.5
     }
     static func boost(_ value: Double) -> Double { let t = min(max((value - 0.8) / 0.2, 0), 1); return t * t * (3 - 2 * t) }
     static func opacity(dark: Bool, tint: Double) -> Double { let base = dark ? 0.62 : 0.78; return base + (0.9 - base) * boost(tint) }
@@ -79,6 +101,15 @@ struct Wash: View {
         let v = min(max(tint, 0), 1), shade = dark ? 1 - 0.075 * boost(v) : 1
         func mix(_ x: CGFloat) -> Double { (0.5 + (Double(x) - 0.5) * v) * shade }
         return Color(.sRGB, red: mix(c[0]), green: mix(c[1]), blue: mix(c[2]))
+    }
+}
+
+/// Text and controls on a Space's full wash: light when the wash is dark.
+struct OnWash: ViewModifier {
+    let space: SpaceRow?
+    @Environment(\.colorScheme) private var scheme
+    func body(content: Content) -> some View {
+        content.environment(\.colorScheme, Wash.isDark(space, dark: scheme == .dark) ? .dark : scheme)
     }
 }
 

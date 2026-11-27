@@ -53,6 +53,32 @@ import XCTest
         browser.close(tab)
     }
 
+    /// Idle tabs move to the archive; the tab on screen and ones opened from a pinned tab stay.
+    func testIdleTabsArchive() throws {
+        let browser = Browser()
+        browser.switchSpace(Local.space)
+        let idle = URL(string: "https://example.com/idle-\(UUID())")!
+        let pinned = URL(string: "https://example.com/pinned-\(UUID())")!
+        browser.open(idle)
+        let old = try XCTUnwrap(browser.selected)
+        browser.open(pinned, home: pinned)
+        let kept = try XCTUnwrap(browser.selected)
+        browser.open(URL(string: "https://example.com/current")!)
+        let current = try XCTUnwrap(browser.selected)
+        // Tabs restored from earlier runs count as long idle too.
+        browser.spaceTabs.forEach { $0.active = .distantPast }
+        kept.active = Date(timeIntervalSinceNow: -100_000)
+        XCTAssertEqual(browser.previous?.id, kept.id, "the most recently seen other tab")
+        browser.archiveIdle()
+        XCTAssertFalse(browser.tabs.contains { $0.id == old.id })
+        XCTAssertTrue(browser.tabs.contains { $0.id == kept.id } && browser.tabs.contains { $0.id == current.id })
+        let item = try XCTUnwrap(browser.archived.first { $0.url == idle })
+        browser.unarchive(item)
+        XCTAssertEqual(browser.selected?.url, idle)
+        XCTAssertFalse(browser.archived.contains { $0.id == item.id })
+        [kept, current].forEach(browser.close); browser.selected.map(browser.close)
+    }
+
     /// The strip colour is the row's background, not text mixed into it.
     func testEdgeColourIgnoresText() throws {
         let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 2)).image { context in

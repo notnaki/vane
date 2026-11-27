@@ -1,125 +1,113 @@
 import SwiftUI
 import LocalAuthentication
 
+/// Laid out like Arc Search: the page takes the screen, a short bar at its foot holds the tab
+/// stack, + and the page menu; + (and coming back to Vane) opens search with the keyboard up.
+/// With no page open, the Space's tabs sit side by side on its colours.
 struct RootView: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
+    @Environment(\.scenePhase) private var phase
     @State private var settings = false
     @State private var noArticle = false
-    @State private var bookmarks = false
+    @State private var mac = false
+    @State private var archive = false
     @State private var themeDemo = false
     @State private var switcherDemo = false
+    @State private var menu = false
+    @State private var away: Date?
     @AppStorage("onboarded") private var onboarded = false
 
     private var space: SpaceRow? { library.space(browser.spaceID) }
 
     var body: some View {
-        // The page takes the whole screen; the controls float over its foot in the Space's
-        // colour, down in the home-indicator strip, and shrink away while you read.
         ZStack(alignment: .bottom) {
-            Wash(space: space)
             if let tab = browser.selected {
-                // Under the bar: the colour of the page's own last row, so it reads as one surface.
-                Color(tab.footColor ?? .systemBackground).ignoresSafeArea()
-                    .animation(.easeOut(duration: 0.2), value: tab.footColor)
+                // The Space's colours behind everything; the page sits on them as a card.
+                Wash(space: space, full: true)
+                // The page is a card on the Space's colours, as on the Mac: it ends above the bar with
+                // rounded corners (so its own fixed bars stay in view), and runs to the foot while reading.
                 WebContainer(tab: tab).id(tab.id)
-                    .ignoresSafeArea(edges: .top)
-                    // Ends above the bar (or the small capsule while reading) so nothing on the page hides behind it.
-                    .padding(.bottom, tab.collapsed && browser.editing == nil ? 12 : Look.barHeight + 8)
+                    .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: tab.collapsed ? 0 : Look.pageRadius,
+                                                      bottomTrailingRadius: tab.collapsed ? 0 : Look.pageRadius, style: .continuous))
+                    .padding(.bottom, tab.collapsed ? 0 : Look.barRoom)
+                    .ignoresSafeArea(edges: tab.collapsed ? [.top, .bottom] : .top)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                // Loading: a short rounded pill at the top of the screen, filling as the page loads.
+                if tab.progress > 0, tab.progress < 1 {
+                    LoadPill(progress: tab.progress)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .transition(.opacity)
+                }
                 if let pull = tab.pull {
                     PullActions(pull: pull, color: tab.pageColor).frame(maxHeight: .infinity, alignment: .top)
                 }
                 // Reader is a mode of the tab: the article takes the page's place, under the same bar.
                 if let article = tab.reading {
-                    ReaderView(article: article)
-                        .transition(.opacity)
+                    ReaderView(article: article).padding(.bottom, Look.barRoom).transition(.opacity)
                 }
             } else {
-                // Home: every Space, full screen, swiped between like Arc on iPhone.
-                SpacesHome(openSettings: { settings = true })
-                    .transition(.opacity)
+                ZStack {
+                    Wash(space: space, full: true)
+                    TabSwitcher(openArchive: { archive = true })
+                        .padding(.bottom, Look.barRoom)
+                        .modifier(OnWash(space: space))
+                }
+                .transition(.opacity.combined(with: .scale(scale: 1.04)))
             }
-            if browser.editing != nil {
-                // The page or Space stays in view, dimmed; a tap outside cancels.
+            if menu, let tab = browser.selected, let space = space ?? library.spaces.first {
                 Color.black.opacity(0.25).ignoresSafeArea()
+                    .onTapGesture { menu = false }
+                    .transition(.opacity)
+                PageMenu(tab: tab, space: space, close: { menu = false }, noArticle: $noArticle)
+                    .padding(.horizontal, 10).padding(.bottom, Look.barRoom + 6)
+                    .transition(.scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity))
+            }
+            BottomBar(space: space, menu: $menu, openSettings: { settings = true }, openMac: { mac = true })
+                .modifier(OnWash(space: space))
+            if browser.editing != nil {
+                // The page or Space stays in view above the sheet, dimmed; a tap there cancels.
+                Color.black.opacity(browser.selected == nil ? 0.08 : 0.3).ignoresSafeArea()
                     .onTapGesture { browser.editing = nil }
                     .transition(.opacity)
-                Suggestions(space: space)
-                    .padding(.horizontal, 14).padding(.bottom, Look.barHeight + 12)
-                    .transition(.opacity.combined(with: .offset(y: 16)))
+                SearchSheet(space: space)
+                    .transition(.move(edge: .bottom))
             }
-            BottomBar(space: space, menu: menu)
         }
-        .animation(.smooth(duration: 0.28), value: browser.editing)
+        .animation(.smooth(duration: 0.32), value: browser.editing)
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
+        .animation(.smooth(duration: 0.25), value: menu)
         .animation(.easeInOut(duration: 0.25), value: browser.selected?.reading)
+        .onChange(of: browser.selectedID) { menu = false }
+        .onChange(of: browser.editing) { if browser.editing != nil { menu = false } }
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
         .sheet(isPresented: $settings) { SettingsView().frostsBehind() }
+        .sheet(isPresented: $mac) { MacView().frostsBehind() }
+        .sheet(isPresented: $archive) { ArchiveView().frostsBehind() }
         .sheet(isPresented: $themeDemo) { if let space { ThemeEditor(space: space) } }
         .sheet(isPresented: $switcherDemo) { SpaceSwitcher() }
-        .sheet(isPresented: $bookmarks) { BookmarksView().frostsBehind() }
         .alert("Reader isn't available for this page", isPresented: $noArticle) {}
         .fullScreenCover(isPresented: Binding(get: { !onboarded }, set: { onboarded = !$0 })) { Onboarding { onboarded = true } }
         .preferredColorScheme(space?.appearance == "dark" ? .dark : space?.appearance == "light" ? .light : nil)
         .tint(.primary)
-        .task { demo() }
+        // Arc Search opens on a new search: at launch, and when you come back after a while.
+        .onChange(of: phase) { _, phase in
+            if phase == .background { away = .now }
+            if phase == .active, let away, Date.now.timeIntervalSince(away) > 5 * 60, onboarded { search() }
+        }
+        .task { if onboarded { search() }; demo() }
     }
 
-    /// Short enough to open whole on any iPhone: actions sit in two rows of icons, and the
-    /// ways to keep a page share one submenu.
-    @ViewBuilder private var menu: some View {
-        if let tab = browser.selected, let space {
-            ControlGroup {
-                Button("Back", systemImage: "chevron.backward") { tab.webView.goBack() }.disabled(!tab.canGoBack)
-                Button("Forward", systemImage: "chevron.forward") { tab.webView.goForward() }.disabled(!tab.canGoForward)
-                Button("Reload", systemImage: "arrow.clockwise") { tab.webView.reload() }
-            }
-            ControlGroup {
-                ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
-                Button("Find", systemImage: "text.magnifyingglass") { tab.webView.findInteraction?.presentFindNavigator(showingReplace: false) }
-                // One short label either way; the filled icon says Reader is on.
-                Button("Reader", systemImage: tab.reading == nil ? "doc.plaintext" : "doc.plaintext.fill") {
-                    if tab.reading != nil { tab.reading = nil } else { Task { tab.reading = await tab.article(); noArticle = tab.reading == nil } }
-                }
-            }
-            if !space.isIncognito {
-                // Each way to keep the page, named plainly, filled when the page already is one;
-                // tapping again undoes it.
-                let favourite = library.favourites(profile: space.profileID).first { $0.url == tab.url }
-                let pin = library.pinned(space: space.id).first { $0.url == tab.url }
-                ControlGroup {
-                    Button("Favourite", systemImage: favourite == nil ? "star" : "star.fill") {
-                        if let favourite { library.remove(favourite.id) } else { library.addFavourite(tab.url, profile: space.profileID) }
-                    }
-                    Button("Pin Tab", systemImage: pin == nil ? "pin" : "pin.fill") {
-                        if let pin { library.remove(pin.id) } else { library.addPinned(tab.url, title: tab.title, space: space) }
-                    }
-                }
-            }
-            Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
+    private func search() {
+        // Not over a link that just came in from another app, an open menu, or any sheet or dialog.
+        let presenting = UIApplication.shared.connectedScenes.contains {
+            ($0 as? UIWindowScene)?.keyWindow?.rootViewController?.presentedViewController != nil
         }
-        Section {
-            Button("New Tab", systemImage: "plus") { browser.editing = .newTab }
-            if space?.isIncognito == true {
-                Button("Leave Incognito", systemImage: "eyeglasses") { leaveIncognito() }
-            } else {
-                Button("New Incognito Tab", systemImage: "eyeglasses") { browser.select(nil); browser.switchSpace(SpaceRow.incognito.id); browser.editing = .newTab }
-            }
-        }
-        Section {
-            // The bookmarks library synced from Vane on the Mac; only there when it has some.
-            if let space, !library.bookmarks(profile: space.profileID).isEmpty {
-                Button("Mac Bookmarks", systemImage: "book") { bookmarks = true }
-            }
-            Button("Settings", systemImage: "gearshape") { settings = true }
-        }
-    }
-
-    private func leaveIncognito() {
-        browser.switchSpace(library.spaces.first?.id ?? Local.space)
+        guard browser.editing == nil, !menu, !presenting,
+              Date.now.timeIntervalSince(browser.externalOpen ?? .distantPast) > 3 else { return }
+        browser.editing = .newTab
     }
 
     /// Debug-only launch arguments for screenshots, e.g. `-demoPanel spaces -demoOpen https://…`.
@@ -140,7 +128,7 @@ struct RootView: View {
             browser.select(nil)
         }
         if defaults.bool(forKey: "demoIncognito") { browser.switchSpace(SpaceRow.incognito.id) }
-        if let raw = defaults.string(forKey: "demoOpen"), let url = URL(string: raw) { browser.open(url) }
+        if let raw = defaults.string(forKey: "demoOpen"), let url = URL(string: raw) { browser.editing = nil; browser.open(url) }
         if let dx = defaults.object(forKey: "demoPull") as? String, let value = Double(dx) {
             Task { try? await Task.sleep(for: .seconds(5)); browser.selected?.pull = .init(progress: 1, choice: value < -45 ? .newTab : value > 45 ? .close : .reload, dx: value) }
         }
@@ -148,9 +136,13 @@ struct RootView: View {
             Task { try? await Task.sleep(for: .seconds(5)); withAnimation { browser.selected?.collapsed = true } }
         }
         switch defaults.string(forKey: "demoPanel") {
-        case "spaces": browser.select(nil)
+        case "spaces": browser.editing = nil; browser.select(nil)
+        case "tabs": browser.editing = nil; Task { try? await Task.sleep(for: .seconds(8)); browser.select(nil) }
         case "settings": settings = true
         case "address": browser.editing = .current
+        case "search": browser.editing = .newTab
+        case "menu": browser.editing = nil; Task { try? await Task.sleep(for: .seconds(3)); menu = true }
+        case "archive": browser.editing = nil; archive = true
         case "theme": themeDemo = true
         case "switcher": browser.select(nil); switcherDemo = true
         default: break
@@ -159,327 +151,300 @@ struct RootView: View {
     }
 }
 
-/// The controls under the page, on the Space's ground. Sliding along the bar moves to the
-/// next or previous Space, the way a two-finger swipe does on the Mac sidebar.
-struct BottomBar<Menu: View>: View {
+/// The page's load progress as a short capsule: a faint track and a brighter fill.
+struct LoadPill: View {
+    let progress: Double
+    var body: some View {
+        Capsule().fill(Color(white: 0.5).opacity(0.3))
+            .frame(width: 120, height: 4)
+            .overlay(alignment: .leading) {
+                Capsule().fill(Color(white: 0.55)).frame(width: max(4, 120 * progress))
+            }
+            .padding(.top, 4)
+            .animation(.easeOut(duration: 0.2), value: progress)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A round or capsule control on the bar: a soft white over the Space's colours.
+struct BarFill: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color.Resolved {
+        (environment.colorScheme == .dark ? Color.white.opacity(0.14) : Color.white.opacity(0.5)).resolve(in: environment)
+    }
+}
+
+/// Arc Search's bar: the last two tabs as a little stack on the left, + in the middle, the
+/// page menu's chevron on the right, on the Space's colours. While reading it shrinks to the
+/// site's name. With no page open: your Mac's tabs, + and Settings.
+struct BottomBar: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
     let space: SpaceRow?
-    let menu: Menu
-    @State private var nudge: CGFloat = 0
-    @State private var selection: TextSelection?
-    @FocusState private var focused: Bool
-    private var editing: Bool { browser.editing != nil }
+    @Binding var menu: Bool
+    let openSettings: () -> Void
+    let openMac: () -> Void
+    @State private var sharing = false
 
     var body: some View {
-        Group { content }
-            .onChange(of: browser.editing) { _, editing in
-                guard let editing else { focused = false; return }
-                // Editing the page you're on starts from its address, all selected so typing replaces it.
-                let query = editing == .newTab ? "" : browser.selected?.url.absoluteString ?? ""
-                browser.query = query
-                selection = TextSelection(range: query.startIndex..<query.endIndex)
-                focused = true
+        Group {
+            if let tab = browser.selected, tab.collapsed, !menu {
+                reading(tab)
+            } else {
+                bar.transition(.opacity.combined(with: .offset(y: 12)))
             }
-    }
-
-    @ViewBuilder private var content: some View {
-        if let tab = browser.selected, tab.collapsed, !editing {
-            // Reading: just the site, small, down in the home-indicator strip. A tap brings the bar back.
-            Button { withAnimation(.smooth(duration: 0.3)) { tab.collapsed = false } } label: {
-                HStack(spacing: 6) {
-                    SiteIcon(url: tab.url, size: 12)
-                    Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.caption.weight(.semibold)).lineLimit(1)
-                }
-                .padding(.horizontal, 12).frame(height: 28)
-                .glassEffect(.regular.interactive(), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, -18)
-            .accessibilityLabel("Show controls, \(tab.url.host() ?? "")")
-            .transition(.scale(scale: 0.6, anchor: .bottom).combined(with: .opacity))
-        } else {
-            bar.transition(.scale(scale: 0.9, anchor: .bottom).combined(with: .opacity))
         }
+        .sheet(isPresented: $sharing) { if let url = browser.selected?.url { ShareSheet(items: [url]).presentationDetents([.medium, .large]) } }
     }
 
-    /// One glass capsule: tabs on the left, the address in the middle, the page menu on the right.
+    /// Reading: just the site, small, down in the home-indicator strip. A tap brings the bar back.
+    private func reading(_ tab: Tab) -> some View {
+        Button { withAnimation(.smooth(duration: 0.3)) { tab.collapsed = false } } label: {
+            HStack(spacing: 6) {
+                SiteIcon(url: tab.url, size: 12)
+                Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.caption.weight(.semibold)).lineLimit(1)
+            }
+            .padding(.horizontal, 12).frame(height: 28)
+            .glassEffect(.regular.interactive(), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, -18)
+        .accessibilityLabel("Show controls, \(tab.url.host() ?? "")")
+        .transition(.scale(scale: 0.6, anchor: .bottom).combined(with: .opacity))
+    }
+
     private var bar: some View {
         let tab = browser.selected
-        let last = browser.spaceTabs.last
-        return HStack(spacing: 4) {
-            if !editing {
-                // On a page: the Space and its tabs. On the Space itself: back to the last tab.
-                Button { if tab == nil, let last { browser.select(last) } else { tab?.takeSnapshot(); browser.select(nil) } } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.primary, lineWidth: 1.6).frame(width: 21, height: 21)
-                        Text("\(browser.spaceTabs.count)").font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
-                    }
-                    .frame(width: 44, height: 44).contentShape(Circle())
+        return HStack {
+            Group {
+                if let tab { TabStack(tab: tab, previous: browser.previous) } else {
+                    round("desktopcomputer", label: "Your Mac", action: openMac)
+                        .disabled(library.remoteTabs.isEmpty && library.bookmarks(profile: space?.profileID ?? Local.profile).isEmpty)
                 }
-                .disabled(tab == nil && last == nil)
-                .opacity(tab == nil && last == nil ? 0.35 : 1)
-                .accessibilityLabel(tab == nil ? "Back to \(last?.title ?? "tab")" : "Spaces and tabs, \(browser.spaceTabs.count) open")
-                .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
-            pill(tab: tab)
-            if editing {
-                Button("Cancel") { browser.editing = nil }.fontWeight(.medium).padding(.horizontal, 10).frame(height: 44)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                SwiftUI.Menu { menu } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44).contentShape(Circle())
+            .frame(width: 52, alignment: .leading)
+            Spacer()
+            Button { browser.editing = .newTab } label: {
+                Image(systemName: "plus").font(.system(size: 17, weight: .regular))
+                    .frame(width: 72, height: 32).background(BarFill(), in: Capsule()).contentShape(Capsule())
+            }
+            .accessibilityLabel("New Search")
+            Spacer()
+            Group {
+                if tab != nil {
+                    Image(systemName: "chevron.up").font(.system(size: 13, weight: .semibold))
+                        .rotationEffect(.degrees(menu ? 180 : 0))
+                        .frame(width: 32, height: 32)
+                        .background(menu ? AnyShapeStyle(Color(.systemBackground)) : AnyShapeStyle(BarFill()), in: Circle())
+                        .contentShape(Circle())
+                        .onTapGesture { menu.toggle() }
+                        // Holding the chevron goes straight to Share, as in Arc Search.
+                        .onLongPressGesture { UIImpactFeedbackGenerator(style: .medium).impactOccurred(); menu = false; sharing = true }
+                        .accessibilityElement().accessibilityLabel("Page Menu").accessibilityAddTraits(.isButton)
+                        .accessibilityAction { menu.toggle() }
+                        .accessibilityAction(named: "Share") { sharing = true }
+                } else {
+                    round("gearshape", label: "Settings", action: openSettings)
                 }
-                .accessibilityLabel("More")
-                .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
+            .frame(width: 52, alignment: .trailing)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 26)
+        .frame(height: Look.barHeight)
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, -Look.barSink)
+        // The bar sits straight on the Space's colours, drawn behind the page and the tab view.
+    }
+
+    private func round(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 13, weight: .medium))
+                .frame(width: 32, height: 32).background(BarFill(), in: Circle()).contentShape(Circle())
+        }
+        .accessibilityLabel(label)
+    }
+}
+
+/// The bar's tab button: this tab and the one before it as two small cards. A tap opens the
+/// tab switcher; a flick up swaps to the previous tab.
+struct TabStack: View {
+    @Environment(Browser.self) private var browser
+    let tab: Tab
+    let previous: Tab?
+    @State private var lift: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            if let previous { card(previous).rotationEffect(.degrees(-12)).offset(x: -6, y: 2) }
+            card(tab).rotationEffect(.degrees(6)).offset(x: 5, y: lift)
+        }
+        .frame(width: 44, height: Look.barHeight)
+        .contentShape(Rectangle())
+        .onTapGesture { tab.takeSnapshot(); browser.select(nil) }
+        .gesture(DragGesture(minimumDistance: 8).onChanged { value in
+            lift = max(-14, min(0, value.translation.height * 0.4))
+        }.onEnded { value in
+            if value.translation.height < -24 || value.predictedEndTranslation.height < -60, let previous {
+                UISelectionFeedbackGenerator().selectionChanged()
+                browser.select(previous)
+            }
+            withAnimation(.spring(duration: 0.3, bounce: 0.35)) { lift = 0 }
+        })
+        .accessibilityElement()
+        .accessibilityLabel("Tabs, \(browser.spaceTabs.count) open")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { tab.takeSnapshot(); browser.select(nil) }
+        .accessibilityAction(named: "Previous Tab") { if let previous { browser.select(previous) } }
+    }
+
+    private func card(_ tab: Tab) -> some View {
+        Group {
+            if let snapshot = tab.snapshot {
+                Image(uiImage: snapshot).resizable().scaledToFill().frame(width: 19, height: 26, alignment: .top)
+            } else {
+                SiteIcon(url: tab.url, size: 11).frame(width: 19, height: 26)
+            }
+        }
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(.primary.opacity(0.15), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+    }
+}
+
+/// The chevron's menu, above the bar: the address (tap to edit, or copy it), Back, Forward,
+/// Reload and Share as tiles, then the page's own actions.
+struct PageMenu: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    let tab: Tab
+    let space: SpaceRow
+    let close: () -> Void
+    @Binding var noArticle: Bool
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button { close(); browser.editing = .current } label: {
+                    HStack(spacing: 8) {
+                        SiteIcon(url: tab.url, size: 16)
+                        Text(tab.url.absoluteString.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "www.", with: ""))
+                            .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Edit Address, \(tab.url.host() ?? "")")
+                Button { UIPasteboard.general.url = tab.url; UINotificationFeedbackGenerator().notificationOccurred(.success); close() } label: {
+                    Image(systemName: "doc.on.doc").font(.subheadline)
+                }
+                .accessibilityLabel("Copy Address")
+            }
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 12).frame(height: 40)
+            .background(GroundFill(strength: 1.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            HStack(spacing: 8) {
+                tile("Back", "chevron.backward") { tab.webView.goBack() }.disabled(!tab.canGoBack)
+                tile("Forward", "chevron.forward") { tab.webView.goForward() }.disabled(!tab.canGoForward)
+                tile("Reload", "arrow.clockwise") { tab.webView.reload(); close() }
+                ShareLink(item: tab.url) { tileLabel("Share", "square.and.arrow.up") }
+            }
+            VStack(spacing: 0) {
+                if !space.isIncognito {
+                    // Each way to keep the page, filled when it already is one; tapping again undoes it.
+                    let favourite = library.favourites(profile: space.profileID).first { $0.url == tab.url }
+                    let pin = library.pinned(space: space.id).first { $0.url == tab.url }
+                    item(favourite == nil ? "Add to Favourites" : "Remove from Favourites", favourite == nil ? "star" : "star.fill") {
+                        if let favourite { library.remove(favourite.id) } else { library.addFavourite(tab.url, profile: space.profileID) }
+                    }
+                    item(pin == nil ? "Pin to \(space.name)" : "Unpin", pin == nil ? "pin" : "pin.fill") {
+                        if let pin { library.remove(pin.id) } else { library.addPinned(tab.url, title: tab.title, space: space) }
+                    }
+                }
+                item(tab.reading == nil ? "Reader" : "Close Reader", tab.reading == nil ? "doc.plaintext" : "doc.plaintext.fill") {
+                    if tab.reading != nil { tab.reading = nil } else { Task { tab.reading = await tab.article(); noArticle = tab.reading == nil } }
+                }
+                item("Find on Page", "text.magnifyingglass") {
+                    tab.webView.findInteraction?.presentFindNavigator(showingReplace: false)
+                }
+                item("Close Tab", "xmark", role: .destructive) { withAnimation(.smooth(duration: 0.3)) { browser.close(tab) } }
             }
         }
         .buttonStyle(.plain)
-        .padding(4)
-        .glassEffect(.regular.interactive(), in: Capsule())
-        .frame(maxWidth: 560)
-        .padding(.horizontal, 14).padding(.bottom, 2)
-        .offset(x: nudge)
-        .simultaneousGesture(editing ? nil : DragGesture(minimumDistance: 24).onChanged { value in
-            nudge = value.translation.width * 0.12
-        }.onEnded { value in
-            let ids = library.spaces.map(\.id)
-            if abs(value.translation.width) > 80, let index = ids.firstIndex(of: browser.spaceID) {
-                let next = index + (value.translation.width < 0 ? 1 : -1)
-                if ids.indices.contains(next) {
-                    UISelectionFeedbackGenerator().selectionChanged()
-                    browser.switchSpace(ids[next])
-                }
-            }
-            withAnimation(.spring(duration: 0.35, bounce: 0.3)) { nudge = 0 }
-        })
+        .padding(10)
+        .frame(maxWidth: 420)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape, close)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
-    /// The address pill; while editing, the same pill holds the text field.
-    private func pill(tab: Tab?) -> some View {
-        ZStack {
-            if editing {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.6)
-                    TextField("Search or enter address", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
-                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
-                    if !browser.query.isEmpty {
-                        Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.45) }
-                            .accessibilityLabel("Clear")
-                    }
-                }
-                .font(.subheadline)
-                .padding(.horizontal, 14)
-            } else {
-                Button { browser.editing = .current } label: {
-                    HStack(spacing: 8) {
-                        if let tab {
-                            if tab.reading != nil { Image(systemName: "doc.plaintext.fill").font(.subheadline).accessibilityLabel("Reader") }
-                            SiteIcon(url: tab.url, size: 16)
-                            Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? tab.title).lineLimit(1)
-                        } else {
-                            Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium))
-                            Text("Search or enter address").foregroundStyle(.secondary)
-                        }
-                    }
-                    .font(.subheadline.weight(.medium))
-                    .padding(.horizontal, 14)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Capsule())
-                }
-                .accessibilityLabel(tab.map { "Address, \($0.url.host() ?? "")" } ?? "Search or enter address")
-            }
+    private func tile(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { tileLabel(title, symbol) }
+    }
+    private func tileLabel(_ title: String, _ symbol: String) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 16, weight: .medium))
+            Text(title).font(.caption2)
         }
-        .frame(maxWidth: .infinity).frame(height: 40)
-        .background(GroundFill(strength: editing ? 1.8 : 1.2), in: Capsule())
-        .overlay(alignment: .bottom) {
-            // Loading: a thin line along the pill's foot.
-            if let tab, tab.progress > 0, tab.progress < 1, !editing {
-                GeometryReader { geo in
-                    Capsule().fill(.primary.opacity(0.6)).frame(width: geo.size.width * tab.progress, height: 2)
-                }
-                .frame(height: 2).padding(.horizontal, 18).padding(.bottom, 2)
-                .animation(.easeOut(duration: 0.2), value: tab.progress)
+        .frame(maxWidth: .infinity).frame(height: 52)
+        .background(GroundFill(strength: 1.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(Rectangle())
+    }
+    private func item(_ title: String, _ symbol: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
+        Button(role: role) { action(); close() } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                Image(systemName: symbol).frame(width: 22)
             }
+            .foregroundStyle(role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            .padding(.horizontal, 12).frame(height: 44)
+            .contentShape(Rectangle())
         }
+        .overlay(alignment: .top) { Rectangle().fill(.primary.opacity(0.08)).frame(height: 0.5).padding(.horizontal, 12) }
     }
 }
 
-/// Home: every Space side by side, full screen, swiped between like Arc on iPhone. The
-/// Space marks under them work as page dots, as at the foot of the Mac sidebar.
-struct SpacesHome: View {
-    @Environment(Library.self) private var library
-    @Environment(Browser.self) private var browser
-    let openSettings: () -> Void
-    @State private var creating = false
-    @State private var name = ""
-
-    var body: some View {
-        let current = library.space(browser.spaceID)
-        let pages = library.spaces + [.incognito]
-        ZStack(alignment: .bottom) {
-            TabView(selection: Binding(get: { browser.spaceID }, set: { browser.switchSpace($0) })) {
-                ForEach(pages) { space in
-                    SpaceColumn(space: space, close: {}, openSettings: openSettings).tag(space.id)
-                        // Room to scroll the last card clear of the marks and the bar.
-                        .safeAreaPadding(.bottom, Look.barHeight + 46)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .ignoresSafeArea(edges: .bottom)
-            .mask {
-                // Content fades out under the marks and bar rather than being cut off.
-                VStack(spacing: 0) {
-                    Color.black
-                    LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 120)
-                    Color.clear.frame(height: 40)
-                }
-                .ignoresSafeArea()
-            }
-            HStack(spacing: 0) {
-                ForEach(pages) { space in
-                    let here = space.id == browser.spaceID
-                    Button { withAnimation(.smooth) { browser.switchSpace(space.id) } } label: {
-                        SpaceMark(space: space, size: 14).opacity(here ? 1 : 0.4).frame(width: 34, height: 34)
-                    }
-                    .accessibilityLabel(space.name)
-                    .accessibilityAddTraits(here ? .isSelected : [])
-                }
-                Button { name = ""; creating = true } label: {
-                    Image(systemName: "plus").font(.system(size: 13, weight: .semibold)).opacity(0.5).frame(width: 34, height: 34)
-                }
-                .accessibilityLabel("New Space")
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, Look.barHeight + 6)
-        }
-        .alert("New Space", isPresented: $creating) {
-            TextField("Name", text: $name)
-            Button("Create") {
-                guard !name.isEmpty else { return }
-                browser.switchSpace(library.addSpace(name, profile: current.flatMap { $0.isIncognito ? nil : $0.profileID } ?? Local.profile))
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-    }
+/// The system share sheet, for a long press on the chevron.
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
-/// One Space, laid out like the Mac sidebar: favourites as tiles, pinned tabs and folders,
-/// a hairline, New Tab, then the Space's open tabs. Other devices' tabs follow.
-struct SpaceColumn: View {
+/// Arc Search's tab view: the Space's tabs as cards side by side on its colours, oldest on
+/// the left. Swipe a card up to close it. The Space's name and dots sit on top, its favourites
+/// under them, and the archive past the oldest card.
+struct TabSwitcher: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    @Environment(Sync.self) private var sync
-    let space: SpaceRow?
-    let close: () -> Void
-    let openSettings: () -> Void
+    let openArchive: () -> Void
+    @State private var switching = false
+    @State private var theming = false
     @State private var renaming = false
     @State private var deleting = false
-    @State private var theming = false
+    @State private var creating = false
     @State private var name = ""
     @State private var naming: LinkRow?
-    @State private var switching = false
 
     var body: some View {
-        let favourites = space.map { library.favourites(profile: $0.profileID) } ?? []
-        let tabs = browser.tabs.filter { $0.spaceID == space?.id }
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                if !favourites.isEmpty || (canKeep && !tabs.isEmpty) {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                        ForEach(favourites) { link in
-                            Button { open(link) } label: {
-                                SiteIcon(url: link.url, size: 24)
-                                    .frame(maxWidth: .infinity).frame(height: Look.tileHeight)
-                                    .background(GroundFill(strength: browser.selected?.home == link.url ? 2.2 : 1),
-                                                in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous))
-                            }
-                            .buttonStyle(PressFill())
-                            .accessibilityLabel(link.title)
-                            .contextMenu {
-                                Text(link.title)
-                                Button("Rename", systemImage: "pencil") { name = link.title; naming = link }
-                                Button("Remove Favourite", systemImage: "star.slash", role: .destructive) { library.remove(link.id) }
-                            }
-                        }
-                        if favourites.isEmpty {
-                            // Somewhere to drop the first one.
-                            Image(systemName: "star").font(.system(size: 16, weight: .medium)).opacity(0.4)
-                                .frame(maxWidth: .infinity).frame(height: Look.tileHeight)
-                                .overlay(RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous)
-                                    .strokeBorder(.primary.opacity(0.2), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4])))
-                                .accessibilityLabel("Drag a tab here to make it a favourite")
-                        }
-                    }
-                    // Drag a tab up here to make it a favourite, as on the Mac.
-                    .dropDestination(for: URL.self) { urls, _ in
-                        guard let space, canKeep else { return false }
-                        urls.forEach { library.addFavourite($0, profile: space.profileID) }
-                        return !urls.isEmpty
-                    }
-                }
-                if let space {
-                    VStack(spacing: 2) { PinnedRows(space: space.id, open: open) }
-                        .frame(minHeight: 12)
-                        .contentShape(Rectangle())
-                        .dropDestination(for: URL.self) { urls, _ in
-                            guard canKeep else { return false }
-                            for url in urls { library.addPinned(url, title: browser.tabs.first { $0.url == url }?.title ?? url.host() ?? "", space: space) }
-                            return !urls.isEmpty
-                        }
-                }
-                Rectangle().fill(.primary.opacity(0.14)).frame(height: 1).padding(.horizontal, 12)
-                VStack(spacing: 2) {
-                    Row(title: "New Tab", icon: AnyView(Image(systemName: "plus").fontWeight(.medium))) {
-                        browser.editing = .newTab; close()
-                    }
-                }
-                // Open tabs as cards, newest first, like Arc on iPhone.
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
-                    ForEach(tabs.reversed()) { tab in
-                        TabCard(tab: tab, selected: tab.id == browser.selectedID) {
-                            browser.select(tab); close()
-                        } close: {
-                            withAnimation(.smooth(duration: 0.25)) { browser.close(tab) }
-                        }
-                        .draggable(tab.url) { SiteIcon(url: tab.url, size: 28).padding(10).background(GroundFill(strength: 2), in: RoundedRectangle(cornerRadius: Look.pillRadius, style: .continuous)) }
-                        .contextMenu {
-                            if let space, canKeep {
-                                Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
-                                Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
-                            }
-                            Button("Close Tab", systemImage: "xmark", role: .destructive) { browser.close(tab) }
-                        }
-                    }
-                }
-                ForEach(space?.isIncognito == true ? [] : library.remoteTabs, id: \.device) { group in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label(group.device, systemImage: "laptopcomputer")
-                            .font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 4)
-                        ForEach(group.tabs) { tab in
-                            Row(title: tab.title.isEmpty ? tab.url.absoluteString : tab.title, icon: AnyView(SiteIcon(url: tab.url, size: 18))) {
-                                browser.open(tab.url); close()
-                            }
-                        }
-                    }
-                }
-                if space?.isIncognito == true {
-                    Text("Nothing here is saved or synced. Close the last tab and it's gone.")
-                        .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.top, 6)
-                } else if favourites.isEmpty && tabs.isEmpty && library.pinned(space: space?.id ?? Local.space).isEmpty {
-                    emptyHint
-                }
+        let space = library.space(browser.spaceID)
+        let tabs = browser.spaceTabs
+        VStack(spacing: 0) {
+            header(space)
+            if let space, !space.isIncognito { favourites(space) }
+            if tabs.isEmpty {
+                empty(space).frame(maxHeight: .infinity)
+            } else {
+                carousel(tabs)
             }
-            .padding(.horizontal, Look.inset).padding(.vertical, 12)
-            .frame(maxWidth: 520)
-            .frame(maxWidth: .infinity)
         }
-        .scrollIndicators(.hidden)
-        .refreshable { await sync.run() }
-        .sheet(isPresented: $theming) { if let space { ThemeEditor(space: space) } }
         .sheet(isPresented: $switching) { SpaceSwitcher() }
+        .sheet(isPresented: $theming) { if let space { ThemeEditor(space: space) } }
         .alert("Rename", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField(naming?.url.host() ?? "Name", text: $name)
             Button("Rename") { if let naming { library.setCustomName(naming.id, to: name) } }
@@ -489,6 +454,14 @@ struct SpaceColumn: View {
         .alert("Rename Space", isPresented: $renaming) {
             TextField("Name", text: $name)
             Button("Rename") { if let space, !name.isEmpty { library.renameSpace(space, to: name) } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("New Space", isPresented: $creating) {
+            TextField("Name", text: $name)
+            Button("Create") {
+                guard !name.isEmpty else { return }
+                browser.switchSpace(library.addSpace(name, profile: space.flatMap { $0.isIncognito ? nil : $0.profileID } ?? Local.profile))
+            }
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog("Delete \(space?.name ?? "this Space")?", isPresented: $deleting, titleVisibility: .visible) {
@@ -503,60 +476,448 @@ struct SpaceColumn: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            // Tap the Space's icon or name to jump to another Space.
-            Button { switching = true } label: {
-                // Same columns as a row: 12 in, a 22-wide icon, 12 to the title.
-                HStack(spacing: 12) {
-                    if let space { SpaceMark(space: space, size: 18).frame(width: 22) }
-                    Text(space?.name ?? "Vane").font(.title2.weight(.semibold)).lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        .padding(.leading, -6)
+    /// The Space's name (tap to pick another) with its options, and a dot per Space.
+    private func header(_ space: SpaceRow?) -> some View {
+        let pages = library.spaces + [.incognito]
+        return VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Button { switching = true } label: {
+                    HStack(spacing: 7) {
+                        if let space { SpaceMark(space: space, size: 15) }
+                        Text(space?.name ?? "Vane").font(.headline).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12).frame(height: 36).contentShape(Capsule())
                 }
-                .padding(.leading, 12)
+                .accessibilityLabel("Space, \(space?.name ?? ""). Switch Space")
+                if let space, !space.isIncognito {
+                    Menu {
+                        Button("Edit Theme and Icon", systemImage: "paintpalette") { theming = true }
+                        Button("Rename", systemImage: "pencil") { name = space.name; renaming = true }
+                        Button("New Space", systemImage: "plus") { name = ""; creating = true }
+                        Button("Delete Space", systemImage: "trash", role: .destructive) { deleting = true }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).frame(width: 30, height: 30)
+                            .background(BarFill(), in: Circle())
+                    }
+                    .accessibilityLabel("Space options")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Space, \(space?.name ?? ""). Switch Space")
-            Spacer()
-            if let space, !space.isIncognito {
-                Menu {
-                    Button("Edit Theme and Icon", systemImage: "paintpalette") { theming = true }
-                    Button("Rename", systemImage: "pencil") { name = space.name; renaming = true }
-                    Button("Delete Space", systemImage: "trash", role: .destructive) { deleting = true }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).frame(width: 36, height: 36)
-                        .background(GroundFill(), in: Circle())
+            HStack(spacing: 0) {
+                ForEach(pages) { page in
+                    let here = page.id == browser.spaceID
+                    Button { withAnimation(.smooth) { browser.switchSpace(page.id) } } label: {
+                        Circle().fill(.primary.opacity(here ? 0.85 : 0.25)).frame(width: 6, height: 6).frame(width: 24, height: 30).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(page.name)
+                    .accessibilityAddTraits(here ? .isSelected : [])
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Space options")
             }
         }
-        .padding(.top, 12)
-        .overlay(alignment: .bottomLeading) {
-            if let space, !space.isIncognito, let profile = library.profileName(space.profileID) {
-                Text(profile).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    .padding(.leading, 12 + 22 + 12).offset(y: 16)
-            }
-        }
-        .padding(.bottom, library.profileName(space?.profileID ?? Local.profile) == nil || space?.isIncognito == true ? 0 : 14)
+        .buttonStyle(.plain)
+        .padding(.top, 8)
+        // Swipe sideways on the name to move between Spaces.
+        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+            let ids = pages.map(\.id)
+            guard abs(value.translation.width) > 50, let index = ids.firstIndex(of: browser.spaceID) else { return }
+            let next = index + (value.translation.width < 0 ? 1 : -1)
+            guard ids.indices.contains(next) else { return }
+            UISelectionFeedbackGenerator().selectionChanged()
+            withAnimation(.smooth) { browser.switchSpace(ids[next]) }
+        })
     }
 
-    private var emptyHint: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Drag tabs here to keep them.")
-            if !sync.enabled {
-                Button("Sync with your Mac", action: openSettings).fontWeight(.medium)
+    private func favourites(_ space: SpaceRow) -> some View {
+        let links = library.favourites(profile: space.profileID)
+        // One row, scrolling sideways when there are more, so the tab cards keep the room.
+        return ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(links) { link in
+                    Button { browser.open(link.url, home: link.url) } label: {
+                        SiteIcon(url: link.url, size: 20)
+                            .frame(width: 58, height: 44)
+                            .background(BarFill(), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(PressFill())
+                    .accessibilityLabel(link.title)
+                    .contextMenu {
+                        Text(link.title)
+                        Button("Rename", systemImage: "pencil") { name = link.title; naming = link }
+                        Button("Remove Favourite", systemImage: "star.slash", role: .destructive) { library.remove(link.id) }
+                    }
+                }
             }
         }
-        .font(.subheadline).foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.top, 6)
+        .scrollIndicators(.hidden)
+        .contentMargins(.horizontal, 18, for: .scrollContent)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .padding(.top, 14)
+        .frame(maxWidth: 520)
     }
 
-    /// Incognito keeps nothing, so nothing can be favourited or pinned from it.
-    private var canKeep: Bool { space.map { !$0.isIncognito } ?? false }
+    private func carousel(_ tabs: [Tab]) -> some View {
+        GeometryReader { geo in
+            let width = min(geo.size.width * 0.6, 300)
+            let height = min(geo.size.height - 70, width * 1.85)
+            let archived = browser.archived.contains { $0.spaceID == browser.spaceID }
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .center, spacing: 14) {
+                    if archived {
+                        Button(action: openArchive) {
+                            VStack(spacing: 6) {
+                                Image(systemName: "archivebox").font(.system(size: 18, weight: .medium))
+                                Text("Archive").font(.caption2.weight(.medium))
+                            }
+                            .frame(width: 64, height: 88).background(BarFill(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ForEach(tabs) { tab in
+                        TabCard(tab: tab, width: width, height: height)
+                            .transition(.asymmetric(insertion: .opacity, removal: .move(edge: .top).combined(with: .opacity)))
+                    }
+                }
+                .scrollTargetLayout()
+                .frame(maxHeight: .infinity)
+            }
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
+            .contentMargins(.horizontal, (geo.size.width - width) / 2, for: .scrollContent)
+            .defaultScrollAnchor(.trailing)
+            .scrollClipDisabled()
+        }
+        .padding(.top, 8)
+    }
 
-    private func open(_ link: LinkRow) { browser.open(link.url, home: link.url); close() }
+    private func empty(_ space: SpaceRow?) -> some View {
+        VStack(spacing: 10) {
+            Text(space?.isIncognito == true ? "You're browsing Incognito" : "No open tabs").font(.headline)
+            Text(space?.isIncognito == true ? "Nothing here is saved or synced. Close the last tab and it's gone." : "Tap + to search or open a page.")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            if browser.archived.contains(where: { $0.spaceID == browser.spaceID }) {
+                Button("Archived Tabs", systemImage: "archivebox", action: openArchive).font(.subheadline.weight(.medium)).padding(.top, 6)
+            }
+        }
+        .padding(.horizontal, 40)
+    }
+}
+
+/// An open tab in the switcher: its site and title above, the page as it last looked below.
+/// Swipe it up to close it.
+struct TabCard: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    let tab: Tab
+    let width: CGFloat
+    let height: CGFloat
+    @State private var lift: CGFloat = 0
+    /// Set by a drag's first movement: up closes, sideways belongs to the scroll.
+    @State private var vertical: Bool?
+
+    var body: some View {
+        let space = library.space(tab.spaceID)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                SiteIcon(url: tab.url, size: 14)
+                Text(tab.title).font(.caption.weight(.semibold)).lineLimit(1)
+            }
+            .padding(.leading, 4)
+            .opacity(1 - Double(min(1, -lift / 120)))
+            Group {
+                if let snapshot = tab.snapshot {
+                    Image(uiImage: snapshot).resizable().scaledToFill()
+                        .frame(width: width, height: height, alignment: .top)
+                } else {
+                    // Not seen since launch: the site's icon, not a blank page.
+                    SiteIcon(url: tab.url, size: 36).frame(width: width, height: height)
+                }
+            }
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .onTapGesture { browser.select(tab) }
+            .contextMenu {
+                if let space, !space.isIncognito {
+                    Button("Add to Favourites", systemImage: "star") { library.addFavourite(tab.url, profile: space.profileID) }
+                    Button("Pin to \(space.name)", systemImage: "pin") { library.addPinned(tab.url, title: tab.title, space: space) }
+                }
+                Button("Close Tab", systemImage: "xmark", role: .destructive) { close() }
+            }
+        }
+        .frame(width: width)
+        .offset(y: lift)
+        .opacity(1 - Double(min(0.6, -lift / 400)))
+        // Up closes, like the app switcher; sideways stays the scroll's.
+        .simultaneousGesture(DragGesture(minimumDistance: 14).onChanged { value in
+            if vertical == nil { vertical = abs(value.translation.height) > abs(value.translation.width) }
+            guard vertical == true else { return }
+            lift = min(0, value.translation.height)
+        }.onEnded { value in
+            defer { vertical = nil }
+            if lift < -120 || (lift < -20 && value.predictedEndTranslation.height < -300) {
+                withAnimation(.easeOut(duration: 0.2)) { lift = -height } completion: { close() }
+            } else {
+                withAnimation(.spring(duration: 0.35, bounce: 0.3)) { lift = 0 }
+            }
+        })
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { browser.select(tab) }
+        .accessibilityAction(named: "Close Tab") { close() }
+    }
+
+    private func close() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(.smooth(duration: 0.3)) { browser.close(tab) }
+    }
+}
+
+/// Searching, as Arc Search does it: a sheet up from the bottom with the field on top and the
+/// keyboard already up; the Space's favourites and pinned tabs wait between them.
+struct SearchSheet: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    let space: SpaceRow?
+    @State private var selection: TextSelection?
+    @FocusState private var focused: Bool
+    private var text: String { browser.query }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.subheadline.weight(.medium)).opacity(0.5)
+                    TextField("Search…", text: Binding(get: { browser.query }, set: { browser.query = $0 }), selection: $selection)
+                        .focused($focused).keyboardType(.webSearch).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.go).onSubmit { browser.go(browser.destination(for: browser.query)) }
+                    if !text.isEmpty {
+                        Button { browser.query = "" } label: { Image(systemName: "xmark.circle.fill").opacity(0.4) }
+                            .accessibilityLabel("Clear")
+                    }
+                }
+                .padding(.horizontal, 12).frame(height: 44)
+                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                if text.isEmpty, browser.editing == .newTab {
+                    // Arc Search's Incognito switch, beside the field.
+                    let on = space?.isIncognito == true
+                    Button {
+                        let back = browser.beforeIncognito.flatMap { id in library.spaces.first { $0.id == id }?.id }
+                        browser.switchSpace(on ? back ?? library.spaces.first?.id ?? Local.space : SpaceRow.incognito.id)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text("Incognito").font(.subheadline.weight(.medium))
+                            Image(systemName: on ? "eyeglasses.slash" : "eyeglasses")
+                        }
+                        .padding(.horizontal, 12).frame(height: 44)
+                        .background(on ? AnyShapeStyle(Color.primary.opacity(0.85)) : AnyShapeStyle(Color(.systemBackground)),
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .foregroundStyle(on ? AnyShapeStyle(Color(.systemBackground)) : AnyShapeStyle(.primary))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
+                }
+            }
+            .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 6)
+            .animation(.smooth(duration: 0.2), value: text.isEmpty)
+            ScrollView {
+                Group { if idle { start } else { matches } }
+                    .padding(.horizontal, 12).padding(.bottom, 16)
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .frame(maxWidth: 600)
+        .background(Color(.secondarySystemBackground), in: UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26, style: .continuous))
+        .background(Color(.secondarySystemBackground).ignoresSafeArea(edges: .bottom).padding(.top, 26))
+        .padding(.top, browser.selected == nil ? 110 : 70)
+        .onAppear(perform: begin)
+        .onChange(of: browser.editing) { begin() }
+    }
+
+    private func begin() {
+        guard let editing = browser.editing else { return }
+        // Editing the page you're on starts from its address, all selected so typing replaces it.
+        let query = editing == .newTab ? "" : browser.selected?.url.absoluteString ?? ""
+        browser.query = query
+        selection = TextSelection(range: query.startIndex..<query.endIndex)
+        focused = true
+    }
+
+    /// Nothing typed yet (or only the page's own address).
+    private var idle: Bool { text.isEmpty || text == browser.selected?.url.absoluteString }
+
+    /// Before typing: the Space's favourites and pinned tabs, then where you've been lately.
+    @ViewBuilder private var start: some View {
+        let keeps = space.map { !$0.isIncognito } ?? false
+        let favourites = keeps ? library.favourites(profile: space!.profileID) : []
+        let pinned = keeps ? library.pinned(space: space!.id) : []
+        let folders = keeps ? library.folders(space: space!.id) : []
+        var seen = Set<URL>()
+        let recent = space?.isIncognito == true ? [] : Array(browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(6))
+        VStack(alignment: .leading, spacing: 8) {
+            if UIPasteboard.general.hasStrings || UIPasteboard.general.hasURLs {
+                // The system's paste button reads the clipboard without the paste prompt; it goes straight there.
+                PasteButton(payloadType: String.self) { strings in
+                    Task { @MainActor in browser.go(browser.destination(for: strings.first ?? "")) }
+                }
+                .buttonBorderShape(.capsule).labelStyle(.titleAndIcon).tint(.secondary)
+                .padding(.top, 6)
+            }
+            if !favourites.isEmpty {
+                section("Favourites")
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 12) {
+                    ForEach(favourites.prefix(12)) { link in
+                        Button { browser.editing = nil; browser.open(link.url, home: link.url) } label: {
+                            VStack(spacing: 5) {
+                                SiteIcon(url: link.url, size: 24)
+                                    .frame(maxWidth: .infinity).frame(height: 52)
+                                    .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                Text(link.title).font(.caption2).lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !pinned.isEmpty || !folders.isEmpty, let space {
+                section("Pinned · \(space.name)")
+                VStack(spacing: 2) { PinnedRows(space: space.id) { link in browser.editing = nil; browser.open(link.url, home: link.url) } }
+            }
+            if !recent.isEmpty {
+                section("Recently Visited")
+                VStack(spacing: 2) {
+                    ForEach(recent, id: \.self) { visit in
+                        Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { browser.go(visit.url) } trailing: {
+                            Text(host(visit.url)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                }
+            }
+            if space?.isIncognito == true {
+                Text("You're browsing Incognito").font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.top, 60)
+            }
+        }
+    }
+
+    private func section(_ title: String) -> some View {
+        Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 4).padding(.top, 14)
+    }
+
+    /// While typing: the search (or address) first, then history matches.
+    private var matches: some View {
+        VStack(spacing: 2) {
+            if let destination = browser.destination(for: text) {
+                let search = destination.absoluteString.contains("?q=")
+                Row(title: search ? "Search for \u{201C}\(text)\u{201D}" : destination.absoluteString,
+                    icon: AnyView(Image(systemName: search ? "magnifyingglass" : "arrow.up.right"))) { browser.go(destination) }
+            }
+            ForEach(browser.suggestions(for: text), id: \.self) { visit in
+                Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { browser.go(visit.url) } trailing: {
+                    Text(host(visit.url)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func host(_ url: URL) -> String { url.host()?.replacingOccurrences(of: "www.", with: "") ?? "" }
+}
+
+/// Your Mac: its open tabs (and other devices'), and the bookmarks synced from it.
+struct MacView: View {
+    @Environment(Library.self) private var library
+    @Environment(Browser.self) private var browser
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        let profile = library.space(browser.spaceID).flatMap { $0.isIncognito ? nil : $0.profileID } ?? Local.profile
+        NavigationStack {
+            List {
+                if !library.bookmarks(profile: profile).isEmpty {
+                    NavigationLink { BookmarksView(onOpen: { dismiss() }) } label: { Label("Bookmarks", systemImage: "book") }
+                }
+                ForEach(library.remoteTabs, id: \.device) { group in
+                    Section(group.device) {
+                        ForEach(group.tabs) { tab in
+                            Button { browser.open(tab.url); dismiss() } label: {
+                                HStack(spacing: 12) {
+                                    SiteIcon(url: tab.url, size: 20)
+                                    VStack(alignment: .leading) {
+                                        Text(tab.title.isEmpty ? tab.url.absoluteString : tab.title).lineLimit(1)
+                                        Text(tab.url.host() ?? "").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .overlay { if library.remoteTabs.isEmpty && library.bookmarks(profile: profile).isEmpty { ContentUnavailableView("Nothing from your Mac yet", systemImage: "desktopcomputer", description: Text("Turn on iCloud sync in Settings on both devices.")) } }
+            .navigationTitle("Your Mac").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+/// Tabs archived after sitting unopened, newest first, with how long tabs may sit.
+struct ArchiveView: View {
+    @Environment(Browser.self) private var browser
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    var body: some View {
+        @Bindable var browser = browser
+        let items = browser.archived.filter {
+            $0.spaceID == browser.spaceID && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.url.absoluteString.localizedCaseInsensitiveContains(query))
+        }
+        let calendar = Calendar.current
+        let groups: [(String, [Archived])] = [
+            ("Today", items.filter { calendar.isDateInToday($0.at) }),
+            ("Yesterday", items.filter { calendar.isDateInYesterday($0.at) }),
+            ("Earlier", items.filter { !calendar.isDateInToday($0.at) && !calendar.isDateInYesterday($0.at) }),
+        ].filter { !$0.1.isEmpty }
+        NavigationStack {
+            List {
+                ForEach(groups, id: \.0) { title, rows in
+                    Section(title) {
+                        ForEach(rows) { item in
+                            Button { browser.unarchive(item); dismiss() } label: {
+                                HStack(spacing: 12) {
+                                    SiteIcon(url: item.url, size: 20)
+                                    VStack(alignment: .leading) {
+                                        Text(item.title).lineLimit(1)
+                                        Text(item.url.host() ?? "").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Section {
+                    ArchivePicker(value: $browser.archiveAfter)
+                } footer: { Text("Tabs you haven't opened in this long move here. Tabs opened from a favourite or pinned tab stay.") }
+            }
+            .searchable(text: $query, prompt: "Search archive")
+            .overlay { if items.isEmpty && query.isEmpty { ContentUnavailableView("No archived tabs", systemImage: "archivebox") } }
+            .navigationTitle("Archived Tabs").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+    }
+}
+
+struct ArchivePicker: View {
+    @Binding var value: Double
+    var body: some View {
+        Picker("Archive tabs", selection: $value) {
+            Text("After 12 hours").tag(43_200.0)
+            Text("After 1 day").tag(86_400.0)
+            Text("After 7 days").tag(604_800.0)
+            Text("After 30 days").tag(2_592_000.0)
+            Text("Never").tag(0.0)
+        }
+    }
 }
 
 /// Pinned tabs and their folders. Folders locked on the Mac open only after Face ID or the passcode.
@@ -651,16 +1012,15 @@ struct ReaderView: View {
 struct BookmarksView: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
-    @Environment(\.dismiss) private var dismiss
+    let onOpen: () -> Void
     var body: some View {
         let profile = library.spaces.first { $0.id == browser.spaceID }?.profileID ?? Local.profile
         let groups = library.bookmarks(profile: profile)
-        NavigationStack {
             List {
                 ForEach(groups, id: \.folder) { group in
                     Section(group.folder ?? "Bookmarks") {
                         ForEach(group.links) { link in
-                            Button { browser.open(link.url); dismiss() } label: {
+                            Button { browser.open(link.url); onOpen() } label: {
                                 VStack(alignment: .leading) {
                                     Text(link.title).lineLimit(1)
                                     Text(link.url.host() ?? "").font(.caption).foregroundStyle(.secondary)
@@ -672,117 +1032,9 @@ struct BookmarksView: View {
                 }
             }
             
-            .overlay { if groups.isEmpty { ContentUnavailableView("No Bookmarks", systemImage: "book", description: Text("Use Bookmark in the ••• menu to save a page.")) } }
+            .overlay { if groups.isEmpty { ContentUnavailableView("No Bookmarks", systemImage: "book", description: Text("Bookmarks you save in Vane on your Mac show up here.")) } }
             .navigationTitle("Bookmarks").navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
-        }
     }
-}
-
-struct SpaceChip: View {
-    let row: SpaceRow
-    let selected: Bool
-    let action: () -> Void
-    var body: some View {
-        let color = Color(hex: row.colorHex) ?? .accentColor
-        Button(action: action) {
-            Label(row.name, systemImage: row.isLocal ? "iphone" : "square.stack")
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(selected ? color.opacity(0.25) : Color.secondary.opacity(0.12), in: Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// The address field and what it finds, on the Space's colour.
-/// Typing an address, Safari-style: the field stays at the foot of the screen with the
-/// keyboard straight up under it, and suggestions stack upward from it, nearest first.
-struct Suggestions: View {
-    @Environment(Browser.self) private var browser
-    @Environment(Library.self) private var library
-    let space: SpaceRow?
-    private var text: String { browser.query }
-    var body: some View {
-        // As tall as what it holds, scrolling only once that's more than the room above the bar.
-        ViewThatFits(in: .vertical) {
-            list
-            ScrollView { list }.defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.never)
-        }
-            .frame(maxWidth: 560)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .frame(maxHeight: .infinity, alignment: .bottom)
-            .padding(.top, 60)
-    }
-
-    @ViewBuilder private var list: some View {
-        Group { if idle { start } else { matches } }
-            .padding(.horizontal, 10).padding(.vertical, 8)
-    }
-
-    /// Nothing typed yet (or only the page's own address).
-    private var idle: Bool { text.isEmpty || text == browser.selected?.url.absoluteString }
-
-    /// Before typing: the Space's favourites as icons, then where you've been lately.
-    private var start: some View {
-        let favourites = space.flatMap { $0.isIncognito ? nil : library.favourites(profile: $0.profileID) } ?? []
-        var seen = Set<URL>()
-        let recent = browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(8)
-        return VStack(alignment: .leading, spacing: 22) {
-                if !favourites.isEmpty {
-                    section("Favourites")
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
-                        ForEach(favourites.prefix(12)) { link in
-                            Button { go(link.url) } label: {
-                                VStack(spacing: 6) {
-                                    SiteIcon(url: link.url, size: 28)
-                                        .frame(width: 60, height: 60)
-                                        .background(GroundFill(strength: 1.4), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                    Text(link.title).font(.caption).lineLimit(1)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-                if !recent.isEmpty {
-                    section("Recently Visited")
-                    VStack(spacing: 2) {
-                        ForEach(Array(recent), id: \.self) { visit in
-                            Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
-                                Text(visit.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                        }
-                    }
-                }
-                if favourites.isEmpty && recent.isEmpty {
-                    Text("Search the web or type an address.").font(.subheadline).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 10)
-                }
-            }
-            .padding(.vertical, 6)
-    }
-
-    private func section(_ title: String) -> some View {
-        Text(title).font(.footnote.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 4)
-    }
-
-    /// While typing: matches stacked up from the field, nearest first.
-    private var matches: some View {
-                VStack(spacing: 2) {
-                    ForEach(browser.suggestions(for: text).reversed(), id: \.self) { visit in
-                        Row(title: visit.title, icon: AnyView(SiteIcon(url: visit.url, size: 18))) { go(visit.url) } trailing: {
-                            Text(visit.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }
-                    if let destination = browser.destination(for: text), !text.isEmpty {
-                        let search = destination.absoluteString.contains("?q=")
-                        Row(title: search ? "Search for \u{201C}\(text)\u{201D}" : destination.absoluteString,
-                            icon: AnyView(Image(systemName: search ? "magnifyingglass" : "arrow.up.right"))) { go(destination) }
-                    }
-                }
-    }
-
-    private func go(_ url: URL?) { browser.go(url) }
 }
 
 struct SettingsView: View {
@@ -820,6 +1072,9 @@ struct SettingsView: View {
                         if let url = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) { UIApplication.shared.open(url) }
                     }
                 }
+                Section {
+                    ArchivePicker(value: $browser.archiveAfter)
+                } header: { Text("Tabs") } footer: { Text("Like Arc, tabs you haven't opened in a while move to the archive at the start of the tab view.") }
                 Section("Search") {
                     Picker("Search engine", selection: $browser.engine) { ForEach(SearchEngine.allCases) { Text($0.name).tag($0) } }
                 }
@@ -864,54 +1119,6 @@ struct HistoryView: View {
         .searchable(text: $query)
         .overlay { if browser.allHistory.isEmpty { ContentUnavailableView("No History", systemImage: "clock") } }
         .navigationTitle("History")
-    }
-}
-
-/// An open tab as Arc shows it on iPhone: the page as it last looked, its site and title
-/// above, and a close button in the corner.
-struct TabCard: View {
-    let tab: Tab
-    let selected: Bool
-    let open: () -> Void
-    let close: () -> Void
-    var body: some View {
-        // One card: a title bar inside it, then the page. Its edges line up with the
-        // favourite tiles, its icon and title with the rows' icons and titles.
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                SiteIcon(url: tab.url, size: 16)
-                Text(tab.title).font(.caption.weight(.medium)).lineLimit(1)
-                Spacer(minLength: 0)
-                Button(action: close) {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).opacity(0.6)
-                        .frame(width: 32, height: 32).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, -8)
-                .accessibilityLabel("Close \(tab.title)")
-            }
-            .padding(.horizontal, 12).frame(height: 36)
-            Group {
-                if let snapshot = tab.snapshot {
-                    Image(uiImage: snapshot).resizable().scaledToFill()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                        .background(Color(.systemBackground))
-                } else {
-                    // Not seen since launch: the site's icon, not a blank page.
-                    SiteIcon(url: tab.url, size: 30).frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .frame(height: 170)
-            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 16, bottomTrailingRadius: 16, style: .continuous))
-        }
-        .background(GroundFill(strength: 1.3), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(selected ? Color.primary : .clear, lineWidth: 2))
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .onTapGesture(perform: open)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(tab.title)
-        .accessibilityAddTraits(.isButton)
     }
 }
 

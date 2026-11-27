@@ -14,7 +14,7 @@
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)io.github.notnaki.vane.ios</string>
+		<string>$(AppIdentifierPrefix)io.github.notnaki.vane.iphone</string>
 	</array>
 </dict>
 </plist>
