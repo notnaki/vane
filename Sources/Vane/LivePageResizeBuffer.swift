@@ -730,6 +730,13 @@ struct LivePageResizeAnchor {
         return abs(installed - leading) < 0.001
     }
 
+    /// A window drag's viewport: exactly the request, except that while either axis grows
+    /// the shrinking one keeps the visible size until the window has moved.
+    private static func windowTarget(_ visible: NSSize, _ size: NSSize) -> NSSize {
+        let grows = size.width > visible.width + 0.001 || size.height > visible.height + 0.001
+        return grows ? NSSize(width: max(visible.width, size.width), height: max(visible.height, size.height)) : size
+    }
+
     private static func between(_ size: NSSize, _ a: NSSize, _ b: NSSize) -> Bool {
         // 1pt slack: a corner drag's other axis wobbles; failing it would stall the window.
         size.width >= min(a.width, b.width) - 1 && size.width <= max(a.width, b.width) + 1
@@ -850,7 +857,8 @@ struct LivePageResizeAnchor {
         // visibly. A shrink follows the pointer at once, its old paint pinned to the
         // still edge; growth waits (briefly, see awaitPaint) for its exact paint.
         if frameDriver != nil {
-            if zip(pages, desired).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
+            let targets = zip(pages, desired).map { Self.windowTarget($0.currentVisibleSize, $1) }
+            if zip(pages, targets).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
                 prepare(exact: true)
             }
             return
@@ -888,9 +896,7 @@ struct LivePageResizeAnchor {
             // A window drag shrinks the page ahead of the window only when nothing grows. A
             // corner drag that also grows keeps the visible floor: an intermediate WK resize
             // can answer the presentation callback before the grown viewport has painted.
-            let current = page.currentVisibleSize
-            let grows = size.width > current.width + 0.001 || size.height > current.height + 0.001
-            let visible = frameDriver != nil && !grows ? .zero : current
+            let visible = frameDriver != nil ? Self.windowTarget(page.currentVisibleSize, size) : page.currentVisibleSize
             // A mixed-axis proposal can wait for growth while its other axis
             // shrinks. Do not prepare a viewport smaller than the still-visible clip.
             return NSSize(width: max(submitted.width, visible.width,
@@ -908,7 +914,9 @@ struct LivePageResizeAnchor {
         generation = UUID()
         let token = generation
         exactPaint = exact && targets == desired
-        preparedRequest = exactPaint ? latest : nil
+        // A floored corner paint still covers the request it was prepared for: the window
+        // may publish it while the pointer runs ahead.
+        preparedRequest = exactPaint || (exact && frameDriver != nil) ? latest : nil
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
         pendingStyleReplies = pendingPaints
