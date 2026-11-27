@@ -898,6 +898,7 @@ struct TitleReveal: Equatable, Sendable {
                                     forMainFrameOnly: false, in: .page))
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
+        WebSerial.install(on: c)
         c.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
@@ -949,6 +950,8 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(draftProtection, contentWorld: DraftProtection.world, name: DraftProtection.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: ChromeWebStorePage.world, name: ChromeWebStorePage.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: WebSerial.gestureWorld, name: WebSerial.gestureName)
+        WebSerial.attach(self, to: web)
         NativePiPHostBridge.register(tab: self, web: web)
         WebNotifications.attach(self, web)
         if let linkView = web as? LinkContextWebView {
@@ -1419,6 +1422,7 @@ struct TitleReveal: Equatable, Sendable {
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: SiteBoostScripts.messageName, contentWorld: SiteBoostScripts.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: ChromeWebStorePage.messageName, contentWorld: ChromeWebStorePage.world)
+        WebSerial.detach(from: old)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: DraftProtection.messageName, contentWorld: DraftProtection.world)
         old.uiDelegate = nil
@@ -1491,7 +1495,7 @@ struct TitleReveal: Equatable, Sendable {
         easelSession?.liveItems.removeAll()
         easelObservation = nil
         vanePageObservation = nil
-        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
+        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id); WebSerial.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
         if isPrivate { Self.clearPrivateHTTPSStateIfUnused() }
@@ -2601,6 +2605,7 @@ struct TitleReveal: Equatable, Sendable {
         guard !tornDown, let currentWeb = existingWeb, m.webView === currentWeb else { return }
         if m.name == ChromeWebStorePage.messageName { ChromeWebStorePage.receive(m, tab: self); return }
         if m.name == SiteBoostScripts.messageName { SiteBoosts.receive(m, tab: self); return }
+        if m.name == WebSerial.gestureName { WebSerial.gesture(m, tab: self); return }
         if m.name == LinkContextWebView.messageName {
             guard let linkView = existingWeb as? LinkContextWebView else { return }
             linkView.receiveContextLink(m.body, sourceURL: m.frameInfo.request.url)
@@ -4169,7 +4174,7 @@ struct Stash {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
-            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
+            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id); WebSerial.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
                                         isPrivate: isPrivate) { ClosedTabs.push(tab) }
             SharedTabs.remove(id, from: self)

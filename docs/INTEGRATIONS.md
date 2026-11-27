@@ -157,6 +157,17 @@ Sites can show notifications in Notification Center once allowed. A site can onl
 after you click or type on it. Each notification names its site; clicking one brings
 back its tab. macOS asks once whether Vane may show notifications.
 
+### Serial ports
+
+Sites that talk to hardware over Web Serial work in Vane: ESP Web Tools, esptool-js,
+Arduino web editors, Betaflight Configurator and the like. Click the site's connect
+button, pick your device in the list that appears under the address bar, and click
+**Connect**. The list updates as you plug things in.
+
+The site keeps access to that device until you forget it: turn off its **Serial Port**
+row in **Site Controls**. Private windows forget when the tab closes. Only the page in
+the tab can ask, not frames embedded in it, and only on HTTPS or `localhost`.
+
 ## AI connections and feature routing
 
 AI features are off until you turn them on in onboarding or **Settings → Max**. Apple's

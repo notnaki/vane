@@ -343,7 +343,7 @@ struct KeepLoadedRule: Codable, Equatable, Sendable {
     /// far, because both cost a round trip into WebKit.
     private static func facts(_ tab: Tab, now: Date, active: Bool, stashed: Bool) -> Facts {
         Facts(active: active, pinned: tab.stays, stashed: stashed,
-              isPrivate: tab.isPrivate, playing: tab.inMeetCall, loading: tab.loading,
+              isPrivate: tab.isPrivate, playing: tab.inMeetCall || WebSerial.hasOpenPort(tabID: tab.id), loading: tab.loading,
               kept: KeepLoadedRule.matches(tab.currentURL, in: Prefs.keepLoaded), suspended: tab.suspended,
               loaded: tab.existingWeb?.url != nil, idle: now.timeIntervalSince(tab.lastActive))
     }
@@ -421,7 +421,7 @@ struct KeepLoadedRule: Codable, Equatable, Sendable {
         guard tab.existingWeb === web, web.url == pageURL,
               tab.readingDocumentGeneration == document, tab.lastActive == lastActive,
               tab.presentationOwner == owner, var fresh = currentFacts(tab, now: .now) else { return }
-        fresh.playing = playing || tab.pictureInPicture || tab.inMeetCall
+        fresh.playing = playing || tab.pictureInPicture || tab.inMeetCall || WebSerial.hasOpenPort(tabID: tab.id)
             || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
         fresh.hasInput = hasInput
         let currentLimit = underPressure ? 0 : BatterySaver.idleLimit(normal: Prefs.suspendAfter,

@@ -25,6 +25,12 @@
        entitlement does not grant the user's separate Location Services authorization. -->
   <key>com.apple.security.personal-information.location</key><true/>
 
+  <!-- Web Serial (WebSerial.swift): opening a /dev/cu.* node the user picked for a site.
+       Measured with a probe signed with these entitlements: without this, open() fails
+       with EPERM; with it, open, termios and the modem-line ioctls work. Listing devices
+       only reads the IOKit registry and needs no entitlement, so device.usb is not here. -->
+  <key>com.apple.security.device.serial</key><true/>
+
   <!-- ⌘P on a page. -->
   <key>com.apple.security.print</key><true/>
 

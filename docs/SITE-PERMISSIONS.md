@@ -27,6 +27,7 @@ its pending app request. Restoring a backup requires fresh security consent; see
 | Location | WebKit compatibility geolocation delegate on macOS 26; public `WKUIDelegate` request on macOS 27 | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
 | Pop-ups | `WKUIDelegate` `createWebViewWith`, with tabs' `javaScriptCanOpenWindowsAutomatically` on so popups with no gesture arrive there | A popup the user's click or key opened always opens. For any other popup the main document's answer decides: Ask (the default) blocks it and shows a toast whose Open loads its URL beside the page, without `window.opener`; Allow opens it like a clicked one; Block drops it with no toast. A popup with no URL offers Allow instead. Never prompted. If WebKit's gesture accessor goes away, WebKit blocks these popups again itself, with no toast. |
 | Notifications | None in WebKit on macOS. Vane injects `Notification` into the main frame of secure http(s) pages and posts through a `WKScriptMessageHandlerWithReply` bridge to `UNUserNotificationCenter` | Allow Once, saved Allow/Block, private-tab answers and Ask/reset, keyed like camera. `requestPermission()` prompts only during a user gesture (`navigator.userActivation`); otherwise it resolves to the current answer. A blocked or unanswered site's `new Notification` fires `error`. `Notification.permission` is right at document start: an isolated-world script holds the profile's saved answers and hands the page only its own; later changes are pushed to open pages. Each web view's shim carries a random key the page can't read, so page code can't post to the bridge directly. Clicking focuses the tab and fires `click` if the same document is still loaded (each document gets a random id, so a reload or later page ignores it); dismissing fires `close`; a closed tab's notifications are removed, private tabs' at quit, and any left from an earlier run (a crash) at launch. Icons stream through a cookieless session, cut off at 1 MB. Embedded frames have no `Notification`. No service-worker `showNotification` or Push. macOS asks once whether Vane may notify; no entitlement or Info.plist key is needed. |
+| Serial ports | None in WebKit. Vane injects `navigator.serial` and does the I/O itself; see [Serial ports](#serial-ports) | A chooser per request; the picked device is remembered for that origin and profile until forgotten. No Ask/Allow/Block answer: there is nothing to allow without a device. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
 Location decisions and the Location row are available on the minimum macOS 26 runtime,
@@ -110,12 +111,68 @@ closure uses Vane’s existing page teardown; shared tabs retained by another wi
 keep their owning document rather than destroying it just because a snapshot window
 closed. Display capture and location document cleanup remain WebKit’s responsibility.
 
+## Serial ports
+
+System WebKit has no Web Serial API. Vane adds one without patching WebKit: a page script
+defines `navigator.serial` (`requestPort`, `getPorts`, `connect`/`disconnect`, and
+`SerialPort` with `open`, `readable`, `writable`, `setSignals`, `getSignals`, `getInfo`,
+`close`, `forget`), and each call is a script message answered natively with termios and
+`ioctl` on the `/dev/cu.*` node. Bytes cross as base64. The packaged app carries
+`com.apple.security.device.serial`; without it the sandbox refuses the `open`.
+
+The page script runs in the page's own world, so it is trusted with nothing. Every message
+is checked again natively:
+
+- **Who.** The main frame only, in a secure context (HTTPS, or HTTP to `localhost` or a
+  loopback address). Frames get no `navigator.serial`: `WKFrameInfo` cannot say whether a
+  parent delegated `serial` to a child, so none are served. Opaque and `file:` origins
+  have no scope and get nothing.
+- **Which device.** Only one the user picked in the chooser for that exact origin
+  (scheme, host, port) in that profile. The page never names a path; it holds an opaque
+  id. A grant follows the device by USB vendor, product and serial number, or, for a
+  device without a serial number, by vendor, product and port. A different adapter in the
+  same socket does not inherit it.
+- **When the chooser may open.** Only with a user gesture. A script in a separate content
+  world confirms `navigator.userActivation` and tells Vane; a request that arrives
+  without that, including one posted straight to the message handler, is refused. One
+  chooser at a time, only for the page on screen and only when the origin asking is the
+  one in the address bar, and it closes when that page navigates, hides or closes. A
+  camera or location question that arrives while it is open is turned away, as it would
+  be by another permission bubble. Return and Escape cannot connect.
+
+Grants in a regular window are saved until forgotten. A private tab's grants live in
+memory and go with the tab. Backups leave grants out, like other security decisions.
+Forget one from **Site Controls** (the **Serial Port** row), with `port.forget()`, or by
+deleting the profile; an open port closes at once.
+
+Ports close when the document is replaced, the tab closes, or its WebContent process
+ends. A tab with an open port is not suspended, whether for being idle or to free memory
+under pressure. A navigation that has only started leaves them open, because it may turn
+into a download and leave the page in place. A port is opened exclusively, so a second
+tab or app gets an error instead of half the bytes; `port.close()` resolves only once the
+device is released, so a page can close and reopen it at once (as flashers do to change
+baud rate).
+
+Up to 1 MiB received from a device (or the page's `bufferSize`, if larger) waits natively
+for the page to read it; past that the device is held back. At most 16 MiB may wait to be
+written to one port: a write beyond that is rejected with a `QuotaExceededError`, which
+the page script, sending one megabyte at a time, never reaches.
+
+Limits: no Bluetooth service-class ports beyond what macOS already lists under
+`/dev/cu.*`; no BYOB readers (`readable` is a default stream, not a byte stream); parity,
+framing, break and overrun errors are not reported (a slow reader holds the device back
+instead); `navigator.serial` is not in workers or frames. A page restored from the
+back/forward cache finds its ports closed and must reopen them, and gets no `connect` or
+`disconnect` events until it next calls `getPorts()`, `requestPort()` or
+`addEventListener()` on `navigator.serial`.
+
 ## Validation and remaining platform coverage
 
 Run the focused fixtures on a logged-in macOS desktop:
 
 ```sh
 swift test --filter 'SitePermissionTests|SitePermissionWebTests|WebNotification|SharedPresentationTests|LifecycleEfficiencyTests'
+swift test --filter 'WebSerialTests|SerialConnectionTests|WebSerialWebKitTests'
 ./.build/debug/vane selfcheck --pure
 python3 scripts/check-permission-display.py
 ```
@@ -142,6 +199,11 @@ They run without the macOS 27 SDK/runtime gate, so the minimum-runtime CI exerci
 the compatibility dispatch.
 These exercise policy and engine cleanup without collecting physical device data or
 changing macOS authorization.
+
+The serial fixtures use a pseudo-terminal as the device and answer the chooser
+themselves. `WebSerialTests` and `SerialConnectionTests` open no window; a pty has no
+modem lines and no exclusive lock, so DTR/RTS and "port busy" are covered by the bit
+arithmetic and by hand on hardware, not by a fixture.
 
 This is not verification of real TCC Allow/deny/revocation, accuracy of delivered
 location coordinates, native screen-source chooser restrictions, audio sharing, or

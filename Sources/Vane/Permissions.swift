@@ -236,8 +236,9 @@ import WebKit
             symbol: symbol)
     }
 
+    /// The serial port chooser is one of these bubbles too, and nothing may stack on it.
     static func activePrompt(in window: NSWindow) -> SitePermissionPrompt? {
-        pending.values.first { $0.window === window }?.presentation
+        pending.values.first { $0.window === window }?.presentation ?? WebSerial.chooser(in: window)
     }
 
     /// Capture public lifecycle identity synchronously at the delegate boundary. A

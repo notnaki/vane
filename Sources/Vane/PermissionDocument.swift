@@ -75,6 +75,7 @@ extension Tab {
     /// the view during teardown. Location/display tracks end with WebKit's document.
     func endPermissionDocument(navigationStarted: Bool = false) {
         ExternalApps.dismiss(for: self)
+        WebSerial.endDocument(tabID: id, navigationStarted: navigationStarted)
         permissionGeneration &+= 1
         SitePermissions.endDocument(tabID: id, preservingLocation: navigationStarted)
         existingWeb?.setCameraCaptureState(.none, completionHandler: nil)

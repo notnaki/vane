@@ -9,6 +9,9 @@ import SwiftUI
     let informativeText: String
     let persistentAllowTitle: String
     private let symbol: String
+    private var width: CGFloat = 236
+    /// What the bubble shows instead of the Allow question: the serial port chooser.
+    private var content: ((@escaping (NSApplication.ModalResponse) -> Void) -> AnyView)?
     private var continuation: CheckedContinuation<NSApplication.ModalResponse, Never>?
     /// Cancelled before the bubble was up (during the wait for an auto-hidden bar).
     private var aborted = false
@@ -21,6 +24,12 @@ import SwiftUI
         super.init()
         popover.behavior = .semitransient
         popover.delegate = self
+    }
+
+    convenience init(width: CGFloat, content: @escaping (@escaping (NSApplication.ModalResponse) -> Void) -> AnyView) {
+        self.init(message: "", information: "", persistentAllowTitle: "", symbol: "")
+        self.width = width
+        self.content = content
     }
 
     func present(in window: NSWindow, tabID: UUID) async -> NSApplication.ModalResponse {
@@ -41,11 +50,11 @@ import SwiftUI
             x: bounds.minX + min(150, bounds.width / 2),
             y: positioningView.isFlipped ? bounds.minY : bounds.maxY - 1,
             width: 1, height: 1)
-        let view = PermissionPromptContent(message: messageText, information: informativeText,
-                                           persistentAllowTitle: persistentAllowTitle, icon: symbol) {
-            [weak self] in self?.finish($0)
-        }
-            .frame(width: min(236, max(180, content.bounds.width - 24)))
+        let respond: (NSApplication.ModalResponse) -> Void = { [weak self] in self?.finish($0) }
+        let view = (self.content?(respond) ?? AnyView(PermissionPromptContent(
+            message: messageText, information: informativeText,
+            persistentAllowTitle: persistentAllowTitle, icon: symbol, respond: respond)))
+            .frame(width: min(width, max(180, content.bounds.width - 24)))
         let controller = NSHostingController(rootView: view)
         popover.contentViewController = controller
         popover.contentSize = controller.view.fittingSize
@@ -130,7 +139,7 @@ private struct PermissionPromptContent: View {
     }
 }
 
-private struct PermissionButtonStyle: ButtonStyle {
+struct PermissionButtonStyle: ButtonStyle {
     var emphasized = false
 
     func makeBody(configuration: Configuration) -> some View {
