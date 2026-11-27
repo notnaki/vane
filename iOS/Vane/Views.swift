@@ -1056,7 +1056,7 @@ struct BookmarksView: View {
                     }
                 }
             }
-            
+
             .overlay { if groups.isEmpty { ContentUnavailableView("No Bookmarks", systemImage: "book", description: Text("Bookmarks you save in Vane on your Mac show up here.")) } }
             .navigationTitle("Bookmarks").navigationBarTitleDisplayMode(.inline)
     }
@@ -1114,7 +1114,7 @@ struct SettingsView: View {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 }
             }
-            
+
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
             .confirmationDialog("Clear history, cookies and website data on this device?", isPresented: $confirmClear, titleVisibility: .visible) {
@@ -1142,7 +1142,7 @@ struct HistoryView: View {
                 }
             }
         }
-        
+
         .searchable(text: $query)
         .overlay { if browser.allHistory.isEmpty { ContentUnavailableView("No History", systemImage: "clock") } }
         .navigationTitle("History")
