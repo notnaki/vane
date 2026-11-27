@@ -30,11 +30,12 @@ import WebKit
         return parts
     }
 
-    /// A row's state as Chrome names it: a paused row is still in progress.
+    /// A row's state as Chrome names it: one the user paused is still in progress; one the
+    /// network broke off, though Vane keeps it as resumable, is interrupted.
     static func state(_ status: Downloads.Item.Status, reason: String) -> (state: String, paused: Bool, error: String?) {
         switch status {
         case .running: ("in_progress", false, nil)
-        case .paused: ("in_progress", true, nil)
+        case .paused: ["Paused", "Pausing…"].contains(reason) ? ("in_progress", true, nil) : ("interrupted", false, "NETWORK_FAILED")
         case .done, .missing: ("complete", false, nil)
         case .failed: ("interrupted", false, reason == Downloads.cancelledText ? "USER_CANCELED" : "NETWORK_FAILED")
         }
@@ -50,9 +51,15 @@ import WebKit
         ].contains(name)
     }
 
+    /// What a row reports as its `url`: a data: URL cut short, as it can be a whole file.
+    nonisolated static func reported(_ url: String) -> String {
+        url.lowercased().hasPrefix("data:") && url.count > 100 ? String(url.prefix(100)) + "…" : url
+    }
+
     // Requests travel over `ExtensionChromiumGaps`' `ask`, as `downloads.<op>`. Events come
     // from one call the host holds open until the list changes: each context compares the
-    // list it last saw, as Chrome reports changes, and stays awake while it listens.
+    // list it last saw, as Chrome reports changes, and stays awake while it listens. A
+    // failed call is retried after a moment, so a context never goes deaf.
     // ponytail: the first answer is the baseline, so a download started while a context
     // adds its first listener may come without `onCreated`.
     /// Run inside `ExtensionChromiumGaps.script`, with its `api`, `ask`, `answer` and `declared`.
@@ -66,8 +73,8 @@ import WebKit
           const poll = async () => {
             if (polling || !listening()) return;
             polling = true;
-            try {
-              while (listening()) {
+            while (listening()) {
+              try {
                 const reply = await call('watch', stamp === undefined ? {} : {after: stamp});
                 const baseline = stamp === undefined, next = new Map(reply.items.map(item => [item.id, item]));
                 stamp = reply.stamp;
@@ -84,8 +91,12 @@ import WebKit
                   for (const id of known.keys()) if (!next.has(id)) fire(listeners.erased, id);
                 }
                 known = next;
+              } catch (error) {
+                console.error(error);
+                await new Promise(resolve => setTimeout(resolve, 2000));
               }
-            } catch (error) { console.error(error); } finally { polling = false; }
+            }
+            polling = false;
           };
           const channel = set => Object.freeze({
             addListener(listener) { if (typeof listener !== 'function') throw new TypeError('Listener must be a function'); set.add(listener); poll(); },
@@ -135,14 +146,15 @@ import WebKit
           Object.defineProperty(api, 'downloads', {configurable: true, value: {
             download(options, callback) {
               return answer((async () => {
-                let url = String(options?.url ?? '');
+                let url = String(options?.url ?? ''), reported;
                 if (/^blob:/i.test(url)) {
                   // Only the extension's own blobs, read here: the host cannot reach them.
                   const inner = new URL(url.slice(5));
                   if (inner.protocol !== globalThis.location?.protocol || inner.host !== globalThis.location?.host) throw new Error('Invalid URL.');
+                  reported = url;
                   url = await toData(await (await fetch(url)).blob());
                 }
-                const args = {url};
+                const args = {url, ...(reported ? {reported} : {})};
                 for (const key of ['filename', 'saveAs', 'conflictAction', 'method', 'body']) if (options?.[key] !== undefined) args[key] = options[key];
                 if (options?.headers !== undefined) args.headers = [...options.headers].map(header => [String(header?.name), String(header?.value)]);
                 return call('download', args);
@@ -155,8 +167,8 @@ import WebKit
             erase(query, callback) {
               return answer(call('list').then(items => call('erase', {ids: search(items, query).map(item => item.id)})), callback);
             },
-            // A click in this page counts as the user's gesture; a worker has none to report.
-            open: each('open', () => ({gesture: globalThis.navigator?.userActivation?.isActive === true})),
+            // The host decides whether the user just clicked; nothing reported here counts.
+            open: each('open'),
             show(id) { quiet(call('show', {id})); },
             showDefaultFolder() { quiet(call('showDefaultFolder')); },
             getFileIcon(id, options, callback) {
@@ -172,15 +184,15 @@ import WebKit
 }
 
 /// The host's side of `chrome.downloads` for one profile: Chrome's integer ids over the
-/// list's UUIDs, and which extension started what.
+/// list's UUIDs. Which extension started what lives on the row (`Item.byExtension`).
 // ponytail: ids and `byExtensionId` live as long as the host, so they change on relaunch.
 // Persist them beside the list if an extension keeps ids across a restart.
 @MainActor final class ExtensionDownloads {
     let profileID: UUID
     private var ids: [UUID: Int] = [:]
     private var nextID = 1
-    private var started: [UUID: (id: String, name: String, url: String)] = [:]
-    private var manager: Downloads { Downloads.manager(for: profileID) }
+    /// Once: asking by id per call would bring a deleted profile's list back.
+    private lazy var manager = Downloads.manager(for: profileID)
     private static let iso: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -189,17 +201,25 @@ import WebKit
 
     init(profileID: UUID) { self.profileID = profileID }
 
+    private func id(_ item: Downloads.Item) -> Int {
+        if let id = ids[item.id] { return id }
+        defer { nextID += 1 }
+        ids[item.id] = nextID
+        return nextID
+    }
+
     /// Each row in Chrome's shape, oldest first, as Chrome numbers them.
     private func list() -> [[String: Any]] {
         manager.items.reversed().map { item in
-            let id = ids[item.id] ?? { defer { nextID += 1 }; ids[item.id] = nextID; return nextID }()
+            let id = id(item)
             var reason = ""
             if case .failed(let why) = item.state { reason = why }
             let (state, paused, error) = ExtensionDownloadsAPI.state(item.status, reason: reason)
-            let url = item.source?.absoluteString ?? started[item.id]?.url ?? ""
+            let url = ExtensionDownloadsAPI.reported(item.byExtension?.url ?? item.source?.absoluteString ?? "")
             let size: Int64 = item.total > 0 ? item.total : -1
             var entry: [String: Any] = [
-                "id": id, "url": url, "finalUrl": url, "referrer": "", "filename": item.url?.path ?? "",
+                "id": id, "url": url, "finalUrl": item.transfer.map { ExtensionDownloadsAPI.reported($0.absoluteString) } ?? url,
+                "referrer": "", "filename": item.url?.path ?? "",
                 "incognito": false, "danger": "safe", "state": state, "paused": paused, "canResume": manager.canResume(item),
                 "bytesReceived": item.received, "totalBytes": size, "fileSize": item.status == .done ? size : -1,
                 "exists": item.status != .missing, "startTime": Self.iso.string(from: item.started),
@@ -207,7 +227,7 @@ import WebKit
             ]
             if let completed = item.completed { entry["endTime"] = Self.iso.string(from: completed) }
             if let error { entry["error"] = error }
-            if let by = started[item.id] { entry["byExtensionId"] = by.id; entry["byExtensionName"] = by.name }
+            if let by = item.byExtension { entry["byExtensionId"] = by.id; entry["byExtensionName"] = by.name }
             return entry
         }
     }
@@ -218,30 +238,40 @@ import WebKit
         return item
     }
 
+    /// `gesture`: the host saw the user click one of this extension's pages a moment ago.
     func answer(_ operation: String, _ arguments: [String: Any], for context: WKWebExtensionContext,
-                extensionID: String, window: NSWindow?) async throws -> Any {
+                extensionID: String, window: NSWindow?, gesture: () -> Bool) async throws -> Any {
         switch operation {
         case "download":
+            // The URL the extension named: its blob: one, not the data: it was read into.
+            let named = (arguments["reported"] as? String).flatMap { $0.lowercased().hasPrefix("blob:") ? $0 : nil }
+                ?? arguments["url"] as? String ?? ""
             let item = try await manager.start(try request(arguments), path: try path(arguments),
                                                overwrite: arguments["conflictAction"] as? String == "overwrite",
-                                               saveAs: arguments["saveAs"] as? Bool == true, in: window)
-            started[item.id] = (extensionID, context.webExtension.displayName ?? "", arguments["url"] as? String ?? "")
-            _ = list()
-            return ids[item.id] ?? -1
+                                               saveAs: arguments["saveAs"] as? Bool == true,
+                                               by: (extensionID, context.webExtension.displayName ?? "", ExtensionDownloadsAPI.reported(named)),
+                                               in: window)
+            return id(item)
         case "list":
             return list()
         case "watch":
-            // ponytail: checks the list twice a second while a context listens; observe the
-            // rows instead if that ever shows up in a profile.
+            // Wakes on the list's saves, not the clock; a save that only moved bytes, which
+            // Chrome does not report, keeps waiting.
+            // ponytail: polls an integer a few times a second per listening context; observe
+            // `revision` instead if that ever shows up in a profile.
             let after = arguments["after"] as? String, deadline = ContinuousClock.now + .seconds(25)
+            var seen: Int?
             while true {
-                let items = list()
-                // Bytes arriving are not a change Chrome reports.
-                let quiet = items.map { $0.filter { $0.key != "bytesReceived" } }
-                let data = try JSONSerialization.data(withJSONObject: quiet, options: [.sortedKeys])
-                let stamp = String(data.hashValue)
-                if stamp != after || ContinuousClock.now >= deadline { return ["stamp": stamp, "items": items] }
-                try await Task.sleep(for: .milliseconds(500))
+                if seen != manager.revision {
+                    seen = manager.revision
+                    let items = list()
+                    let quiet = items.map { $0.filter { $0.key != "bytesReceived" } }
+                    let data = try JSONSerialization.data(withJSONObject: quiet, options: [.sortedKeys])
+                    let stamp = String(data.hashValue)
+                    if stamp != after { return ["stamp": stamp, "items": items] }
+                }
+                if ContinuousClock.now >= deadline { return ["stamp": after ?? "", "items": list()] }
+                try await Task.sleep(for: .milliseconds(250))
             }
         case "pause":
             let item = try item(arguments)
@@ -256,12 +286,12 @@ import WebKit
             let wanted = Set((arguments["ids"] as? [NSNumber] ?? []).map(\.intValue))
             let erased = manager.items.filter { ids[$0.id].map(wanted.contains) == true }
             for item in erased { manager.forget(item) }
-            return erased.compactMap { ids[$0.id] }
+            return erased.compactMap { ids.removeValue(forKey: $0.id) }
         case "open":
             guard ExtensionDownloadsAPI.declared(context.webExtension.manifest, ExtensionDownloadsAPI.openPermission) else {
                 throw ExtensionHost.Failure("The \"downloads.open\" permission is required.")
             }
-            guard arguments["gesture"] as? Bool == true else { throw ExtensionHost.Failure("User gesture required.") }
+            guard gesture() else { throw ExtensionHost.Failure("User gesture required.") }
             let item = try item(arguments)
             guard item.status == .done else { throw ExtensionHost.Failure("Download must be complete.") }
             manager.open(item)

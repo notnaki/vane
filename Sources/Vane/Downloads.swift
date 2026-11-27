@@ -163,6 +163,11 @@ import Darwin
         @Published var source: URL?
         /// The last redirect target the transfer followed; resume data replays it.
         fileprivate(set) var transfer: URL?
+        /// Which extension asked for this row (`chrome.downloads`), and the URL it named:
+        /// not saved, as Chrome's ids are not.
+        fileprivate(set) var byExtension: (id: String, name: String, url: String)?
+        /// `conflictAction: 'overwrite'`: the name in this folder the finished file takes.
+        fileprivate var replaces: String?
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -532,6 +537,7 @@ import Darwin
     /// while bytes are arriving.
     func save() {
         guard !invalidated else { return }
+        revision &+= 1
         lastSave = .now
         var keep: [Item] = []
         var evicted: [Item] = []
@@ -554,6 +560,8 @@ import Darwin
     }
 
     private var lastSave = Date.distantPast
+    /// Bumped on every save, so `chrome.downloads` can wait for a change without rebuilding.
+    private(set) var revision = 0
 
     /// Bytes arrive dozens of times a second; the index does not need to. One write a
     /// second keeps a hard quit's record within a second of the truth.
@@ -832,7 +840,10 @@ import Darwin
 
     private var saveAsDownloads: [ObjectIdentifier: String] = [:]
     /// `chrome.downloads.download`'s own: a path under the folder, and who hears of the row.
-    private struct ExtensionRequest { let path: [String]?; let overwrite: Bool; let done: (Result<Item, any Error>) -> Void }
+    private struct ExtensionRequest {
+        let path: [String]?, overwrite: Bool, by: (id: String, name: String, url: String)
+        let done: (Result<Item, any Error>) -> Void
+    }
     private var extensionRequests: [ObjectIdentifier: ExtensionRequest] = [:]
     private var privateSources: [ObjectIdentifier: WKWebsiteDataStore] = [:]
     private struct Origin { weak var web: WKWebView?; weak var window: NSWindow? }
@@ -853,21 +864,27 @@ import Darwin
     /// An extension's download, with the profile's cookies, into this list like any other.
     /// `path` is already checked (`ExtensionDownloadsAPI.relativePath`); the row comes back
     /// once WebKit knows where the file goes.
-    func start(_ request: URLRequest, path: [String]?, overwrite: Bool, saveAs: Bool, in window: NSWindow?) async throws -> Item {
+    func start(_ request: URLRequest, path: [String]?, overwrite: Bool, saveAs: Bool,
+               by: (id: String, name: String, url: String), in window: NSWindow?) async throws -> Item {
         guard !invalidated, profileID != Profile.incognito.id else { throw ExtensionHost.Failure("Downloads are unavailable.") }
         let web = profileResumer()
         let download = await web.startDownload(using: request)
         return try await withCheckedThrowingContinuation { done in
-            extensionRequests[ObjectIdentifier(download)] = ExtensionRequest(path: path, overwrite: overwrite) { done.resume(with: $0) }
+            extensionRequests[ObjectIdentifier(download)] = ExtensionRequest(path: path, overwrite: overwrite, by: by) { done.resume(with: $0) }
             attach(download, alwaysAsk: saveAs, suggestedFilename: path?.last, from: web, in: window)
         }
     }
 
-    /// Where an extension's `path` lands under `dir`, its folders made: nil when an existing
-    /// folder on the way leads out of `dir` (a symlink). `overwrite` replaces a plain file.
+    /// Where an extension's `path` lands under `dir`, its folders made: nil when `dir` is
+    /// gone or an existing folder on the way leads out of it (a symlink). `overwrite` never
+    /// touches the old file now: the download goes beside it and `replaces` names the plain
+    /// file it takes the place of once complete (`replace`), so a failed transfer loses
+    /// nothing. A path another download is writing is never a target.
     nonisolated static func extensionDestination(_ path: [String], in dir: URL, overwrite: Bool,
-                                                 fm: FileManager = .default, reserved: [URL] = []) -> URL? {
-        guard let name = path.last else { return nil }
+                                                 fm: FileManager = .default,
+                                                 reserved: [URL] = []) -> (file: URL, replaces: String?)? {
+        var isFolder: ObjCBool = false
+        guard let name = path.last, fm.fileExists(atPath: dir.path, isDirectory: &isFolder), isFolder.boolValue else { return nil }
         let folder = path.dropLast().reduce(dir) { $0.appendingPathComponent($1, isDirectory: true) }
         let root = dir.resolvingSymlinksInPath().path
         func inside(_ url: URL) -> Bool {
@@ -879,9 +896,25 @@ import Darwin
         guard inside(existing), (try? fm.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
               inside(folder) else { return nil }
         let file = folder.appendingPathComponent(name)
-        if overwrite, let type = try? fm.attributesOfItem(atPath: file.path)[.type] as? FileAttributeType, type == .typeRegular,
-           (try? fm.removeItem(at: file)) != nil { return file }
-        return uniqueDestination(in: folder, suggested: name, fm: fm, reserved: reserved)
+        let unique = uniqueDestination(in: folder, suggested: name, fm: fm, reserved: reserved)
+        let plain = (try? fm.attributesOfItem(atPath: file.path)[.type] as? FileAttributeType) == .typeRegular
+        return (unique, overwrite && unique != file && plain && !isReserved(file, reserved) ? name : nil)
+    }
+
+    /// `overwrite`'s last step: the finished `file` takes `target`'s place, unless another
+    /// download now writes there or it is no longer a plain file. nil leaves `file` as is.
+    nonisolated static func replace(_ target: URL, with file: URL, fm: FileManager = .default, reserved: [URL] = []) -> URL? {
+        guard !isReserved(target, reserved) else { return nil }
+        guard let type = try? fm.attributesOfItem(atPath: target.path)[.type] as? FileAttributeType else {
+            return (try? fm.moveItem(at: file, to: target)) != nil ? target : nil
+        }
+        guard type == .typeRegular else { return nil }
+        do { _ = try fm.replaceItemAt(target, withItemAt: file); return target } catch { return nil }
+    }
+
+    private nonisolated static func isReserved(_ url: URL, _ reserved: [URL]) -> Bool {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return reserved.contains { $0.standardizedFileURL.resolvingSymlinksInPath().path == path }
     }
 
     /// A server filename wins over the anchor's download attribute. Otherwise preserve
@@ -968,9 +1001,10 @@ import Darwin
                                             reserved: Array(Self.pendingDestinations.values))
         let anchorFilename = saveAsDownloads.removeValue(forKey: ObjectIdentifier(download))
         let chosenByPanel = anchorFilename != nil || DownloadLocation.askEveryTime(for: profileID)
+        var replaces: String?
         if chosenByPanel {
             let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")
-            let name = Self.saveAsFilename(anchor: anchorFilename, server: suggestedFilename, disposition: disposition)
+            let name = asked?.path?.last ?? Self.saveAsFilename(anchor: anchorFilename, server: suggestedFilename, disposition: disposition)
             guard let chosen = askWhereToSave(suggested: name,
                                               in: destinationDirectory) else {
                 completionHandler(nil)      // cancelled: no file, and no row either
@@ -978,12 +1012,14 @@ import Darwin
             }
             target = chosen
         } else if let asked, let path = asked.path {
-            guard let chosen = Self.extensionDestination(path, in: destinationDirectory, overwrite: asked.overwrite,
-                                                         reserved: Array(Self.pendingDestinations.values)) else {
-                completionHandler(nil)
+            if let chosen = Self.extensionDestination(path, in: destinationDirectory, overwrite: asked.overwrite,
+                                                      reserved: Array(Self.pendingDestinations.values)) {
+                target = chosen.file
+                replaces = chosen.replaces
+            } else if FileManager.default.fileExists(atPath: destinationDirectory.path) {
+                completionHandler(nil)      // a path out of the folder
                 return
-            }
-            target = chosen
+            }   // A missing folder: the check below says so on the row.
         }
         guard acceptsRetryOrigin(download), pendingDownloads[ObjectIdentifier(download)] != nil else {
             completionHandler(nil)
@@ -995,9 +1031,16 @@ import Darwin
         entry.destinationBookmarkIsFile = chosenByPanel ? true : nil
         entry.destinationBookmark = DownloadLocation.bookmark(for: target, profileID: profileID,
                                                              selectedFile: chosenByPanel)
-        // An extension's data: URL is its whole file; the row keeps no copy of it.
-        entry.source = (download.originalRequest?.url ?? response.url).flatMap { $0.scheme == "data" ? nil : $0 }
+        entry.source = download.originalRequest?.url ?? response.url
         entry.transfer = response.url
+        if let asked {
+            // An extension's data: URL is its whole file, often a blob it read; the row and
+            // downloads.json keep no copy of it.
+            if entry.source?.scheme?.lowercased() == "data" { entry.source = nil }
+            if entry.transfer?.scheme?.lowercased() == "data" { entry.transfer = nil }
+            entry.byExtension = asked.by
+            entry.replaces = replaces
+        }
         entry.sourceMethod = download.originalRequest?.httpMethod
         entry.sourceWeb = origin?.web ?? download.webView
         if profileID == Profile.incognito.id {
@@ -1054,11 +1097,20 @@ import Darwin
         guard let i = item(for: download) else { return }
         Self.pendingDestinations[i.scopeOwner] = nil
         captureFileGrant(i)
-        guard let destination = restoredDestination(i),
+        guard var destination = restoredDestination(i),
               let size = Self.validFileSize(destination, expected: i.total > 0 ? i.total : nil) else {
             i.unwatch()
             finish(i, error: "The downloaded file is unavailable or unreadable. Retry the download.", resumeData: nil)
             return
+        }
+        if let name = i.replaces {
+            i.replaces = nil
+            if let replaced = Self.replace(destination.deletingLastPathComponent().appendingPathComponent(name), with: destination,
+                                           reserved: Array(Self.pendingDestinations.values)) {
+                destination = replaced
+                i.url = replaced
+                i.name = Self.filenameWithoutBidiControls(name)
+            }
         }
         Self.quarantine(destination, source: i.source, page: i.sourceWeb?.url,
                         isPrivate: profileID == Profile.incognito.id)

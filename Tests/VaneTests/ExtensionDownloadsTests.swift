@@ -19,10 +19,20 @@ import XCTest
     func testRowsReadAsChromesStates() {
         XCTAssertTrue(ExtensionDownloadsAPI.state(.running, reason: "") == ("in_progress", false, nil))
         XCTAssertTrue(ExtensionDownloadsAPI.state(.paused, reason: "Paused") == ("in_progress", true, nil))
+        XCTAssertTrue(ExtensionDownloadsAPI.state(.paused, reason: "Pausing…") == ("in_progress", true, nil))
+        XCTAssertTrue(ExtensionDownloadsAPI.state(.paused, reason: "Interrupted — The network connection was lost.. Resume available.")
+                      == ("interrupted", false, "NETWORK_FAILED"))
         XCTAssertTrue(ExtensionDownloadsAPI.state(.done, reason: "") == ("complete", false, nil))
         XCTAssertTrue(ExtensionDownloadsAPI.state(.missing, reason: Downloads.missingText) == ("complete", false, nil))
         XCTAssertTrue(ExtensionDownloadsAPI.state(.failed, reason: Downloads.cancelledText) == ("interrupted", false, "USER_CANCELED"))
         XCTAssertTrue(ExtensionDownloadsAPI.state(.failed, reason: "The network connection was lost.") == ("interrupted", false, "NETWORK_FAILED"))
+    }
+
+    func testDataURLsAreReportedShort() {
+        XCTAssertEqual(ExtensionDownloadsAPI.reported("data:text/plain;base64,aGVsbG8="), "data:text/plain;base64,aGVsbG8=")
+        let long = "data:application/octet-stream;base64," + String(repeating: "A", count: 10_000)
+        XCTAssertEqual(ExtensionDownloadsAPI.reported(long).count, 101)
+        XCTAssertEqual(ExtensionDownloadsAPI.reported("https://example.com/" + String(repeating: "a", count: 200)).count, 220)
     }
 
     func testUnsafeHeadersAreRefused() {
@@ -47,17 +57,39 @@ import XCTest
         defer { try? fm.removeItem(at: base) }
 
         let nested = try XCTUnwrap(Downloads.extensionDestination(["a", "b", "file.txt"], in: root, overwrite: false))
-        XCTAssertEqual(nested.path, root.appendingPathComponent("a/b/file.txt").path)
+        XCTAssertEqual(nested.file.path, root.appendingPathComponent("a/b/file.txt").path)
+        XCTAssertNil(nested.replaces)
         XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent("a/b").path))
 
-        try Data("old".utf8).write(to: root.appendingPathComponent("taken.txt"))
-        XCTAssertEqual(Downloads.extensionDestination(["taken.txt"], in: root, overwrite: false)?.lastPathComponent, "taken 2.txt")
-        XCTAssertEqual(Downloads.extensionDestination(["taken.txt"], in: root, overwrite: true)?.lastPathComponent, "taken.txt")
-        XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("taken.txt").path), "Overwrite replaces the plain file")
+        // Overwrite downloads beside the old file, which stays until the new one is complete.
+        let taken = root.appendingPathComponent("taken.txt")
+        try Data("old".utf8).write(to: taken)
+        XCTAssertEqual(Downloads.extensionDestination(["taken.txt"], in: root, overwrite: false)?.file.lastPathComponent, "taken 2.txt")
+        XCTAssertNil(Downloads.extensionDestination(["taken.txt"], in: root, overwrite: false)?.replaces)
+        let overwrite = try XCTUnwrap(Downloads.extensionDestination(["taken.txt"], in: root, overwrite: true))
+        XCTAssertEqual(overwrite.file.lastPathComponent, "taken 2.txt")
+        XCTAssertEqual(overwrite.replaces, "taken.txt")
+        XCTAssertEqual(try String(contentsOf: taken, encoding: .utf8), "old")
+        try Data("new".utf8).write(to: overwrite.file)
+        XCTAssertEqual(Downloads.replace(taken, with: overwrite.file)?.path, taken.path)
+        XCTAssertEqual(try String(contentsOf: taken, encoding: .utf8), "new")
+        XCTAssertFalse(fm.fileExists(atPath: overwrite.file.path))
+
+        // A path another download is writing is never replaced, then or at the end.
+        XCTAssertNil(Downloads.extensionDestination(["taken.txt"], in: root, overwrite: true, reserved: [taken])?.replaces)
+        try Data("other".utf8).write(to: overwrite.file)
+        XCTAssertNil(Downloads.replace(taken, with: overwrite.file, reserved: [taken]))
+        XCTAssertEqual(try String(contentsOf: taken, encoding: .utf8), "new")
 
         // A folder is never overwritten, only stepped around.
         try fm.createDirectory(at: root.appendingPathComponent("folder"), withIntermediateDirectories: true)
-        XCTAssertEqual(Downloads.extensionDestination(["folder"], in: root, overwrite: true)?.lastPathComponent, "folder 2")
+        XCTAssertEqual(Downloads.extensionDestination(["folder"], in: root, overwrite: true)?.file.lastPathComponent, "folder 2")
+        XCTAssertNil(Downloads.extensionDestination(["folder"], in: root, overwrite: true)?.replaces)
+
+        // A missing download folder is not made again.
+        let gone = base.appendingPathComponent("Gone")
+        XCTAssertNil(Downloads.extensionDestination(["a", "file.txt"], in: gone, overwrite: false))
+        XCTAssertFalse(fm.fileExists(atPath: gone.path))
 
         // A symlink inside the folder that leads out of it is refused, and nothing is made there.
         try fm.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: outside)
@@ -181,6 +213,13 @@ import XCTest
         for id in pair { try await wait("small file \(id)") { try await self.item(id, in: page)["state"] as? String == "complete" } }
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("hello.txt"), encoding: .utf8), "hello")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("blob.txt"), encoding: .utf8), "blob body")
+        let blobRow = try await item(pair[1], in: page)
+        XCTAssertEqual((blobRow["url"] as? String)?.hasPrefix("blob:"), true, "The URL the extension named")
+        XCTAssertEqual(blobRow["byExtensionName"] as? String, "Download Fixture")
+        // Neither file is kept a second time in the list on disk.
+        let saved = try String(contentsOf: Downloads.listURL(for: profile, in: Store.directory), encoding: .utf8)
+        XCTAssertFalse(saved.contains("data:"), saved)
+        XCTAssertTrue(saved.contains("blob.txt"))
         let found = try await run("""
             const newest = await chrome.downloads.search({orderBy: ['-startTime'], limit: 1});
             const texts = await chrome.downloads.search({filenameRegex: '\\\\.txt$', state: 'complete'});

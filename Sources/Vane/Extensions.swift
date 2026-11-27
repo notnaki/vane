@@ -2377,7 +2377,7 @@ import WebKit
             }
             return try await downloads.answer(String(operation.dropFirst("downloads.".count)), arguments, for: context,
                 extensionID: chromeID(of: context, path: loaded.first { $0.context === context }?.path).id,
-                window: frontmostStore?.window)
+                window: frontmostStore?.window) { [unowned self] in hasOwnPageGesture(context) }
         case let operation where operation.hasPrefix("ws."):
             let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
             if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
@@ -2592,6 +2592,18 @@ import WebKit
     /// The user just pressed this extension's button or shortcut.
     func noteSidePanelGesture(_ context: WKWebExtensionContext) {
         sidePanelGestures[ObjectIdentifier(context)] = .now
+    }
+
+    /// `downloads.open`'s gesture, which launches a file, so only what the host saw: the
+    /// extension's button or shortcut, or a real click a moment ago while one of the
+    /// extension's own pages has focus in the key window. Never the page's own report.
+    func hasOwnPageGesture(_ context: WKWebExtensionContext) -> Bool {
+        if let last = sidePanelGestures[ObjectIdentifier(context)], .now - last < .seconds(5) { return true }
+        guard secondsSinceClick() < 5 else { return false }
+        var view = NSApp.keyWindow?.firstResponder as? NSView
+        while let current = view, !(current is WKWebView) { view = current.superview }
+        guard let url = (view as? WKWebView)?.url else { return false }
+        return url.scheme == context.baseURL.scheme && url.host == context.baseURL.host && url.port == context.baseURL.port
     }
 
     /// `sidePanel.open()` answers a user gesture, as in Chrome: the extension's button or
