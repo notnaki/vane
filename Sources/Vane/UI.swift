@@ -1144,7 +1144,8 @@ struct LoadingBar: View {
         /// animation cannot be stopped mid-breath and faded from where it is.
         static func at(_ t: Double, since end: Double? = nil, still: Bool = false) -> Pose {
             if still { return Pose(width: Look.loadingPill.width, opacity: end == nil ? 1 : 0) }
-            let live = end.map { t - $0 } ?? t
+            // max: a paused timeline can hand back a date from before the load began.
+            let live = max(0, end.map { t - $0 } ?? t)
             var s = shape(live)
             if let end {
                 let k = min(1, end / fade)
@@ -1178,6 +1179,7 @@ struct LoadingBar: View {
             let pill = Look.loadingPill.width
             return [
                 ("a load starts invisible", at(0).opacity == 0),
+                ("…even when the clock reads from before it began", at(-0.8).opacity == 0),
                 ("…breathes to its peak half a breath in", abs(at(pulse / 2).opacity - 1) < 0.001),
                 ("…and again on the next breath", abs(at(pulse * 1.5).opacity - 1) < 0.001),
                 ("…at full width there", abs(at(pulse / 2).width - pill) < 0.001),
@@ -1225,7 +1227,7 @@ struct LoadingBar: View {
     }
 
     var body: some View {
-        TimelineView(.animation(paused: began == nil || still)) { context in
+        TimelineView(.animation(paused: began == nil || still || hidden)) { context in
             let now = context.date
             let shape = began.map { b in
                 Pose.at(now.timeIntervalSince(b), since: ended.map { now.timeIntervalSince($0) }, still: still)
@@ -1234,7 +1236,9 @@ struct LoadingBar: View {
         }
         .onAppear { if tab.loading { began = .now } }
         .onChange(of: tab.loading) { _, loading in
-            if loading { began = .now; ended = nil } else if began != nil { ended = .now }
+            // A load that picks up again mid-fade carries on from where the pill was.
+            if loading { if began == nil || ended == nil { began = .now }; ended = nil }
+            else if began != nil { ended = .now }
         }
         // Once the fade is over, stop the clock.
         .task(id: ended) {
@@ -1248,6 +1252,7 @@ struct LoadingBar: View {
         .accessibilityLabel("Loading page")
         .accessibilityValue(Text("\(Int(tab.progress * 100))%"))
         .accessibilityHidden(!accessible || !tab.loading || hidden)
+        .vaneMotionPolicy()
     }
 }
 
