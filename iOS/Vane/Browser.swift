@@ -38,7 +38,6 @@ import WebKit
     /// the strip under the bar continue the page exactly.
     /// Also paints the overscroll and the status-bar area, so the top reads as one surface with the page's top element.
     var pageColor: UIColor? { didSet { if let pageColor { view?.underPageBackgroundColor = pageColor } } }
-    var footColor: UIColor?
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -143,19 +142,16 @@ import WebKit
     /// The page's article as plain text blocks, or nil when there isn't one. The script runs
     /// in its own content world, so the page's scripts can't tamper with it, and only text
     /// comes back: the reader view renders it natively, never as the page's markup.
-    /// Reads the colour of the page's top and bottom rows of pixels.
+    /// Reads the colour of the page's top row of pixels.
     func sampleEdges() {
         guard let view, view.bounds.height > 4 else { return }
-        let top = view.safeAreaInsets.top
-        for (y, foot) in [(top, false), (view.bounds.height - 2, true)] {
-            let config = WKSnapshotConfiguration()
-            // A 2-point strip a little inside the edge, at full size (a scaled-down strip this thin comes back empty).
-            config.rect = CGRect(x: 0, y: foot ? y - 2 : y + 2, width: view.bounds.width, height: 2)
-            view.takeSnapshot(with: config) { [weak self] image, _ in
-                MainActor.assumeIsolated {
-                    guard let color = image.flatMap(Self.average) else { return }
-                    if foot { self?.footColor = color } else { self?.pageColor = color }
-                }
+        let config = WKSnapshotConfiguration()
+        // A 2-point strip a little inside the edge, at full size (a scaled-down strip this thin comes back empty).
+        config.rect = CGRect(x: 0, y: view.safeAreaInsets.top + 2, width: view.bounds.width, height: 2)
+        view.takeSnapshot(with: config) { [weak self] image, _ in
+            MainActor.assumeIsolated {
+                guard let color = image.flatMap(Self.average) else { return }
+                self?.pageColor = color
             }
         }
     }

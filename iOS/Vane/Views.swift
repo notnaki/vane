@@ -24,14 +24,14 @@ struct RootView: View {
         ZStack(alignment: .bottom) {
             if let tab = browser.selected {
                 // The Space's colours behind everything; the page sits on them as a card.
-                Wash(space: space, full: true).modifier(OnWash(space: space))
+                Wash(space: space, full: true)
                 // The page is a card on the Space's colours, as on the Mac: it ends above the bar with
                 // rounded corners (so its own fixed bars stay in view), and runs to the foot while reading.
                 WebContainer(tab: tab).id(tab.id)
                     .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: tab.collapsed ? 0 : Look.pageRadius,
                                                       bottomTrailingRadius: tab.collapsed ? 0 : Look.pageRadius, style: .continuous))
                     .padding(.bottom, tab.collapsed ? 0 : Look.barRoom)
-                    .ignoresSafeArea(edges: tab.collapsed ? .all : .top)
+                    .ignoresSafeArea(edges: tab.collapsed ? [.top, .bottom] : .top)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 // Loading: a short rounded pill at the top of the screen, filling as the page loads.
@@ -52,8 +52,8 @@ struct RootView: View {
                     Wash(space: space, full: true)
                     TabSwitcher(openArchive: { archive = true })
                         .padding(.bottom, Look.barRoom)
+                        .modifier(OnWash(space: space))
                 }
-                .modifier(OnWash(space: space))
                 .transition(.opacity.combined(with: .scale(scale: 1.04)))
             }
             if menu, let tab = browser.selected, let space = space ?? library.spaces.first {

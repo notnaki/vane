@@ -12,10 +12,14 @@ enum Look {
     static let pillRadius: CGFloat = 14
     /// The floating bar's height over a page; pages scroll their last line above it.
     static let barHeight: CGFloat = 42
+    /// Phones with a home indicator have a strip under the bar the buttons can sit down into.
+    @MainActor static var homeStrip: Bool {
+        ((UIApplication.shared.connectedScenes.first as? UIWindowScene)?.keyWindow?.safeAreaInsets.bottom ?? 0) > 0
+    }
     /// How far the bar's buttons sit down into the home-indicator strip, as in Arc Search.
-    static let barSink: CGFloat = 4
+    @MainActor static var barSink: CGFloat { homeStrip ? 9 : 0 }
     /// The room a page leaves at its foot for the bar.
-    static var barRoom: CGFloat { barHeight - barSink }
+    @MainActor static var barRoom: CGFloat { barHeight - (homeStrip ? 4 : 0) }
     static let rowRadius: CGFloat = 12
     /// "Streamlined" is the Mac's denser interface style; read at launch, as there.
     static let streamlined = UserDefaults.standard.string(forKey: "interfaceStyle") == "streamlined"
