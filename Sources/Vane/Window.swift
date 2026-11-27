@@ -212,6 +212,7 @@ final class VaneWindow: NSWindow {
         livePageResizeBuffer = LivePageResizeBuffer(window: self,
             axes: NSSize(width: nearHorizontal ? 1 : 0, height: nearVertical ? 1 : 0),
             frameDriver: SidebarResizePublication.displayFrames(for: self),
+            trailing: resizeAnchor?.fixedRight == true,
             apply: { [weak self] frame, _ in self?.commitPreparedResize(frame, display: true) },
             completion: { [weak self] in
                 guard let self, self.liveResizeOwner == owner else { return }

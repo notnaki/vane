@@ -406,25 +406,35 @@ import XCTest
         XCTAssertEqual(f.commits.count, 1, "An idle frame must not dirty the unchanged window")
     }
 
-    func testWindowDragShrinkKeepsThePaintedChildUntilItsSmallerPaint() throws {
+    func testWindowDragShrinkFollowsAtOnceWithTheOldPaintHeldInPlace() throws {
         var frame: (@MainActor () -> Void)?
         let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
         f.buffer.start(); nextPaint(&f.paints)()
         let child = try XCTUnwrap(f.web.subviews.first, "WebKit's native child must exist to prove the hold")
         let childWidth = child.frame.width
+        let childOnScreen = child.convert(child.bounds, to: nil)
         f.request(560)
+        XCTAssertEqual(f.web.frame.width, 560, "The smaller viewport is prepared at once")
+        XCTAssertEqual(child.frame.width, childWidth, "The old paint keeps its size meanwhile")
         frame?()
-        XCTAssertEqual(f.window.frame.width, 600, "Shrink waits for the smaller paint instead of clipping")
-        XCTAssertEqual(f.web.frame.width, 560)
-        XCTAssertEqual(child.frame.width, childWidth, "The painted child keeps its size meanwhile")
+        XCTAssertEqual(f.window.frame.width, 560, "A shrink follows the pointer without waiting for paint")
+        XCTAssertEqual(child.convert(child.bounds, to: nil), childOnScreen, "The old paint does not move")
         nextPaint(&f.paints)()
-        XCTAssertEqual(f.window.frame.width, 560)
         XCTAssertEqual(child.frame.width, childWidth - 40)
         XCTAssertTrue(f.web.autoresizesSubviews)
         f.buffer.finish()
         for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
         XCTAssertEqual(f.completions, 1)
         XCTAssertEqual(f.web.frame.width, 560)
+    }
+
+    func testTrailingAnchorKeepsTheRightEdgeStill() {
+        let anchor = LivePageResizeAnchor(originalFrame: NSRect(x: 10, y: 0, width: 580, height: 400),
+                                          originalParentBounds: NSRect(x: 0, y: 0, width: 600, height: 400),
+                                          flipped: true, trailing: true)
+        let frame = anchor.frame(for: NSSize(width: 520, height: 400), in: NSRect(x: 0, y: 0, width: 540, height: 400))
+        XCTAssertEqual(frame.maxX, 530, "The 10pt right gap is kept")
+        XCTAssertEqual(frame.width, 520)
     }
 
     func testWindowDragPublishesThePaintedSizeWhenThePointerMovedOn() {
