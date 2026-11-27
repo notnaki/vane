@@ -124,24 +124,54 @@ import XCTest
 
         // A failed load on the switched host shows its error page and stays there: the
         // simulated error page is never re-issued as a real load.
-        let closed = try NWListener(using: .tcp, on: .any)
-        closed.start(queue: .main)
-        while closed.port == nil { try await Task.sleep(for: .milliseconds(10)) }
-        let closedPort = closed.port!.rawValue
-        closed.cancel()
+        // A port closed synchronously refuses at once. A cancelled NWListener's cancel is
+        // asynchronous: a connect that still finds its socket bound gets no answer and hangs
+        // (about 8s before WebKit gives up), past the wait below.
+        let closedPort = try Self.closedPort()
         var retries = 0
-        tab.navigationStageObserver = { if $0.stage == "act-as-chrome-retry" { retries += 1 } }
+        var stages: [String] = []
+        let began = Date.now
+        tab.navigationStageObserver = {
+            if $0.stage == "act-as-chrome-retry" { retries += 1 }
+            stages.append(String(format: "%.2f ", Date.now.timeIntervalSince(began)) + "\($0.stage) \($0.detail)")
+        }
         defer { tab.navigationStageObserver = nil }
         tab.navigate(to: URL(string: "http://127.0.0.1:\(closedPort)/")!)
         var shown = false
+        var html: String?
         for _ in 0..<500 where !shown {      // until the error page is up
             try await Task.sleep(for: .milliseconds(20))
-            let html = try? await tab.web.evaluateJavaScript("document.documentElement.outerHTML") as? String
+            html = try? await tab.web.evaluateJavaScript("document.documentElement.outerHTML") as? String
             shown = tab.web.url?.port == Int(closedPort) && html?.contains("location.reload") == true
         }
-        XCTAssertTrue(shown, "the error page loads")
+        // CI-only so far: say why, so the next failure names its cause.
+        XCTAssertTrue(shown, """
+            the error page loads; after \(String(format: "%.1f", Date.now.timeIntervalSince(began)))s \
+            url=\(tab.web.url?.absoluteString ?? "nil") loading=\(tab.web.isLoading) \
+            loopRequests=\(server.loopRequests) html=\(html.map { String($0.prefix(160)) } ?? "nil")
+            stages:
+            \(stages.joined(separator: "\n"))
+            """)
         try await Task.sleep(for: .seconds(1))
         XCTAssertLessThanOrEqual(retries, ActAsChrome.maxRetries, "the error page is never re-issued")
+    }
+
+    private static func closedPort() throws -> UInt16 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw POSIXError(.EMFILE) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0
+            }
+        }
+        close(fd)
+        guard bound else { throw POSIXError(.EADDRNOTAVAIL) }
+        return UInt16(bigEndian: address.sin_port)
     }
 }
 
