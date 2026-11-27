@@ -134,11 +134,15 @@ struct Onboarding: View {
                 Image(systemName: "checkmark").font(.system(size: 26, weight: .light))
                     .frame(width: 64, height: 64).overlay(Circle().stroke(line, lineWidth: 1))
                     .accessibilityHidden(true)
-                copy("The internet is yours from here.", "Open links from other apps in Vane by making it your default browser.")
-                Button("Choose Default Browser") {
-                    if let url = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) { UIApplication.shared.open(url) }
+                if Look.canBeDefaultBrowser {
+                    copy("The internet is yours from here.", "Open links from other apps in Vane by making it your default browser.")
+                    Button("Choose Default Browser") {
+                        if let url = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) { UIApplication.shared.open(url) }
+                    }
+                    .buttonStyle(Ink(primary: false, ink: ink, paper: paper, surface: surface, line: line))
+                } else {
+                    copy("The internet is yours from here.", "Search or type an address to start.")
                 }
-                .buttonStyle(Ink(primary: false, ink: ink, paper: paper, surface: surface, line: line))
             }
             .padding(.vertical, 40)
         }

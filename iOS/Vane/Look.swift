@@ -26,6 +26,9 @@ enum Look {
     static let rowHeight: CGFloat = streamlined ? 38 : 46
     static let tileHeight: CGFloat = streamlined ? 50 : 58
     static let defaultTint = 0.8
+    /// ponytail: flip to true together with com.apple.developer.web-browser in project.yml once
+    /// Apple grants it; until then iOS never lists Vane as a browser, so offering it would mislead.
+    static let canBeDefaultBrowser = false
     /// The Mac's swatches (Look.themeSwatches), in its order.
     static let swatches = [
         "#F2EAE4", "#F29BBB", "#A6729D", "#F25E6B", "#FF8558", "#F8D558", "#34E895", "#6CBAD9", "#666789",

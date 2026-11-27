@@ -1067,9 +1067,11 @@ struct SettingsView: View {
                 } header: { Text("Look") } footer: {
                     Text(styleChanged ? "Streamlined applies the next time Vane opens." : "Streamlined uses denser rows and tiles, as on the Mac. Each Space's colours and icon are set from its ••• menu.")
                 }
-                Section {
-                    Button("Make Vane Your Default Browser") {
-                        if let url = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) { UIApplication.shared.open(url) }
+                if Look.canBeDefaultBrowser {
+                    Section {
+                        Button("Make Vane Your Default Browser") {
+                            if let url = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) { UIApplication.shared.open(url) }
+                        }
                     }
                 }
                 Section {
