@@ -189,7 +189,6 @@ import WebKit
     /// Embedded frames lose WebKit's native `Notification` (see the type comment).
     nonisolated static let frameScript = "if (window !== window.top) delete globalThis.Notification;"
 
-
     /// A tab's scripts may predate an answer change, so each commit gets the current answer.
     static func committed(_ tab: Tab) { push(tab) }
 
