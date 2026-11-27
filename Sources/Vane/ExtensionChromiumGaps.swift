@@ -4,9 +4,10 @@ import WebKit
 /// Chromium namespaces an MV3 extension has requested and system WebKit does not have.
 /// Without them the extension's first `chrome.notifications.onClicked.addListener(…)`
 /// throws and its whole background fails to load. Each stands in with its events, which
-/// never fire, and its constants. Its methods stay undefined, so `chrome.downloads?.download`
-/// still tells the extension the feature is missing. `notifications` is the exception: it
-/// works, through Notification Center (`ExtensionNotifications`). The exceptions answer truthfully
+/// never fire, and its constants. Its methods stay undefined, so an absent method still tells
+/// the extension the feature is missing. `notifications` works, through Notification Center
+/// (`ExtensionNotifications`), and `downloads` replaces its stand-in with Vane's list
+/// (ExtensionDownloads.swift). The exceptions answer truthfully
 /// enough to be cheap: `management.getSelf` (from the manifest), `idle.queryState`
 /// (always active) and `action.getUserSettings`; and, from the host over `bridgePath`,
 /// `runtime.getContexts`. `offscreen` stays absent: WebKit runs an extension page in its
@@ -268,6 +269,7 @@ import WebKit
               }
               // Everything below is Chrome's API.
               if (safari) continue;
+              \#(ExtensionDownloadsAPI.script)
               // Outside a tab WebKit answers getCurrent with null; Chrome with undefined, which
               // extensions test for (`getCurrent() === undefined` means a side panel or popup).
               if (typeof api.tabs?.getCurrent === 'function') {

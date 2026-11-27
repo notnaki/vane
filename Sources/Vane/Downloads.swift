@@ -35,6 +35,8 @@ import Darwin
                 download.cancel { _ in }
             }
             manager.pendingDownloads = [:]
+            for request in manager.extensionRequests.values { request.done(.failure(ExtensionHost.Failure("Download canceled."))) }
+            manager.extensionRequests = [:]
             manager.privateSources = [:]
             manager.origins = [:]
             for item in manager.items {
@@ -161,6 +163,17 @@ import Darwin
         @Published var source: URL?
         /// The last redirect target the transfer followed; resume data replays it.
         fileprivate(set) var transfer: URL?
+        /// Which extension asked for this row (`chrome.downloads`), and the URL it named:
+        /// not saved, as Chrome's ids are not.
+        fileprivate(set) var byExtension: (id: String, name: String, url: String)?
+        /// `conflictAction: 'overwrite'`: the name in this folder the finished file takes.
+        // ponytail: not saved, so an overwrite a quit interrupts finishes, once resumed,
+        // under the stand-in name. Save it in the record if anyone notices.
+        fileprivate var replaces: String?
+        /// The extension gave the path, so Tidy Downloads leaves the name alone.
+        fileprivate var namedByExtension = false
+        /// A paused row's reason the destination check's own covers for now.
+        fileprivate var reasonBeforeCheck: String?
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -530,6 +543,7 @@ import Darwin
     /// while bytes are arriving.
     func save() {
         guard !invalidated else { return }
+        changed()
         lastSave = .now
         var keep: [Item] = []
         var evicted: [Item] = []
@@ -552,6 +566,27 @@ import Darwin
     }
 
     private var lastSave = Date.distantPast
+    /// Whoever waits in `nextChange`, woken on every save, so `chrome.downloads` hears
+    /// of changes without a clock.
+    private var changeWaiters: [UUID: (waiter: CheckedContinuation<Void, Never>, timer: Task<Void, Never>)] = [:]
+
+    private func changed() {
+        let waiters = changeWaiters.values
+        changeWaiters = [:]
+        for waiter in waiters { waiter.timer.cancel(); waiter.waiter.resume() }
+    }
+
+    /// Returns at the next save (or other change an extension can see), or after `limit`.
+    func nextChange(within limit: Duration) async {
+        let id = UUID()
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let timer = Task { [weak self] in
+                guard (try? await Task.sleep(for: limit)) != nil else { return }
+                self?.changeWaiters.removeValue(forKey: id)?.waiter.resume()
+            }
+            changeWaiters[id] = (waiter, timer)
+        }
+    }
 
     /// Bytes arrive dozens of times a second; the index does not need to. One write a
     /// second keeps a hard quit's record within a second of the truth.
@@ -760,8 +795,9 @@ import Darwin
                         item.destinationBookmark = bookmark; changed = true
                     }
                     item.destinationLease = result.lease
-                    item.resumeEligibility = result.unavailable ? .pending
+                    let eligibility: Item.ResumeEligibility = result.unavailable ? .pending
                         : result.resumeIssue == nil && result.readable ? .available : .unavailable
+                    if item.resumeEligibility != eligibility { item.resumeEligibility = eligibility; changed = true }
                     if item.status == .done || item.status == .missing {
                         let want: Item.Status = result.readable ? .done : .missing
                         if item.status != want {
@@ -770,9 +806,18 @@ import Darwin
                             changed = true
                         }
                     } else if item.status == .paused {
-                        if result.unavailable { item.state = .failed("Download folder unavailable. Reconnect it to resume.") }
-                        else if let issue = result.resumeIssue { item.state = .failed(issue) }
-                        else { item.state = .failed("Paused") }
+                        // This check's own words cover the reason before them ("Interrupted —
+                        // …"), which comes back when the check clears. That reason is not
+                        // saved: after a relaunch it reads "Paused".
+                        var shown: String?
+                        if case .failed(let old) = item.state { shown = old }
+                        let ours = shown.map { $0.hasPrefix("Download folder unavailable") || $0.hasPrefix("Cannot resume") } ?? false
+                        var reason: String?
+                        if result.unavailable { reason = "Download folder unavailable. Reconnect it to resume." }
+                        else if let issue = result.resumeIssue { reason = issue }
+                        if reason != nil, !ours { item.reasonBeforeCheck = shown }
+                        if reason == nil, ours { reason = item.reasonBeforeCheck ?? "Paused"; item.reasonBeforeCheck = nil }
+                        if let reason, item.state != .failed(reason) { item.state = .failed(reason); changed = true }
                     }
                     item.inspectedDestination = destinationRequest(item)
                 }
@@ -817,18 +862,24 @@ import Darwin
         }
         guard let granted = ScopedPaths.accessBookmark(bookmark, owner: item.scopeOwner) else { return nil }
         if item.destinationBookmarkIsFile == true {
-            if item.url != granted { item.url = granted }
+            if item.url != granted { item.url = granted; changed() }
             return granted
         }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: granted.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return nil }
         let resolved = granted.appendingPathComponent(saved.lastPathComponent)
-        if item.url != resolved { item.url = resolved }
+        if item.url != resolved { item.url = resolved; changed() }
         return resolved
     }
 
     private var saveAsDownloads: [ObjectIdentifier: String] = [:]
+    /// `chrome.downloads.download`'s own: a path under the folder, and who hears of the row.
+    private struct ExtensionRequest {
+        let path: [String]?, overwrite: Bool, by: (id: String, name: String, url: String)
+        let done: (Result<Item, any Error>) -> Void
+    }
+    private var extensionRequests: [ObjectIdentifier: ExtensionRequest] = [:]
     private var privateSources: [ObjectIdentifier: WKWebsiteDataStore] = [:]
     private struct Origin { weak var web: WKWebView?; weak var window: NSWindow? }
     private var origins: [ObjectIdentifier: Origin] = [:]
@@ -843,6 +894,74 @@ import Darwin
         }
         if alwaysAsk { saveAsDownloads[ObjectIdentifier(download)] = suggestedFilename ?? "" }
         download.delegate = self
+    }
+
+    /// An extension's download, with the profile's cookies, into this list like any other.
+    /// `path` is already checked (`ExtensionDownloadsAPI.relativePath`); the row comes back
+    /// once WebKit knows where the file goes.
+    func start(_ request: URLRequest, path: [String]?, overwrite: Bool, saveAs: Bool,
+               by: (id: String, name: String, url: String), in window: NSWindow?) async throws -> Item {
+        guard !invalidated, profileID != Profile.incognito.id else { throw ExtensionHost.Failure("Downloads are unavailable.") }
+        let web = profileResumer()
+        let download = await web.startDownload(using: request)
+        return try await withCheckedThrowingContinuation { done in
+            extensionRequests[ObjectIdentifier(download)] = ExtensionRequest(path: path, overwrite: overwrite, by: by) { done.resume(with: $0) }
+            attach(download, alwaysAsk: saveAs, suggestedFilename: path?.last, from: web, in: window)
+        }
+    }
+
+    /// Where an extension's `path` lands under `dir`, its folders made: nil when `dir` is
+    /// gone or an existing folder on the way leads out of it (a symlink). `overwrite` never
+    /// touches the old file now: the download goes beside it and `replaces` names the plain
+    /// file it takes the place of once complete (`replace`), so a failed transfer loses
+    /// nothing. A path another download is writing is never a target.
+    nonisolated static func extensionDestination(_ path: [String], in dir: URL, overwrite: Bool,
+                                                 fm: FileManager = .default,
+                                                 reserved: [URL] = []) -> (file: URL, replaces: String?)? {
+        var isFolder: ObjCBool = false
+        guard let name = path.last, fm.fileExists(atPath: dir.path, isDirectory: &isFolder), isFolder.boolValue else { return nil }
+        let folder = path.dropLast().reduce(dir) { $0.appendingPathComponent($1, isDirectory: true) }
+        let root = dir.resolvingSymlinksInPath().path
+        func inside(_ url: URL) -> Bool {
+            let resolved = url.resolvingSymlinksInPath().path
+            return resolved == root || resolved.hasPrefix(root + "/")
+        }
+        var existing = folder
+        while existing.path.count > dir.path.count, !fm.fileExists(atPath: existing.path) { existing.deleteLastPathComponent() }
+        guard inside(existing), (try? fm.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
+              inside(folder) else { return nil }
+        let file = folder.appendingPathComponent(name)
+        let unique = uniqueDestination(in: folder, suggested: name, fm: fm, reserved: reserved)
+        let plain = (try? fm.attributesOfItem(atPath: file.path)[.type] as? FileAttributeType) == .typeRegular
+        return (unique, overwrite && unique != file && plain && !isReserved(file, reserved) ? name : nil)
+    }
+
+    /// `overwrite`'s last step: the finished `file` takes `target`'s place, unless another
+    /// download now writes there or it is no longer a plain file. nil leaves `file` as is.
+    nonisolated static func replace(_ target: URL, with file: URL, fm: FileManager = .default, reserved: [URL] = []) -> URL? {
+        guard !isReserved(target, reserved) else { return nil }
+        guard let type = try? fm.attributesOfItem(atPath: target.path)[.type] as? FileAttributeType else {
+            return (try? fm.moveItem(at: file, to: target)) != nil ? target : nil
+        }
+        guard type == .typeRegular else { return nil }
+        do { _ = try fm.replaceItemAt(target, withItemAt: file); return target } catch { return nil }
+    }
+
+    /// Every file a download may still write: chosen ones not yet begun, and the partial
+    /// files of running and paused rows in any profile, which `pendingDestinations` lets go of.
+    var writing: [URL] {
+        Array(Self.pendingDestinations.values)
+            + (items + Self.cache.values.flatMap(\.items)).filter(\.status.isLive).compactMap(\.url)
+    }
+
+    private nonisolated static func isReserved(_ url: URL, _ reserved: [URL]) -> Bool {
+        reserved.map(pathKey).contains(pathKey(url))
+    }
+
+    /// One key per file on APFS's default volume, which ignores case and Unicode form:
+    /// `Big.iso` is `big.iso`. A case-sensitive volume only gets a cautious extra number.
+    nonisolated static func pathKey(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path.precomposedStringWithCanonicalMapping.lowercased()
     }
 
     /// A server filename wins over the anchor's download attribute. Otherwise preserve
@@ -873,10 +992,9 @@ import Darwin
         var target = dir.appendingPathComponent(safe.isEmpty ? "download" : safe)
         let ext = target.pathExtension
         let stem = target.deletingPathExtension().lastPathComponent
-        let occupied = Set(reserved.map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
+        let occupied = Set(reserved.map(pathKey))
         var n = 2
-        while fm.fileExists(atPath: target.path)
-            || occupied.contains(target.standardizedFileURL.resolvingSymlinksInPath().path) {
+        while fm.fileExists(atPath: target.path) || occupied.contains(pathKey(target)) {
             target = dir.appendingPathComponent("\(stem) \(n)" + (ext.isEmpty ? "" : ".\(ext)"))
             n += 1
         }
@@ -905,6 +1023,9 @@ import Darwin
                   suggestedFilename: String,
                   completionHandler: @escaping @MainActor (URL?) -> Void) {
         let pending = pendingDownloads[ObjectIdentifier(download)]
+        let asked = extensionRequests.removeValue(forKey: ObjectIdentifier(download))
+        var started: Item?
+        defer { asked?.done(started.map { .success($0) } ?? .failure(ExtensionHost.Failure("Download canceled."))) }
         guard acceptsRetryOrigin(download),
               pending != nil || resuming[ObjectIdentifier(download)] != nil else {
             completionHandler(nil)
@@ -926,15 +1047,25 @@ import Darwin
                                             reserved: Array(Self.pendingDestinations.values))
         let anchorFilename = saveAsDownloads.removeValue(forKey: ObjectIdentifier(download))
         let chosenByPanel = anchorFilename != nil || DownloadLocation.askEveryTime(for: profileID)
+        var replaces: String?
         if chosenByPanel {
             let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")
-            let name = Self.saveAsFilename(anchor: anchorFilename, server: suggestedFilename, disposition: disposition)
+            let name = asked?.path?.last ?? Self.saveAsFilename(anchor: anchorFilename, server: suggestedFilename, disposition: disposition)
             guard let chosen = askWhereToSave(suggested: name,
                                               in: destinationDirectory) else {
                 completionHandler(nil)      // cancelled: no file, and no row either
                 return
             }
             target = chosen
+        } else if let asked, let path = asked.path {
+            if let chosen = Self.extensionDestination(path, in: destinationDirectory, overwrite: asked.overwrite,
+                                                      reserved: writing) {
+                target = chosen.file
+                replaces = chosen.replaces
+            } else if FileManager.default.fileExists(atPath: destinationDirectory.path) {
+                completionHandler(nil)      // a path out of the folder
+                return
+            }   // A missing folder: the check below says so on the row.
         }
         guard acceptsRetryOrigin(download), pendingDownloads[ObjectIdentifier(download)] != nil else {
             completionHandler(nil)
@@ -948,6 +1079,15 @@ import Darwin
                                                              selectedFile: chosenByPanel)
         entry.source = download.originalRequest?.url ?? response.url
         entry.transfer = response.url
+        if let asked {
+            // An extension's data: URL is its whole file, often a blob it read; the row and
+            // downloads.json keep no copy of it.
+            if entry.source?.scheme?.lowercased() == "data" { entry.source = nil }
+            if entry.transfer?.scheme?.lowercased() == "data" { entry.transfer = nil }
+            entry.byExtension = asked.by
+            entry.replaces = replaces
+            entry.namedByExtension = asked.path != nil
+        }
         entry.sourceMethod = download.originalRequest?.httpMethod
         entry.sourceWeb = origin?.web ?? download.webView
         if profileID == Profile.incognito.id {
@@ -964,6 +1104,7 @@ import Darwin
         items.insert(entry, at: 0)
         Self.pendingDestinations[entry.scopeOwner] = target
         save()
+        started = entry
         // Some WebKit versions do not promptly report an unwritable destination.
         // Check automatic folders only: Save panels grant the selected file, not its parent.
         if !chosenByPanel {
@@ -1003,15 +1144,24 @@ import Darwin
         guard let i = item(for: download) else { return }
         Self.pendingDestinations[i.scopeOwner] = nil
         captureFileGrant(i)
-        guard let destination = restoredDestination(i),
+        guard var destination = restoredDestination(i),
               let size = Self.validFileSize(destination, expected: i.total > 0 ? i.total : nil) else {
             i.unwatch()
             finish(i, error: "The downloaded file is unavailable or unreadable. Retry the download.", resumeData: nil)
             return
         }
+        if let name = i.replaces {
+            i.replaces = nil
+            if let replaced = Self.replace(destination.deletingLastPathComponent().appendingPathComponent(name), with: destination,
+                                           reserved: writing) {
+                destination = replaced
+                i.url = replaced
+                i.name = Self.filenameWithoutBidiControls(name)
+            }
+        }
         Self.quarantine(destination, source: i.source, page: i.sourceWeb?.url,
                         isPrivate: profileID == Profile.incognito.id)
-        TidyDownloads.tidy(download, in: self)      // before unwatch() nils out item.download
+        if !i.namedByExtension { TidyDownloads.tidy(download, in: self) }     // before unwatch() nils out item.download
         i.unwatch()
         i.state = .done
         i.status = .done
@@ -1051,6 +1201,7 @@ import Darwin
         origins.removeValue(forKey: ObjectIdentifier(download))
         resuming.removeValue(forKey: ObjectIdentifier(download))
         retryOrigins.removeValue(forKey: ObjectIdentifier(download))?.item.retryPending = false
+        extensionRequests.removeValue(forKey: ObjectIdentifier(download))?.done(.failure(error))
         guard let i = item(for: download) else { return }
         i.unwatch()
         finish(i, error: error.localizedDescription, resumeData: resumeData)
