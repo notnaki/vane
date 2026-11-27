@@ -287,15 +287,21 @@ import WebKit
         web.configuration.userContentController.removeScriptMessageHandler(forName: gestureName, contentWorld: gestureWorld)
     }
 
-    /// Main actor, so the gesture message and the request it unlocks are handled in the order they were sent.
-    @MainActor private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
+    /// The reply-handler form, not `async`: WebKit calls it on the main thread in the order the
+    /// page sent, and each message's task is queued there in that order. The async form starts every
+    /// message on its own task off the main thread, so a request could overtake the gesture before it.
+    private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         private weak var tab: Tab?
         init(_ tab: Tab) { self.tab = tab }
 
-        func userContentController(_ controller: WKUserContentController,
-                                   didReceive message: WKScriptMessage) async -> (Any?, String?) {
-            do throws(HIDError) { return (["value": try await WebHID.handle(message, tab: tab) ?? NSNull()], nil) }
-            catch { return (["error": [error.name, error.message]], nil) }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                                   replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+            MainActor.assumeIsolated {
+                _ = Task { @MainActor [tab] in
+                    do throws(HIDError) { replyHandler(["value": try await WebHID.handle(message, tab: tab) ?? NSNull()], nil) }
+                    catch { replyHandler(["error": [error.name, error.message]], nil) }
+                }
+            }
         }
     }
 
