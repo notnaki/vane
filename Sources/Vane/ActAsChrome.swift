@@ -61,13 +61,12 @@ import WebKit
     ///
     /// Returns a request to load instead when the outgoing header disagrees: a reload, or a
     /// server redirect into or out of a switched host, carries the first request's
-    /// User-Agent. Only for a chain Vane itself started (typed, reload, its own retry): a
-    /// fresh load drops what a page's navigation carries (referrer, gesture, SameSite
-    /// context), so a link click, form or script navigation keeps WebKit's header for that
-    /// request. Only GET (a POST body can't be replayed from here), never back/forward (it
-    /// would rewrite history) or a download (it would open in the tab). At most
-    /// `maxRetries` until the next commit or real failure, so a redirect loop across the
-    /// boundary still ends at WebKit's redirect limit.
+    /// User-Agent. Only for a navigation Vane itself started (typed, reload, its own retry),
+    /// matched by identity, which redirects keep: a fresh load drops what a page's
+    /// navigation carries (referrer, gesture, SameSite context), so a link click, form or
+    /// script navigation keeps WebKit's header for that request. Only GET (a POST body
+    /// can't be replayed from here). At most `maxRetries` per load Vane started, so a
+    /// redirect loop across the boundary still ends at WebKit's redirect limit.
     static let maxRetries = 3
     static func apply(_ action: WKNavigationAction, to web: WKWebView, preferences: WKWebpagePreferences,
                       tab: Tab) -> URLRequest? {
@@ -76,14 +75,12 @@ import WebKit
         let ua = resolve(global: Settings.userAgent, siteOn: switched)
         let sent = action.request.value(forHTTPHeaderField: "User-Agent")
         let mismatch = sent != nil && sent != ua
-        // ponytail: SPI; without it no navigation counts as a redirect, so redirects never retry.
-        let isRedirect = action.responds(to: NSSelectorFromString("_isRedirect"))
-            && (action.value(forKey: "_isRedirect") as? Bool) == true
-        if !isRedirect { tab.actAsChromeBrowserChain = tab.actAsChromeBrowserLoad; tab.actAsChromeBrowserLoad = false }
-        if mismatch, tab.actAsChromeBrowserChain, tab.actAsChromeRetries < maxRetries,
-           (action.request.httpMethod ?? "GET") == "GET", action.navigationType != .backForward,
-           !action.shouldPerformDownload, ["http", "https"].contains(url?.scheme?.lowercased()) {
-            tab.actAsChromeRetries += 1
+        // Public on macOS 27, SPI before; without either nothing is ours, so nothing retries.
+        let navigation = ["mainFrameNavigation", "_mainFrameNavigation"]
+            .first { action.responds(to: NSSelectorFromString($0)) }
+            .flatMap { action.value(forKey: $0) as? WKNavigation }
+        if mismatch, let navigation, navigation === tab.actAsChromeOwn, tab.actAsChromeRetries < maxRetries,
+           (action.request.httpMethod ?? "GET") == "GET", ["http", "https"].contains(url?.scheme?.lowercased()) {
             var request = action.request
             request.setValue(ua, forHTTPHeaderField: "User-Agent")
             return request

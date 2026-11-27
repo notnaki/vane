@@ -70,9 +70,10 @@ gets Chrome's `navigator`: extension content scripts and Web Workers see a Chrom
 agent but Apple's `navigator.vendor` and no `userAgentData`. When a link, a form or the
 page's own script leads onto or off a switched site, directly or through a redirect, that
 first request may still carry the previous user agent. The page that loads gets the
-right identity. Turning the switch on for a page you reached by submitting a form reloads
-it with the previous user agent. Pages you type, reload or open from Vane, and the
-redirects they follow, always send the right one.
+right identity. Turning the switch on for a page you reached through a form that posts
+reloads it with the previous user agent. Pages you type, reload or open from Vane, and
+the redirects they follow, send the right one where WebKit lets Vane recognize its own
+loads, up to a few redirects across the switch.
 
 ## Copy a clean link
 

@@ -94,6 +94,20 @@ import XCTest
         XCTAssertEqual(r["ua"], safariUA)
         XCTAssertEqual(r["vendor"], "Apple Computer, Inc.")
 
+        // A same-document Back (to a pushState entry) is a history command, not a load Vane
+        // owns, so the next click off the switched site still isn't replayed.
+        _ = try await tab.web.evaluateJavaScript("window.result = undefined; 0")
+        tab.navigate(to: URL(string: "http://127.0.0.1:\(port)/")!)
+        _ = try await page()
+        _ = try await tab.web.evaluateJavaScript("history.pushState(null, '', '/pushed'); 0")
+        _ = tab.web.goBack()
+        for _ in 0..<250 {
+            if try await tab.web.evaluateJavaScript("location.pathname") as? String == "/" { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        r = try await click(to: "localhost")
+        XCTAssertEqual(r["ua"], safariUA)
+
         // A 302 loop across the boundary retries a few times, then WebKit's redirect limit
         // ends it instead of every retry starting a fresh 20 redirects.
         server.loopRequests = 0
@@ -105,7 +119,8 @@ import XCTest
             last = server.loopRequests
         }
         XCTAssertGreaterThan(server.loopRequests, 10, "the loop ran into WebKit's limit")
-        XCTAssertLessThanOrEqual(server.loopRequests, 21 * (ActAsChrome.maxRetries + 1), "the loop ended")
+        // WebKit's 20-redirect chain plus one request per retry, one spare.
+        XCTAssertLessThanOrEqual(server.loopRequests, 22 + ActAsChrome.maxRetries, "the loop ended")
     }
 }
 
