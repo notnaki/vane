@@ -2,9 +2,10 @@ import AppKit
 import UserNotifications
 import WebKit
 
-/// Web notifications on a WebKit that has none: macOS WKWebView exposes no `Notification`
-/// and no permission hook. A page-world shim gives the main frame of a secure http(s)
-/// page `Notification`, and the Notifications site permission (`SitePermissions`) decides
+/// Web notifications on a WebKit that cannot grant them: macOS WKWebView exposes a native
+/// `Notification` but no public permission hook, so it stays at "default" forever. A
+/// page-world shim replaces it in the main frame of a secure http(s) page, a frame script
+/// removes it from embedded frames, and the Notifications site permission (`SitePermissions`) decides
 /// what reaches `UNUserNotificationCenter`. Embedded frames get no `Notification` at all,
 /// like Vane's camera and location policy: a frame cannot be tied to its original document.
 ///
@@ -37,7 +38,8 @@ import WebKit
         #"""
         (() => {
           const key = '\#(key)';
-          if ('Notification' in globalThis || !globalThis.isSecureContext || !/^https?:$/.test(location.protocol)) return;
+          // WebKit's own `Notification` is replaced: without a private UI delegate it can never be granted.
+          if (!globalThis.isSecureContext || !/^https?:$/.test(location.protocol)) return;
           const handler = globalThis.webkit?.messageHandlers?.\#(messageName);
           if (!handler) return;
           const send = handler.postMessage.bind(handler), define = Object.defineProperty;
@@ -180,7 +182,13 @@ import WebKit
         controller.addUserScript(WKUserScript(source: shim(key: key), injectionTime: .atDocumentStart,
                                               forMainFrameOnly: true, in: .page))
         controller.addScriptMessageHandler(Bridge(tab: tab, key: key), contentWorld: .page, name: messageName)
+        controller.addUserScript(WKUserScript(source: frameScript, injectionTime: .atDocumentStart,
+                                              forMainFrameOnly: false, in: .page))
     }
+
+    /// Embedded frames lose WebKit's native `Notification` (see the type comment).
+    nonisolated static let frameScript = "if (window !== window.top) delete globalThis.Notification;"
+
 
     /// A tab's scripts may predate an answer change, so each commit gets the current answer.
     static func committed(_ tab: Tab) { push(tab) }
