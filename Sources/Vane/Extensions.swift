@@ -2371,6 +2371,13 @@ import WebKit
             return extensionContexts(context)
         case "fetch":
             return try await credentialedFetch(arguments, for: context)
+        case let operation where operation.hasPrefix("downloads."):
+            guard ExtensionDownloadsAPI.declared(context.webExtension.manifest) else {
+                throw Failure("This extension has not requested the downloads permission.")
+            }
+            return try await downloads.answer(String(operation.dropFirst("downloads.".count)), arguments, for: context,
+                extensionID: chromeID(of: context, path: loaded.first { $0.context === context }?.path).id,
+                window: frontmostStore?.window)
         case let operation where operation.hasPrefix("ws."):
             let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
             if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
@@ -2556,6 +2563,8 @@ import WebKit
             tabGroups.dissolveIdle(used: debugger.used, after: groupIdle, contexts: installed)
         }
     }
+    /// `chrome.downloads` over the profile's list; see ExtensionDownloads.swift.
+    private(set) lazy var downloads = ExtensionDownloads(profileID: profileID)
     /// `chrome.tabGroups` over Today's folders; see ExtensionTabGroups.swift.
     private(set) lazy var tabGroups = ExtensionTabGroups(profileID: profileID)
     /// Published: a tab's `enabled` decides whether the window's panel shows on it.
