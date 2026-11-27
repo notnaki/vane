@@ -19,6 +19,8 @@ struct RootView: View {
     @AppStorage("onboarded") private var onboarded = false
 
     private var space: SpaceRow? { library.space(browser.spaceID) }
+    /// How far the keyboard reaches above the bottom safe area.
+    @State private var keyboard: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -66,13 +68,26 @@ struct RootView: View {
             }
             BottomBar(space: space, menu: $menu, openSettings: { settings = true }, openMac: { mac = true })
                 .modifier(OnWash(space: space))
+                // Out of the way while typing into a page; the keyboard's own bar takes its place.
+                .opacity(keyboard > 0 && browser.editing == nil ? 0 : 1)
             if browser.editing != nil {
                 // The page or Space stays in view above the sheet, dimmed; a tap there cancels.
                 Color.black.opacity(browser.selected == nil ? 0.08 : 0.3).ignoresSafeArea()
                     .onTapGesture { browser.editing = nil }
                     .transition(.opacity)
                 SearchSheet(space: space)
+                    .padding(.bottom, keyboard)
                     .transition(.move(edge: .bottom))
+            }
+        }
+        // A page's keyboard covers the bar, as in Safari, instead of lifting the bar and squeezing
+        // the page; WebKit scrolls the focused field into view itself. Only the search sheet rides it.
+        .ignoresSafeArea(.keyboard)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+                  let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else { return }
+            withAnimation(.smooth(duration: 0.25)) {
+                keyboard = max(0, window.bounds.maxY - frame.minY - window.safeAreaInsets.bottom)
             }
         }
         .animation(.smooth(duration: 0.32), value: browser.editing)
@@ -80,7 +95,10 @@ struct RootView: View {
         .animation(.smooth(duration: 0.25), value: menu)
         .animation(.easeInOut(duration: 0.25), value: browser.selected?.reading)
         .onChange(of: browser.selectedID) { menu = false }
-        .onChange(of: browser.editing) { if browser.editing != nil { menu = false } }
+        .onChange(of: browser.editing) {
+            // The card's picture is taken now, before the keyboard covers part of the page.
+            if browser.editing != nil { menu = false; browser.selected?.takeSnapshot() }
+        }
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
         .sheet(isPresented: $settings) { SettingsView().frostsBehind() }
@@ -611,8 +629,6 @@ struct TabCard: View {
     let width: CGFloat
     let height: CGFloat
     @State private var lift: CGFloat = 0
-    /// Set by a drag's first movement: up closes, sideways belongs to the scroll.
-    @State private var vertical: Bool?
 
     var body: some View {
         let space = library.space(tab.spaceID)
@@ -649,17 +665,18 @@ struct TabCard: View {
         .frame(width: width)
         .offset(y: lift)
         .opacity(1 - Double(min(0.6, -lift / 400)))
-        // Up closes, like the app switcher; sideways stays the scroll's.
-        .simultaneousGesture(DragGesture(minimumDistance: 14).onChanged { value in
-            if vertical == nil { vertical = abs(value.translation.height) > abs(value.translation.width) }
-            guard vertical == true else { return }
-            lift = min(0, value.translation.height)
-        }.onEnded { value in
-            defer { vertical = nil }
-            if lift < -120 || (lift < -20 && value.predictedEndTranslation.height < -300) {
-                withAnimation(.easeOut(duration: 0.2)) { lift = -height } completion: { close() }
-            } else {
-                withAnimation(.spring(duration: 0.35, bounce: 0.3)) { lift = 0 }
+        // Up closes, like the app switcher. A UIKit pan that only starts on an upward drag, so
+        // sideways drags always reach the carousel's scroll (a SwiftUI drag here swallows some).
+        .gesture(UpwardPan { pan in
+            let dy = pan.translation(in: pan.view).y
+            switch pan.state {
+            case .began, .changed: lift = min(0, dy)
+            default:
+                if lift < -120 || (lift < -20 && pan.velocity(in: pan.view).y < -600) {
+                    withAnimation(.easeOut(duration: 0.2)) { lift = -height } completion: { close() }
+                } else {
+                    withAnimation(.spring(duration: 0.35, bounce: 0.3)) { lift = 0 }
+                }
             }
         })
         .accessibilityElement(children: .combine)
@@ -1237,6 +1254,25 @@ struct SpaceSwitcher: View {
             dismiss()
         } trailing: {
             if space.id == browser.spaceID { Image(systemName: "checkmark").font(.footnote.weight(.semibold)) }
+        }
+    }
+}
+
+/// A pan that begins only when the drag starts out upward, leaving every other drag to the scroll view.
+struct UpwardPan: UIGestureRecognizerRepresentable {
+    let changed: (UIPanGestureRecognizer) -> Void
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        return pan
+    }
+    func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) { changed(pan) }
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            guard let pan = g as? UIPanGestureRecognizer else { return false }
+            let v = pan.velocity(in: pan.view)
+            return v.y < 0 && abs(v.y) > abs(v.x) * 1.5
         }
     }
 }

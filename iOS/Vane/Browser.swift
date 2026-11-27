@@ -33,11 +33,11 @@ import WebKit
     private var pullTracker: PullTracker?
     /// Where the finger was, on screen, when the page first passed its top: sideways movement
     /// counts from here, not from wherever the scroll began.
-    private var pullStart: (finger: CGFloat, travel: CGFloat)?
+    private var pullStart: (finger: CGFloat, travel: CGFloat, down: CGFloat)?
     /// The colours actually drawn along the page's top and bottom edges, so the pull strip and
     /// the strip under the bar continue the page exactly.
     /// Also paints the overscroll and the status-bar area, so the top reads as one surface with the page's top element.
-    var pageColor: UIColor? { didSet { if let pageColor { view?.underPageBackgroundColor = pageColor } } }
+    var pageColor: UIColor? { didSet { if let pageColor { view?.underPageBackgroundColor = pageColor; view?.backgroundColor = pageColor } } }
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -66,6 +66,9 @@ import WebKit
         web.isFindInteractionEnabled = true
         web.allowsLinkPreview = true
         web.uiDelegate = PopupOpener.shared
+        // Until the site paints, the Space's colours show through instead of a white flash.
+        web.isOpaque = false
+        web.backgroundColor = .clear
         // Pull down at the top of a page for new tab / reload / close, as in Chrome.
         web.scrollView.alwaysBounceVertical = true
         let tracker = PullTracker { [weak self] pan in self?.pulled(pan) }
@@ -94,15 +97,20 @@ import WebKit
         switch pan.state {
         case .began, .changed:
             if pan.state == .began { sampleEdges() }
-            guard depth > 0, reading == nil else { if pull != nil { pull = nil }; pullStart = nil; return }
+            // At the top of the page (or pulled past it). Below the top the page is just scrolling.
+            guard depth > -1, reading == nil else { if pull != nil { pull = nil }; pullStart = nil; return }
             // A finger moves the touch point; a trackpad or mouse wheel (the Simulator, iPad)
             // moves only the pan's travel. Count whichever went further sideways.
-            let finger = pan.location(in: nil).x, travel = pan.translation(in: nil).x
-            let start = pullStart ?? (finger, travel)
+            let finger = pan.location(in: nil).x, travel = pan.translation(in: nil).x, down = pan.translation(in: nil).y
+            let start = pullStart ?? (finger, travel, down)
             pullStart = start
             let moved = (finger - start.finger, travel - start.travel)
             let dx = abs(moved.0) >= abs(moved.1) ? moved.0 : moved.1
-            let next = Pull(progress: min(depth / 100, 1), choice: dx < -24 ? .newTab : dx > 24 ? .close : .reload, dx: dx, depth: depth)
+            // Pages that switch off the bounce (overscroll-behavior: none, as Wikipedia does) never
+            // move past their top, so the finger's own travel down counts too, damped like a bounce.
+            let pulled = max(depth, (down - start.down) * 0.5)
+            guard pulled > 0 else { if pull != nil { pull = nil }; return }
+            let next = Pull(progress: min(pulled / 100, 1), choice: dx < -24 ? .newTab : dx > 24 ? .close : .reload, dx: dx, depth: pulled)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
                 UISelectionFeedbackGenerator().selectionChanged()
             }
@@ -315,8 +323,9 @@ struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UU
     /// The tab you were on before this one, in this Space: a flick up on the bar's tab stack swaps to it.
     var previous: Tab? { spaceTabs.filter { $0.id != selectedID }.max { $0.active < $1.active } }
 
-    func select(_ tab: Tab?) {
-        if tab?.id != selectedID { selected?.takeSnapshot(); selected?.active = .now }
+    /// `snapshot: false` when the search sheet's keyboard is up: the picture taken as the sheet opened stays.
+    func select(_ tab: Tab?, snapshot: Bool = true) {
+        if tab?.id != selectedID { if snapshot { selected?.takeSnapshot() }; selected?.active = .now }
         tab?.active = .now
         selectedID = tab?.id
         UserDefaults.standard.set(tab?.id.uuidString, forKey: "tab")
@@ -327,8 +336,9 @@ struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UU
     /// Favourites and pinned links return to the tab they opened, like on the Mac.
     func open(_ url: URL, home: URL? = nil, newTab: Bool = true) {
         // Whatever opens a page (a link from another app, a favourite) closes the search sheet over it.
+        let searching = editing != nil
         editing = nil
-        if let home, let existing = spaceTabs.first(where: { $0.home == home }) { return select(existing) }
+        if let home, let existing = spaceTabs.first(where: { $0.home == home }) { return select(existing, snapshot: !searching) }
         if !newTab, let tab = selected {
             tab.webView.load(URLRequest(url: url))
             return
@@ -336,7 +346,7 @@ struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UU
         let tab = Tab(.init(id: UUID(), spaceID: spaceID, url: url, title: url.host() ?? url.absoluteString, home: home))
         watch(tab)
         tabs.append(tab)
-        select(tab)
+        select(tab, snapshot: !searching)
         save()
     }
     func close(_ tab: Tab) {
