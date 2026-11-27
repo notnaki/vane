@@ -48,7 +48,7 @@ import WebKit
         XCTAssertEqual(result.skipped, 3)
         XCTAssertEqual(result.diagnostics.map(\.line), [4, 5, 6])
         XCTAssertEqual(result.reasonCounts["Regular expression"], 1)
-        XCTAssertEqual(result.reasonCounts["Scriptlet or procedural selector"], 1)
+        XCTAssertEqual(result.reasonCounts["Unsupported scriptlet"], 1)
     }
 
     func testCaseSensitiveRulesPreservePatternCase() throws {

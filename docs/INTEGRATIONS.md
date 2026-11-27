@@ -141,6 +141,15 @@ party options, domain restrictions, CSS element hiding, `$match-case`, `$badfilt
 simple regular expressions. Rules it can't represent are skipped and listed under
 **Unsupported Rules…**, never approximated.
 
+uBlock Origin scriptlets (`example.com##+js(…)`) run in each matching page and frame
+before the page's own scripts. Supported: `set-constant`, `json-prune`,
+`json-prune-fetch-response`, `json-prune-xhr-response`, `abort-on-property-read`,
+`abort-on-property-write`, `abort-current-script`, `no-setTimeout-if`,
+`no-setInterval-if`, `prevent-fetch`, `prevent-xhr`, `remove-attr`, `remove-class`,
+`addEventListener-defuser` and `window.open-defuser`, with their short names (`set`,
+`aopr`, `nostif`, `nowoif`…). `#@#+js(…)` exceptions, `~host` and `name.*` hosts work.
+Site exceptions and the on/off switch apply to scriptlets too.
+
 ## Site permissions
 
 When a site asks for your camera, microphone, location or to show notifications, choose **Allow Once**,
@@ -277,8 +286,12 @@ separate from link previews.
   **`chrome.sidePanel`** forgets its options when the extension reloads.
   **`chrome.downloads`** never fires `onDeterminingFilename`, treats a `prompt` name clash
   as "add a number", marks nothing as dangerous, and renumbers downloads after a relaunch.
-- **Content blocking** covers part of EasyList; scriptlets, procedural selectors and
-  complex regular expressions are skipped. There are no per-request block counts.
+- **Content blocking** covers part of EasyList; procedural selectors, complex regular
+  expressions and other scriptlets are skipped. `trusted-*` scriptlets are skipped
+  because they can rewrite pages. `name.*` matches any host with that label, not only
+  public suffixes. There are no per-request block counts.
+  Like uBlock Origin, `set-constant` locks its property, so a page script that later
+  declares that name (`function x(){}`, `let x`) fails to run.
 - **Embedded frames** can't use the camera, microphone, location or notifications.
 - **Web notifications** come from open pages only: service-worker notifications and Push
   (`registration.showNotification`, `PushManager`) aren't available, so a closed site

@@ -87,6 +87,23 @@ is coordinated separately with the lifecycle task.
   Reduce Motion, Battery Saver, accessibility, native media controls, autofill
   origin/target checks and user data paths are unchanged.
 
+## Scriptlet filters — 2026-11-27
+
+The built-in blocker's scriptlet script (`Scriptlets.swift`) is one page-world,
+all-frames, document-start script per profile. Its hostname table is split into
+64 bucket functions; the library is another function. JavaScriptCore only
+pre-parses an uncalled function, so a frame builds its own host's bucket and
+compiles the library only when something matches.
+
+Measured with the system `jsc` on an M1 Max that was under heavy load from other
+builds, with uBlock filters, quick fixes, annoyances (others), privacy and unbreak
+plus EasyList: about 5,300 scriptlet filters (859 use unsupported scriptlets),
+4,669 host keys and a 280 KB script. First run of the script in a process: about 1.0 ms with no match. A single
+table literal of the same data took 1.7 ms in the same run. A later frame in the
+same process (same source, so JavaScriptCore's code cache hits): 0.015–0.03 ms
+with no match, and about 0.6 ms on www.youtube.com, including installing its
+scriptlets. Treat these as a rough before/after diagnostic, not a guarantee.
+
 ## Repeat and validate
 
 Run the same diagnostic harness at both revisions on a quiet logged-in Mac,
