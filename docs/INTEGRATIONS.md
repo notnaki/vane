@@ -151,6 +151,17 @@ or choose **⋯ → Site Settings…** for every permission. Blocking stops the 
 microphone at once. macOS has its own permission for each device and for screen sharing;
 Vane can't override a macOS denial. See [Site permissions](SITE-PERMISSIONS.md).
 
+### Serial ports
+
+Sites that talk to hardware over Web Serial work in Vane: ESP Web Tools, esptool-js,
+Arduino web editors, Betaflight Configurator and the like. Click the site's connect
+button, pick your device in the list that appears under the address bar, and click
+**Connect**. The list updates as you plug things in.
+
+The site keeps access to that device until you forget it: turn off its **Serial Port**
+row in **Site Controls**. Private windows forget when the tab closes. Only the page in
+the tab can ask, not frames embedded in it, and only on HTTPS or `localhost`.
+
 ## AI connections and feature routing
 
 AI features are off until you turn them on in onboarding or **Settings → Max**. Apple's

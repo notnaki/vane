@@ -37,7 +37,7 @@ struct BackupLibrary: @unchecked Sendable {
         key.hasPrefix("backup.") || key.hasPrefix("icloud.") || ["blockerLastGoodList", "firstLaunchWelcome"].contains(key)
     }
     private static func isRememberedSecurityDecision(_ key: String) -> Bool {
-        if ["certException.", "sitePermission.", "externalApp."].contains(where: { key.hasPrefix($0) }) { return true }
+        if ["certException.", "sitePermission.", "externalApp.", "serialPort."].contains(where: { key.hasPrefix($0) }) { return true }
         for base in [HTTPSOnly.exceptionsKey, ExtensionConsent.baseKey] {
             if key == base { return true }
             guard key.hasPrefix(base + "-"),

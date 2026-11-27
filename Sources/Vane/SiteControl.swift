@@ -69,6 +69,8 @@ struct SiteControlModel: Equatable, Sendable {
     var extensions: [Ext] = []
     /// The apps this site is allowed to open without asking. See ExternalApps.swift.
     var apps: [App] = []
+    /// The serial ports this site may connect to, by the name the chooser showed. See WebSerial.swift.
+    var serialPorts: [String] = []
     var boosted = false
     var developer = false
 }
@@ -82,6 +84,8 @@ extension SiteControlModel {
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
         case app(Int)
+        /// The index into `serialPorts`: one device picked in the serial port chooser.
+        case serial(Int)
     }
 
     /// What sits at the trailing edge of a row.
@@ -229,6 +233,11 @@ extension SiteControlModel {
                            control: .toggle(true),
                            note: "Always opens " + app.scheme + ": links from this site."))
         }
+        for (i, port) in serialPorts.enumerated() {
+            out.append(Row(id: .serial(i), title: "Serial Port: " + port, glyph: "cable.connector",
+                           control: .toggle(true),
+                           note: "This site can connect to this serial port. Turn off to forget it."))
+        }
         if scheme?.lowercased() == "http" || scheme?.lowercased() == "https" {
             out.append(Row(id: .boost, title: boosted ? "Edit Boost" : "Boost This Site", glyph: "paintbrush.pointed", control: .action))
         }
@@ -292,6 +301,10 @@ extension SiteControlModel {
             out.append(Setting(id: .app(i), title: "Open " + app.name, value: "Allowed",
                                glyph: "arrow.up.forward.app.fill", on: true))
         }
+        for (i, port) in serialPorts.enumerated() {
+            out.append(Setting(id: .serial(i), title: "Serial Port: " + port, value: "Allowed",
+                               glyph: "cable.connector", on: true))
+        }
         return out
     }
 
@@ -353,6 +366,7 @@ extension SiteControlModel {
             let handler = URL(string: scheme + "://open").flatMap(ExternalApps.handler(for:))
             return App(scheme: scheme, name: ExternalApps.name(of: handler) ?? scheme)
         }
+        serialPorts = WebSerial.grants(scope: SitePermissions.scope(for: tab)).map(\.name)
         if let origin = SiteBoosts.origin(url) { boosted = SiteBoosts.value(origin: origin, tab: tab) != SiteBoost() }
         developer = tab.developer
     }
@@ -416,6 +430,10 @@ extension SiteControlModel {
         // The switch is on because the answer exists; the only thing it can do is take it
         // back, which puts the site back to being asked.
         case .app(let i): forgetApp(i, on: tab)
+        case .serial(let i):
+            // Indexed and re-read the way `forgetApp` is, so a stale row forgets nothing.
+            let scope = SitePermissions.scope(for: tab), all = WebSerial.grants(scope: scope)
+            if all.indices.contains(i) { WebSerial.forget(scope: scope, id: all[i].id) }
         case .clearData: clearSiteData(host: host, tab: tab)
         case .developer: DeveloperMode.toggle(tab)
         }
@@ -659,6 +677,12 @@ extension SiteControlModel {
                     appRows.map(\.title) == ["Can Open Zoom", "Can Open Microsoft Teams"]))
         out.append(("…and they sit above Clear Site Data, which is still the last thing but one",
                     opens.rows.dropLast().last?.id == .clearData))
+        var wired = m
+        wired.serialPorts = ["CP2102 (cu.usbserial-0001)"]
+        out.append(("a granted serial port is a row that is on, and a setting that says Allowed",
+                    wired.rows.first { $0.id == .serial(0) }?.control == .toggle(true)
+                        && wired.settings.first { $0.id == .serial(0) }?.title == "Serial Port: CP2102 (cu.usbserial-0001)"
+                        && !m.rows.contains { $0.id == .serial(0) }))
         out.append(("a scheme nothing claims any more is still listed, so it can be removed",
                     { var orphan = opens
                       orphan.apps = [SiteControlModel.App(scheme: "zoommtg", name: "zoommtg")]
@@ -908,6 +932,7 @@ struct SiteControlPopover: View {
             .accessibilityLabel("Back")
             ForEach(rows.filter { row in
                 if case .app = row.id { return true }
+                if case .serial = row.id { return true }
                 return shown.contains(row.id)
             }) { SiteControlRow(row: $0, tab: tab) }
         }
