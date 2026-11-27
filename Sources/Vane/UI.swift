@@ -4110,7 +4110,8 @@ private struct FolderRow: View {
     @State private var zone: FolderZone?
     @State private var icons = false
     @State private var editing = false
-    @StateObject private var hover = DownloadsHover()
+    // Slower than the library's 250 ms: a pass over a closed folder shouldn't pop its search.
+    @StateObject private var hover = DownloadsHover(openDelay: 600)
 
     @ObservedObject private var dragging = Dragging.shared
     private var locked: Bool { store.isFolderLocked(folder.id) }
