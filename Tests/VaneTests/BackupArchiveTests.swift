@@ -60,6 +60,20 @@ final class BackupArchiveTests: XCTestCase {
         let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
     }
+    func testSelectedExportWritesInPlaceWithoutSiblingTempFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("picked.vanebackup"), link = root.appendingPathComponent("link.vanebackup")
+        try BackupCodec.write(archive(), to: file, password: "pw", writer: BackupIO.writeSelected)
+        try BackupCodec.write(archive(), to: file, writer: BackupIO.writeSelected) // overwrite, shorter
+        XCTAssertNoThrow(try BackupCodec.decode(Data(contentsOf: file), password: nil))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["picked.vanebackup"])
+        let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        XCTAssertThrowsError(try BackupIO.writeSelected(Data("x".utf8), link))
+    }
     func testFailedAtomicWritePreservesCompletedExport() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

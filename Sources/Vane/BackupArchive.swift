@@ -198,6 +198,24 @@ enum BackupIO {
         guard rename(temp.path, url.path) == 0 else { throw posixError() }
         try syncDirectory(url.deletingLastPathComponent())
     }
+    /// A save-panel URL: the sandbox grants that file only, so the sibling temp
+    /// file `write` uses gets EPERM. Write in place; a failed new file is removed.
+    static func writeSelected(_ data: Data, _ url: URL) throws {
+        try checkFile(url, mayBeMissing: true)
+        let existed = FileManager.default.fileExists(atPath: url.path)
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw posixError() }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            guard fsync(fd) == 0 else { throw posixError() }
+            try handle.close()
+        } catch {
+            try? handle.close()
+            if !existed { try? FileManager.default.removeItem(at: url) }
+            throw error
+        }
+    }
     static func remove(_ url: URL) throws {
         try checkFile(url)
         try FileManager.default.removeItem(at: url)
