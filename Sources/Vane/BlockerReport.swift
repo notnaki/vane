@@ -23,6 +23,8 @@ struct BlockerReport: Codable, Equatable, Sendable {
 struct BlockerConversion: Sendable {
     var json: String
     var report: BlockerReport
+    /// `Scriptlets.Table.text`; empty when no scriptlet filter was accepted.
+    var scriptlets = ""
     var rules: Int { report.rules }
     var skipped: Int { report.skipped }
     var reasonCounts: [String: Int] { report.reasonCounts }
