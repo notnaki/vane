@@ -129,12 +129,19 @@ import XCTest
         while closed.port == nil { try await Task.sleep(for: .milliseconds(10)) }
         let closedPort = closed.port!.rawValue
         closed.cancel()
+        var retries = 0
+        tab.navigationStageObserver = { if $0.stage == "act-as-chrome-retry" { retries += 1 } }
+        defer { tab.navigationStageObserver = nil }
         tab.navigate(to: URL(string: "http://127.0.0.1:\(closedPort)/")!)
-        try await Task.sleep(for: .seconds(2))
-        for _ in 0..<10 {
-            XCTAssertFalse(tab.web.isLoading, "the error page settles instead of retrying")
-            try await Task.sleep(for: .milliseconds(100))
+        var shown = false
+        for _ in 0..<500 where !shown {      // until the error page is up
+            try await Task.sleep(for: .milliseconds(20))
+            let html = try? await tab.web.evaluateJavaScript("document.documentElement.outerHTML") as? String
+            shown = tab.web.url?.port == Int(closedPort) && html?.contains("location.reload") == true
         }
+        XCTAssertTrue(shown, "the error page loads")
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertLessThanOrEqual(retries, ActAsChrome.maxRetries, "the error page is never re-issued")
     }
 }
 
