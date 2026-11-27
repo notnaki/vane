@@ -26,6 +26,10 @@ its pending app request. Restoring a backup requires fresh security consent; see
 | Camera and microphone | `WKUIDelegate` media permission request; `WKWebView.cameraCaptureState`, `microphoneCaptureState`, and their setters | Allow Once, saved Allow/Block, private-tab answers, Ask/reset, and stopping the revoked device with `.none`. State/setters cover the whole web view, so revoking one frame’s camera can also stop another frame’s camera. The untouched device continues. |
 | Location | WebKit compatibility geolocation delegate on macOS 26; public `WKUIDelegate` request on macOS 27 | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
 | Pop-ups | `WKUIDelegate` `createWebViewWith`, with tabs' `javaScriptCanOpenWindowsAutomatically` on so popups with no gesture arrive there | A popup the user's click or key opened always opens. For any other popup the main document's answer decides: Ask (the default) blocks it and shows a toast whose Open loads its URL beside the page, without `window.opener`; Allow opens it like a clicked one; Block drops it with no toast. A popup with no URL offers Allow instead. Never prompted. If WebKit's gesture accessor goes away, WebKit blocks these popups again itself, with no toast. |
+| Notifications | None in WebKit on macOS. Vane injects `Notification` into the main frame of secure http(s) pages and posts through a `WKScriptMessageHandlerWithReply` bridge to `UNUserNotificationCenter` | Allow Once, saved Allow/Block, private-tab answers and Ask/reset, keyed like camera. `requestPermission()` prompts only during a user gesture (`navigator.userActivation`); otherwise it resolves to the current answer. A blocked or unanswered site's `new Notification` fires `error`. `Notification.permission` is right at document start: an isolated-world script holds the profile's saved answers and hands the page only its own; later changes are pushed to open pages. Each web view's shim carries a random key the page can't read, so page code can't post to the bridge directly. Clicking focuses the tab and fires `click` if the same document is still loaded (each document gets a random id, so a reload or later page ignores it); dismissing fires `close`; a closed tab's notifications are removed, private tabs' at quit, and any left from an earlier run (a crash) at launch. Icons stream through a cookieless session, cut off at 1 MB. Embedded frames have no `Notification`. No service-worker `showNotification` or Push. macOS asks once whether Vane may notify; no entitlement or Info.plist key is needed. |
+| Serial ports | None in WebKit. Vane injects `navigator.serial` and does the I/O itself; see [Serial ports](#serial-ports) | A chooser per request; the picked device is remembered for that origin and profile until forgotten. No Ask/Allow/Block answer: there is nothing to allow without a device. |
+| Files and folders | None in WebKit for the user's own files (it has the handle classes only for the origin private file system). Vane injects `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker`; see [Files and folders](#files-and-folders) | Picking is the grant. Edit access to an opened file or a folder asks again in the permission bubble. Lasts for the document only; nothing is saved. |
+| HID devices | None in WebKit. Vane injects `navigator.hid` and does the I/O itself; see [HID devices](#hid-devices) | A chooser per request; the picked device is remembered for that origin and profile until forgotten. No Ask/Allow/Block answer: there is nothing to allow without a device. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
 Location decisions and the Location row are available on the minimum macOS 26 runtime,
@@ -109,12 +113,205 @@ closure uses Vane’s existing page teardown; shared tabs retained by another wi
 keep their owning document rather than destroying it just because a snapshot window
 closed. Display capture and location document cleanup remain WebKit’s responsibility.
 
+## Serial ports
+
+System WebKit has no Web Serial API. Vane adds one without patching WebKit: a page script
+defines `navigator.serial` (`requestPort`, `getPorts`, `connect`/`disconnect`, and
+`SerialPort` with `open`, `readable`, `writable`, `setSignals`, `getSignals`, `getInfo`,
+`close`, `forget`), and each call is a script message answered natively with termios and
+`ioctl` on the `/dev/cu.*` node. Bytes cross as base64. The packaged app carries
+`com.apple.security.device.serial`; without it the sandbox refuses the `open`.
+
+The page script runs in the page's own world, so it is trusted with nothing. Every message
+is checked again natively:
+
+- **Who.** The main frame only, in a secure context (HTTPS, or HTTP to `localhost` or a
+  loopback address). Frames get no `navigator.serial`: `WKFrameInfo` cannot say whether a
+  parent delegated `serial` to a child, so none are served. Opaque and `file:` origins
+  have no scope and get nothing.
+- **Which device.** Only one the user picked in the chooser for that exact origin
+  (scheme, host, port) in that profile. The page never names a path; it holds an opaque
+  id. A grant follows the device by USB vendor, product and serial number, or, for a
+  device without a serial number, by vendor, product and port. A different adapter in the
+  same socket does not inherit it.
+- **When the chooser may open.** Only with a user gesture. A script in a separate content
+  world confirms `navigator.userActivation` and tells Vane; a request that arrives
+  without that, including one posted straight to the message handler, is refused. One
+  chooser at a time, only for the page on screen and only when the origin asking is the
+  one in the address bar, and it closes when that page navigates, hides or closes. A
+  camera or location question that arrives while it is open is turned away, as it would
+  be by another permission bubble. Return and Escape cannot connect.
+
+Grants in a regular window are saved until forgotten. A private tab's grants live in
+memory and go with the tab. Backups leave grants out, like other security decisions.
+Forget one from **Site Controls** (the **Serial Port** row), from **Settings → Privacy →
+Site Permissions** (one row per port, or **Reset Permissions…** for the profile; **Reset
+Site Permissions…** in the menu does every profile), with `port.forget()`, or by deleting
+the profile; an open port closes at once.
+
+Ports close when the document is replaced, the tab closes, or its WebContent process
+ends. A tab with an open port is not suspended, whether for being idle or to free memory
+under pressure. A navigation that has only started leaves them open, because it may turn
+into a download and leave the page in place. A port is opened exclusively, so a second
+tab or app gets an error instead of half the bytes; `port.close()` resolves only once the
+device is released, so a page can close and reopen it at once (as flashers do to change
+baud rate).
+
+Up to 1 MiB received from a device (or the page's `bufferSize`, if larger) waits natively
+for the page to read it; past that the device is held back. At most 16 MiB may wait to be
+written to one port: a write beyond that is rejected with a `QuotaExceededError`, which
+the page script, sending one megabyte at a time, never reaches.
+
+Limits: no Bluetooth service-class ports beyond what macOS already lists under
+`/dev/cu.*`; no BYOB readers (`readable` is a default stream, not a byte stream); parity,
+framing, break and overrun errors are not reported (a slow reader holds the device back
+instead); `navigator.serial` is not in workers or frames. A page restored from the
+back/forward cache finds its ports closed and must reopen them, and gets no `connect` or
+`disconnect` events until it next calls `getPorts()`, `requestPort()` or
+`addEventListener()` on `navigator.serial`.
+
+## Files and folders
+
+System WebKit has `FileSystemHandle`, `FileSystemFileHandle`, `FileSystemDirectoryHandle`
+and `FileSystemWritableFileStream`, but only for the origin private file system. Vane adds
+the three pickers without patching WebKit: a page script makes handles whose prototypes
+are WebKit's own (so `instanceof` and `String(handle)` match Chrome), wraps those
+prototypes' methods so they serve both kinds, and forwards each call to a native bridge.
+WebKit cannot create a real platform handle for a path, so these are shim objects with
+WebKit's prototype rather than WebKit-made objects. File I/O runs off the main thread.
+
+What works: `kind`, `name`, `isSameEntry`, `queryPermission`, `requestPermission`,
+`getFile()` (a real `File`), `createWritable()` (`write`, `seek`, `truncate`, `close`,
+`abort`, and the `{type}` commands), `entries()`/`keys()`/`values()`/`for await`,
+`getFileHandle`/`getDirectoryHandle` with `create`, `removeEntry` with `recursive`, and
+`resolve()`. Picker options: `types`, `excludeAcceptAllOption`, `multiple`,
+`suggestedName`, `startIn` (a well-known folder or a handle), `id` (remembers the last
+folder for this run of the app), and `mode`.
+
+The page script is trusted with nothing. Every message is checked again natively:
+
+- **Who.** The main frame only, in a secure context (HTTPS, or HTTP to `localhost` or a
+  loopback address). Frames get no pickers. Opaque and `file:` origins get nothing.
+- **When.** A picker needs a user gesture, confirmed from a separate content world as
+  for Web Serial; a request posted straight to the bridge without one is refused. One
+  picker per tab at a time, as a sheet on the tab's window, only for the page on screen
+  and only when the origin asking is the one in the address bar. `requestPermission`
+  needs a gesture too, and one click is good for one picker or one question.
+- **What.** The page holds an opaque token per pick and names, never paths. Every
+  operation resolves the entry again with `realpath` and refuses anything that lands
+  outside the picked file or folder: no `/`, `.` or `..` in names, links that lead out
+  are not listed and can't be opened, and a folder that was moved or replaced by a link
+  is gone. Removing a link removes the link. The panel refuses Chromium's blocked
+  locations with "contains system files": `/`, the home folder itself, Desktop,
+  Documents and Downloads themselves (their contents are fine), `~/Library` (except
+  `CloudStorage`, `Containers` and iCloud Drive), `~/.ssh`, `~/.gnupg`, `~/.config`,
+  `~/.cache`, shell and vim startup files, system folders (`/System`, `/Library`,
+  `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/private` apart from temporary
+  folders), Vane itself and its own data, and, as in Chromium, any folder that contains
+  one of these (a project folder holding a Vane build, say).
+- **Where it may write.** Nothing inside a `.git` folder except the object store, refs,
+  logs, `HEAD`, `index` and `packed-refs` (so `config` and `hooks/` stay read-only),
+  nothing inside `.mvn`, and no file named `.git`, at any depth. A site can't create a
+  file Finder follows on a double-click without asking (`.webloc`, `.inetloc`, `.fileloc`,
+  `.url`, `.terminal`). New files aren't executable and written files are quarantined, so
+  `deploy.sh` in a web IDE is fine. A suggested save name that Finder would run or follow
+  (`.command`, `.app`, `.sh` and similar) gets `.download` added and loses any leading
+  dots. Blocked names match in any letter case. Saving over an existing file empties it, as Chrome does. A page has at
+  most 32 writes open at once. Creates and removes go through the folder's descriptor
+  without following links.
+- **How much.** Opening grants read. Saving grants read and write. A folder picked with
+  `mode: 'readwrite'`, or a later `requestPermission({ mode: 'readwrite' })`, asks in
+  the permission bubble ("Allow site to edit files in “name”?"). Return and Escape mean
+  Not Now. Don't Allow is remembered for the document: `queryPermission` and
+  `requestPermission` then answer `denied`.
+
+Writes go to a copy (macOS's item-replacement folder on the same volume, or a
+`.crswap` file beside the target when that is refused) and replace the file on
+`close()`, keeping its permissions. Abort, an error, or the page going away leaves the
+file as it was. Written files are quarantined like downloads. Files are read and
+written in 4 MiB messages.
+
+Grants last for the document: a reload, navigation or closed tab ends them, and a
+private tab's picks go when it closes. Nothing is saved to disk. A handle stored in
+IndexedDB comes back as a handle in the same run of the app and can call
+`requestPermission()` again, which is how vscode.dev reopens a folder after it reloads.
+After Vane quits, an old handle reports `NotFoundError`; pick the folder again.
+
+Limits: no handles from drag and drop (`getAsFileSystemHandle`); `move()`, `remove()`
+and sync access handles are not supported on picked files; a handle survives a
+structured clone only as the value itself or in an array read from IndexedDB, so
+`postMessage` to a worker or nested in other objects gives a plain object; `types`
+filter the open panel only with `excludeAcceptAllOption` (there is no type menu);
+`getFile()` reads the whole file into memory and refuses files over 2 GiB; picks are not listed in Site Controls.
+
+## HID devices
+
+System WebKit has no WebHID API. Vane adds one without patching WebKit: a page script
+defines `navigator.hid` (`requestDevice`, `getDevices`, `connect`/`disconnect`, and
+`HIDDevice` with `opened`, `vendorId`, `productId`, `productName`, `collections`, `open`,
+`close`, `forget`, `sendReport`, `sendFeatureReport`, `receiveFeatureReport` and
+`inputreport` events). Each call is a script message answered natively with IOKit
+(`IOHIDDeviceOpen`, `SetReport`, `GetReport`, and an input-report callback on a queue of
+its own; nothing blocks the main thread). Reports cross as base64. `collections` comes
+from the device's report descriptor, parsed in Swift the way Chromium reads it.
+
+The packaged app carries `com.apple.security.device.usb`. Measured with a sandboxed probe
+on macOS 27: without it `IOHIDDeviceOpen` fails with `kIOReturnNotPermitted`, whatever
+the transport; with it the open works. `device.bluetooth` alone does not help. Listing
+devices and reading their descriptors only reads the IOKit registry and needs no
+entitlement. Devices are opened without seizing them, so macOS keeps using them too.
+
+macOS may ask for **Input Monitoring** when an app opens a keyboard interface. Most
+configurator interfaces (VIA's raw HID, Stream Deck, gamepads) are not keyboards and
+need nothing. If the user denies it, `open()` rejects with `NotAllowedError`; Vane does
+not ask again itself.
+
+The page script runs in the page's own world, so it is trusted with nothing. Every message
+is checked again natively:
+
+- **Who.** The main frame only, in a secure context (HTTPS, or HTTP to `localhost` or a
+  loopback address). Frames get no `navigator.hid`: `WKFrameInfo` cannot say whether a
+  parent delegated `hid` to a child. Opaque and `file:` origins get nothing.
+- **Which device.** Only one the user picked in the chooser for that exact origin
+  (scheme, host, port) in that profile. The page holds an opaque id per interface, never
+  an IOKit id. A grant follows the physical device by vendor, product and serial number.
+  A device without a serial number is known only by vendor, product and the port it is
+  in, so, as in Chromium, its grant is kept in memory and ends when it is unplugged.
+- **Which reports.** Chromium's HID blocklist: the FIDO usage page (`0xF1D0`) and listed
+  security keys are never offered. Keyboard, keypad, mouse and pointer top-level
+  collections keep their input and output reports from the page (feature reports, which
+  carry settings like backlight, stay reachable). System-control collections are blocked
+  outright. Blocked reports are left out of `collections`, are not delivered as
+  `inputreport`, and cannot be sent. A device left with nothing is not listed.
+- **When the chooser may open.** Only with a user gesture, confirmed from a separate
+  content world through `navigator.userActivation`. One chooser at
+  a time, only for the page on screen whose origin is in the address bar. It closes
+  when that page navigates, hides or closes. Return and Escape cannot connect.
+
+Grants in a regular window are saved until forgotten. A private tab's grants live in
+memory and go with the tab. Backups leave grants out. Forget one from **Site Controls**
+(the **HID Device** row), from **Settings → Privacy → Site Permissions** (one row per
+device, or **Reset Permissions…** for the profile; **Reset Site Permissions…** in the
+menu does every profile), with `device.forget()`, or by deleting the profile; an open
+device closes at once. Devices close when the document is replaced, the tab closes, or
+the device is unplugged (`disconnect` fires, and `connect` when it comes back, if it has a serial number). A page
+restored from the back/forward cache finds its devices closed and gets new
+`HIDDevice` objects from `getDevices()`. A tab
+with an open device is not suspended. Up to 1,024 input reports wait for a page that is
+busy; past that the oldest go.
+
+Limits: no `navigator.hid` in workers or frames. Bluetooth HID devices are listed like
+USB ones but have not been tried on hardware.
+
 ## Validation and remaining platform coverage
 
 Run the focused fixtures on a logged-in macOS desktop:
 
 ```sh
-swift test --filter 'SitePermissionTests|SitePermissionWebTests|SharedPresentationTests|LifecycleEfficiencyTests'
+swift test --filter 'SitePermissionTests|SitePermissionWebTests|WebNotification|SharedPresentationTests|LifecycleEfficiencyTests'
+swift test --filter 'WebSerialTests|SerialConnectionTests|WebSerialWebKitTests'
+swift test --filter 'FileSystemAccessDiskTests|FileSystemAccessWebKitTests'
+swift test --filter 'WebHIDTests|WebHIDWebKitTests'
 ./.build/debug/vane selfcheck --pure
 python3 scripts/check-permission-display.py
 ```
@@ -141,6 +338,16 @@ They run without the macOS 27 SDK/runtime gate, so the minimum-runtime CI exerci
 the compatibility dispatch.
 These exercise policy and engine cleanup without collecting physical device data or
 changing macOS authorization.
+
+The serial fixtures use a pseudo-terminal as the device and answer the chooser
+themselves. `WebSerialTests` and `SerialConnectionTests` open no window; a pty has no
+modem lines and no exclusive lock, so DTR/RTS and "port busy" are covered by the bit
+arithmetic and by hand on hardware, not by a fixture.
+
+`WebHIDTests` parses real report descriptors (a QMK/VIA raw HID interface, a gamepad, a
+boot keyboard, a FIDO key, a gaming mouse) and opens no window. `WebHIDWebKitTests`
+uses fake devices and answers the chooser itself; real IOKit opens, Input Monitoring and
+Bluetooth are checked by hand on hardware.
 
 This is not verification of real TCC Allow/deny/revocation, accuracy of delivered
 location coordinates, native screen-source chooser restrictions, audio sharing, or

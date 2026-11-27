@@ -47,13 +47,33 @@ on **Settings → Links → Auto-hide toolbar in Little Vane and Peek**.
 Click the Site Controls button in the address pill for quick actions on the current site:
 **Share**, **Boost**, **Capture**, and **Reader**, plus a tile for each installed
 extension (click a dimmed tile to turn it on). Below, a short **Settings** list shows only
-what this site has changed: permissions you answered, zoom, ad blocking, translation,
-apps it may open, and Developer Mode. Click a row to flip it.
+what this site has changed: permissions you answered (including Notifications), zoom, ad blocking, translation,
+apps it may open, serial ports and HID devices it may use, and Developer Mode. Click a row to flip it.
 
 **⋯ → Site Settings…** lists every permission and site option. The **⋯** menu also has
 **Clear Site Data…**, **Translate Page**, extension management, and filter lists. Right-
 click an extension for its options, **Pin**/**Unpin**, or **Remove from Vane…**. See
 [site permissions](SITE-PERMISSIONS.md).
+
+**Act as Chrome** (in **⋯** and **Site Settings…**) is for sites that turn away browsers
+other than Chrome. It is off by default and works per site and per profile. In private
+windows it is kept in memory until Vane quits, shared by all private windows. When on,
+that site sees a Chrome user agent and Chrome's `navigator` details. Other sites keep the
+normal identity. Turning it on reloads the page. Streaming video (Netflix, Disney+) may
+stop working with it on. If you picked a user agent in **Develop → User Agent**, that
+choice applies everywhere and this switch is unavailable.
+
+It matches the exact host (`www.example.com` and `example.com` are separate). If a site
+sends other browsers to an "unsupported browser" page on another host, go back to the
+site's own address and turn it on there, not on the warning page. Only the page itself
+gets Chrome's `navigator`: extension content scripts and Web Workers see a Chrome user
+agent but Apple's `navigator.vendor` and no `userAgentData`. When a link, a form or the
+page's own script leads onto or off a switched site, directly or through a redirect, that
+first request may still carry the previous user agent. The page that loads gets the
+right identity. Turning the switch on for a page you reached through a form that posts
+reloads it with the previous user agent. Pages you type, reload or open from Vane, and
+the redirects they follow, send the right one where WebKit lets Vane recognize its own
+loads, up to a few redirects across the switch. Error pages are never retried.
 
 ## Copy a clean link
 
@@ -196,6 +216,11 @@ you quit, with their Back/Forward history.
 
 Downloads can be paused, resumed, or retried where the server allows. See
 [download reliability](DOWNLOAD-RELIABILITY.md).
+
+Sites that open and save files in place work: vscode.dev **Open Folder**, Excalidraw,
+Photopea, and other web editors. The site asks with a normal Open or Save panel, and asks
+again before it edits a file you opened or a folder. Access lasts until the tab reloads,
+navigates or closes. See [files and folders](SITE-PERMISSIONS.md#files-and-folders).
 
 ## Picture in Picture and media
 

@@ -95,8 +95,10 @@ These extensions were checked with unmodified packages; see
 | `chrome.sidePanel` | The extension's panel docks to the right of the page, per tab, with a header and a ✕ that always closes it. It follows its tab across Spaces and windows. |
 | `chrome.debugger` | An extension that asks for it can read, click, type in and screenshot pages it has access to. A pill reads "*Extension* is controlling this tab" with **Stop**, and the tab's sidebar row shows a pointer. Only the tab on screen can be driven. |
 | `chrome.tabGroups` | A group is a folder in Today. Extensions can read your folders but change only folders an extension made. Pinned tabs and Favourites can't be grouped. |
+| `chrome.downloads` | Extensions that ask for it save files (web, `data:` and their own `blob:` links, with the profile's cookies) into your downloads folder, and they show in the Library. They can list, pause, resume, cancel, erase, show and open the profile's downloads and hear when they change. Opening a file needs `downloads.open` and, in the last 5 seconds, a click on the extension's button or a click or key press that went to one of its own pages; typing in a website doesn't count, even if an extension page takes focus right after. `overwrite` replaces the old file only once the new one has finished, and never a file another download, running or paused, is still writing, even under a name that differs only in case. Tidy Downloads leaves names an extension chose alone. Private-window downloads stay hidden. |
 | `chrome.identity` | `launchWebAuthFlow` opens a sign-in window titled with the extension's name and the site, using the profile's cookies. |
-| Chromium-only names | `notifications`, `downloads`, `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start, but `notifications` and `downloads` don't do anything. Chrome's enums and constants are filled in too. |
+| `chrome.notifications` | `create`, `update`, `clear`, `getAll` and `getPermissionLevel` show text notifications in Notification Center under the extension's name; `getPermissionLevel` says `denied` when macOS notifications are off for Vane. `onClicked`, `onClosed` and up to two buttons (`onButtonClicked`) reach the background worker. Needs the `notifications` permission. |
+| Chromium-only names | `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start. Chrome's enums and constants are filled in too. |
 | Native messaging | Extensions that declare `nativeMessaging` get Chrome's "Specified native messaging host not found." error, so ones that expect a desktop app (like Bitwarden) carry on. No desktop app is contacted. Turn it off with **Disable Error-Only Mode** in Manage Extensions → Compatibility. |
 
 These additions apply to Chrome Web Store and folder packages. Safari app extensions get
@@ -139,9 +141,18 @@ party options, domain restrictions, CSS element hiding, `$match-case`, `$badfilt
 simple regular expressions. Rules it can't represent are skipped and listed under
 **Unsupported Rules…**, never approximated.
 
+uBlock Origin scriptlets (`example.com##+js(…)`) run in each matching page and frame
+before the page's own scripts. Supported: `set-constant`, `json-prune`,
+`json-prune-fetch-response`, `json-prune-xhr-response`, `abort-on-property-read`,
+`abort-on-property-write`, `abort-current-script`, `no-setTimeout-if`,
+`no-setInterval-if`, `prevent-fetch`, `prevent-xhr`, `remove-attr`, `remove-class`,
+`addEventListener-defuser` and `window.open-defuser`, with their short names (`set`,
+`aopr`, `nostif`, `nowoif`…). `#@#+js(…)` exceptions, `~host` and `name.*` hosts work.
+Site exceptions and the on/off switch apply to scriptlets too.
+
 ## Site permissions
 
-When a site asks for your camera, microphone or location, choose **Allow Once**,
+When a site asks for your camera, microphone, location or to show notifications, choose **Allow Once**,
 **Always Allow** or **Don't Allow**. Allow Once lasts until the page navigates or closes.
 Saved answers belong to that site in that profile; private windows keep them in memory.
 Requests from embedded frames are refused.
@@ -150,6 +161,35 @@ Change an answer from **Site Controls**: right-click a permission for Ask, Allow
 or choose **⋯ → Site Settings…** for every permission. Blocking stops the camera or
 microphone at once. macOS has its own permission for each device and for screen sharing;
 Vane can't override a macOS denial. See [Site permissions](SITE-PERMISSIONS.md).
+
+Sites can show notifications in Notification Center once allowed. A site can only ask
+after you click or type on it. Each notification names its site; clicking one brings
+back its tab. macOS asks once whether Vane may show notifications.
+
+### Serial ports
+
+Sites that talk to hardware over Web Serial work in Vane: ESP Web Tools, esptool-js,
+Arduino web editors, Betaflight Configurator and the like. Click the site's connect
+button, pick your device in the list that appears under the address bar, and click
+**Connect**. The list updates as you plug things in.
+
+The site keeps access to that device until you forget it: turn off its **Serial Port**
+row in **Site Controls**. Private windows forget when the tab closes. Only the page in
+the tab can ask, not frames embedded in it, and only on HTTPS or `localhost`.
+
+### HID devices
+
+Sites that configure hardware over WebHID work in Vane: VIA and other QMK keyboard
+configurators, Stream Deck tools, and game-controller setup pages. Click the site's
+connect button, pick your device in the list under the address bar, and click
+**Connect**. The list updates as you plug things in.
+
+The site keeps access until you forget the device: turn off its **HID Device** row in
+**Site Controls**. Private windows forget when the tab closes. Only the page in the tab
+can ask, not embedded frames, and only on HTTPS or `localhost`. Security keys are never
+listed. A site never gets a keyboard's keystrokes or a mouse's movement. If a device is
+also a keyboard, macOS may ask to allow Vane **Input Monitoring**. If you say no, the
+site can't open that device.
 
 ## AI connections and feature routing
 
@@ -256,7 +296,8 @@ separate from link previews.
   request events aren't available.
 - **`chrome.offscreen`** runs one hidden document per extension until it's closed or the
   extension reloads. It gets every extension API, not only `runtime`, and Chrome's
-  audio-only timeout doesn't apply.
+  audio-only timeout doesn't apply. Camera, microphone, screen and location requests are
+  denied there, though `USER_MEDIA`, `DISPLAY_MEDIA` and `GEOLOCATION` are accepted reasons.
 - **Apple's iCloud Passwords extension** can't run: macOS only starts its helper for
   Apple-approved browsers. See [Password manager](PASSWORD-MANAGER.md) and the
   [investigation](EXTENSION-VALIDATION.md#icloud-passwords-investigation--2026-11-22).
@@ -266,9 +307,25 @@ separate from link previews.
   navigation; other protocol commands fail. **`chrome.tabGroups`** colours aren't shown,
   groups stay in one window, and `tabs.onUpdated` doesn't report group changes.
   **`chrome.sidePanel`** forgets its options when the extension reloads.
-- **Content blocking** covers part of EasyList; scriptlets, procedural selectors and
-  complex regular expressions are skipped. There are no per-request block counts.
-- **Embedded frames** can't use the camera, microphone or location.
+  **`chrome.downloads`** never fires `onDeterminingFilename`, treats a `prompt` name clash
+  as "add a number", marks nothing as dangerous, and renumbers downloads after a relaunch.
+- **Content blocking** covers part of EasyList; procedural selectors, complex regular
+  expressions and other scriptlets are skipped. `trusted-*` scriptlets are skipped
+  because they can rewrite pages. `name.*` matches any host with that label, not only
+  public suffixes. There are no per-request block counts.
+  Like uBlock Origin, `set-constant` locks its property, so a page script that later
+  declares that name (`function x(){}`, `let x`) fails to run.
+- **Embedded frames** can't use the camera, microphone, location or notifications.
+- **Web notifications** come from open pages only: service-worker notifications and Push
+  (`registration.showNotification`, `PushManager`) aren't available, so a closed site
+  can't notify you. A closed tab's notifications are removed. Icons are best effort;
+  notification actions, images and badges aren't shown. Like other browsers, Vane doesn't
+  limit how many notifications an allowed site shows. Private windows' notifications are
+  removed when Vane quits, and any left from an earlier run are removed at launch.
+  Extension notifications are text only (no icons or images) and reach only the background
+  worker, which keeps running while they're showing and is started for a click if it was
+  stopped. A worker that's running but had nothing showing itself (the notification came
+  from its popup) hears the click when it next adds a listener or shows one.
 - **Favourite previews** depend on each site's page layout; when one changes, the card
   shows **Preview unavailable** instead of an empty list.
 - Details and evidence: [Extension validation](EXTENSION-VALIDATION.md),

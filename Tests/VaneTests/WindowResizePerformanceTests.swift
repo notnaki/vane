@@ -180,8 +180,7 @@ import XCTest
                            "The page painted its released size once: \(dragged.painted)")
 
             // A press and release that moves nothing still defers and rebuilds the
-            // loop. The buffer shows the page its lookahead size and back, as it
-            // does without the rebuild; nothing may follow that.
+            // loop. With no lookahead the page keeps its size: nothing may resize it.
             try await arm()
             window.beginPageResize(at: NSPoint(x: window.frame.maxX, y: window.frame.minY))
             XCTAssertTrue(window.autorecalculatesKeyViewLoop)
@@ -191,11 +190,9 @@ import XCTest
             try await Task.sleep(for: .milliseconds(500))
             let rebuilt = try await read()
             XCTAssertEqual(rebuilt.size, dragged.size)
-            // The lookahead and back, each once, and the page is still at its end.
-            XCTAssertEqual(rebuilt.resize.count, 2, "\(rebuilt.resize)")
-            XCTAssertEqual(rebuilt.resize.last, rebuilt.size)
-            XCTAssertEqual(rebuilt.observed, 2)
-            XCTAssertEqual(rebuilt.flips, 2)
+            XCTAssertEqual(rebuilt.resize.count, 0, "\(rebuilt.resize)")
+            XCTAssertEqual(rebuilt.observed, 0)
+            XCTAssertEqual(rebuilt.flips, 0)
             XCTAssertEqual(rebuilt.painted, rebuilt.resize)
             XCTAssertEqual(rebuilt.bottom, 0)
         }
@@ -415,7 +412,7 @@ import XCTest
             window.endPageResize()
             try await compatibilityWait { !window.isPreparingPageResize }
             let pressed = try await read()
-            XCTAssertNotNil(pressed.asked, "The page must have handled a resize")
+            XCTAssertNil(pressed.asked, "A press without a move must not resize the page")
             XCTAssertEqual(pressed.y, start.y, "A press and release moved the page")
 
             // Narrower, the text above the paragraph is taller: the page scrolls

@@ -30,13 +30,13 @@ import WebKit
         let required = mv3 ? Set(manifest["permissions"] as? [String] ?? []) : []
         var issues = missing.subtracting([ExtensionSidePanelAPI.permission, ExtensionIdentityAPI.permission, ExtensionDebuggerAPI.permission,
                                           ExtensionTabGroupsAPI.permission] + (mv3 ? ["management"] : []))
-            .subtracting(required.intersection(["idle", "offscreen"])).sorted().map {
+            .subtracting(required.intersection(["idle", "offscreen", ExtensionDownloadsAPI.permission, ExtensionDownloadsAPI.openPermission])).sorted().map {
             "\($0): \(unrecognized)"
         }
         if missing.contains("idle"), required.contains("idle") { issues.append("idle: Vane always reports the user as active; state changes never fire.") }
         if mv3, missing.contains("management") { issues.append("management: Vane answers getSelf only.") }
         if missing.contains("offscreen"), required.contains("offscreen") {
-            issues.append("offscreen: Vane runs the document hidden until the extension closes it or reloads.")
+            issues.append("offscreen: Vane runs the document hidden until the extension closes it or reloads; USER_MEDIA, DISPLAY_MEDIA and GEOLOCATION reasons are accepted, but those requests are denied in the hidden document.")
         }
         if manifest["devtools_page"] != nil {
             issues.append("devtools_page: panels are tabs in Web Inspector (Developer → Show Web Inspector, with Allow Web Inspector on). WebKit answers panels.create, themeName, inspectedWindow.eval, reload and tabId, and network.onNavigated; element and source sidebars, network.getHAR and request events are unavailable.")
@@ -52,6 +52,9 @@ import WebKit
         } else if declared.contains(ExtensionIdentityAPI.permission) {
             // WebKit cannot grant a permission it does not know, so there is no grant to honour.
             issues.append("identity: " + notProvided + "web sign-in for identity in optional_permissions; only required permissions get it.")
+        }
+        if required.contains(ExtensionDownloadsAPI.permission) {
+            issues.append("downloads: Vane saves into its own download list. onDeterminingFilename never fires, a name clash never asks, and nothing is flagged as dangerous.")
         }
         if declared.contains(ExtensionTabGroupsAPI.permission) {
             issues.append("tabGroups: Vane's groups are folders in Today. Pinned tabs and Favourites cannot be grouped, tabs stay in their own window, colours are kept but not shown, and extensions change only the folders extensions made.")

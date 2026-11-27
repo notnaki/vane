@@ -52,7 +52,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         VaneSetBooleanPreference(self, NSSelectorFromString("_setShouldSuppressFirstResponderChanges:"), elsewhere)
     }
 
-    private func requested(_ navigation: WKNavigation?) -> WKNavigation? {
+    /// `own`: a load Vane started, which Act as Chrome may re-issue; never a history command.
+    private func requested(_ navigation: WKNavigation?, own: Bool = true) -> WKNavigation? {
+        if own { navigationOwner?.actAsChromeOwn = navigation; navigationOwner?.actAsChromeRetries = 0 }
         navigationOwner?.expectNavigation(navigation)
         // A same-document command can finish synchronously inside super, before expect
         // advances its generation. Reconcile again with that final command identity.
@@ -72,13 +74,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func loadHTMLString(_ string: String, baseURL: URL?) -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: baseURL ?? URL(string: "about:blank"))
-        return requested(super.loadHTMLString(string, baseURL: baseURL))
+        // Vane's own HTML (error pages, blank pages) is never re-issued by Act as Chrome.
+        return requested(super.loadHTMLString(string, baseURL: baseURL), own: false)
     }
 
     override func loadSimulatedRequest(_ request: URLRequest, responseHTML string: String) -> WKNavigation {
         navigationOwner?.prepareNavigation(to: request.url)
         let navigation = super.loadSimulatedRequest(request, responseHTML: string)
-        _ = requested(navigation)
+        // Error pages and the HTTPS-only interstitial: re-issuing one as a real load would
+        // fail again, show the page again, and loop.
+        _ = requested(navigation, own: false)
         return navigation
     }
 
@@ -94,17 +99,17 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func goBack() -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: backForwardList.backItem?.url)
-        return requested(super.goBack())
+        return requested(super.goBack(), own: false)
     }
 
     override func goForward() -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: backForwardList.forwardItem?.url)
-        return requested(super.goForward())
+        return requested(super.goForward(), own: false)
     }
 
     override func go(to item: WKBackForwardListItem) -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: item.url)
-        return requested(super.go(to: item))
+        return requested(super.go(to: item), own: false)
     }
 
     static let messageName = "vanelinkcontext"
@@ -888,8 +893,14 @@ struct TitleReveal: Equatable, Sendable {
         if let script = ExtensionChromiumGaps.webPageScript(extensions) {
             c.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         }
+        // Every frame, page world: it does nothing unless the page's UA already says Chrome.
+        c.addUserScript(WKUserScript(source: ActAsChrome.script, injectionTime: .atDocumentStart,
+                                    forMainFrameOnly: false, in: .page))
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
+        WebSerial.install(on: c)
+        FileSystemAccess.install(on: c)
+        WebHID.install(on: c)
         c.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
@@ -929,6 +940,8 @@ struct TitleReveal: Equatable, Sendable {
                                     forMainFrameOnly: true, in: .defaultClient))
         // A tab built around WebKit's own configuration never went through
         // `Tab.configuration`, so the blocker is attached here rather than there.
+        // Keep this last: its scriptlets patch page globals, and page-world scripts added
+        // after it would see the patched ones.
         Blocker.apply(to: c, profileID: profileID)
         return c
     }
@@ -941,7 +954,13 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(draftProtection, contentWorld: DraftProtection.world, name: DraftProtection.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: ChromeWebStorePage.world, name: ChromeWebStorePage.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: WebSerial.gestureWorld, name: WebSerial.gestureName)
+        WebSerial.attach(self, to: web)
+        FileSystemAccess.attach(self, to: web)
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: WebHID.gestureWorld, name: WebHID.gestureName)
+        WebHID.attach(self, to: web)
         NativePiPHostBridge.register(tab: self, web: web)
+        WebNotifications.attach(self, web)
         if let linkView = web as? LinkContextWebView {
             linkView.navigationOwner = self
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
@@ -1160,6 +1179,10 @@ struct TitleReveal: Equatable, Sendable {
     /// provisional destination for the document already on screen.
     private var initialRequestedURL: URL?
     private var provisional = false
+    /// The last load Vane started, and Act as Chrome's header retries for it; see
+    /// `ActAsChrome.apply`.
+    weak var actAsChromeOwn: WKNavigation?
+    var actAsChromeRetries = 0
 
     /// A fragment link never starts a provisional load, so it must not hold the address.
     static func sameDocument(_ action: WKNavigationAction, from current: URL?) -> Bool {
@@ -1406,6 +1429,9 @@ struct TitleReveal: Equatable, Sendable {
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: SiteBoostScripts.messageName, contentWorld: SiteBoostScripts.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: ChromeWebStorePage.messageName, contentWorld: ChromeWebStorePage.world)
+        WebSerial.detach(from: old)
+        FileSystemAccess.detach(from: old)
+        WebHID.detach(from: old)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: DraftProtection.messageName, contentWorld: DraftProtection.world)
         old.uiDelegate = nil
@@ -1472,12 +1498,13 @@ struct TitleReveal: Equatable, Sendable {
         tornDown = true
         SiteBoosts.forget(tab: self)
         endPermissionDocument()
+        WebNotifications.drop(tabID: id)
         presentationGeneration += 1
         windowSnapshot = nil
         easelSession?.liveItems.removeAll()
         easelObservation = nil
         vanePageObservation = nil
-        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
+        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id); WebSerial.forgetPrivate(tabID: id); FileSystemAccess.forgetPrivate(tabID: id); WebHID.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
         if isPrivate { Self.clearPrivateHTTPSStateIfUnused() }
@@ -2235,6 +2262,7 @@ struct TitleReveal: Equatable, Sendable {
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()
+            WebNotifications.committed(self)
         }
         finishCertificateNavigation(navigation, in: w)
         Trace.note("committed")
@@ -2291,6 +2319,27 @@ struct TitleReveal: Equatable, Sendable {
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
         // on disk follows it.
         if stays { TabStore.savePins(owning: self) }
+    }
+
+    /// WebKit calls this variant when it exists. It only adds the per-site identity (Act as
+    /// Chrome) to an allowed main-frame load, before the request goes out.
+    func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        webView(w, decidePolicyFor: navigationAction) { [weak self] policy in
+            guard policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let self,
+                  let retry = ActAsChrome.apply(navigationAction, to: w, preferences: preferences, tab: self)
+            else { decisionHandler(policy, preferences); return }
+            // Like HTTPS-only: cancel plus a re-load is the only way to change the header.
+            decisionHandler(.cancel, preferences)
+            #if DEBUG
+            self.navigationStageObserver?(NavigationStageEvent(stage: "act-as-chrome-retry",
+                identity: .action(self.navigationActionStageSerial), detail: "policy=cancel"))
+            #endif
+            let n = self.actAsChromeRetries + 1
+            self.expectNavigation(w.load(retry))   // requested() marks it ours and resets the count
+            self.actAsChromeRetries = n
+        }
     }
 
     /// HTTPS-only mode. `.cancel` plus a re-load is the only way to change a navigation's
@@ -2565,6 +2614,8 @@ struct TitleReveal: Equatable, Sendable {
         guard !tornDown, let currentWeb = existingWeb, m.webView === currentWeb else { return }
         if m.name == ChromeWebStorePage.messageName { ChromeWebStorePage.receive(m, tab: self); return }
         if m.name == SiteBoostScripts.messageName { SiteBoosts.receive(m, tab: self); return }
+        if m.name == WebSerial.gestureName { WebSerial.gesture(m, tab: self); return }
+        if m.name == WebHID.gestureName { WebHID.gesture(m, tab: self); return }
         if m.name == LinkContextWebView.messageName {
             guard let linkView = existingWeb as? LinkContextWebView else { return }
             linkView.receiveContextLink(m.body, sourceURL: m.frameInfo.request.url)
@@ -4133,7 +4184,7 @@ struct Stash {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
-            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
+            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id); WebSerial.forgetPrivate(tabID: id); FileSystemAccess.forgetPrivate(tabID: id); WebHID.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
                                         isPrivate: isPrivate) { ClosedTabs.push(tab) }
             SharedTabs.remove(id, from: self)

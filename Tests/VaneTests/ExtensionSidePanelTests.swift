@@ -203,15 +203,15 @@ import XCTest
 
             // What WebKit lacks keeps its events and constants and no methods, so feature
             // detection still finds it missing. Optional permissions get no stand-in.
-            // `debugger` and `tabGroups` are Vane's own (ExtensionDebuggerTests,
-            // ExtensionTabGroupsTests), so their methods exist.
+            // `debugger`, `tabGroups` and `notifications` are Vane's own (ExtensionDebuggerTests,
+            // ExtensionTabGroupsTests, WebNotificationPermissionTests), so their methods exist.
             let gaps = try await run("""
                 const managed = JSON.stringify(await chrome.storage.managed.get(null));
                 return [typeof chrome.debugger.onEvent.addListener, typeof chrome.debugger?.attach,
                         chrome.notifications?.create ? 'chromium' : 'fallback', typeof chrome.tabs.group, managed,
                         chrome.tabGroups.TAB_GROUP_ID_NONE, typeof chrome.downloads, chrome.runtime.ContextType.SIDE_PANEL].join('|');
                 """, in: panel.web)
-            XCTAssertEqual(gaps, "function|function|fallback|function|{}|-1|undefined|SIDE_PANEL")
+            XCTAssertEqual(gaps, "function|function|chromium|function|{}|-1|undefined|SIDE_PANEL")
 
             // A tab's own panel belongs to that tab alone.
             let other = store.newBlankTab()
@@ -593,7 +593,7 @@ import XCTest
             let context = try XCTUnwrap(host.installed.first)
             XCTAssertTrue(ExtensionDiagnostics.runtimeErrors(context.errors, manifest: context.webExtension.manifest).isEmpty, "\(context.errors)")
             let notes = host.entries.first?.compatibility ?? []
-            XCTAssertTrue(notes.contains("offscreen: Vane runs the document hidden until the extension closes it or reloads."), "\(notes)")
+            XCTAssertTrue(notes.contains { $0.hasPrefix("offscreen: Vane runs the document hidden until the extension closes it or reloads;") }, "\(notes)")
             let page = try await page(context)
             defer { page.stopLoading() }
             let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)

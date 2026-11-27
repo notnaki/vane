@@ -127,9 +127,20 @@ private struct BlockRule: Codable, Equatable {
     static func apply(to controller: WKUserContentController,
                       profileID: UUID = ProfileManager.shared.active.id) {
         if let attached = controllers.object(forKey: controller)?.list { controller.remove(attached) }
-        let next = enabled(for: profileID) ? list(for: profileID) : nil
+        let previous = controllers.object(forKey: controller)
+        let on = enabled(for: profileID)
+        let next = on ? list(for: profileID) : nil
         if let next { controller.add(next) }
-        controllers.setObject(Attachment(profileID: profileID, list: next), forKey: controller)
+        let script = on ? scriptletScript(for: profileID) : nil
+        if script !== previous?.script {
+            // No public API removes one user script. Keep the others and their order, and put
+            // the scriptlets last so Vane's own page-world scripts start with unpatched globals.
+            let others = controller.userScripts.filter { $0 !== previous?.script }
+            controller.removeAllUserScripts()
+            others.forEach(controller.addUserScript)
+            if let script { controller.addUserScript(script) }
+        }
+        controllers.setObject(Attachment(profileID: profileID, list: next, script: script), forKey: controller)
         ExtensionFilterBridge.apply(to: controller, profileID: profileID)
     }
 
@@ -151,10 +162,11 @@ private struct BlockRule: Codable, Equatable {
                     guard refreshState.isCurrent(generation) else { return }
                     // Keep accepted base rules available for site troubleshooting even
                     // when a legacy source disappears. No private host is in this snapshot.
-                    let snapshot = Snapshot(json: fresh.json, report: fresh.report)
+                    let snapshot = Snapshot(json: fresh.json, report: fresh.report, scriptlets: fresh.scriptlets)
                     try await writeSnapshot(snapshot, generation: generation)
                     guard refreshState.finish(.success(fresh.base), generation: generation) else { return }
                     profileLists = fresh.profiles
+                    setScriptletTable(fresh.scriptlets)
                     UserDefaults.vane.set(fresh.base.identifier, forKey: "blockerLastGoodList")
                     let saved = fresh.profiles.filter { !$0.key.hasPrefix(Profile.incognito.id.uuidString + ":") }
                     UserDefaults.vane.set(saved.mapValues { $0.identifier! }, forKey: "blockerLastGoodProfiles")
@@ -176,8 +188,12 @@ private struct BlockRule: Codable, Equatable {
                         for (key, identifier) in UserDefaults.vane.dictionary(forKey: "blockerLastGoodProfiles") as? [String: String] ?? [:] {
                             if let list = try? await store.contentRuleList(forIdentifier: identifier) { recovered[key] = list }
                         }
+                        let snapshot = try? await Task.detached(priority: .utility, operation: {
+                            try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL))
+                        }).value
                         guard refreshState.finish(.success(previous), generation: generation) else { return }
                         profileLists = recovered
+                        setScriptletTable(snapshot?.scriptlets ?? "")
                     }
                     guard refreshState.finish(.failure(error), generation: generation) else { return }
                     let detail = error.localizedDescription
@@ -300,7 +316,29 @@ private struct BlockRule: Codable, Equatable {
     private final class Attachment {
         let profileID: UUID
         let list: WKContentRuleList?
-        init(profileID: UUID, list: WKContentRuleList?) { self.profileID = profileID; self.list = list }
+        let script: WKUserScript?
+        init(profileID: UUID, list: WKContentRuleList?, script: WKUserScript?) {
+            self.profileID = profileID; self.list = list; self.script = script
+        }
+    }
+
+    /// Scriptlet table from the last good compile, and one script per site-exception set.
+    private static var scriptletTable = ""
+    private static var scriptletScripts: [[String]: WKUserScript] = [:]
+    private static func setScriptletTable(_ table: String) {
+        if scriptletTable != table { scriptletTable = table; scriptletScripts = [:] }
+    }
+    private static func scriptletScript(for profileID: UUID) -> WKUserScript? {
+        let hosts = siteExceptions(for: profileID).sorted()
+        if let cached = scriptletScripts[hosts] { return cached }
+        // Drop sets no profile has any more, such as before a site exception was added.
+        let inUse = Set((ProfileManager.shared.profiles.map(\.id) + [Profile.incognito.id]).map { siteExceptions(for: $0).sorted() })
+        scriptletScripts = scriptletScripts.filter { inUse.contains($0.key) }
+        guard let source = Scriptlets.source(table: scriptletTable, siteExceptions: hosts) else { return nil }
+        // Page world, every frame, document start: before the page's own first script.
+        let script = WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)
+        scriptletScripts[hosts] = script
+        return script
     }
     private static let controllers = NSMapTable<WKUserContentController, Attachment>(keyOptions: .weakMemory, valueOptions: .strongMemory)
 
@@ -309,6 +347,7 @@ private struct BlockRule: Codable, Equatable {
         var profiles: [String: WKContentRuleList]
         var report: BlockerReport
         var json: String
+        var scriptlets: String
         var sourceFailure: String?
     }
     private static let snapshotGate = BlockerAsyncGate()
@@ -324,6 +363,7 @@ private struct BlockRule: Codable, Equatable {
     private struct Snapshot: Codable, Sendable {
         var json: String
         var report: BlockerReport
+        var scriptlets: String? // Absent in snapshots written before scriptlet support.
     }
     private nonisolated static var snapshotURL: URL { Store.directory.appendingPathComponent("FilterLists/last-good-rules.json") }
     private static var protectedIdentifiers: Set<String> {
@@ -415,7 +455,8 @@ private struct BlockRule: Codable, Equatable {
             guard let snapshot = try? await Task.detached(priority: .utility, operation: {
                 try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL))
             }).value else { throw error }
-            var recovered = try await compile(base: BlockerConversion(json: snapshot.json, report: snapshot.report))
+            var recovered = try await compile(base: BlockerConversion(json: snapshot.json, report: snapshot.report,
+                                                                           scriptlets: snapshot.scriptlets ?? ""))
             recovered.sourceFailure = failure
             return recovered
         }
@@ -490,7 +531,7 @@ private struct BlockRule: Codable, Equatable {
             } else { variantStore = store }
             variants[exceptionKey(profile, hosts: hosts)] = try await compiledList(json, store: variantStore)
         }
-        return Compilation(base: compiledBase, profiles: variants, report: base.report, json: base.json)
+        return Compilation(base: compiledBase, profiles: variants, report: base.report, json: base.json, scriptlets: base.scriptlets)
     }
 
     private nonisolated static func excluding(_ hosts: [String], from json: String) throws -> String {
@@ -519,8 +560,10 @@ private struct BlockRule: Codable, Equatable {
     /// within an explicit positive resource set.
     ///
     /// Also supports a conservative ASCII regex subset and exact network `$badfilter`.
+    /// `##+js(…)` scriptlets go to `Scriptlets` (a page script, not a WebKit rule) and count
+    /// as rules when the library has them.
     /// Skipped and counted: other regex constructs, `#@#` / `#?#` / `#$#` cosmetic variants,
-    /// scriptlets, procedural selectors, negative-only or aggregated resource exclusions, `$important`,
+    /// unknown scriptlets, procedural selectors, negative-only or aggregated resource exclusions, `$important`,
     /// `$redirect`, `$csp`, `$removeparam`, non-ASCII patterns, and anything with an
     /// option this does not know — an unknown option can invert a rule's meaning, so an
     /// unrecognised one drops the whole line.
@@ -576,6 +619,7 @@ private struct BlockRule: Codable, Equatable {
         }
         var rules: [BlockRule] = []
         var report = BlockerReport()
+        var scriptlets = Scriptlets.Table()
         for (source, text) in texts.enumerated() {
             var conditionalDepth = 0
             for (index, raw) in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).enumerated() {
@@ -585,7 +629,12 @@ private struct BlockRule: Codable, Equatable {
                 if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
                 if conditionalDepth == 0, badfilterTarget(line) != nil { continue }
                 if conditionalDepth == 0, disabled.contains(networkIdentity(line)), !line.contains("#") { continue }
-                if conditionalDepth == 0, var rule = rule(for: line) {
+                var scriptlet = conditionalDepth == 0 ? Scriptlets.parse(line) : nil
+                if case .rule(let parsed) = scriptlet {
+                    if scriptlets.add(parsed) { continue }
+                    scriptlet = .unsupported("Scriptlet table full")
+                }
+                if conditionalDepth == 0, scriptlet == nil, var rule = rule(for: line) {
                     if !excludingHosts.isEmpty, !rule.isException {
                         rule.trigger.unlessTopURL = excludingHosts.sorted().map {
                             "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/"
@@ -593,7 +642,8 @@ private struct BlockRule: Codable, Equatable {
                     }
                     rules.append(rule)
                 } else {
-                    let reason = conditionalDepth > 0 ? "Conditional rule" : unsupportedReason(line)
+                    var reason = conditionalDepth > 0 ? "Conditional rule" : unsupportedReason(line)
+                    if case .unsupported(let why) = scriptlet { reason = why }
                     report.skipped += 1
                     report.reasonCounts[reason, default: 0] += 1
                     if report.diagnostics.count < 20 {
@@ -607,13 +657,13 @@ private struct BlockRule: Codable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
         let data = (try? encoder.encode(ordered)) ?? Data("[]".utf8)
-        report.rules = ordered.count
-        return BlockerConversion(json: String(decoding: data, as: UTF8.self), report: report)
+        report.rules = ordered.count + scriptlets.count
+        return BlockerConversion(json: String(decoding: data, as: UTF8.self), report: report, scriptlets: scriptlets.text)
     }
 
     private nonisolated static func unsupportedReason(_ line: String) -> String {
-        if line.contains("##+js(") || [":has-text(", ":-abp-", ":style(", ":remove(", ":matches-css", ":upward(", ":xpath(", ":nth-ancestor(", ":watch-attr("].contains(where: line.contains) {
-            return "Scriptlet or procedural selector"
+        if [":has-text(", ":-abp-", ":style(", ":remove(", ":matches-css", ":upward(", ":xpath(", ":nth-ancestor(", ":watch-attr("].contains(where: line.contains) {
+            return "Procedural selector"
         }
         if line.contains("#@#") || line.contains("#?#") || line.contains("#$#") { return "Cosmetic variant or exception" }
         if !line.allSatisfy({ $0.isASCII }) { return "Non-ASCII rule" }
@@ -1044,7 +1094,7 @@ private struct BlockRule: Codable, Equatable {
         assert("$important is skipped", rule(for: "||ads.example.com^$important") == nil)
         assert("a negated resource type is skipped", rule(for: "||ads.example.com^$~script") == nil)
         assert("a cosmetic exception is skipped", rule(for: "example.com#@#.banner") == nil)
-        assert("a scriptlet is skipped", rule(for: "example.com##+js(aopr, ads)") == nil)
+        assert("a scriptlet is not a WebKit rule", rule(for: "example.com##+js(aopr, ads)") == nil)
         assert("a procedural selector is skipped",
                rule(for: "example.com##.item:has-text(Sponsored)") == nil)
         assert("a non-ASCII pattern is skipped", rule(for: "||рекламa.example^") == nil)

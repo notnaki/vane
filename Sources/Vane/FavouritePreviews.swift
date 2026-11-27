@@ -454,7 +454,7 @@ struct FavouriteSessionFingerprint: Equatable {
         cfg.mediaTypesRequiringUserActionForPlayback = .all
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
         let web = WKWebView(frame: NSRect(origin: .zero, size: Previews.viewport), configuration: cfg)
-        web.customUserAgent = Settings.userAgent
+        web.customUserAgent = ActAsChrome.userAgent(for: context.entryURL, profileID: context.profileID, isPrivate: false)
         web.navigationDelegate = self; web.uiDelegate = self
         self.web = web; host = PreviewHostWindow(content: web)
         let ticket = generation

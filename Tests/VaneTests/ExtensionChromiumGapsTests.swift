@@ -1,4 +1,5 @@
 import JavaScriptCore
+import WebKit
 import XCTest
 @testable import vane
 
@@ -21,6 +22,28 @@ import XCTest
         XCTAssertNil(ExtensionChromiumGaps.Request(URL(string: "webkit-extension://abc/__vane_gaps__"), base: base))
         XCTAssertEqual(ExtensionChromiumGaps.reply(.success(3)), #"[vane-gaps] {"value":3}"#)
         XCTAssertEqual(ExtensionChromiumGaps.reply(.failure(ExtensionHost.Failure("No."))), #"[vane-gaps] {"error":"No."}"#)
+    }
+
+    /// `hasDocument` waits for the load; a crashed WebContent process drops the document; the
+    /// main frame never leaves the extension (PM-8014 races Bitwarden's `withDocument` on these).
+    func testOffscreenDocumentIsThereOnlyOnceLoadedAndGoesWithItsProcess() async throws {
+        let base = URL(string: "about:blank")!
+        let document = OffscreenDocument(WKWebView(frame: .zero, configuration: WKWebViewConfiguration()), base: base)
+        var terminated = 0
+        document.terminated = { terminated += 1 }
+        let loading = Task { await document.load(base) }
+        XCTAssertFalse(document.loaded, "a document still loading must not count as there")
+        let loaded = await loading.value
+        XCTAssertTrue(loaded)
+        XCTAssertTrue(document.loaded)
+        XCTAssertIdentical(document.web.navigationDelegate, document, "the delegate must outlive the first load")
+        document.webViewWebContentProcessDidTerminate(document.web)
+        XCTAssertEqual(terminated, 1)
+
+        let leaving = OffscreenDocument(WKWebView(frame: .zero, configuration: WKWebViewConfiguration()), base: base)
+        let left = await leaving.load(URL(string: "https://example.invalid/")!)
+        XCTAssertFalse(left)
+        XCTAssertFalse(leaving.loaded)
     }
 
     func testACredentialedFetchCarriesOnlyItsOwnSitesCookies() throws {

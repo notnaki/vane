@@ -28,12 +28,16 @@ struct LivePageResizeAnchor {
     let originalFrame: NSRect
     let originalParentBounds: NSRect
     let flipped: Bool
+    /// Hang from the right edge: a left-edge window drag keeps that edge still on screen,
+    /// so the page stays put while the moving edge slides over it (as Arc does).
+    var trailing = false
 
     func frame(for size: NSSize, in parentBounds: NSRect) -> NSRect {
         let left = originalFrame.minX - originalParentBounds.minX
+        let right = originalParentBounds.maxX - originalFrame.maxX
         let top = flipped ? originalFrame.minY - originalParentBounds.minY
             : originalParentBounds.maxY - originalFrame.maxY
-        return NSRect(x: parentBounds.minX + left,
+        return NSRect(x: trailing ? parentBounds.maxX - right - size.width : parentBounds.minX + left,
                       y: flipped ? parentBounds.minY + top : parentBounds.maxY - top - size.height,
                       width: size.width, height: size.height)
     }
@@ -76,13 +80,18 @@ struct LivePageResizeAnchor {
         var prepared: NSSize
         var restored = false
         private var stylePreparation: UUID?
+        /// While a shrink awaits its paint, WebKit's native children keep their painted
+        /// size and screen position: the web size they match and their own frames.
+        private var heldChildSize: NSSize?
+        private var heldChildFrames: [(view: NSView, frame: NSRect)] = []
 
-        init(web: WKWebView, host: WebHost, navigation: Navigation? = nil) {
+        init(web: WKWebView, host: WebHost, navigation: Navigation? = nil, trailing: Bool = false) {
             self.navigation = navigation
             self.web = web
             self.host = host
             originalSize = web.frame.size
-            anchor = LivePageResizeAnchor(originalFrame: web.frame, originalParentBounds: host.bounds, flipped: host.isFlipped)
+            anchor = LivePageResizeAnchor(originalFrame: web.frame, originalParentBounds: host.bounds, flipped: host.isFlipped,
+                                          trailing: trailing)
             expectedFrame = web.frame
             parentSize = host.bounds.size
             mask = web.autoresizingMask
@@ -98,8 +107,8 @@ struct LivePageResizeAnchor {
             guard let host else { return false }
             return web.superview === host && host.web === web && !host.offscreen
                 && !web.isHiddenOrHasHiddenAncestor && web.frame == expectedFrame && host.isFlipped == anchor.flipped
-                && web.autoresizingMask.isEmpty && web.autoresizesSubviews == autoSubviews && host.clipsToBounds
-                && host.resizeFraction == fraction
+                && web.autoresizingMask.isEmpty && (web.autoresizesSubviews == autoSubviews || heldChildSize != nil)
+                && host.clipsToBounds && host.resizeFraction == fraction
                 && (navigation == nil ? host.resizeLayout.enabled : host.resizeLayout.permitsLibraryNavigation)
                 && host.resizeLayout.librarySection == layout.librarySection
                 && host.resizeLayout.spaces == layout.spaces
@@ -128,11 +137,26 @@ struct LivePageResizeAnchor {
             if web.frame != expectedFrame { web.frame = expectedFrame }
         }
 
-        func prepare(_ size: NSSize, progress: (() -> Void)? = nil) {
+        func prepare(_ size: NSSize, holdChild: Bool = false, progress: (() -> Void)? = nil) {
             prepared = size
+            // WebKit's native child follows the frame at once, shifting or clipping the old
+            // paint. Keep it at its painted size and screen position until the new paint lands.
+            var pinned: [(view: NSView, rect: NSRect)] = []
+            // Growth on a leading anchor leaves the old paint in place by itself; holding the
+            // child on a growing axis would leave that edge empty (a corner drag) for a frame.
+            let grows = size.width > web.frame.width || size.height > web.frame.height
+            let shrinks = size.width < web.frame.width || size.height < web.frame.height
+            let trailingWidth = anchor.trailing && size.width != web.frame.width && size.height <= web.frame.height
+            if holdChild, heldChildSize == nil, autoSubviews, let host, (shrinks && !grows) || trailingWidth {
+                heldChildSize = web.frame.size
+                heldChildFrames = web.subviews.map { ($0, $0.frame) }
+                pinned = web.subviews.map { ($0, $0.convert($0.bounds, to: host)) }
+                web.autoresizesSubviews = false
+            }
             // Move and size together before reading safeAreaInsets. Growing up
             // into a titled window's unsafe area does not grow its CSS viewport.
             assignFrame(size: size)
+            if let host { for (view, rect) in pinned { view.frame = web.convert(rect, from: host) } }
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.frameAssigned", width: size.width, height: size.height)
 #endif
@@ -148,7 +172,19 @@ struct LivePageResizeAnchor {
             stylePreparation = PageResizeStyle.prepare(web, nextSize: prepared)
         }
 
-        func acknowledgePaint() { painted = prepared }
+        func acknowledgePaint() {
+            painted = prepared
+            releaseChild()
+        }
+
+        func releaseChild() {
+            guard let held = heldChildSize else { return }
+            heldChildSize = nil
+            for (view, frame) in heldChildFrames where view.superview === web { view.frame = frame }
+            heldChildFrames = []
+            web.autoresizesSubviews = autoSubviews
+            web.resizeSubviews(withOldSize: held)
+        }
 
         var currentVisibleSize: NSSize {
             guard let host else { return originalSize }
@@ -166,6 +202,7 @@ struct LivePageResizeAnchor {
         func restore(exact: Bool) {
             guard !restored else { return }
             restored = true
+            releaseChild()
             if let host, host.web === web {
                 let ownsSizing = web.superview === host && web.frame == expectedFrame
                     && web.autoresizingMask.isEmpty && web.autoresizesSubviews == autoSubviews
@@ -320,6 +357,7 @@ struct LivePageResizeAnchor {
           now: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
           frameDriver: FrameDriver? = nil,
           navigation: Navigation? = nil,
+          trailing: Bool = false,
           isCurrent: @escaping @MainActor () -> Bool = { true },
           apply: @escaping @MainActor (NSRect, CGFloat?) -> Void,
           completion: @escaping @MainActor () -> Void = {}) {
@@ -356,7 +394,7 @@ struct LivePageResizeAnchor {
         }) else { return nil }
         // Capture masks and frames only after the previous owner has restored
         // them. Otherwise a window drag inherits Library's temporary empty mask.
-        let pages = candidates.map { Page(web: $0.web, host: $0.host, navigation: navigation) }
+        let pages = candidates.map { Page(web: $0.web, host: $0.host, navigation: navigation, trailing: trailing) }
         self.window = window
         self.root = root
         baselineFrame = window.frame
@@ -423,7 +461,7 @@ struct LivePageResizeAnchor {
             }
         }
         if !ending { stopFrames = frameDriver? { [weak self] in self?.advancePublicationFrame() } }
-        prepare(exact: ending || stagesExactNavigation)
+        prepare(exact: ending || stagesExactNavigation || frameDriver != nil)
     }
 
     /// True means this buffer owns the proposal, even if it needs more coverage.
@@ -470,7 +508,19 @@ struct LivePageResizeAnchor {
 #endif
         if !started { start() }
         drive()
+        if frameDriver != nil, presenter == nil, !covered(sizes(latest)) { awaitPaint() }
         return true
+    }
+
+    /// Like Chromium, hold an uncovered (growing) step briefly for its exact paint, so the
+    /// window commits with the page under the pointer instead of trailing a paint behind.
+    /// ponytail: fixed 50ms budget; slower pages fall back to the asynchronous publish.
+    private func awaitPaint(budget: TimeInterval = 0.05) {
+        let deadline = Date(timeIntervalSinceNow: budget)
+        let mode = RunLoop.current.currentMode ?? .default
+        while active, !ending, !pendingPaints.isEmpty, Date() < deadline {
+            RunLoop.current.run(mode: mode, before: deadline)
+        }
     }
 
     func finish(_ completion: @escaping @MainActor () -> Void = {}) {
@@ -639,7 +689,16 @@ struct LivePageResizeAnchor {
     }
 
     private func sizes(_ request: Request) -> [NSSize] {
-        let desired = nominalSizes(request)
+        var desired = nominalSizes(request)
+        if frameDriver != nil, published?.frame == request.frame {
+            // A split pane's installed clip can round half a point off its nominal share.
+            // Fill that clip, or the seam shows a sub-point strip for the whole drag.
+            desired = zip(pages, desired).map { page, size in
+                let visible = page.currentVisibleSize
+                return NSSize(width: abs(visible.width - size.width) < 1 ? visible.width : size.width,
+                              height: abs(visible.height - size.height) < 1 ? visible.height : size.height)
+            }
+        }
         let visible = pages.map(\.currentVisibleSize)
         guard desired != visible, published?.frame == request.frame,
               published?.sidebar == request.sidebar, navigationParentSizesMatch(desired),
@@ -669,6 +728,19 @@ struct LivePageResizeAnchor {
         guard stagesExactNavigation, let leading = request.sidebar,
               let installed = navigation?.layoutLeading?() else { return false }
         return abs(installed - leading) < 0.001
+    }
+
+    /// A window drag's viewport: exactly the request, except that while either axis grows
+    /// the shrinking one keeps the visible size until the window has moved.
+    private static func windowTarget(_ visible: NSSize, _ size: NSSize) -> NSSize {
+        let grows = size.width > visible.width + 0.001 || size.height > visible.height + 0.001
+        return grows ? NSSize(width: max(visible.width, size.width), height: max(visible.height, size.height)) : size
+    }
+
+    private static func between(_ size: NSSize, _ a: NSSize, _ b: NSSize) -> Bool {
+        // 1pt slack: a corner drag's other axis wobbles; failing it would stall the window.
+        size.width >= min(a.width, b.width) - 1 && size.width <= max(a.width, b.width) + 1
+            && size.height >= min(a.height, b.height) - 1 && size.height <= max(a.height, b.height) + 1
     }
 
     private func covered(_ sizes: [NSSize]) -> Bool {
@@ -780,19 +852,13 @@ struct LivePageResizeAnchor {
             }
             return
         }
-        // A held window drag has no growth left to cover. Lay the page out at the
-        // visible width now instead of at release; lookahead centres and clips a
-        // responsive page off the window edge. The next pointer sample refills it.
-        // ponytail: fixed 0.15s hold, measured from pointer samples, not velocity.
-        // Only after a real pointer sample: a press held before moving keeps the prime.
-        if frameDriver != nil, hasPresentedViewport, sampledVelocity, now() - lastTime >= 0.15 {
-            // Exact preparation never shrinks below the visible clip, which a split pane's
-            // pixel rounding can leave wider than nominal. Compare with what it prepares.
-            let fitted = zip(pages, desired).map { page, size in
-                let visible = page.currentVisibleSize
-                return NSSize(width: max(visible.width, size.width), height: max(visible.height, size.height))
-            }
-            if zip(pages, fitted).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
+        // A window drag lays the page out at exactly the visible width. Lookahead
+        // clipped a responsive page off the window edge, so every refill reflowed it
+        // visibly. A shrink follows the pointer at once, its old paint pinned to the
+        // still edge; growth waits (briefly, see awaitPaint) for its exact paint.
+        if frameDriver != nil {
+            let targets = zip(pages, desired).map { Self.windowTarget($0.currentVisibleSize, $1) }
+            if zip(pages, targets).contains(where: { $0.prepared != $1 || $0.painted != $1 }) {
                 prepare(exact: true)
             }
             return
@@ -827,11 +893,15 @@ struct LivePageResizeAnchor {
             // until native layout acknowledges the latest one, even if it
             // coalesces past every intermediate parent.
             let submitted = submittedSidebarFloor?[index] ?? .zero
+            // A window drag shrinks the page ahead of the window only when nothing grows. A
+            // corner drag that also grows keeps the visible floor: an intermediate WK resize
+            // can answer the presentation callback before the grown viewport has painted.
+            let visible = frameDriver != nil ? Self.windowTarget(page.currentVisibleSize, size) : page.currentVisibleSize
             // A mixed-axis proposal can wait for growth while its other axis
             // shrinks. Do not prepare a viewport smaller than the still-visible clip.
-            return NSSize(width: max(submitted.width, page.currentVisibleSize.width,
+            return NSSize(width: max(submitted.width, visible.width,
                                     size.width + (exact || !page.mask.contains(.width) || (navigation != nil && shrinkingWidth && !hasPresentedViewport) ? 0 : axes.width * (shrinkingWidth ? 24 : lead.width) * page.fraction.width)),
-                          height: max(submitted.height, page.currentVisibleSize.height,
+                          height: max(submitted.height, visible.height,
                                      size.height + (exact || !page.mask.contains(.height) ? 0 : axes.height * (shrinkingHeight ? 24 : lead.height) * page.fraction.height)))
         }
         // Deferred native submissions can hold a larger floor through several
@@ -844,7 +914,9 @@ struct LivePageResizeAnchor {
         generation = UUID()
         let token = generation
         exactPaint = exact && targets == desired
-        preparedRequest = exactPaint ? latest : nil
+        // A floored corner paint still covers the request it was prepared for: the window
+        // may publish it while the pointer runs ahead.
+        preparedRequest = exactPaint || (exact && frameDriver != nil) ? latest : nil
         guard targets.allSatisfy({ $0.width > 0 && $0.height > 0 && $0.width.isFinite && $0.height.isFinite }) else { cancel(); return }
         pendingPaints = Set(pages.map { ObjectIdentifier($0.web) })
         pendingStyleReplies = pendingPaints
@@ -856,7 +928,7 @@ struct LivePageResizeAnchor {
             ResizeTimingDiagnostics.record("buffer.prepare.begin", width: target.width, height: target.height)
 #endif
             let id = ObjectIdentifier(page.web)
-            page.prepare(target, progress: { [weak self] in self?.styleReplied(token, page: id) })
+            page.prepare(target, holdChild: frameDriver != nil, progress: { [weak self] in self?.styleReplied(token, page: id) })
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.prepare.end", width: target.width, height: target.height)
 #endif
@@ -905,11 +977,21 @@ struct LivePageResizeAnchor {
 #endif
             pages.forEach { $0.acknowledgePaint() }
             hasPresentedViewport = true
+            // Commit the window inside WebKit's paint transaction, not a display frame later.
+            if frameDriver != nil { publicationAllowed = true }
+            defer { if !inPublicationFrame { publicationAllowed = false } }
 #if DEBUG
             ResizeTimingDiagnostics.record("buffer.install.end")
             trace("buffer.paint.acknowledged", token: token, page: page)
 #endif
             if covered(sizes(latest)) { publish() }
+            else if frameDriver != nil, let preparedRequest,
+                    covered(sizes(preparedRequest)),
+                    Self.between(preparedRequest.frame.size, (published?.frame ?? baselineFrame).size, latest.frame.size) {
+                // The pointer moved on during the paint: show the painted size, then chase it.
+                // Never past the latest input: a reversal waits for its own paint.
+                publish(preparedRequest)
+            }
             else if stagesExactNavigation, !ending, let preparedRequest,
                     preparedRequest.frame == latest.frame,
                     let accepted = published?.sidebar, let ready = preparedRequest.sidebar,

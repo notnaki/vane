@@ -58,7 +58,7 @@ The gain is Chrome's enums, scalar constants and events, filled into every names
 | uBlock 25.5.1 | No context errors; `/88/tag.min.js` not requested on `/ad-check` (120-second settle). |
 | AdBlock 6.55.0 | Popup works; `/88/tag.min.js` not requested (120-second settle); only the known “No remote configuration” message. |
 
-Automated coverage: `ExtensionSidePanelTests.testWorkerAndPageHaveDisposeSymbolsAndWorkerSocketsCarryBinaryFrames` (symbols in worker and page, TypeScript's downlevel `using`, Chrome's enums and constants read at a worker's top level, no invented `offscreen` or `userScripts`, text, `ArrayBuffer` and `Blob` echoes through a loopback WebSocket server); `ExtensionNativeMessagingErrorTests.testNativeMessagingFailsLikeChromeByDefault` and the updated mode tests; `SafariAppExtensionTests.testSafariAppExtensionGetsNoChromiumStandInsOrChromeNativeMessagingDefault`. Logs and the probe's results are kept locally under `~/.cache/vane-bw-check-2026-11-26/`.
+Automated coverage: `ExtensionSidePanelTests.testWorkerAndPageHaveDisposeSymbolsAndWorkerSocketsCarryBinaryFrames` (symbols in worker and page, TypeScript's downlevel `using`, Chrome's enums and constants read at a worker's top level, no invented `userScripts`, and `offscreen` only for an extension that declares it, text, `ArrayBuffer` and `Blob` echoes through a loopback WebSocket server); `ExtensionNativeMessagingErrorTests.testNativeMessagingFailsLikeChromeByDefault` and the updated mode tests; `SafariAppExtensionTests.testSafariAppExtensionGetsNoChromiumStandInsOrChromeNativeMessagingDefault`. Logs and the probe's results are kept locally under `~/.cache/vane-bw-check-2026-11-26/`.
 
 ## Tab groups as Today folders (`chrome.tabGroups`) — 2026-11-23
 
@@ -91,7 +91,9 @@ Vane now answers the part of `chrome.debugger` that the official **Claude** exte
 | `runtime.getContexts` | Lists the background and open side panels. Claude's own check (`documentUrls: [location.href]`, every result a `SIDE_PANEL`) passes. |
 | `tabGroups`, `tabs.group`/`ungroup` | Absent at the time; since provided over Today's folders (see the tab groups section). |
 | `identity` | See the identity section below. |
-| `notifications`, `offscreen`, `downloads`, `favicon`, `runtime.connectNative` | Unchanged from the sections below. |
+| `notifications`, `downloads` | Since provided by Vane (see [Integrations](INTEGRATIONS.md)). |
+| `offscreen` | A hidden extension document. It accepts every Chrome reason, but `USER_MEDIA`, `DISPLAY_MEDIA` and `GEOLOCATION` requests are denied in it. |
+| `favicon`, `runtime.connectNative` | Unchanged from the sections below. |
 
 **Observed** in the signed-out run, each call made from Claude's side panel page in Chrome's callback style:
 
@@ -234,7 +236,7 @@ One crash was found and fixed on the way: an extension page hosted by Vane (opti
 | `debugger` (`attach`, `sendCommand`, `onEvent`) | Absent; events only in Vane, methods undefined (since emulated in part: see the section above) | **Page actions do not work.** Claude clicks, types and takes screenshots through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`, `Network.*`). WebKit offers extensions no equivalent. |
 | `tabGroups`, `tabs.group`/`ungroup` | Absent; constants and events only | Claude's tab group is not created. |
 | `identity.launchWebAuthFlow` | Absent; undefined | Claude's silent OAuth refresh path fails. Whether interactive sign-in completes was not tested. |
-| `notifications`, `downloads` | Absent; events only, methods undefined | No notifications, no downloads from the extension. (`offscreen` is now a hidden extension document.) |
+| `notifications`, `downloads` | Absent; events only, methods undefined | No notifications, no downloads from the extension. (Both since provided by Vane's shims; `offscreen` is now a hidden extension document.) |
 | `runtime.connectNative` | Hidden by Vane | Claude reports the desktop app and Claude Code connection as absent. |
 | `runtime.getContexts` | Absent | Claude's ⌘E command cannot tell that its panel is open, so it does not toggle. |
 | `action.getUserSettings`, `action.setBadgeTextColor`, `favicon` | Absent | Cosmetic. |
