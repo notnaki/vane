@@ -47,7 +47,7 @@ on **Settings → Links → Auto-hide toolbar in Little Vane and Peek**.
 Click the Site Controls button in the address pill for quick actions on the current site:
 **Share**, **Boost**, **Capture**, and **Reader**, plus a tile for each installed
 extension (click a dimmed tile to turn it on). Below, a short **Settings** list shows only
-what this site has changed: permissions you answered, zoom, ad blocking, translation,
+what this site has changed: permissions you answered (including Notifications), zoom, ad blocking, translation,
 apps it may open, and Developer Mode. Click a row to flip it.
 
 **⋯ → Site Settings…** lists every permission and site option. The **⋯** menu also has

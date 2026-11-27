@@ -793,6 +793,7 @@ import WebKit
         if let path = loaded.first(where: { $0.context === context })?.path { revokeICloudStorageLeases(path) }
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
         webSockets.close(owner: ObjectIdentifier(context))
+        ExtensionNotifications.forget(owner: notificationOwner(context))
         try controller.unload(context)
         filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
         backgroundViews.removeObject(forKey: context)
@@ -2372,6 +2373,13 @@ import WebKit
             return extensionContexts(context)
         case "fetch":
             return try await credentialedFetch(arguments, for: context)
+        case let operation where operation.hasPrefix("notifications."):
+            guard (context.webExtension.manifest["permissions"] as? [String])?.contains("notifications") == true else {
+                throw Failure("The extension does not declare the notifications permission.")
+            }
+            return try await ExtensionNotifications.answer(operation, arguments, owner: notificationOwner(context),
+                                                           name: context.webExtension.displayName ?? "Extension",
+                                                           wake: { [weak context] in context?.loadBackgroundContent { _ in } })
         case let operation where operation.hasPrefix("downloads."):
             guard ExtensionDownloadsAPI.declared(context.webExtension.manifest) else {
                 throw Failure("This extension has not requested the downloads permission.")
@@ -2386,6 +2394,10 @@ import WebKit
         default:
             throw Failure("Vane does not answer \(request.operation).")
         }
+    }
+
+    private func notificationOwner(_ context: WKWebExtensionContext) -> String {
+        "\(profileID)/\(context.uniqueIdentifier)"
     }
 
     private let fetchSession: URLSession = {

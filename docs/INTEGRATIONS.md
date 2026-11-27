@@ -97,7 +97,8 @@ These extensions were checked with unmodified packages; see
 | `chrome.tabGroups` | A group is a folder in Today. Extensions can read your folders but change only folders an extension made. Pinned tabs and Favourites can't be grouped. |
 | `chrome.downloads` | Extensions that ask for it save files (web, `data:` and their own `blob:` links, with the profile's cookies) into your downloads folder, and they show in the Library. They can list, pause, resume, cancel, erase, show and open the profile's downloads and hear when they change. Opening a file needs `downloads.open` and, in the last 5 seconds, a click on the extension's button or a click or key press that went to one of its own pages; typing in a website doesn't count, even if an extension page takes focus right after. `overwrite` replaces the old file only once the new one has finished, and never a file another download, running or paused, is still writing, even under a name that differs only in case. Tidy Downloads leaves names an extension chose alone. Private-window downloads stay hidden. |
 | `chrome.identity` | `launchWebAuthFlow` opens a sign-in window titled with the extension's name and the site, using the profile's cookies. |
-| Chromium-only names | `notifications`, `downloads`, `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start, but `notifications` doesn't do anything. Chrome's enums and constants are filled in too. |
+| `chrome.notifications` | `create`, `update`, `clear`, `getAll` and `getPermissionLevel` show text notifications in Notification Center under the extension's name; `getPermissionLevel` says `denied` when macOS notifications are off for Vane. `onClicked`, `onClosed` and up to two buttons (`onButtonClicked`) reach the background worker. Needs the `notifications` permission. |
+| Chromium-only names | `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start. Chrome's enums and constants are filled in too. |
 | Native messaging | Extensions that declare `nativeMessaging` get Chrome's "Specified native messaging host not found." error, so ones that expect a desktop app (like Bitwarden) carry on. No desktop app is contacted. Turn it off with **Disable Error-Only Mode** in Manage Extensions → Compatibility. |
 
 These additions apply to Chrome Web Store and folder packages. Safari app extensions get
@@ -142,7 +143,7 @@ simple regular expressions. Rules it can't represent are skipped and listed unde
 
 ## Site permissions
 
-When a site asks for your camera, microphone or location, choose **Allow Once**,
+When a site asks for your camera, microphone, location or to show notifications, choose **Allow Once**,
 **Always Allow** or **Don't Allow**. Allow Once lasts until the page navigates or closes.
 Saved answers belong to that site in that profile; private windows keep them in memory.
 Requests from embedded frames are refused.
@@ -151,6 +152,10 @@ Change an answer from **Site Controls**: right-click a permission for Ask, Allow
 or choose **⋯ → Site Settings…** for every permission. Blocking stops the camera or
 microphone at once. macOS has its own permission for each device and for screen sharing;
 Vane can't override a macOS denial. See [Site permissions](SITE-PERMISSIONS.md).
+
+Sites can show notifications in Notification Center once allowed. A site can only ask
+after you click or type on it. Each notification names its site; clicking one brings
+back its tab. macOS asks once whether Vane may show notifications.
 
 ## AI connections and feature routing
 
@@ -263,7 +268,17 @@ separate from link previews.
   as "add a number", marks nothing as dangerous, and renumbers downloads after a relaunch.
 - **Content blocking** covers part of EasyList; scriptlets, procedural selectors and
   complex regular expressions are skipped. There are no per-request block counts.
-- **Embedded frames** can't use the camera, microphone or location.
+- **Embedded frames** can't use the camera, microphone, location or notifications.
+- **Web notifications** come from open pages only: service-worker notifications and Push
+  (`registration.showNotification`, `PushManager`) aren't available, so a closed site
+  can't notify you. A closed tab's notifications are removed. Icons are best effort;
+  notification actions, images and badges aren't shown. Like other browsers, Vane doesn't
+  limit how many notifications an allowed site shows. Private windows' notifications are
+  removed when Vane quits, and any left from an earlier run are removed at launch.
+  Extension notifications are text only (no icons or images) and reach only the background
+  worker, which keeps running while they're showing and is started for a click if it was
+  stopped. A worker that's running but had nothing showing itself (the notification came
+  from its popup) hears the click when it next adds a listener or shows one.
 - **Favourite previews** depend on each site's page layout; when one changes, the card
   shows **Preview unavailable** instead of an empty list.
 - Details and evidence: [Extension validation](EXTENSION-VALIDATION.md),

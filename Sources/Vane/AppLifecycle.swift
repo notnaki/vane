@@ -113,6 +113,7 @@ enum QuitAsk {
     func applicationWillTerminate(_ notification: Notification) {
         PasswordClipboard.clearOnTerminate()
         Blocker.closePrivateRules()
+        WebNotifications.terminating()
     }
 
     private final class MinimizedWindow {

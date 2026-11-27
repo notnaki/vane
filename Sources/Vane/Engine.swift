@@ -950,6 +950,7 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: ChromeWebStorePage.world, name: ChromeWebStorePage.messageName)
         NativePiPHostBridge.register(tab: self, web: web)
+        WebNotifications.attach(self, web)
         if let linkView = web as? LinkContextWebView {
             linkView.navigationOwner = self
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
@@ -1484,6 +1485,7 @@ struct TitleReveal: Equatable, Sendable {
         tornDown = true
         SiteBoosts.forget(tab: self)
         endPermissionDocument()
+        WebNotifications.drop(tabID: id)
         presentationGeneration += 1
         windowSnapshot = nil
         easelSession?.liveItems.removeAll()
@@ -2247,6 +2249,7 @@ struct TitleReveal: Equatable, Sendable {
             FileUploads.cancel(tabID: id)
             PageDialogs.cancel(tabID: id)
             endPermissionDocument()
+            WebNotifications.committed(self)
         }
         finishCertificateNavigation(navigation, in: w)
         Trace.note("committed")
