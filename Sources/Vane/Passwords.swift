@@ -1248,6 +1248,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
                                ("page translation", PageTranslation.check),
+                               ("act as chrome", ActAsChrome.check),
                                ("command palette", Palette.check),
                                ("find in page", Find.check),
                                ("clear browsing data", BrowsingData.check),

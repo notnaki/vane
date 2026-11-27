@@ -71,13 +71,16 @@ struct SiteControlModel: Equatable, Sendable {
     var apps: [App] = []
     var boosted = false
     var developer = false
+    var actAsChrome = false
+    /// Develop → User Agent is set to something other than the default, and wins here.
+    var userAgentOverridden = false
 }
 
 extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, translateOffers, capture, boost, clearData, developer
+        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, translateOffers, actAsChrome, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -231,6 +234,11 @@ extension SiteControlModel {
         }
         if scheme?.lowercased() == "http" || scheme?.lowercased() == "https" {
             out.append(Row(id: .boost, title: boosted ? "Edit Boost" : "Boost This Site", glyph: "paintbrush.pointed", control: .action))
+            out.append(Row(id: .actAsChrome, title: "Act as Chrome", glyph: "theatermasks",
+                           control: .toggle(actAsChrome && !userAgentOverridden),
+                           note: userAgentOverridden ? "Develop → User Agent is set and applies to every site."
+                            : "For sites that turn away other browsers. Streaming video may stop working with it on. Changing it reloads the page.",
+                           inert: userAgentOverridden))
         }
         if SitePermissions.supportsLocation {
             out.insert(Row(id: .location, title: "Location", glyph: "location", control: .permission(location),
@@ -284,6 +292,9 @@ extension SiteControlModel {
         }
         if profileBlocking && !blocking {
             out.append(Setting(id: .blocker, title: "Block Ads", value: "Off", glyph: "shield.slash", on: false))
+        }
+        if actAsChrome && !userAgentOverridden {
+            out.append(Setting(id: .actAsChrome, title: "Act as Chrome", value: "On", glyph: "theatermasks.fill", on: true))
         }
         if translated {
             out.append(Setting(id: .translate, title: "Translation", value: "On", glyph: "translate", on: true))
@@ -355,6 +366,8 @@ extension SiteControlModel {
         }
         if let origin = SiteBoosts.origin(url) { boosted = SiteBoosts.value(origin: origin, tab: tab) != SiteBoost() }
         developer = tab.developer
+        actAsChrome = ActAsChrome.isOn(url, profileID: tab.profileID, isPrivate: tab.isPrivate)
+        userAgentOverridden = ActAsChrome.overridden
     }
 }
 
@@ -418,6 +431,7 @@ extension SiteControlModel {
         case .app(let i): forgetApp(i, on: tab)
         case .clearData: clearSiteData(host: host, tab: tab)
         case .developer: DeveloperMode.toggle(tab)
+        case .actAsChrome: ActAsChrome.toggle(tab)
         }
         SiteChanges.shared.bump()
     }
@@ -641,6 +655,18 @@ extension SiteControlModel {
         dev.developer = true
         out.append(("…and reads as on when the tab is inspectable", control(dev, .developer) == .toggle(true)))
 
+        // Act as Chrome. `m` is an https page.
+        out.append(("act as chrome is off by default", control(m, .actAsChrome) == .toggle(false)
+                    && !m.settings.contains { $0.id == .actAsChrome }))
+        var chrome = m
+        chrome.actAsChrome = true
+        out.append(("…shows in Settings once on", control(chrome, .actAsChrome) == .toggle(true)
+                    && chrome.settings.contains { $0.id == .actAsChrome }))
+        chrome.userAgentOverridden = true
+        out.append(("…and is inert while Develop's user agent wins",
+                    chrome.rows.first { $0.id == .actAsChrome }?.inert == true
+                    && !chrome.settings.contains { $0.id == .actAsChrome }))
+
         // Apps this site may open without asking. See ExternalApps.swift.
         out.append(("a site that has never been allowed an app gets no row for one",
                     !m.rows.contains { if case .app = $0.id { return true }; return false }))
@@ -863,6 +889,9 @@ struct SiteControlPopover: View {
                 if let offers = rows.first(where: { $0.id == .translateOffers }), case .toggle(let on) = offers.control {
                     Toggle("Offer to Translate", isOn: Binding(get: { on }, set: { _ in SiteControl.act(.translateOffers, on: tab) }))
                 }
+                if let chrome = rows.first(where: { $0.id == .actAsChrome }), !chrome.inert, case .toggle(let on) = chrome.control {
+                    Toggle("Act as Chrome", isOn: Binding(get: { on }, set: { _ in SiteControl.act(.actAsChrome, on: tab) }))
+                }
                 Divider()
                 Button("Manage Extensions…") {
                     dismiss()
@@ -890,7 +919,7 @@ struct SiteControlPopover: View {
     /// Every setting this site has, as rows with their controls, one page in.
     private func siteSettings(_ model: SiteControlModel, rows: [SiteControlModel.Row]) -> some View {
         let shown: Set<SiteControlModel.RowID> = [.camera, .microphone, .location, .popups, .pictureInPicture,
-                                                  .zoom, .blocker, .translateOffers, .developer]
+                                                  .zoom, .blocker, .translateOffers, .actAsChrome, .developer]
         return VStack(alignment: .leading, spacing: 0) {
             Button { show(allSettings: false) } label: {
                 HStack(spacing: Look.rowSpacing) {
@@ -932,11 +961,18 @@ private struct SettingItem: View {
         }
     }
 
+    /// The glyph on an "on" disc: the ink's opposite, so it reads on the dark disc in light
+    /// mode as well as the light one in dark mode.
+    private static let onGlyph = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 0, alpha: 0.75) : NSColor(white: 1, alpha: 0.9)
+    })
+
     var body: some View {
         Button(action: flip) {
             HStack(spacing: Look.rowSpacing) {
                 Image(systemName: setting.glyph).font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(setting.on ? Color.black.opacity(0.75) : Look.inkPrimary)
+                    .foregroundStyle(setting.on ? Self.onGlyph : Look.inkPrimary)
                     .frame(width: Look.siteDisc, height: Look.siteDisc)
                     .background(setting.on ? Look.ink(0.9) : Look.ink(0.16), in: .circle)
                 VStack(alignment: .leading, spacing: 0) {

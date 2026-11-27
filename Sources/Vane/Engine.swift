@@ -52,7 +52,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         VaneSetBooleanPreference(self, NSSelectorFromString("_setShouldSuppressFirstResponderChanges:"), elsewhere)
     }
 
-    private func requested(_ navigation: WKNavigation?) -> WKNavigation? {
+    /// `own`: a load Vane started, which Act as Chrome may re-issue; never a history command.
+    private func requested(_ navigation: WKNavigation?, own: Bool = true) -> WKNavigation? {
+        if own { navigationOwner?.actAsChromeOwn = navigation; navigationOwner?.actAsChromeRetries = 0 }
         navigationOwner?.expectNavigation(navigation)
         // A same-document command can finish synchronously inside super, before expect
         // advances its generation. Reconcile again with that final command identity.
@@ -72,13 +74,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func loadHTMLString(_ string: String, baseURL: URL?) -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: baseURL ?? URL(string: "about:blank"))
-        return requested(super.loadHTMLString(string, baseURL: baseURL))
+        // Vane's own HTML (error pages, blank pages) is never re-issued by Act as Chrome.
+        return requested(super.loadHTMLString(string, baseURL: baseURL), own: false)
     }
 
     override func loadSimulatedRequest(_ request: URLRequest, responseHTML string: String) -> WKNavigation {
         navigationOwner?.prepareNavigation(to: request.url)
         let navigation = super.loadSimulatedRequest(request, responseHTML: string)
-        _ = requested(navigation)
+        // Error pages and the HTTPS-only interstitial: re-issuing one as a real load would
+        // fail again, show the page again, and loop.
+        _ = requested(navigation, own: false)
         return navigation
     }
 
@@ -94,17 +99,17 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func goBack() -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: backForwardList.backItem?.url)
-        return requested(super.goBack())
+        return requested(super.goBack(), own: false)
     }
 
     override func goForward() -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: backForwardList.forwardItem?.url)
-        return requested(super.goForward())
+        return requested(super.goForward(), own: false)
     }
 
     override func go(to item: WKBackForwardListItem) -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: item.url)
-        return requested(super.go(to: item))
+        return requested(super.go(to: item), own: false)
     }
 
     static let messageName = "vanelinkcontext"
@@ -888,6 +893,9 @@ struct TitleReveal: Equatable, Sendable {
         if let script = ExtensionChromiumGaps.webPageScript(extensions) {
             c.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         }
+        // Every frame, page world: it does nothing unless the page's UA already says Chrome.
+        c.addUserScript(WKUserScript(source: ActAsChrome.script, injectionTime: .atDocumentStart,
+                                    forMainFrameOnly: false, in: .page))
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
         c.addUserScript(
@@ -1160,6 +1168,10 @@ struct TitleReveal: Equatable, Sendable {
     /// provisional destination for the document already on screen.
     private var initialRequestedURL: URL?
     private var provisional = false
+    /// The last load Vane started, and Act as Chrome's header retries for it; see
+    /// `ActAsChrome.apply`.
+    weak var actAsChromeOwn: WKNavigation?
+    var actAsChromeRetries = 0
 
     /// A fragment link never starts a provisional load, so it must not hold the address.
     static func sameDocument(_ action: WKNavigationAction, from current: URL?) -> Bool {
@@ -2291,6 +2303,27 @@ struct TitleReveal: Equatable, Sendable {
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
         // on disk follows it.
         if stays { TabStore.savePins(owning: self) }
+    }
+
+    /// WebKit calls this variant when it exists. It only adds the per-site identity (Act as
+    /// Chrome) to an allowed main-frame load, before the request goes out.
+    func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        webView(w, decidePolicyFor: navigationAction) { [weak self] policy in
+            guard policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let self,
+                  let retry = ActAsChrome.apply(navigationAction, to: w, preferences: preferences, tab: self)
+            else { decisionHandler(policy, preferences); return }
+            // Like HTTPS-only: cancel plus a re-load is the only way to change the header.
+            decisionHandler(.cancel, preferences)
+            #if DEBUG
+            self.navigationStageObserver?(NavigationStageEvent(stage: "act-as-chrome-retry",
+                identity: .action(self.navigationActionStageSerial), detail: "policy=cancel"))
+            #endif
+            let n = self.actAsChromeRetries + 1
+            self.expectNavigation(w.load(retry))   // requested() marks it ours and resets the count
+            self.actAsChromeRetries = n
+        }
     }
 
     /// HTTPS-only mode. `.cancel` plus a re-load is the only way to change a navigation's

@@ -55,6 +55,26 @@ apps it may open, and Developer Mode. Click a row to flip it.
 click an extension for its options, **Pin**/**Unpin**, or **Remove from Vane…**. See
 [site permissions](SITE-PERMISSIONS.md).
 
+**Act as Chrome** (in **⋯** and **Site Settings…**) is for sites that turn away browsers
+other than Chrome. It is off by default and works per site and per profile. In private
+windows it is kept in memory until Vane quits, shared by all private windows. When on,
+that site sees a Chrome user agent and Chrome's `navigator` details. Other sites keep the
+normal identity. Turning it on reloads the page. Streaming video (Netflix, Disney+) may
+stop working with it on. If you picked a user agent in **Develop → User Agent**, that
+choice applies everywhere and this switch is unavailable.
+
+It matches the exact host (`www.example.com` and `example.com` are separate). If a site
+sends other browsers to an "unsupported browser" page on another host, go back to the
+site's own address and turn it on there, not on the warning page. Only the page itself
+gets Chrome's `navigator`: extension content scripts and Web Workers see a Chrome user
+agent but Apple's `navigator.vendor` and no `userAgentData`. When a link, a form or the
+page's own script leads onto or off a switched site, directly or through a redirect, that
+first request may still carry the previous user agent. The page that loads gets the
+right identity. Turning the switch on for a page you reached through a form that posts
+reloads it with the previous user agent. Pages you type, reload or open from Vane, and
+the redirects they follow, send the right one where WebKit lets Vane recognize its own
+loads, up to a few redirects across the switch. Error pages are never retried.
+
 ## Copy a clean link
 
 <kbd>⇧⌘C</kbd> (**View → Copy Page URL**) or **Copy Link** copies the address with

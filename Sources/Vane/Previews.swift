@@ -366,6 +366,7 @@ import WebKit
             }
             guard !Task.isCancelled, self.latest == id, Previews.enabled,
                   !BatterySaver.shared.isActive else { return }
+            web.customUserAgent = ActAsChrome.userAgent(for: url, profileID: tab.profileID, isPrivate: tab.isPrivate)
             self.navigation = web.load(URLRequest(url: Previews.requestURL(url, profileID: tab.profileID)))
             if !tab.isPrivate { self.monitorSession(id) }
             self.paintTask = Task(priority: .background) { [weak self] in await self?.paint(id: id, web: web) }
