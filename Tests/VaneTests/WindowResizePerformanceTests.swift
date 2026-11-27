@@ -412,7 +412,7 @@ import XCTest
             window.endPageResize()
             try await compatibilityWait { !window.isPreparingPageResize }
             let pressed = try await read()
-            XCTAssertNotNil(pressed.asked, "The page must have handled a resize")
+            XCTAssertNil(pressed.asked, "A press without a move must not resize the page")
             XCTAssertEqual(pressed.y, start.y, "A press and release moved the page")
 
             // Narrower, the text above the paragraph is taller: the page scrolls

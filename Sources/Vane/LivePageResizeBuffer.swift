@@ -142,7 +142,12 @@ struct LivePageResizeAnchor {
             // WebKit's native child follows the frame at once, shifting or clipping the old
             // paint. Keep it at its painted size and screen position until the new paint lands.
             var pinned: [(view: NSView, rect: NSRect)] = []
-            if holdChild, heldChildSize == nil, autoSubviews, let host, size != web.frame.size {
+            // Growth on a leading anchor leaves the old paint in place by itself; holding the
+            // child on a growing axis would leave that edge empty (a corner drag) for a frame.
+            let grows = size.width > web.frame.width || size.height > web.frame.height
+            let shrinks = size.width < web.frame.width || size.height < web.frame.height
+            let trailingWidth = anchor.trailing && size.width != web.frame.width && size.height <= web.frame.height
+            if holdChild, heldChildSize == nil, autoSubviews, let host, (shrinks && !grows) || trailingWidth {
                 heldChildSize = web.frame.size
                 heldChildFrames = web.subviews.map { ($0, $0.frame) }
                 pinned = web.subviews.map { ($0, $0.convert($0.bounds, to: host)) }
