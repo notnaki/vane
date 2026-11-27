@@ -179,8 +179,9 @@ import WebKit
           const s = slot(this);
           settled(s);
           if (s.opened) return;
-          await changing(s, () => call('open', { id: s.id }));
+          const active = await changing(s, () => call('open', { id: s.id }));
           s.opened = true;
+          s.active = active ?? null;
           reset(s);
         }
         async close() {
@@ -204,6 +205,7 @@ import WebKit
           if (!s.configurations.some(c => part(c).value === configurationValue)) {
             throw fail('NotFoundError', 'The configuration value provided is not supported by the device.');
           }
+          if (s.active === configurationValue) return;
           await changing(s, () => call('configure', { id: s.id, value: configurationValue }));
           s.active = configurationValue;
           reset(s);
@@ -381,7 +383,7 @@ import WebKit
         web.configuration.userContentController.removeScriptMessageHandler(forName: gestureName, contentWorld: gestureWorld)
     }
 
-    private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
+    @MainActor private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         private weak var tab: Tab?
         init(_ tab: Tab) { self.tab = tab }
 
@@ -544,10 +546,14 @@ import WebKit
         let scope: Scope
         var open: [UInt64: Opened] = [:]
         var opening: Set<UInt64> = []
+        /// Openings with a configure, claim, release, alternate or reset in flight.
+        var changing: Set<ObjectIdentifier> = []
         /// The page's name for each device it has been shown, and the grant that showed it.
         var handles: [String: (entryID: UInt64, grant: String)] = [:]
         var known: Set<UInt64>
-        var events: [Event] = []
+        /// Events a page has not collected. Past this the oldest go.
+        static let maxEvents = 1024
+        private(set) var events: [Event] = []
         var waiter: CheckedContinuation<Bool, Never>?
         var gesture: ContinuousClock.Instant?
         var chooser: SitePermissionPrompt?
@@ -582,6 +588,11 @@ import WebKit
             return out
         }
 
+        func post(_ event: Event) {
+            if events.count >= Self.maxEvents { events.removeFirst() }
+            events.append(event)
+        }
+
         func close(_ entryID: UInt64) { open.removeValue(forKey: entryID)?.transport.close() }
 
         func wake() {
@@ -594,7 +605,7 @@ import WebKit
             known = Set(present.map(\.device.entryID))
             for entryID in open.keys.sorted() where !known.contains(entryID) {
                 close(entryID)
-                events.append(.closed(entryID))
+                post(.closed(entryID))
             }
             wake()
         }
@@ -661,10 +672,10 @@ import WebKit
             let now = Set(present.map(\.device.entryID))
             for entryID in session.known.subtracting(now).sorted() {
                 session.close(entryID)
-                session.events.append(.disconnect(entryID))
+                session.post(.disconnect(entryID))
             }
             for entry in present where !session.known.contains(entry.device.entryID) {
-                session.events.append(.connect(entry.grant, entry.device))
+                session.post(.connect(entry.grant, entry.device))
             }
             session.known = now
             session.wake()
@@ -742,8 +753,18 @@ import WebKit
             }
             return (opened, found)
         }
-        /// Still this document's, and still the same opening of the device.
-        func still(_ before: Opened) -> Bool { current && session.open[entryID]?.transport === before.transport }
+        /// Still this document's, still the same opening of the device, in the same configuration.
+        func still(_ before: Opened) -> Bool {
+            current && session.open[entryID]?.transport === before.transport && session.open[entryID]?.configuration == before.configuration
+        }
+        /// One state change at a time per opening, as in Chromium: a claim racing a
+        /// `selectConfiguration` could otherwise land on the old configuration's interface.
+        func changing(_ opened: Opened) throws(USBError) -> ObjectIdentifier {
+            let key = ObjectIdentifier(opened.transport)
+            guard !session.changing.contains(key) else { throw .state("An operation that changes the device state is in progress.") }
+            session.changing.insert(key)
+            return key
+        }
 
         switch op {
         case "forget":
@@ -751,7 +772,8 @@ import WebKit
         case "close":
             session.close(entryID)
         case "open":
-            guard session.open[entryID] == nil, !session.opening.contains(entryID) else { return nil }
+            if let already = session.open[entryID] { return already.configuration.map { Int($0) } }
+            guard !session.opening.contains(entryID) else { return nil }
             guard let device = present(scope: scope).first(where: { $0.device.entryID == entryID })?.device else {
                 throw .notFound("The device was disconnected.")
             }
@@ -769,27 +791,43 @@ import WebKit
                 opened.close()
                 throw .notFound("The device was disconnected.")
             }
-            session.open[entryID] = Opened(device: device, transport: opened, configuration: device.activeConfiguration)
+            // The device's own answer at open: macOS or another app may have changed it since it was plugged in.
+            session.open[entryID] = Opened(device: device, transport: opened, configuration: opened.configuration)
+            return opened.configuration.map { Int($0) }
         case "configure":
             let opened = try opened()
             guard let value = number(body["value"], max: 0xFF), opened.device.configuration(UInt8(value)) != nil else {
                 throw .notFound("The configuration value provided is not supported by the device.")
             }
-            guard await opened.transport.selectConfiguration(UInt8(value)), still(opened) else {
-                throw .network("Unable to set device configuration.")
+            if opened.configuration == UInt8(value) { return nil }
+            let key = try changing(opened)
+            defer { session.changing.remove(key) }
+            // The spec releases what is claimed before the configuration changes.
+            for number in opened.claimed.sorted() {
+                session.open[entryID]?.claimed.remove(number)
+                session.open[entryID]?.alternates[number] = nil
+                _ = await opened.transport.release(number)
             }
+            let selected = await opened.transport.selectConfiguration(UInt8(value))
+            guard current, session.open[entryID]?.transport === opened.transport else { throw .network("Unable to set device configuration.") }
+            guard selected else { throw .network("Unable to set device configuration.") }
             session.open[entryID]?.configuration = UInt8(value)
             session.open[entryID]?.claimed = []
             session.open[entryID]?.alternates = [:]
+            USBDevices.shared.configurationChanged(entryID: entryID, to: UInt8(value))
         case "claim":
             let (opened, found) = try interface()
             if opened.claimed.contains(found.number) { return nil }
             if found.isProtected { throw .security("The requested interface implements a protected class.") }
+            let key = try changing(opened)
+            defer { session.changing.remove(key) }
             guard await opened.transport.claim(found.number), still(opened) else { throw .network("Unable to claim interface.") }
             session.open[entryID]?.claimed.insert(found.number)
         case "release":
             let (opened, found) = try interface()
             guard opened.claimed.contains(found.number) else { return nil }
+            let key = try changing(opened)
+            defer { session.changing.remove(key) }
             session.open[entryID]?.claimed.remove(found.number)
             session.open[entryID]?.alternates[found.number] = nil
             guard await opened.transport.release(found.number) else { throw .network("Unable to release interface.") }
@@ -799,6 +837,8 @@ import WebKit
             guard let setting = number(body["setting"], max: 0xFF), found.alternates.contains(where: { $0.setting == UInt8(setting) }) else {
                 throw .notFound("The alternate setting provided is not supported by the device in its current configuration.")
             }
+            let key = try changing(opened)
+            defer { session.changing.remove(key) }
             guard await opened.transport.selectAlternate(found.number, setting: UInt8(setting)), still(opened) else {
                 throw .network("Unable to set device interface.")
             }
@@ -853,6 +893,8 @@ import WebKit
             guard await opened.transport.clearHalt(endpoint: endpoint.address) else { throw .network("Unable to clear endpoint.") }
         case "reset":
             let opened = try opened()
+            let key = try changing(opened)
+            defer { session.changing.remove(key) }
             guard await opened.transport.reset(), still(opened) else { throw .network("Unable to reset the device.") }
             session.open[entryID]?.claimed = []
             session.open[entryID]?.alternates = [:]

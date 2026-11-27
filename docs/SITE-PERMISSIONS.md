@@ -346,6 +346,10 @@ the device's descriptors and this document's own record of what it opened and cl
   interface or endpoint need it claimed. Standard `SET_ADDRESS`, `SET_CONFIGURATION` and
   `SET_INTERFACE` requests are refused; use `selectConfiguration` and
   `selectAlternateInterface`.
+- **One change at a time.** While a `selectConfiguration`, `claimInterface`,
+  `releaseInterface`, `selectAlternateInterface` or `reset` is running on a device, another
+  rejects with `InvalidStateError`. The configuration is read from the device when it opens.
+  At most 16 calls and 16 MiB of transfer buffers may be in flight per device.
 
 Grants, forgetting (Site Controls' **USB Device** row, Settings → Privacy → Site
 Permissions, `device.forget()`, Reset Permissions, deleting the profile), private tabs,
@@ -386,7 +390,9 @@ The page script is trusted with nothing:
   FIDO, and Nordic and TI firmware-update services are never reachable (a filter naming one
   rejects); the reconnection address and serial number string characteristics are hidden;
   the peripheral privacy flag and the client and server characteristic configuration
-  descriptors can't be written. Filters on iBeacon manufacturer data are refused.
+  descriptors can't be written. A filter on Apple's manufacturer data that could match an
+  iBeacon frame (its prefix, under its mask, doesn't rule out `02 15`; an empty prefix
+  could match anything) is refused.
 - **What it may do.** A characteristic's properties decide whether it can be read, written
   with or without a response, or subscribed to. Values are at most 512 bytes.
 

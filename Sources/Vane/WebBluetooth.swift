@@ -395,7 +395,7 @@ import WebKit
         web.configuration.userContentController.removeScriptMessageHandler(forName: gestureName, contentWorld: gestureWorld)
     }
 
-    private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
+    @MainActor private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         private weak var tab: Tab?
         init(_ tab: Tab) { self.tab = tab }
 
@@ -507,7 +507,7 @@ import WebKit
                         let prefix = (item["dataPrefix"] as? String).flatMap { Data(base64Encoded: $0) } ?? Data()
                         let mask = (item["mask"] as? String).flatMap { Data(base64Encoded: $0) }
                         if let mask, mask.count != prefix.count { throw .type("'mask' size must be equal to 'dataPrefix' size.") }
-                        if BluetoothBlocklist.blocksManufacturer(company: company, prefix: prefix) {
+                        if BluetoothBlocklist.blocksManufacturer(company: company, prefix: prefix, mask: mask) {
                             throw .security("requestDevice() called with a filter containing a blocklisted manufacturer data.")
                         }
                         return ManufacturerFilter(company: company, prefix: prefix, mask: mask)
@@ -951,11 +951,15 @@ import WebKit
         let radio = backend
         Scan.shared.found = []
         radio.startScan()
-        defer { radio.stopScan() }
-        #if DEBUG
-        if let chooserForTesting { return chooserForTesting(Scan.shared.found.filter(request.matches)) }
-        #endif
         var picked: UUID?
+        defer { radio.stopScan(keeping: Set(holders.keys).union(picked.map { [$0] } ?? [])) }
+        #if DEBUG
+        if let chooserForTesting {
+            let ad = chooserForTesting(Scan.shared.found.filter(request.matches))
+            picked = ad?.id
+            return ad
+        }
+        #endif
         let answered = await DeviceAccess.choose(
             tab: tab, web: web, scope: session.scope, busy: sessions.values.contains { $0.chooser != nil },
             hold: { session.chooser = $0; session.chooserWindow = $1 }) { site, respond in

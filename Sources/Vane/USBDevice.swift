@@ -231,7 +231,8 @@ struct USBDeviceInfo: Equatable, Sendable {
     }
 
     /// Every USB device IOKit lists, in registry order. Reads the registry, and each new
-    /// device's configuration descriptors from the copy macOS keeps; opens nothing.
+    /// device's configuration descriptors from the copy macOS keeps: that makes a device user
+    /// client for it, but never opens the device or sends it a request.
     private func list() -> [USBDeviceInfo] {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOUSBHostDeviceClassName),
@@ -263,6 +264,12 @@ struct USBDeviceInfo: Equatable, Sendable {
         described = described.filter { present.contains($0.key) }
         return found.sorted { $0.entryID < $1.entryID }
     }
+
+    /// A page selected a configuration: what was read at attach time is stale now.
+    func configurationChanged(entryID: UInt64, to value: UInt8?) {
+        described[entryID]?.active = value
+        if let index = devices.firstIndex(where: { $0.entryID == entryID }) { devices[index].activeConfiguration = value }
+    }
 }
 
 /// A control transfer's setup packet, as the page described it.
@@ -287,9 +294,32 @@ struct USBTransfer: Equatable, Sendable {
     static let failed = USBTransfer(status: nil)
 }
 
+/// What one open device has in flight, in calls and in buffered bytes. A page that outruns
+/// a stalled device is refused rather than queueing without bound.
+struct USBBudget: Equatable, Sendable {
+    static let maxPending = 16
+    static let maxBytes = 16 << 20
+    private(set) var pending = 0
+    private(set) var bytes = 0
+
+    mutating func admit(_ bytes: Int) -> Bool {
+        guard pending < Self.maxPending, bytes <= Self.maxBytes - self.bytes else { return false }
+        pending += 1
+        self.bytes += bytes
+        return true
+    }
+
+    mutating func done(_ bytes: Int) {
+        pending -= 1
+        self.bytes -= bytes
+    }
+}
+
 /// One open device, as WebUSB.swift uses it. The fixtures have one of their own. Every
 /// call has been checked against the device's descriptors and claims before it gets here.
 protocol USBTransport: AnyObject, Sendable {
+    /// The configuration the device reported when it was opened, or nil while unconfigured.
+    var configuration: UInt8? { get }
     func selectConfiguration(_ value: UInt8) async -> Bool
     func claim(_ interface: UInt8) async -> Bool
     func release(_ interface: UInt8) async -> Bool
@@ -339,8 +369,7 @@ private enum USBLib {
 /// own so a `transferIn` waiting for data does not hold up a `transferOut` (WebUSB transfers
 /// have no timeout). Closing aborts what is waiting and lets go once the last call returns.
 final class USBConnection: USBTransport, @unchecked Sendable {
-    /// What may be in flight on one device. A page that outruns a stalled device is refused.
-    static let maxPending = 64
+    let configuration: UInt8?
 
     private let device: USBLib.Device
     /// Whether macOS let us have the device itself; a composite device's driver may keep it,
@@ -352,7 +381,7 @@ final class USBConnection: USBTransport, @unchecked Sendable {
 
     private struct State {
         var closed = false
-        var pending = 0
+        var budget = USBBudget()
         /// Claimed interfaces, and their pipes by endpoint address.
         var interfaces: [UInt8: (interface: USBLib.Interface, pipes: [UInt8: UInt8])] = [:]
     }
@@ -363,6 +392,11 @@ final class USBConnection: USBTransport, @unchecked Sendable {
         guard let device: USBLib.Device = USBLib.open(service, type: USBLib.deviceClient, id: USBLib.device650),
               let vtable = device.pointee?.pointee else { return nil }
         defer { _ = vtable.Release(device) }
+        return (configurations(device), active(device))
+    }
+
+    private static func configurations(_ device: USBLib.Device) -> [USBConfiguration] {
+        let vtable = device.pointee!.pointee
         var count: UInt8 = 0
         _ = vtable.GetNumberOfConfigurations(device, &count)
         var configurations: [USBConfiguration] = []
@@ -372,9 +406,12 @@ final class USBConnection: USBTransport, @unchecked Sendable {
             let length = Int(UInt16(littleEndian: descriptor.pointee.wTotalLength))
             if let parsed = USBConfiguration(Data(bytes: descriptor, count: max(length, 9))) { configurations.append(parsed) }
         }
+        return configurations
+    }
+
+    private static func active(_ device: USBLib.Device) -> UInt8? {
         var active: UInt8 = 0
-        let configured = vtable.GetConfiguration(device, &active) == kIOReturnSuccess && active != 0
-        return (configurations, configured ? active : nil)
+        return device.pointee!.pointee.GetConfiguration(device, &active) == kIOReturnSuccess && active != 0 ? active : nil
     }
 
     /// Nil when the device is gone or the sandbox refuses the user client.
@@ -389,14 +426,16 @@ final class USBConnection: USBTransport, @unchecked Sendable {
                 // Exclusive access is refused when a driver holds the whole device; libusb
                 // carries on the same way, with what does not need it.
                 let owned = vtable.USBDeviceOpen(device) == kIOReturnSuccess
-                done.resume(returning: USBConnection(device, owned: owned))
+                // The device's own answer now, not what was read when it was plugged in.
+                done.resume(returning: USBConnection(device, owned: owned, configuration: active(device)))
             }
         }
     }
 
-    private init(_ device: USBLib.Device, owned: Bool) {
+    private init(_ device: USBLib.Device, owned: Bool, configuration: UInt8?) {
         self.device = device
         self.owned = owned
+        self.configuration = configuration
     }
 
     private var vtable: IOUSBDeviceInterface650 { device.pointee!.pointee }
@@ -407,19 +446,17 @@ final class USBConnection: USBTransport, @unchecked Sendable {
         return body(&state)
     }
 
-    /// One blocking call, off the main thread, and none once closed.
-    private func run<T: Sendable>(_ refused: T, _ call: @escaping @Sendable () -> T) async -> T {
+    /// One blocking call, off the main thread, and none once closed. `bytes` is what it buffers.
+    private func run<T: Sendable>(_ refused: T, bytes: Int = 0, _ call: @escaping @Sendable () -> T) async -> T {
         let admitted = locked { state -> Bool in
-            guard !state.closed, state.pending < Self.maxPending else { return false }
-            state.pending += 1
-            return true
+            !state.closed && state.budget.admit(bytes)
         }
         guard admitted else { return refused }
         group.enter()
         return await withCheckedContinuation { done in
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 let result = call()
-                locked { $0.pending -= 1 }
+                locked { $0.budget.done(bytes) }
                 group.leave()
                 done.resume(returning: result)
             }
@@ -449,6 +486,11 @@ final class USBConnection: USBTransport, @unchecked Sendable {
                                                     bInterfaceSubClass: UInt16(kIOUSBFindInterfaceDontCare),
                                                     bInterfaceProtocol: UInt16(kIOUSBFindInterfaceDontCare),
                                                     bAlternateSetting: UInt16(kIOUSBFindInterfaceDontCare))
+            // Checked again against the device as it is now, every alternate of it: the bridge
+            // checked its own copy of the descriptors, which a replug or reconfigure could stale.
+            guard let active = Self.active(device),
+                  let live = Self.configurations(device).first(where: { $0.value == active })?.interfaces.first(where: { $0.number == number }),
+                  !live.isProtected else { return false }
             var iterator: io_iterator_t = 0
             guard vtable.CreateInterfaceIterator(device, &request, &iterator) == kIOReturnSuccess else { return false }
             defer { IOObjectRelease(iterator) }
@@ -456,8 +498,9 @@ final class USBConnection: USBTransport, @unchecked Sendable {
                 defer { IOObjectRelease(service) }
                 guard let interface: USBLib.Interface = USBLib.open(service, type: USBLib.interfaceClient, id: USBLib.interface650),
                       let table = interface.pointee?.pointee else { continue }
-                var found: UInt8 = 0
+                var found: UInt8 = 0, kind: UInt8 = 0
                 guard table.GetInterfaceNumber(interface, &found) == kIOReturnSuccess, found == number,
+                      table.GetInterfaceClass(interface, &kind) == kIOReturnSuccess, !USBBlocklist.protectedClasses.contains(kind),
                       // Refused when a kernel driver has it: macOS is using it.
                       table.USBInterfaceOpen(interface) == kIOReturnSuccess else { _ = table.Release(interface); continue }
                 let pipes = Self.pipes(interface)
@@ -493,18 +536,36 @@ final class USBConnection: USBTransport, @unchecked Sendable {
         }
     }
 
+    /// The claimed interface, retained so a `release` or `close` while the call runs cannot
+    /// free it under the call; the caller releases it.
+    private func retained(_ find: (State) -> (USBLib.Interface, UInt8)?) -> (USBLib.Interface, UInt8)? {
+        locked { state in
+            guard let found = find(state) else { return nil }
+            _ = found.0.pointee!.pointee.AddRef(found.0)
+            return found
+        }
+    }
+
+    private func retained(endpoint: UInt8) -> (USBLib.Interface, UInt8)? {
+        retained { state in
+            state.interfaces.values.lazy.compactMap { claimed in claimed.pipes[endpoint].map { (claimed.interface, $0) } }.first
+        }
+    }
+
     func selectAlternate(_ number: UInt8, setting: UInt8) async -> Bool {
         await run(false) { [self] in
-            guard let claimed = locked({ $0.interfaces[number] }),
-                  claimed.interface.pointee!.pointee.SetAlternateInterface(claimed.interface, setting) == kIOReturnSuccess else { return false }
-            let pipes = Self.pipes(claimed.interface)
-            locked { $0.interfaces[number]?.pipes = pipes }
+            guard let (interface, _) = retained({ state in state.interfaces[number].map { ($0.interface, 0) } }) else { return false }
+            let table = interface.pointee!.pointee
+            defer { _ = table.Release(interface) }
+            guard table.SetAlternateInterface(interface, setting) == kIOReturnSuccess else { return false }
+            let pipes = Self.pipes(interface)
+            locked { state in if state.interfaces[number]?.interface == interface { state.interfaces[number]?.pipes = pipes } }
             return true
         }
     }
 
     func control(_ setup: USBSetup, data: Data?, length: Int) async -> USBTransfer {
-        await run(.failed) { [self] in
+        await run(.failed, bytes: data?.count ?? length) { [self] in
             let count = data?.count ?? length
             let buffer = UnsafeMutableRawPointer.allocate(byteCount: max(count, 1), alignment: 1)
             defer { buffer.deallocate() }
@@ -520,27 +581,28 @@ final class USBConnection: USBTransport, @unchecked Sendable {
     }
 
     func transfer(endpoint: UInt8, data: Data?, length: Int) async -> USBTransfer {
-        await run(.failed) { [self] in
-            guard let (interface, pipe) = locked({ state in
-                state.interfaces.values.lazy.compactMap { claimed in claimed.pipes[endpoint].map { (claimed.interface, $0) } }.first
-            }) else { return .failed }
+        await run(.failed, bytes: data?.count ?? length) { [self] in
+            guard let (interface, pipe) = retained(endpoint: endpoint) else { return .failed }
             let table = interface.pointee!.pointee
-            if var data {
-                let result = data.withUnsafeMutableBytes { table.WritePipe(interface, pipe, $0.baseAddress, UInt32($0.count)) }
+            defer { _ = table.Release(interface) }
+            if let data {
+                // WritePipe does not write to the buffer; no copy is made for it.
+                let result = data.withUnsafeBytes { table.WritePipe(interface, pipe, UnsafeMutableRawPointer(mutating: $0.baseAddress), UInt32($0.count)) }
                 return Self.status(result).map { USBTransfer(status: $0, written: $0 == .ok ? data.count : 0) } ?? .failed
             }
-            var bytes = [UInt8](repeating: 0, count: max(length, 1))
+            var bytes = Data(count: max(length, 1))
             var size = UInt32(length)
-            guard let status = Self.status(table.ReadPipe(interface, pipe, &bytes, &size)) else { return .failed }
-            return USBTransfer(status: status, data: Data(bytes.prefix(Int(min(size, UInt32(length))))))
+            let result = bytes.withUnsafeMutableBytes { table.ReadPipe(interface, pipe, $0.baseAddress, &size) }
+            guard let status = Self.status(result) else { return .failed }
+            bytes.count = Int(min(size, UInt32(length)))
+            return USBTransfer(status: status, data: bytes)
         }
     }
 
     func clearHalt(endpoint: UInt8) async -> Bool {
         await run(false) { [self] in
-            guard let (interface, pipe) = locked({ state in
-                state.interfaces.values.lazy.compactMap { claimed in claimed.pipes[endpoint].map { (claimed.interface, $0) } }.first
-            }) else { return false }
+            guard let (interface, pipe) = retained(endpoint: endpoint) else { return false }
+            defer { _ = interface.pointee!.pointee.Release(interface) }
             return interface.pointee!.pointee.ClearPipeStallBothEnds(interface, pipe) == kIOReturnSuccess
         }
     }
@@ -552,15 +614,16 @@ final class USBConnection: USBTransport, @unchecked Sendable {
     /// Aborts what is waiting, then gives every interface and the device back once the
     /// calls that were running have returned.
     func close() {
-        let interfaces = locked { state -> [(interface: USBLib.Interface, pipes: [UInt8: UInt8])]? in
-            guard !state.closed else { return nil }
+        // Under the lock: a `release` running now cannot free an interface mid-abort.
+        let closing = locked { state -> Bool in
+            guard !state.closed else { return false }
             state.closed = true
-            return Array(state.interfaces.values)
+            for claimed in state.interfaces.values {
+                for pipe in claimed.pipes.values { _ = claimed.interface.pointee!.pointee.AbortPipe(claimed.interface, pipe) }
+            }
+            return true
         }
-        guard let interfaces else { return }
-        for claimed in interfaces {
-            for pipe in claimed.pipes.values { _ = claimed.interface.pointee!.pointee.AbortPipe(claimed.interface, pipe) }
-        }
+        guard closing else { return }
         group.notify(queue: .global()) { [self] in
             let left = locked { state in
                 defer { state.interfaces = [:] }

@@ -16,7 +16,7 @@ import XCTest
     var calls: [String] = []
 
     func startScan() { calls.append("scan"); advertisements.forEach { onEvent?(.found($0)) } }
-    func stopScan() { calls.append("stop") }
+    func stopScan(keeping: Set<UUID>) { calls.append("stop") }
     func connect(_ id: UUID) async -> Bool {
         calls.append("connect")
         guard gatt[id] != nil else { return false }
@@ -110,6 +110,25 @@ import XCTest
         XCTAssertTrue(try matches(["manufacturerData": [["companyIdentifier": 0x6B, "dataPrefix": "AQI=", "mask": "/w8="]]]), "The mask ignores bits")
         XCTAssertFalse(try matches(["manufacturerData": [["companyIdentifier": 0x6B, "dataPrefix": "AQI="]]]))
         XCTAssertFalse(try WebBluetooth.Request.parse(["filters": [["namePrefix": "Polar"]], "exclusionFilters": [["name": "Polar H10"]]]).matches(strap))
+    }
+
+    func testAnyFilterThatCouldMatchAnIBeaconIsRefused() {
+        func blocked(_ company: Int, _ prefix: [UInt8], _ mask: [UInt8]? = nil) -> Bool {
+            BluetoothBlocklist.blocksManufacturer(company: company, prefix: Data(prefix), mask: mask.map { Data($0) })
+        }
+        XCTAssertTrue(blocked(0x4C, []), "An empty prefix matches every Apple frame")
+        XCTAssertTrue(blocked(0x4C, [0x02]))
+        XCTAssertTrue(blocked(0x4C, [0x02, 0x15, 0xAA]))
+        XCTAssertTrue(blocked(0x4C, [0x00, 0x15], [0x00, 0xFF]), "A masked-out byte rules nothing out")
+        XCTAssertTrue(blocked(0x4C, [0x03, 0x15], [0xFC, 0xFF]), "Nor do masked-out bits")
+        XCTAssertFalse(blocked(0x4C, [0x03]))
+        XCTAssertFalse(blocked(0x4C, [0x02, 0x16]))
+        XCTAssertFalse(blocked(0x4C, [0x12, 0x15], [0x10, 0x00]))
+        XCTAssertFalse(blocked(0x6B, []), "Only Apple's company id carries iBeacons")
+        XCTAssertEqual(parse(["filters": [["manufacturerData": [["companyIdentifier": 0x4C]]]]]),
+                       "SecurityError: requestDevice() called with a filter containing a blocklisted manufacturer data.")
+        XCTAssertEqual(parse(["filters": [["manufacturerData": [["companyIdentifier": 0x4C, "dataPrefix": "EAA=", "mask": "8AA="]]]]]), "ok",
+                       "10 00 under f0 00 can never be 02 15")
     }
 
     func testUUIDsAreCanonicalAndTheBlocklistSortsReadsFromWrites() {
@@ -332,6 +351,43 @@ import XCTest
             """)
         XCTAssertEqual(forgotten, "0,SecurityError", "Forgetting from Site Controls drops it and takes it back")
         XCTAssertFalse(radio.connected.contains(BluetoothFixtures.strap))
+    }
+
+    func testTwoOriginsShareOneConnectionAndHearOnlyTheirOwnSubscriptions() async throws {
+        let one = try await load("/bt")
+        let two = try await load("/bt", host: "localhost")
+        let subscribe = """
+            window.measurement = await (await device.gatt.getPrimaryService('heart_rate')).getCharacteristic('heart_rate_measurement');
+            window.beats = [];
+            measurement.oncharacteristicvaluechanged = event => beats.push(event.target.value.getUint8(1));
+            """
+        let first = try await js(one, connect + subscribe + "await measurement.startNotifications(); return device.id;")
+        let second = try await js(two, connect + subscribe + "return device.id;")
+        XCTAssertNotNil(first)
+        XCTAssertNotEqual(first, second, "Two origins never see the same id")
+        XCTAssertEqual(radio.calls.filter { $0 == "notify:2:true" }.count, 1)
+
+        radio.onEvent?(.value(BluetoothFixtures.strap, 2, Data([0, 60])))
+        let heard = try await js(one, "while (beats.length < 1) await new Promise(r => setTimeout(r, 20)); return beats.join(',');")
+        XCTAssertEqual(heard, "60")
+        let unheard = try await js(two, "await new Promise(r => setTimeout(r, 200)); return String(beats.length);")
+        XCTAssertEqual(unheard, "0", "Only the subscriber hears a value")
+
+        _ = try await js(two, "await measurement.startNotifications(); return 'on';")
+        XCTAssertEqual(radio.calls.filter { $0 == "notify:2:true" }.count, 1, "One subscription on the radio serves both")
+        let dropped = try await js(one, "device.gatt.disconnect(); return String(device.gatt.connected);")
+        XCTAssertEqual(dropped, "false")
+        XCTAssertFalse(radio.calls.contains("disconnect"), "The other origin still holds the connection")
+        XCTAssertFalse(radio.calls.contains("notify:2:false"), "…and its subscription")
+        radio.onEvent?(.value(BluetoothFixtures.strap, 2, Data([0, 61])))
+        let still = try await js(two, "while (beats.length < 1) await new Promise(r => setTimeout(r, 20)); return [beats.join(','), device.gatt.connected].join(' ');")
+        XCTAssertEqual(still, "61 true")
+        let quiet = try await js(one, "await new Promise(r => setTimeout(r, 200)); return beats.join(',');")
+        XCTAssertEqual(quiet, "60", "A document that let go hears nothing more")
+
+        _ = try await js(two, "device.gatt.disconnect(); return 'off';")
+        XCTAssertTrue(radio.calls.contains("notify:2:false"))
+        XCTAssertTrue(radio.calls.contains("disconnect"), "The last holder lets the radio go")
     }
 
     func testAPrivateTabsGrantGoesWithTheTab() async throws {

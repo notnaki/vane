@@ -39,22 +39,41 @@ enum USBFixtures {
     static let probe = device(entryID: 201, vendorID: 0x2e8a, productID: 0x000c, product: "Picoprobe", serialNumber: "E6614103")
     static let yubikey = device(entryID: 202, vendorID: 0x1050, productID: 0x0407, product: "YubiKey OTP+FIDO+CCID", serialNumber: "1")
     static let serialless = device(entryID: 203, vendorID: 0x16c0, productID: 0x05dc, product: "USBasp")
+
+    /// The probe with a second configuration, and nothing set when it was plugged in.
+    static let twoConfigurations: USBDeviceInfo = {
+        var info = device(entryID: 204, vendorID: 0x2e8a, productID: 0x000d, product: "Two Configs", serialNumber: "TC1")
+        var second = probeConfiguration
+        second[5] = 2
+        info.configurations += USBConfiguration(Data(second)).map { [$0] } ?? []
+        info.activeConfiguration = nil
+        return info
+    }()
 }
 
 /// Stands in for an open device: records what reached it and answers like one.
 final class FakeUSBTransport: USBTransport, @unchecked Sendable {
+    /// What the device itself says when opened; nil is a fresh, unconfigured device.
+    let configuration: UInt8?
+    /// How long state changes and transfers take, to let calls overlap.
+    let delay: Duration
+    init(configuration: UInt8? = nil, delay: Duration = .zero) {
+        self.configuration = configuration
+        self.delay = delay
+    }
+    private func pause() async { if delay > .zero { try? await Task.sleep(for: delay) } }
     enum Call: Equatable {
         case configure(UInt8), claim(UInt8), release(UInt8), alternate(UInt8, UInt8)
         case control(USBSetup, [UInt8]?, Int), transfer(UInt8, [UInt8]?, Int), clearHalt(UInt8), reset
     }
-    private let state = OSAllocatedUnfairLock(initialState: (calls: [Call](), closed: false))
+    private let state = OSAllocatedUnfairLock(initialState: (calls: [Call](), closed: false, releases: 0))
     var calls: [Call] { state.withLock { $0.calls } }
     var closed: Bool { state.withLock { $0.closed } }
     private func record(_ call: Call) -> Bool { state.withLock { $0.calls.append(call); return !$0.closed } }
 
     func selectConfiguration(_ value: UInt8) async -> Bool { record(.configure(value)) }
-    func claim(_ interface: UInt8) async -> Bool { record(.claim(interface)) }
-    func release(_ interface: UInt8) async -> Bool { record(.release(interface)) }
+    func claim(_ interface: UInt8) async -> Bool { await pause(); return record(.claim(interface)) }
+    func release(_ interface: UInt8) async -> Bool { state.withLock { $0.releases += 1 }; return record(.release(interface)) }
     func selectAlternate(_ interface: UInt8, setting: UInt8) async -> Bool { record(.alternate(interface, setting)) }
     func control(_ setup: USBSetup, data: Data?, length: Int) async -> USBTransfer {
         guard record(.control(setup, data.map(Array.init), length)) else { return .failed }
@@ -62,6 +81,10 @@ final class FakeUSBTransport: USBTransport, @unchecked Sendable {
     }
     func transfer(endpoint: UInt8, data: Data?, length: Int) async -> USBTransfer {
         guard record(.transfer(endpoint, data.map(Array.init), length)) else { return .failed }
+        // As IOUSBLib does: releasing an interface or closing aborts what is waiting on it.
+        let releases = state.withLock { $0.releases }
+        await pause()
+        guard state.withLock({ !$0.closed && $0.releases == releases }) else { return .failed }
         return data.map { USBTransfer(status: .ok, written: $0.count) } ?? USBTransfer(status: .ok, data: Data([0xAB, 0xCD].prefix(length)))
     }
     func clearHalt(endpoint: UInt8) async -> Bool { record(.clearHalt(endpoint)) }
@@ -158,6 +181,20 @@ final class FakeUSBTransport: USBTransport, @unchecked Sendable {
         DeviceAccess.forgetAll(profileID: profile)
         XCTAssertTrue(WebUSB.grants(scope: scope).isEmpty, "Reset Permissions and profile deletion take USB grants too")
     }
+
+    func testInFlightWorkIsCappedInCallsAndBytes() {
+        var budget = USBBudget()
+        XCTAssertTrue(budget.admit(USBBudget.maxBytes - 10))
+        XCTAssertFalse(budget.admit(11), "16 MiB of buffers at most")
+        XCTAssertTrue(budget.admit(10))
+        budget.done(USBBudget.maxBytes - 10)
+        budget.done(10)
+        XCTAssertEqual(budget, USBBudget())
+        for _ in 0..<USBBudget.maxPending { XCTAssertTrue(budget.admit(0)) }
+        XCTAssertFalse(budget.admit(0), "No more calls than maxPending")
+        var fresh = USBBudget()
+        XCTAssertFalse(fresh.admit(Int.max), "No overflow")
+    }
 }
 
 /// `navigator.usb` as a real page sees it, in a real tab, against fake devices. The chooser
@@ -168,6 +205,7 @@ final class FakeUSBTransport: USBTransport, @unchecked Sendable {
     private var tabs: [Tab] = []
     private var transports: [FakeUSBTransport] = []
     private var offered: [[UInt64]] = []
+    private var makeTransport: () -> FakeUSBTransport = { FakeUSBTransport() }
 
     override func setUp() async throws {
         TestEnvironment.prepare()
@@ -182,9 +220,12 @@ final class FakeUSBTransport: USBTransport, @unchecked Sendable {
             return candidates.first
         }
         WebUSB.transportForTesting = { [weak self] _ in
-            let transport = FakeUSBTransport()
-            MainActor.assumeIsolated { self?.transports.append(transport) }
-            return transport
+            MainActor.assumeIsolated {
+                guard let self else { return nil }
+                let transport = self.makeTransport()
+                self.transports.append(transport)
+                return transport
+            }
         }
     }
 
@@ -374,6 +415,81 @@ final class FakeUSBTransport: USBTransport, @unchecked Sendable {
         XCTAssertEqual(WebUSB.grants(scope: SitePermissions.scope(for: tab)).map(\.name), ["USBasp"])
         plug([])
         XCTAssertTrue(WebUSB.grants(scope: SitePermissions.scope(for: tab)).isEmpty)
+    }
+
+    func testTheConfigurationIsTheDevicesOwnAndChangingItReleasesClaims() async throws {
+        plug([USBFixtures.twoConfigurations])
+        makeTransport = { FakeUSBTransport(configuration: 2) }
+        let tab = try await load("/usb")
+        let shown = try await js(tab, """
+            window.device = await navigator.usb.requestDevice({ filters: [{ productId: 0x000d, vendorId: 0x2e8a }] });
+            const before = String(device.configuration);
+            await device.open();
+            const opened = device.configuration.configurationValue;
+            await device.selectConfiguration(2);
+            await device.claimInterface(0);
+            await device.selectConfiguration(1);
+            return [before, opened, device.configuration.configurationValue, device.configuration.interfaces[0].claimed,
+                    await name(device.transferIn(5, 8))].join(' ');
+            """)
+        XCTAssertEqual(shown, "null 2 1 false NotFoundError", "Plugged in unconfigured, macOS set 2 since: the device's answer wins")
+        XCTAssertEqual(try XCTUnwrap(transports.first).calls, [.claim(0), .release(0), .configure(1)],
+                       "Selecting the current configuration sends nothing; a new one releases claims first")
+        XCTAssertEqual(USBDevices.shared.devices.first?.activeConfiguration, 1, "What was read at attach time is stale now")
+
+        makeTransport = { FakeUSBTransport(configuration: nil) }
+        let fresh = try await js(tab, """
+            await device.close();
+            await device.open();
+            return [String(device.configuration), await name(device.claimInterface(0))].join(' ');
+            """)
+        XCTAssertEqual(fresh, "null InvalidStateError", "An unconfigured device is not taken for configured")
+        let raw = try await js(tab, """
+            const bridge = webkit.messageHandlers.\(WebUSB.messageName);
+            const [{ id }] = (await bridge.postMessage({ op: 'devices' })).value;
+            const reply = await bridge.postMessage({ op: 'claim', id, interface: 0 });
+            return reply.error ? reply.error[0] : 'claimed';
+            """)
+        XCTAssertEqual(raw, "InvalidStateError", "The bridge does not trust the page's mirror either")
+    }
+
+    func testStateChangesOnOneDeviceNeverOverlap() async throws {
+        plug([USBFixtures.twoConfigurations])
+        makeTransport = { FakeUSBTransport(configuration: 1, delay: .milliseconds(300)) }
+        let tab = try await load("/usb")
+        let raced = try await js(tab, """
+            window.device = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x2e8a }] });
+            await device.open();
+            const bridge = webkit.messageHandlers.\(WebUSB.messageName);
+            const [{ id }] = (await bridge.postMessage({ op: 'devices' })).value;
+            const ask = body => bridge.postMessage({ id, ...body }).then(reply => reply.error ? reply.error[0] : 'done');
+            const claim = ask({ op: 'claim', interface: 0 });
+            const others = await Promise.all([ask({ op: 'configure', value: 2 }), ask({ op: 'claim', interface: 2 }),
+                                              ask({ op: 'reset' }), ask({ op: 'alternate', interface: 0, setting: 1 })]);
+            return [await claim, ...others, await ask({ op: 'claim', interface: 2 })].join(' ');
+            """)
+        XCTAssertEqual(raced, "done InvalidStateError InvalidStateError InvalidStateError InvalidStateError done",
+                       "A configure racing a claim could land the claim on the old configuration")
+        XCTAssertEqual(try XCTUnwrap(transports.first).calls, [.claim(0), .claim(2)])
+    }
+
+    func testReleasingOrClosingUnderAPendingTransferEndsIt() async throws {
+        makeTransport = { FakeUSBTransport(configuration: 1, delay: .milliseconds(300)) }
+        let tab = try await load("/usb")
+        let ended = try await js(tab, connect + """
+            const pending = name(device.transferIn(5, 64));
+            await device.releaseInterface(0);
+            const after = await name(device.transferIn(5, 64));
+            await device.claimInterface(0);
+            const second = name(device.transferIn(5, 64));
+            await device.close();
+            return [await pending, after, await second].join(' ');
+            """)
+        XCTAssertEqual(ended, "NetworkError NotFoundError NetworkError",
+                       "A released interface takes no new transfer; closing fails the one in flight")
+        let transport = try XCTUnwrap(transports.first)
+        XCTAssertEqual(transport.calls, [.claim(0), .transfer(0x85, nil, 64), .release(0), .claim(0), .transfer(0x85, nil, 64)])
+        XCTAssertTrue(transport.closed)
     }
 
     func testAPrivateTabsGrantGoesWithTheTab() async throws {

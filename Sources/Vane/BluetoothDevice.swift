@@ -69,9 +69,13 @@ enum BluetoothBlocklist {
         }
     }
 
-    /// iBeacon frames name a place, not a device: Chromium refuses to filter on them.
-    static func blocksManufacturer(company: Int, prefix: Data) -> Bool {
-        company == 0x004C && prefix.starts(with: [0x02, 0x15])
+    /// iBeacon frames (Apple's company id, then 02 15) name a place, not a device: Chromium
+    /// refuses any filter that could match one. A filter can unless a byte of its first two,
+    /// under its mask, rules 02 15 out; an empty prefix matches everything Apple sends.
+    static func blocksManufacturer(company: Int, prefix: Data, mask: Data? = nil) -> Bool {
+        guard company == 0x004C else { return false }
+        let mask = mask.map(Array.init) ?? Array(repeating: 0xff, count: prefix.count)
+        return zip(zip(prefix, mask), [0x02, 0x15] as [UInt8]).allSatisfy { pair, beacon in pair.0 & pair.1 == beacon & pair.1 }
     }
 }
 
@@ -112,7 +116,8 @@ enum BluetoothEvent: Sendable {
     /// Whether Bluetooth may be usable, without asking macOS anything.
     var available: Bool { get }
     func startScan()
-    func stopScan()
+    /// The chooser closed. What the radio heard of peripherals not in `keeping` may go.
+    func stopScan(keeping: Set<UUID>)
     func connect(_ id: UUID) async -> Bool
     func disconnect(_ id: UUID)
     func services(_ id: UUID) async -> [BluetoothAttribute]?
@@ -135,6 +140,13 @@ enum BluetoothEvent: Sendable {
     private var next: UInt64 = 0
     private var powered: [CheckedContinuation<Bool, Never>] = []
     private var connecting: [UUID: [CheckedContinuation<Bool, Never>]] = [:]
+    /// Each connection attempt's id, for its timeout to know it is still the one waiting.
+    private var attempts: [UUID: UUID] = [:]
+    /// Peripherals we cancelled: their late `didDisconnect` is that cancel's, already handled,
+    /// and must not take down a connection another document has started since.
+    private var cancelled: Set<UUID> = []
+    /// How long a connection attempt may take, as in Chromium's.
+    static let connectTimeout: Duration = .seconds(30)
     private var waiting: [String: [(peripheral: UUID, done: (Any?) -> Void)]] = [:]
 
     /// macOS ends a process that touches CoreBluetooth without saying why in its Info.plist,
@@ -177,6 +189,14 @@ enum BluetoothEvent: Sendable {
         return answer.value as? T
     }
 
+    private func answerAll(_ key: String) {
+        waiting.removeValue(forKey: key)?.forEach { $0.done(nil) }
+    }
+
+    /// A known attribute's instance, never a new one: a callback after `lost` must not
+    /// leave an entry behind.
+    private func known(_ attribute: CBAttribute) -> UInt64? { instances[ObjectIdentifier(attribute)] }
+
     private func answer(_ key: String, _ value: Any?) {
         guard var queue = waiting[key], !queue.isEmpty else { return }
         let first = queue.removeFirst()
@@ -192,9 +212,13 @@ enum BluetoothEvent: Sendable {
         }
     }
 
-    func stopScan() {
+    func stopScan(keeping: Set<UUID>) {
         scanning = false
         central?.stopScan()
+        // Everything the scan heard would otherwise stay for the life of the app.
+        peripherals = peripherals.filter { id, peripheral in
+            keeping.contains(id) || peripheral.state != .disconnected || connecting[id] != nil
+        }
     }
 
     func connect(_ id: UUID) async -> Bool {
@@ -205,17 +229,32 @@ enum BluetoothEvent: Sendable {
         if peripheral.state == .connected { return true }
         return await withCheckedContinuation { done in
             connecting[id, default: []].append(done)
-            if connecting[id]?.count == 1 { central.connect(peripheral) }
+            guard connecting[id]?.count == 1 else { return }
+            central.connect(peripheral)
+            let attempt = UUID()
+            attempts[id] = attempt
+            Task { [weak self] in
+                try? await Task.sleep(for: Self.connectTimeout)
+                guard let self, self.attempts[id] == attempt, self.connecting[id] != nil else { return }
+                central.cancelPeripheralConnection(peripheral)
+                self.cancelled.insert(id)
+                self.attempts[id] = nil
+                self.connecting.removeValue(forKey: id)?.forEach { $0.resume(returning: false) }
+            }
         }
     }
 
     func disconnect(_ id: UUID) {
-        if let peripheral = peripherals[id] { central?.cancelPeripheralConnection(peripheral) }
+        if let peripheral = peripherals[id], peripheral.state != .disconnected {
+            central?.cancelPeripheralConnection(peripheral)
+            cancelled.insert(id)
+        }
         lost(id)
     }
 
     /// Everything waiting on this peripheral fails, and its attributes are forgotten.
     private func lost(_ id: UUID) {
+        attempts[id] = nil
         connecting.removeValue(forKey: id)?.forEach { $0.resume(returning: false) }
         for (key, queue) in waiting {
             let (gone, kept) = (queue.filter { $0.peripheral == id }, queue.filter { $0.peripheral != id })
@@ -231,6 +270,8 @@ enum BluetoothEvent: Sendable {
     func services(_ id: UUID) async -> [BluetoothAttribute]? {
         guard let peripheral = peripherals[id], peripheral.state == .connected else { return nil }
         let found: [CBService]? = await wait("services." + id.uuidString, peripheral: id) { peripheral.discoverServices(nil) }
+        // Lost while this task waited to resume: nothing new may be numbered for it.
+        guard peripherals[id]?.state == .connected else { return nil }
         return found?.map { BluetoothAttribute(instance: instance($0, of: id), uuid: BluetoothUUID.from($0.uuid)) }
     }
 
@@ -239,6 +280,7 @@ enum BluetoothEvent: Sendable {
         let found: [CBCharacteristic]? = await wait("characteristics.\(instance(service, of: id))", peripheral: id) {
             peripheral.discoverCharacteristics(nil, for: service)
         }
+        guard peripherals[id]?.state == .connected else { return nil }
         return found?.map {
             BluetoothAttribute(instance: instance($0, of: id), uuid: BluetoothUUID.from($0.uuid),
                                properties: UInt16(truncatingIfNeeded: $0.properties.rawValue & 0xff))
@@ -250,6 +292,7 @@ enum BluetoothEvent: Sendable {
         let found: [CBDescriptor]? = await wait("descriptors.\(instance(characteristic, of: id))", peripheral: id) {
             peripheral.discoverDescriptors(for: characteristic)
         }
+        guard peripherals[id]?.state == .connected else { return nil }
         return found?.map { BluetoothAttribute(instance: instance($0, of: id), uuid: BluetoothUUID.from($0.uuid)) }
     }
 
@@ -265,7 +308,17 @@ enum BluetoothEvent: Sendable {
         guard let peripheral = peripherals[id], let target = attributes[attribute]?.attribute else { return false }
         if let characteristic = target as? CBCharacteristic, !withResponse {
             // No answer comes for these; the radio's queue is the only thing that can say no.
-            guard peripheral.canSendWriteWithoutResponse else { return false }
+            // A full queue drains: wait for it, a little.
+            if !peripheral.canSendWriteWithoutResponse {
+                let key = "ready." + id.uuidString
+                let timeout = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    self?.answerAll(key)
+                }
+                let _: Bool? = await wait(key, peripheral: id) {}
+                timeout.cancel()
+                guard peripherals[id] === peripheral, peripheral.canSendWriteWithoutResponse else { return false }
+            }
             peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
             return true
         }
@@ -311,14 +364,19 @@ extension CoreBluetoothBackend: @preconcurrency CBCentralManagerDelegate, @preco
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        cancelled.remove(peripheral.identifier)
+        attempts[peripheral.identifier] = nil
         connecting.removeValue(forKey: peripheral.identifier)?.forEach { $0.resume(returning: true) }
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        attempts[peripheral.identifier] = nil
         connecting.removeValue(forKey: peripheral.identifier)?.forEach { $0.resume(returning: false) }
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        // Our own cancel, already handled by `disconnect`: a connect begun since must survive it.
+        if cancelled.remove(peripheral.identifier) != nil { return }
         lost(peripheral.identifier)
         onEvent?(.disconnected(peripheral.identifier))
     }
@@ -328,19 +386,23 @@ extension CoreBluetoothBackend: @preconcurrency CBCentralManagerDelegate, @preco
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        answer("characteristics.\(instance(service, of: peripheral.identifier))", error == nil ? service.characteristics ?? [] : nil)
+        guard let key = known(service) else { return }
+        answer("characteristics.\(key)", error == nil ? service.characteristics ?? [] : nil)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?) {
-        answer("descriptors.\(instance(characteristic, of: peripheral.identifier))", error == nil ? characteristic.descriptors ?? [] : nil)
+        guard let key = known(characteristic) else { return }
+        answer("descriptors.\(key)", error == nil ? characteristic.descriptors ?? [] : nil)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        let key = instance(characteristic, of: peripheral.identifier)
+        guard let key = known(characteristic) else { return }
         let value = error == nil ? characteristic.value ?? Data() : nil
-        // A read's answer and a notification look the same; a pending read takes it first.
-        if waiting["read.\(key)"]?.isEmpty == false { answer("read.\(key)", value) }
-        else if let value { onEvent?(.value(peripheral.identifier, key, value)) }
+        // A read's answer and a notification look the same: a pending read takes it, and
+        // whoever subscribed hears it too.
+        let read = waiting["read.\(key)"]?.isEmpty == false
+        if read { answer("read.\(key)", value) }
+        if let value, !read || characteristic.isNotifying { onEvent?(.value(peripheral.identifier, key, value)) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor, error: Error?) {
@@ -350,18 +412,26 @@ extension CoreBluetoothBackend: @preconcurrency CBCentralManagerDelegate, @preco
         case let number as NSNumber: withUnsafeBytes(of: number.uint16Value.littleEndian) { Data($0) }
         default: Data()
         }
-        answer("read.\(instance(descriptor, of: peripheral.identifier))", error == nil ? value : nil)
+        guard let key = known(descriptor) else { return }
+        answer("read.\(key)", error == nil ? value : nil)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        answer("write.\(instance(characteristic, of: peripheral.identifier))", error == nil)
+        guard let key = known(characteristic) else { return }
+        answer("write.\(key)", error == nil)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor descriptor: CBDescriptor, error: Error?) {
-        answer("write.\(instance(descriptor, of: peripheral.identifier))", error == nil)
+        guard let key = known(descriptor) else { return }
+        answer("write.\(key)", error == nil)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        answer("notify.\(instance(characteristic, of: peripheral.identifier))", error == nil)
+        guard let key = known(characteristic) else { return }
+        answer("notify.\(key)", error == nil)
+    }
+
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        answerAll("ready." + peripheral.identifier.uuidString)
     }
 }
