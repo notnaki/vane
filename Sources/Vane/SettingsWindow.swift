@@ -1806,10 +1806,11 @@ struct PrivacyPane: View {
                     }
                     SettingsRow("Site permissions", icon: "checkmark.shield.fill", tint: .green) {
                         Button("Reset Permissions…") {
-                            if confirm("Forget camera, microphone, location, and HID device permissions for every site in this profile?",
+                            if confirm("Forget camera, microphone, location, notification, serial port and HID device permissions for every site in this profile?",
                                        "Reset") {
                                 SitePermissions.resetAll(profileID: profile.id)
                                 WebHID.forgetAll(profileID: profile.id)
+                                WebSerial.forgetAll(profileID: profile.id)
                                 SiteChanges.shared.bump()
                                 reload()
                             }

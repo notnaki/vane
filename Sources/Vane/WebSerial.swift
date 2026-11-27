@@ -413,11 +413,12 @@ import WebKit
 
     static func forgetPrivate(tabID: UUID) { privateGrants.removeValue(forKey: tabID) }
 
-    /// A profile is going. Its private tabs keep theirs until they close.
-    static func forgetAll(profileID: UUID) {
-        let match = prefix + profileID.uuidString.lowercased() + "."
+    /// A profile is going, or Reset Permissions (every profile when nil). Private tabs keep
+    /// theirs until they close.
+    static func forgetAll(profileID: UUID? = nil) {
+        let match = prefix + (profileID.map { $0.uuidString.lowercased() + "." } ?? "")
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(match) { defaults.removeObject(forKey: key) }
-        for session in sessions.values where session.scope.profileID == profileID && session.scope.privateTabID == nil {
+        for session in sessions.values where (profileID == nil || session.scope.profileID == profileID) && session.scope.privateTabID == nil {
             session.open.values.forEach { $0.close(lost: true) }
             session.open.removeAll()
             session.known.removeAll()

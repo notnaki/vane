@@ -245,6 +245,7 @@ extension SiteControlModel {
             out.append(Row(id: .serial(i), title: "Serial Port: " + port, glyph: "cable.connector",
                            control: .toggle(true),
                            note: "This site can connect to this serial port. Turn off to forget it."))
+        }
         for (i, device) in hidDevices.enumerated() {
             out.append(Row(id: .hid(i), title: "HID Device: " + device, glyph: "gamecontroller",
                            control: .toggle(true),
@@ -325,6 +326,7 @@ extension SiteControlModel {
         for (i, port) in serialPorts.enumerated() {
             out.append(Setting(id: .serial(i), title: "Serial Port: " + port, value: "Allowed",
                                glyph: "cable.connector", on: true))
+        }
         for (i, device) in hidDevices.enumerated() {
             out.append(Setting(id: .hid(i), title: "HID Device: " + device, value: "Allowed",
                                glyph: "gamecontroller.fill", on: true))
