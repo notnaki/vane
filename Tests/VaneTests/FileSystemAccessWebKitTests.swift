@@ -58,8 +58,12 @@ import XCTest
 
     /// Runs as the body of an async function in the page. WebKit runs it as a user gesture,
     /// which is what a click on an Open button is. A hung promise fails instead of stalling CI.
+    /// Each call is one click: WebKit's gesture has no trusted input event to reset the
+    /// one-request-per-click flag, so the fixture resets it.
     private func js(_ tab: Tab, _ body: String) async throws -> String? {
-        try await tab.web.callAsyncJavaScript("""
+        _ = try await tab.web.callAsyncJavaScript("\(FileSystemAccess.gestureUsed) = false", arguments: [:], in: nil,
+                                                  contentWorld: FileSystemAccess.gestureWorld)
+        return try await tab.web.callAsyncJavaScript("""
             return await Promise.race([(async () => { \(body) })(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('file access fixture timed out')), 20000))]);
             """, arguments: [:], in: nil, contentWorld: .page) as? String
@@ -134,12 +138,18 @@ import XCTest
             const aborted = await handle.createWritable({ keepExistingData: true });
             await aborted.truncate(1);
             await aborted.abort();
-            return [await handle.queryPermission({ mode: 'readwrite' }),
-                    await name(showSaveFilePicker({ excludeAcceptAllOption: true })),
+            window.saved = handle;
+            return handle.queryPermission({ mode: 'readwrite' });
+            """)
+        XCTAssertEqual(saved, "granted")
+        // Their own click: WebKit stops carrying the first one's activation across a slow write.
+        let invalid = try await js(tab, """
+            const name = \(outcome);
+            return [await name(showSaveFilePicker({ excludeAcceptAllOption: true })),
                     await name(showOpenFilePicker({ types: [{ accept: { 'nonsense': ['.x'] } }] })),
                     await name(showOpenFilePicker({ id: 'no spaces' }))].join(' ');
             """)
-        XCTAssertEqual(saved, "granted TypeError:TypeError TypeError:TypeError TypeError:TypeError")
+        XCTAssertEqual(invalid, "TypeError:TypeError TypeError:TypeError TypeError:TypeError")
         XCTAssertEqual(requests.first?.suggestedName, "a_b.excalidraw")
         XCTAssertEqual(requests.first?.acceptAll, false)
         let disk = try Data(contentsOf: target)
@@ -190,12 +200,22 @@ import XCTest
         let denied = try await js(tab, """
             window.dir = await showDirectoryPicker();
             const before = await dir.getFileHandle('new.txt', { create: true }).then(() => 'made', error => error.name);
-            return before + ' ' + await dir.requestPermission({ mode: 'readwrite' });
+            const chained = await dir.requestPermission({ mode: 'readwrite' }).then(v => v, error => error.name);
+            const second = await showOpenFilePicker().then(() => 'picked', error => error.name);
+            return [before, chained, second].join(' ');
             """)
-        XCTAssertEqual(denied, "NotAllowedError prompt")
+        XCTAssertEqual(denied, "NotAllowedError SecurityError SecurityError", "one click is one picker or one question")
+        XCTAssertEqual(requests.count, 1)
+        let later = try await js(tab, "return dir.requestPermission({ mode: 'readwrite' });")
+        XCTAssertEqual(later, "prompt")
         answer = .alertThirdButtonReturn
         let refused = try await js(tab, "return dir.requestPermission({ mode: 'readwrite' });")
         XCTAssertEqual(refused, "denied")
+        let remembered = try await js(tab, """
+            return [await dir.queryPermission({ mode: 'readwrite' }), await dir.requestPermission({ mode: 'readwrite' })].join(' ');
+            """)
+        XCTAssertEqual(remembered, "denied denied", "Don't Allow is remembered for this document")
+        XCTAssertEqual(prompts.count, 2, "and not asked again")
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder + "/new.txt"))
     }
 
@@ -226,11 +246,16 @@ import XCTest
             });
             const before = [dir instanceof FileSystemDirectoryHandle, dir.name, await dir.queryPermission()];
             const blocked = await dir.getFileHandle('readme.txt').then(() => 'read', error => error.name);
+            window.dir = dir;
+            return [...before, blocked].join(' ');
+            """)
+        let asked = try await js(tab, """
             const asked = await dir.requestPermission();
             const text = await (await (await dir.getFileHandle('readme.txt')).getFile()).text();
-            return [...before, blocked, asked, text].join(' ');
+            return [asked, text].join(' ');
             """)
-        XCTAssertEqual(revived, "true project prompt NotAllowedError granted hello", "a reload ends the grant; asking again restores it")
+        XCTAssertEqual(revived, "true project prompt NotAllowedError", "a reload ends the grant")
+        XCTAssertEqual(asked, "granted hello", "asking again restores it")
         XCTAssertEqual(prompts, ["view project"])
     }
 }

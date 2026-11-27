@@ -136,7 +136,7 @@ The page script is trusted with nothing. Every message is checked again natively
   for Web Serial; a request posted straight to the bridge without one is refused. One
   picker per tab at a time, as a sheet on the tab's window, only for the page on screen
   and only when the origin asking is the one in the address bar. `requestPermission`
-  needs a gesture too.
+  needs a gesture too, and one click is good for one picker or one question.
 - **What.** The page holds an opaque token per pick and names, never paths. Every
   operation resolves the entry again with `realpath` and refuses anything that lands
   outside the picked file or folder: no `/`, `.` or `..` in names, links that lead out
@@ -144,13 +144,24 @@ The page script is trusted with nothing. Every message is checked again natively
   is gone. Removing a link removes the link. The panel refuses Chromium's blocked
   locations with "contains system files": `/`, the home folder itself, Desktop,
   Documents and Downloads themselves (their contents are fine), `~/Library` (except
-  `CloudStorage`, `Containers` and iCloud Drive), `~/.ssh`, `~/.gnupg`, system folders
-  (`/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/private`
-  apart from temporary folders), Vane itself and its own data.
+  `CloudStorage`, `Containers` and iCloud Drive), `~/.ssh`, `~/.gnupg`, `~/.config`,
+  `~/.cache`, shell and vim startup files, system folders (`/System`, `/Library`,
+  `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/private` apart from temporary
+  folders), Vane itself and its own data, and, as in Chromium, any folder that contains
+  one of these (a project folder holding a Vane build, say).
+- **Where it may write.** Nothing inside a `.git` folder except the object store, refs,
+  logs, `HEAD`, `index` and `packed-refs` (so `config` and `hooks/` stay read-only),
+  nothing inside `.mvn`, and no file named `.git`, at any depth. A site can't create a
+  file Finder would run or follow (`.command`, `.app`, `.webloc`, `.sh` and similar);
+  a suggested save name with such an extension gets `.download` added and loses any
+  leading dots. Saving over an existing file empties it, as Chrome does. A page has at
+  most 32 writes open at once. Creates and removes go through the folder's descriptor
+  without following links.
 - **How much.** Opening grants read. Saving grants read and write. A folder picked with
   `mode: 'readwrite'`, or a later `requestPermission({ mode: 'readwrite' })`, asks in
   the permission bubble ("Allow site to edit files in “name”?"). Return and Escape mean
-  Not Now.
+  Not Now. Don't Allow is remembered for the document: `queryPermission` and
+  `requestPermission` then answer `denied`.
 
 Writes go to a copy (macOS's item-replacement folder on the same volume, or a
 `.crswap` file beside the target when that is refused) and replace the file on
@@ -169,7 +180,7 @@ and sync access handles are not supported on picked files; a handle survives a
 structured clone only as the value itself or in an array read from IndexedDB, so
 `postMessage` to a worker or nested in other objects gives a plain object; `types`
 filter the open panel only with `excludeAcceptAllOption` (there is no type menu);
-`getFile()` reads the whole file into memory; picks are not listed in Site Controls.
+`getFile()` reads the whole file into memory and refuses files over 2 GiB; picks are not listed in Site Controls.
 
 ## Validation and remaining platform coverage
 

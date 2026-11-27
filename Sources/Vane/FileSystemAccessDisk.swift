@@ -20,12 +20,16 @@ struct FileAccessError: Error, Equatable, Sendable {
         name: "NotReadableError", message: "The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.")
     /// A symlink that leads out of the folder the user picked. Never followed.
     static let escapes = notAllowed("This entry points outside the folder you picked.")
+    static let blocked = notAllowed("This location contains system files and can't be opened by a website.")
+    /// Inside `.git` or `.mvn`: what lives there can run code the next time a tool opens the folder.
+    static let writeBlocked = notAllowed("This website can't change files in this folder.")
 
     static func errno(_ code: Int32 = Darwin.errno) -> FileAccessError {
         switch code {
         case ENOENT: .notFound
         case ENOTDIR, EISDIR: .typeMismatch
         case ENOTEMPTY: .notEmpty
+        case ELOOP: .escapes    // O_NOFOLLOW_ANY met a link that appeared after the path was resolved
         case EACCES, EPERM, EROFS: .notAllowed()
         case ENOSPC, EDQUOT: FileAccessError(name: "QuotaExceededError", message: "There is not enough space on the disk.")
         default: FileAccessError(name: "InvalidStateError", message: String(cString: strerror(code)))
@@ -99,14 +103,27 @@ enum FileAccessDisk {
         var info = stat()
         if lstat(entry, &info) == 0 { throw .escapes }    // a dangling link is not nothing
         guard create else { throw .notFound }
+        guard !isWriteBlocked(entry, file: wanted == .file) else { throw .writeBlocked }
+        if wanted == .file, isLaunchable(name) { throw .badName }
+        // Made through the folder itself, opened without following any link, so a component
+        // swapped for a link since `directory` resolved it can't redirect the create.
+        let dir = try openDirectory(parent)
+        defer { close(dir) }
         if wanted == .directory {
-            guard mkdir(entry, 0o777) == 0 || Darwin.errno == EEXIST else { throw .errno() }
+            guard mkdirat(dir, name, 0o777) == 0 || Darwin.errno == EEXIST else { throw .errno() }
         } else {
-            let fd = open(entry, O_CREAT | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o666)
+            let fd = openat(dir, name, O_CREAT | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o666)
             guard fd >= 0 else { throw .errno() }
             close(fd)
         }
         guard kind(try resolve(root: root, components + [name])) == wanted else { throw .typeMismatch }
+    }
+
+    /// A real directory path, opened so that no link anywhere in it is followed.
+    private nonisolated static func openDirectory(_ path: String) throws(FileAccessError) -> Int32 {
+        let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC)
+        guard fd >= 0 else { throw .errno() }
+        return fd
     }
 
     /// A directory's entries. Links are listed only when they land inside the root; sockets,
@@ -134,21 +151,27 @@ enum FileAccessDisk {
     nonisolated static func remove(root: String, _ components: [String], name: String,
                                    recursive: Bool) throws(FileAccessError) {
         guard isValidName(name) else { throw .badName }
-        let entry = try directory(root: root, components) + "/" + name
+        let parent = try directory(root: root, components)
+        let entry = parent + "/" + name
+        guard !isWriteBlocked(entry, file: false) else { throw .writeBlocked }
+        let dir = try openDirectory(parent)
+        defer { close(dir) }
         var info = stat()
-        guard lstat(entry, &info) == 0 else { throw .notFound }
+        guard fstatat(dir, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw .notFound }
         switch info.st_mode & S_IFMT {
         case S_IFLNK:
             // Hidden from `list` when it leads out, so it is not there to remove either.
             guard let resolved = real(entry), contains(root, resolved), kind(resolved) != nil else { throw .notFound }
-            guard unlink(entry) == 0 else { throw .errno() }
+            guard unlinkat(dir, name, 0) == 0 else { throw .errno() }
         case S_IFREG:
-            guard unlink(entry) == 0 else { throw .errno() }
+            guard unlinkat(dir, name, 0) == 0 else { throw .errno() }
         case S_IFDIR:
-            if rmdir(entry) == 0 { return }
+            if unlinkat(dir, name, AT_REMOVEDIR) == 0 { return }
             guard Darwin.errno == ENOTEMPTY || Darwin.errno == EEXIST else { throw .errno() }
             guard recursive else { throw .notEmpty }
             // FileManager removes links inside as links; it does not descend through them.
+            // ponytail: path-based, so a parent swapped for a link mid-removal is followed; a page
+            // can't make links, only another local process could. Walk by fd if that matters.
             do { try FileManager.default.removeItem(atPath: entry) } catch { throw .errno(EACCES) }
         default: throw .notFound
         }
@@ -172,15 +195,20 @@ enum FileAccessDisk {
 
     /// One piece of a file. `expect` is the size and time the first piece saw: a file that
     /// changes while it is being read is an error, as it is for a `File` in Chrome.
+    /// `getFile()` builds the whole file in the page's memory; past this it is refused, not
+    /// left to take the content process down.
+    nonisolated static let maxReadSize: Int64 = 2 << 30
+
     nonisolated static func read(_ path: String, at offset: Int64, length: Int,
                                  expect: (size: Int64, modified: Int64)?) throws(FileAccessError) -> Chunk {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = open(path, O_RDONLY | O_NOFOLLOW_ANY | O_CLOEXEC)
         guard fd >= 0 else { throw .errno() }
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0 else { throw .errno() }
         guard info.st_mode & S_IFMT == S_IFREG else { throw .typeMismatch }
         let size = Int64(info.st_size)
+        guard size <= maxReadSize else { throw FileAccessError(name: "NotReadableError", message: "The file is too large to read.") }
         let modified = Int64(info.st_mtimespec.tv_sec) * 1000 + Int64(info.st_mtimespec.tv_nsec) / 1_000_000
         if let expect, expect.size != size || expect.modified != modified { throw .changed }
         let count = Int(max(0, min(Int64(length), size - max(0, offset))))
@@ -204,13 +232,15 @@ enum FileAccessDisk {
 
     /// A `createWritable()` stream's file. Writes go to a copy and replace the original only
     /// on `close()`, so an abandoned, aborted or crashed write leaves the file as it was.
-    /// FileSystemAccess lets one call at a time use one of these.
+    /// Everything that touches `fd` or `cursor` runs on `queue`, so a discard from a document
+    /// going away can't close the descriptor (and let it be reused) under a write in flight.
     final class Swap: @unchecked Sendable {
         let temp: String
         /// The item-replacement directory holding `temp`, removed with it.
         let holder: String?
         var fd: Int32
         var cursor: Int64 = 0
+        let queue = DispatchQueue(label: "vane.file-access.swap", qos: .userInitiated)
         init(temp: String, holder: String?, fd: Int32) { self.temp = temp; self.holder = holder; self.fd = fd }
     }
 
@@ -218,7 +248,13 @@ enum FileAccessDisk {
     /// target's volume), because a sandboxed app picked a single file may not create files
     /// beside it. Where that is refused, beside the target like Chrome's `.crswap`.
     nonisolated static func openSwap(_ target: String, keepExistingData: Bool) throws(FileAccessError) -> Swap {
-        guard kind(target) == .file else { throw .typeMismatch }
+        guard !isWriteBlocked(target, file: true) else { throw .writeBlocked }
+        let source = open(target, O_RDONLY | O_NOFOLLOW_ANY | O_CLOEXEC)
+        guard source >= 0 else { throw .errno() }
+        defer { close(source) }
+        var info = stat()
+        guard fstat(source, &info) == 0 else { throw .errno() }
+        guard info.st_mode & S_IFMT == S_IFREG else { throw .typeMismatch }
         let url = URL(fileURLWithPath: target)
         let holder = try? FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                                   appropriateFor: url, create: true).path
@@ -228,19 +264,20 @@ enum FileAccessDisk {
             unlink(temp)
             if let holder { rmdir(holder) }
         }
-        if keepExistingData {
-            // A clone on APFS: instant, whatever the size.
-            guard copyfile(target, temp, nil, copyfile_flags_t(COPYFILE_CLONE | COPYFILE_EXCL)) == 0 else {
-                let code = Darwin.errno; clean(); throw .errno(code)
-            }
-        }
-        let fd = open(temp, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (keepExistingData ? 0 : O_EXCL), 0o644)
+        // From the descriptor opened above, not the path: a clone on APFS (instant, whatever
+        // the size), a plain copy elsewhere.
+        let cloned = keepExistingData && fclonefileat(source, AT_FDCWD, temp, 0) == 0
+        let fd = open(temp, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (cloned ? 0 : O_EXCL), 0o644)
         guard fd >= 0 else { let code = Darwin.errno; clean(); throw .errno(code) }
+        if keepExistingData, !cloned, fcopyfile(source, fd, nil, copyfile_flags_t(COPYFILE_DATA)) != 0 {
+            let code = Darwin.errno; close(fd); clean(); throw .errno(code)
+        }
         return Swap(temp: temp, holder: holder, fd: fd)
     }
 
     /// At `position` when given (past the end leaves zeros between), else at the cursor.
     nonisolated static func write(_ swap: Swap, _ data: Data, at position: Int64?) throws(FileAccessError) {
+        guard swap.fd >= 0 else { throw .type("The stream is closed.") }
         if let position { swap.cursor = position }
         var done = 0
         while done < data.count {
@@ -253,6 +290,7 @@ enum FileAccessDisk {
     }
 
     nonisolated static func truncate(_ swap: Swap, to size: Int64) throws(FileAccessError) {
+        guard swap.fd >= 0 else { throw .type("The stream is closed.") }
         guard ftruncate(swap.fd, off_t(size)) == 0 else { throw .errno() }
         swap.cursor = min(swap.cursor, size)
     }
@@ -261,11 +299,22 @@ enum FileAccessDisk {
     /// permissions and other metadata are kept.
     nonisolated static func commit(_ swap: Swap, root: String, _ components: [String]) throws(FileAccessError) -> String {
         defer { discard(swap) }
+        guard swap.fd >= 0 else { throw .type("The stream is closed.") }
         guard fsync(swap.fd) == 0 else { throw .errno() }
         close(swap.fd)
         swap.fd = -1
         let target = try resolve(root: root, components)
-        guard kind(target) == .file else { throw .typeMismatch }
+        guard !isWriteBlocked(target, file: true) else { throw .writeBlocked }
+        // Still a regular file at its real path, reached without following any link.
+        let check = open(target, O_RDONLY | O_NOFOLLOW_ANY | O_CLOEXEC)
+        guard check >= 0 else { throw .errno() }
+        var info = stat()
+        let isFile = fstat(check, &info) == 0 && info.st_mode & S_IFMT == S_IFREG
+        close(check)
+        guard isFile else { throw .typeMismatch }
+        // ponytail: replaceItemAt, not renameatx_np, because the sandbox lets it replace a single
+        // picked file whose folder Vane may not write to. The window between the check above and
+        // the replace stays open to a local process racing it; a page can't make links.
         do {
             _ = try FileManager.default.replaceItemAt(URL(fileURLWithPath: target), withItemAt: URL(fileURLWithPath: swap.temp))
         } catch {
@@ -285,9 +334,10 @@ enum FileAccessDisk {
     // MARK: - What may be picked
 
     /// Chromium's blocklist (chrome_file_system_access_permission_context.cc), in real paths.
-    /// `children` says whether things inside may still be picked: the home folder itself
-    /// can't be shared, a project folder inside it can. The deepest rule that covers a path
-    /// decides.
+    /// As in Chromium's ShouldBlockAccessToPath, a path that is a rule's path or contains one
+    /// is blocked (the home folder itself, or a folder holding this app or its data); otherwise
+    /// the deepest rule above it decides, and `children` says whether things inside may still
+    /// be picked: a project folder in the home folder can be.
     struct Rule: Equatable, Sendable {
         let path: String
         let children: Bool
@@ -299,14 +349,54 @@ enum FileAccessDisk {
                     // Cloud drives and other apps' sandboxed documents, as Chrome allows.
                     home + "/Library/CloudStorage", home + "/Library/Containers",
                     home + "/Library/Mobile Documents", home + "/Library/Mobile Documents/com~apple~CloudDocs"]
-        let closed = [home + "/Library", home + "/.ssh", home + "/.gnupg", home + "/Applications",
-                      "/System", "/Library", "/Applications", "/bin", "/sbin", "/usr", "/dev", "/private", "/cores"] + extra
+        let dotfiles = [".ssh", ".gnupg", ".config", ".cache",
+                        ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".bashrc", ".bash_profile", ".bash_login", ".profile",
+                        ".vimrc", ".gvimrc", ".exrc", ".vim"]
+        let closed = [home + "/Library", home + "/Applications"] + dotfiles.map { home + "/" + $0 }
+            + ["/System", "/Library", "/Applications", "/bin", "/sbin", "/usr", "/dev", "/private", "/cores"] + extra
         return open.map { Rule(path: $0, children: true) } + closed.map { Rule(path: $0, children: false) }
     }
 
     nonisolated static func isBlocked(_ path: String, rules: [Rule]) -> Bool {
+        if rules.contains(where: { contains(path, $0.path) }) { return true }
         guard let rule = rules.filter({ contains($0.path, path) }).max(by: { $0.path.count < $1.path.count }) else { return false }
-        return rule.path == path || !rule.children
+        return !rule.children
+    }
+
+    /// What inside a repository's `.git` a site may still write: the object store, refs and
+    /// logs a web Git client needs. `config`, `hooks/` and the rest can run code, as can
+    /// anything under `.mvn` (Maven's wrapper), so they stay read-only at any depth, as
+    /// Chromium keeps them. A *file* named `.git` is a `gitdir:` pointer and is blocked too.
+    nonisolated static let gitWritable: Set<String> = [
+        "objects", "refs", "logs", "head", "index", "packed-refs", "orig_head", "fetch_head", "merge_head",
+        "commit_editmsg", "shallow"]
+
+    nonisolated static func isWriteBlocked(_ path: String, file: Bool) -> Bool {
+        let parts = path.split(separator: "/").map { $0.lowercased() }    // APFS is case-insensitive
+        if file, parts.last == ".git" { return true }
+        for (i, part) in parts.enumerated().dropLast() {
+            if part == ".mvn" { return true }
+            if part == ".git", !gitWritable.contains(parts[i + 1]) { return true }
+        }
+        return false
+    }
+
+    /// Kinds Finder runs or follows on a double-click. A site may not name a new file so.
+    nonisolated static let launchable: Set<String> = [
+        "app", "command", "tool", "terminal", "term", "fileloc", "inetloc", "webloc", "url", "scpt", "scptd",
+        "applescript", "workflow", "action", "sh", "bash", "zsh", "csh", "ksh", "pkg", "mpkg", "prefpane",
+        "saver", "jar", "osax", "shortcut"]
+
+    nonisolated static func isLaunchable(_ name: String) -> Bool {
+        launchable.contains((name as NSString).pathExtension.lowercased())
+    }
+
+    /// `suggestedName` made safe: no leading dots (a hidden file the user can't see being
+    /// made), and a launchable kind gets `.download` after it, as Chrome does for downloads.
+    nonisolated static func safeSaveName(_ name: String) -> String? {
+        let trimmed = String(name.drop { $0 == "." })
+        guard isValidName(trimmed) else { return nil }
+        return isLaunchable(trimmed) ? trimmed + ".download" : trimmed
     }
 
     /// The real home folder: inside the sandbox `NSHomeDirectory()` is the container.
@@ -323,21 +413,25 @@ enum FileAccessDisk {
         return rules(home: home, extra: extra.compactMap { real($0) })
     }
 
-    /// What the picker returned, made real and checked. A save target that doesn't exist is
-    /// created empty; one that does is left as it is until the page writes to it.
+    /// What the picker returned, made real and checked. A save target is judged by its
+    /// folder's real path and its name before anything is made there, then created, or, when
+    /// it exists, emptied: the user agreed to replace it, and Chrome truncates it the same way.
     nonisolated static func picked(_ path: String, kind wanted: Kind, create: Bool,
                                    rules: [Rule]) throws(FileAccessError) -> String {
-        if create, real(path) == nil {
-            var info = stat()
-            guard lstat(path, &info) != 0 else { throw .escapes }
-            let fd = open(path, O_CREAT | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o666)
+        if create {
+            let url = URL(fileURLWithPath: path)
+            let name = url.lastPathComponent
+            guard isValidName(name), let parent = real(url.deletingLastPathComponent().path) else { throw .notFound }
+            let target = parent + "/" + name
+            guard !isBlocked(path, rules: rules), !isBlocked(target, rules: rules) else { throw .blocked }
+            guard !isWriteBlocked(target, file: true) else { throw .writeBlocked }
+            // By path, not through the folder: a sandboxed app is given the file, not its folder.
+            let fd = open(target, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW_ANY | O_CLOEXEC, 0o666)
             guard fd >= 0 else { throw .errno() }
             close(fd)
         }
         guard let resolved = real(path) else { throw .notFound }
-        guard !isBlocked(path, rules: rules), !isBlocked(resolved, rules: rules) else {
-            throw .notAllowed("This location contains system files and can't be opened by a website.")
-        }
+        guard !isBlocked(path, rules: rules), !isBlocked(resolved, rules: rules) else { throw .blocked }
         guard kind(resolved) == wanted else { throw .typeMismatch }
         return resolved
     }

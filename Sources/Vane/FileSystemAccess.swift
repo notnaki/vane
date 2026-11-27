@@ -27,10 +27,22 @@ import WebKit
     static let gestureEvent = "vane-file-access-request"
     /// Bytes per message each way. Base64 makes each about 5.6 MB of text.
     nonisolated static let chunk = 4 * 1024 * 1024
+    /// Open `createWritable()` streams per document.
+    static let maxWritables = 32
 
+    /// One request per real input event: `isActive` stays true for seconds after a click, so
+    /// without `used` one click could chain picker after picker.
+    /// A global of the isolated world, which the page can't see; tests reset it as a click would.
+    static let gestureUsed = "vaneFileAccessGestureUsed"
     static let gestureScript = """
+    var \(gestureUsed) = false;
+    for (const type of ['keydown', 'mousedown', 'pointerdown', 'pointerup', 'touchend', 'click']) {
+      addEventListener(type, e => { if (e.isTrusted) \(gestureUsed) = false; }, true);
+    }
     addEventListener('\(gestureEvent)', () => {
-      if (navigator.userActivation.isActive) webkit.messageHandlers.\(gestureName).postMessage(1);
+      if (\(gestureUsed) || !navigator.userActivation.isActive) return;
+      \(gestureUsed) = true;
+      webkit.messageHandlers.\(gestureName).postMessage(1);
     }, true);
     """
 
@@ -107,7 +119,8 @@ import WebKit
       }, opfs);
       method(H, 'requestPermission', async function (d) {
         const s = slot(this), mode = modeOf(d);
-        if (await call('query', { h: ref(s), mode }) === 'granted') return 'granted';
+        const state = await call('query', { h: ref(s), mode });
+        if (state !== 'prompt') return state;
         if (!gesture()) throw fail('SecurityError', 'User activation is required to request permissions.');
         return call('request', { h: ref(s), mode });
       }, opfs);
@@ -366,6 +379,8 @@ import WebKit
     @MainActor private final class Session {
         let scope: Scope
         var grants: [String: Mode] = [:]
+        /// Picks the user answered "Don't Allow" for in this document: asked again, `denied`.
+        var denied: Set<String> = []
         var gesture: ContinuousClock.Instant?
         /// A picker or a permission bubble is up.
         var busy = false
@@ -397,7 +412,7 @@ import WebKit
             let open = swaps.values.map(\.swap)
             swaps.removeAll()
             grants.removeAll()
-            if !open.isEmpty { DispatchQueue.global(qos: .utility).async { open.forEach(FileAccessDisk.discard) } }
+            for swap in open { swap.queue.async { FileAccessDisk.discard(swap) } }
         }
     }
     private static var sessions: [UUID: Session] = [:]
@@ -482,11 +497,12 @@ import WebKit
         return whole
     }
 
-    /// File work off the main thread.
-    nonisolated private static func io<T: Sendable>(_ work: @escaping @Sendable () throws(FileAccessError) -> T)
+    /// File work off the main thread; a write stream's work on that stream's own queue.
+    nonisolated private static func io<T: Sendable>(on queue: DispatchQueue = .global(qos: .userInitiated),
+                                                    _ work: @escaping @Sendable () throws(FileAccessError) -> T)
         async throws(FileAccessError) -> T {
         let result = await withCheckedContinuation { (continuation: CheckedContinuation<Result<T, FileAccessError>, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: Result(catching: work)) }
+            queue.async { continuation.resume(returning: Result(catching: work)) }
         }
         return try result.get()
     }
@@ -508,11 +524,13 @@ import WebKit
             return try await pick(body, session: session, tab: tab, web: web) { current }
         case "query":
             let mode = try Mode(body["mode"])
-            guard let token = (body["h"] as? [String: Any])?["root"] as? String, let granted = session.grants[token] else { return "prompt" }
-            return granted >= mode ? "granted" : "prompt"
+            guard let token = (body["h"] as? [String: Any])?["root"] as? String else { return "prompt" }
+            if let granted = session.grants[token], granted >= mode { return "granted" }
+            return session.denied.contains(token) ? "denied" : "prompt"
         case "request":
             let mode = try Mode(body["mode"]), target = try ref(body["h"], scope: scope)
             if let granted = session.grants[target.token], granted >= mode { return "granted" }
+            if session.denied.contains(target.token) { return "denied" }
             guard takeGesture(session) else {
                 throw FileAccessError(name: "SecurityError", message: "User activation is required to request permissions.")
             }
@@ -525,17 +543,20 @@ import WebKit
             case .alertFirstButtonReturn, .alertSecondButtonReturn:
                 session.grant(target.token, mode)
                 return "granted"
-            case .alertThirdButtonReturn: return "denied"
+            case .alertThirdButtonReturn:
+                session.denied.insert(target.token)
+                return "denied"
             default: return "prompt"
             }
         case "open", "write", "seek", "truncate", "close", "abort":
             return try await stream(op, body, session: session, tab: tab)
         case "same", "resolve":
             let a = try ref(body["a"], scope: scope), b = try ref(body["b"], scope: scope)
-            if a.token == b.token, b.path.starts(with: a.path) {
-                let rest = Array(b.path.dropFirst(a.path.count))
-                return op == "same" ? rest.isEmpty : rest
-            }
+            if a.token == b.token, a.path == b.path { return op == "same" ? true : [String]() }
+            if op == "resolve", a.token == b.token, b.path.starts(with: a.path) { return Array(b.path.dropFirst(a.path.count)) }
+            // Real paths from here on, so the answer says nothing about entries the page can't read.
+            try require(.read, a, session)
+            try require(.read, b, session)
             let relative = try await io { () throws(FileAccessError) -> [String]? in
                 guard let parent = try? a.resolve(), let child = try? b.resolve() else { return nil }
                 return FileAccessDisk.relative(from: parent, to: child)
@@ -574,11 +595,11 @@ import WebKit
             let expect = size.flatMap { size in modified.map { (size: size, modified: $0) } }
             let name = target.root.name, last = target.path.last ?? name
             let piece = try await io { () throws(FileAccessError) in
-                try FileAccessDisk.read(try target.resolve(), at: at, length: chunk, expect: expect)
+                let piece = try FileAccessDisk.read(try target.resolve(), at: at, length: chunk, expect: expect)
+                return (data: piece.data.base64EncodedString(), size: piece.size, modified: piece.modified)
             }
             guard current else { throw .abort }
-            return ["data": piece.data.base64EncodedString(), "size": piece.size, "modified": piece.modified,
-                    "type": FileAccessDisk.mimeType(of: last)]
+            return ["data": piece.data, "size": piece.size, "modified": piece.modified, "type": FileAccessDisk.mimeType(of: last)]
         default:
             throw .type("Unknown file operation.")
         }
@@ -589,12 +610,16 @@ import WebKit
         if op == "open" {
             let target = try ref(body["h"], scope: session.scope)
             try require(.readwrite, target, session)
+            // Each holds a descriptor and a copy on disk; a page doesn't get to pile them up.
+            guard session.swaps.count < maxWritables else {
+                throw FileAccessError(name: "QuotaExceededError", message: "Too many files are open for writing.")
+            }
             let keep = body["keep"] as? Bool ?? false
             let swap = try await io { () throws(FileAccessError) in
                 try FileAccessDisk.openSwap(try target.resolve(), keepExistingData: keep)
             }
-            guard sessions[tab.id] === session else {
-                DispatchQueue.global(qos: .utility).async { FileAccessDisk.discard(swap) }
+            guard sessions[tab.id] === session, session.swaps.count < maxWritables else {
+                swap.queue.async { FileAccessDisk.discard(swap) }
                 throw .abort
             }
             let id = UUID().uuidString
@@ -608,27 +633,29 @@ import WebKit
         switch op {
         case "write":
             // The page script sends at most `chunk` bytes a message; anything larger did not come from it.
-            guard let text = body["data"] as? String, text.utf8.count <= (chunk / 3 + 1) * 4,
-                  let data = Data(base64Encoded: text) else { throw .type("Invalid data.") }
+            guard let text = body["data"] as? String, text.utf8.count <= (chunk / 3 + 1) * 4 else { throw .type("Invalid data.") }
             let position = try offset(body["position"])
-            try await io { () throws(FileAccessError) in try FileAccessDisk.write(swap, data, at: position) }
+            try await io(on: swap.queue) { () throws(FileAccessError) in
+                guard let data = Data(base64Encoded: text) else { throw .type("Invalid data.") }
+                try FileAccessDisk.write(swap, data, at: position)
+            }
         case "seek":
             guard let position = try offset(body["position"]) else { throw .type("Invalid position.") }
-            swap.cursor = position
+            try await io(on: swap.queue) { () throws(FileAccessError) in swap.cursor = position }
         case "truncate":
             guard let size = try offset(body["size"]) else { throw .type("Invalid size.") }
-            try await io { () throws(FileAccessError) in try FileAccessDisk.truncate(swap, to: size) }
+            try await io(on: swap.queue) { () throws(FileAccessError) in try FileAccessDisk.truncate(swap, to: size) }
         case "abort":
             session.swaps.removeValue(forKey: id)
-            DispatchQueue.global(qos: .utility).async { FileAccessDisk.discard(swap) }
+            swap.queue.async { FileAccessDisk.discard(swap) }
         default:    // close
             session.swaps.removeValue(forKey: id)
             guard (session.grants[target.token] ?? .read) >= .readwrite else {
-                DispatchQueue.global(qos: .utility).async { FileAccessDisk.discard(swap) }
+                swap.queue.async { FileAccessDisk.discard(swap) }
                 throw .notAllowed()
             }
             let page = tab.currentURL, isPrivate = tab.isPrivate
-            try await io { () throws(FileAccessError) in
+            try await io(on: swap.queue) { () throws(FileAccessError) in
                 let written = try FileAccessDisk.commit(swap, root: target.root.path, target.path)
                 // What a site wrote is marked as from the web, as Chrome and downloads mark it.
                 Downloads.quarantine(URL(fileURLWithPath: written), source: nil, page: page, isPrivate: isPrivate)
@@ -649,7 +676,7 @@ import WebKit
         var suggestedName: String?
         var id = ""
         var startIn: String?
-        var startHandle: [String: String]?
+        var startHandle: String?
         var startPath: [String] = []
         var mode = Mode.read
 
@@ -693,7 +720,7 @@ import WebKit
             if kind == .save, let name = options["suggestedName"] as? String {
                 let clean = String(name.map { $0 == "/" || $0 == ":" ? "_" : $0 }.filter { !$0.isASCII || !($0.asciiValue! < 0x20) })
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                suggestedName = FileAccessDisk.isValidName(clean) ? clean : nil
+                suggestedName = FileAccessDisk.safeSaveName(clean)
             }
             if let start = options["startIn"] as? String {
                 guard Self.wellKnown[start] != nil else {
@@ -702,7 +729,7 @@ import WebKit
                 startIn = start
             } else if let start = options["startIn"] as? [String: Any], let root = start["root"] as? String,
                       let path = start["path"] as? [String] {
-                startHandle = ["root": root]
+                startHandle = root
                 startPath = path
             }
             if kind == .directory { mode = try Mode(options["mode"]) }
@@ -735,7 +762,7 @@ import WebKit
         var start = lastDirectory[scope]?[request.id]
         if start == nil, let known = request.startIn.flatMap({ PickRequest.wellKnown[$0] }) {
             start = URL(fileURLWithPath: FileAccessDisk.home + "/" + known, isDirectory: true)
-        } else if start == nil, let token = request.startHandle?["root"],
+        } else if start == nil, let token = request.startHandle,
                   let handle = try? ref(["root": token, "path": request.startPath], scope: scope) {
             start = try? await io { () throws(FileAccessError) in
                 let path = try handle.resolve()
@@ -798,7 +825,7 @@ import WebKit
         }
         panel.canCreateDirectories = request.kind != .open
         if let directory { panel.directoryURL = directory }
-        let guardian = PanelGuard()
+        let guardian = PanelGuard(save: request.kind == .save)
         panel.delegate = guardian
         session.panel = panel
         let response = await withCheckedContinuation { continuation in
@@ -814,11 +841,15 @@ import WebKit
     /// The panel itself refuses a blocked location, with Chrome's explanation, and stays open.
     private final class PanelGuard: NSObject, NSOpenSavePanelDelegate {
         let rules = FileAccessDisk.defaultRules
+        let save: Bool
+        init(save: Bool) { self.save = save }
 
         func panel(_ sender: Any, validate url: URL) throws {
             let parent = FileAccessDisk.real(url.deletingLastPathComponent().path)
             let real = FileAccessDisk.real(url.path) ?? parent.map { $0 + "/" + url.lastPathComponent } ?? url.path
-            guard FileAccessDisk.isBlocked(url.path, rules: rules) || FileAccessDisk.isBlocked(real, rules: rules) else { return }
+            // isBlocked also covers a folder that holds a protected one, real path or as given.
+            guard FileAccessDisk.isBlocked(url.path, rules: rules) || FileAccessDisk.isBlocked(real, rules: rules)
+                    || (save && FileAccessDisk.isWriteBlocked(real, file: true)) else { return }
             throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError, userInfo: [
                 NSLocalizedDescriptionKey: "Can’t open this location because it contains system files.",
                 NSLocalizedRecoverySuggestionErrorKey: "Choose a different folder or file.",
