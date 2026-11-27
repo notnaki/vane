@@ -6,14 +6,17 @@ import SwiftUI
     @Published private(set) var isVisible = false
     private var regions: Set<Region> = []
     private var pending: Task<Void, Never>?
+    private let openDelay: Int
+    init(openDelay: Int = 250) { self.openDelay = openDelay }
 
     func setHovered(_ hovered: Bool, over region: Region) {
         if hovered { regions.insert(region) } else { regions.remove(region) }
         pending?.cancel()
         let opening = !regions.isEmpty
         guard opening != isVisible else { return }
+        let delay = opening ? openDelay : 180
         pending = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(opening ? 250 : 180)) }
+            do { try await Task.sleep(for: .milliseconds(delay)) }
             catch { return }
             guard let self else { return }
             self.isVisible = opening
