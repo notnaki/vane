@@ -1163,6 +1163,8 @@ struct TitleReveal: Equatable, Sendable {
     /// provisional destination for the document already on screen.
     private var initialRequestedURL: URL?
     private var provisional = false
+    /// The url Act as Chrome last re-loaded to fix its header; see `ActAsChrome.apply`.
+    var actAsChromeRetry: URL?
 
     /// A fragment link never starts a provisional load, so it must not hold the address.
     static func sameDocument(_ action: WKNavigationAction, from current: URL?) -> Bool {
@@ -2302,10 +2304,12 @@ struct TitleReveal: Equatable, Sendable {
                  preferences: WKWebpagePreferences,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         webView(w, decidePolicyFor: navigationAction) { [weak self] policy in
-            if policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let self {
-                ActAsChrome.apply(navigationAction.request.url, to: w, preferences: preferences, tab: self)
-            }
-            decisionHandler(policy, preferences)
+            guard policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let self,
+                  let retry = ActAsChrome.apply(navigationAction, to: w, preferences: preferences, tab: self)
+            else { decisionHandler(policy, preferences); return }
+            // Like HTTPS-only: cancel plus a re-load is the only way to change the header.
+            decisionHandler(.cancel, preferences)
+            self.expectNavigation(w.load(retry))
         }
     }
 

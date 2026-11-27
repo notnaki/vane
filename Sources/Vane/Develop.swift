@@ -106,8 +106,7 @@ import WebKit
         for store in TabStore.all {
             // `everyTab`: the Spaces a window is keeping alive hold real web views too.
             for tab in store.everyTab {
-                tab.existingWeb?.customUserAgent = ActAsChrome.userAgent(for: tab.currentURL,
-                    profileID: tab.profileID, isPrivate: tab.isPrivate)
+                tab.existingWeb?.customUserAgent = userAgent
                 DeveloperMode.apply(to: tab)
             }
         }

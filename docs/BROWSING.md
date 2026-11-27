@@ -56,11 +56,20 @@ click an extension for its options, **Pin**/**Unpin**, or **Remove from Vane…*
 [site permissions](SITE-PERMISSIONS.md).
 
 **Act as Chrome** (in **⋯** and **Site Settings…**) is for sites that turn away browsers
-other than Chrome. It is off by default and works per site and per profile; private
-windows forget it. When on, that site sees a Chrome user agent and Chrome's `navigator`
-details. Other sites keep the normal identity. Turning it on reloads the page. Streaming
-video (Netflix, Disney+) may stop working with it on. If you picked a user agent in
-**Develop → User Agent**, that choice applies everywhere and this switch is unavailable.
+other than Chrome. It is off by default and works per site and per profile. In private
+windows it is kept in memory until Vane quits, shared by all private windows. When on,
+that site sees a Chrome user agent and Chrome's `navigator` details. Other sites keep the
+normal identity. Turning it on reloads the page. Streaming video (Netflix, Disney+) may
+stop working with it on. If you picked a user agent in **Develop → User Agent**, that
+choice applies everywhere and this switch is unavailable.
+
+It matches the exact host (`www.example.com` and `example.com` are separate). If a site
+sends other browsers to an "unsupported browser" page on another host, go back to the
+site's own address and turn it on there, not on the warning page. Only the page itself
+gets Chrome's `navigator`: extension content scripts and Web Workers see a Chrome user
+agent but Apple's `navigator.vendor` and no `userAgentData`. A form that posts and then
+redirects onto or off a switched site keeps the first request's user agent for that one
+redirect.
 
 ## Copy a clean link
 

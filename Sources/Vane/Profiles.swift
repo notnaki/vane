@@ -689,7 +689,7 @@ struct Space: Identifiable, Codable, Equatable {
             Self.removeArchivedPreferences(for: id)
             for key in ["pinnedTabs", "offerToSavePasswords", "passwordsLastUsed", "passwordsNeverSaved", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
                         ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
-                        HTTPSOnly.exceptionsKey] {
+                        HTTPSOnly.exceptionsKey, "actAsChromeHosts"] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
             _ = ScopedPaths.replace(nil, at: DownloadLocation.directoryKey(id))
@@ -761,7 +761,7 @@ struct Space: Identifiable, Codable, Equatable {
             Self.removeArchivedPreferences(for: id)
             for key in ["pinnedTabs", "offerToSavePasswords", "passwordsLastUsed", "passwordsNeverSaved", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
                         ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
-                        HTTPSOnly.exceptionsKey] {
+                        HTTPSOnly.exceptionsKey, "actAsChromeHosts"] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
             _ = ScopedPaths.replace(nil, at: DownloadLocation.directoryKey(id))
@@ -1792,13 +1792,15 @@ struct Space: Identifiable, Codable, Equatable {
         pm.createSpace(name: "Scratch", in: victim)
         let victimKeys = ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey]
             .map { defaultsKey($0, victim) }
-            + [DownloadLocation.directoryKey(victim), DownloadLocation.askKey(victim), defaultsKey("blockerSiteExceptions", victim)]
+            + [DownloadLocation.directoryKey(victim), DownloadLocation.askKey(victim), defaultsKey("blockerSiteExceptions", victim),
+               defaultsKey("actAsChromeHosts", victim)]
         UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
         UserDefaults.vane.set(false, forKey: victimKeys[1])
         UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
         UserDefaults.vane.set([Data("download bookmark".utf8)], forKey: victimKeys[3])
         UserDefaults.vane.set(true, forKey: victimKeys[4])
         UserDefaults.vane.set(["example.com"], forKey: victimKeys[5])
+        UserDefaults.vane.set(["example.com"], forKey: victimKeys[6])
         let victimPermission = SitePermissions.Scope(
             url: URL(string: "https://vane-delete-check.invalid"), profileID: victim)!
         let neighbourPermission = SitePermissions.Scope(

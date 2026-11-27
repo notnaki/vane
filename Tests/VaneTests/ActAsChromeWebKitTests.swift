@@ -44,7 +44,9 @@ import XCTest
         XCTAssertEqual(r["vendor"], "Google Inc.")
         XCTAssertEqual(r["brands"], "Not)A;Brand,Chromium,Google Chrome")
         XCTAssertEqual(r["platform"], "macOS")
-        XCTAssertEqual(r["high"], "151.0.0.0")
+        let version = ActAsChrome.chromeUA.firstMatch(of: /Chrome\/([\d.]+)/).map { String($0.1) }
+        XCTAssertEqual(r["high"], version)
+        XCTAssertEqual(r["arch"], ActAsChrome.architecture)
 
         // Another host: back to the default identity, header and navigator alike.
         _ = try await tab.web.evaluateJavaScript("window.result = undefined; 0")
@@ -54,6 +56,22 @@ import XCTest
         XCTAssertEqual(r["ua"], safariUA)
         XCTAssertEqual(r["vendor"], "Apple Computer, Inc.")
         XCTAssertEqual(r["brands"], "none")
+
+        // A server redirect carries the first request's header; the policy re-loads it so
+        // header and navigator still agree on the destination's identity.
+        func redirect(from: String, to: String) async throws -> [String: String] {
+            _ = try await tab.web.evaluateJavaScript("window.result = undefined; 0")
+            tab.navigate(to: URL(string: "http://\(from):\(port)/go?http://\(to):\(port)/")!)
+            return try await page()
+        }
+        r = try await redirect(from: "localhost", to: "127.0.0.1")
+        XCTAssertEqual(r["header"], ActAsChrome.chromeUA, "a 302 into the switched host goes out as Chrome")
+        XCTAssertEqual(r["ua"], ActAsChrome.chromeUA)
+        XCTAssertEqual(r["vendor"], "Google Inc.")
+        r = try await redirect(from: "127.0.0.1", to: "localhost")
+        XCTAssertEqual(r["header"], safariUA, "a 302 out of the switched host goes back to Safari")
+        XCTAssertEqual(r["ua"], safariUA)
+        XCTAssertEqual(r["vendor"], "Apple Computer, Inc.")
     }
 }
 
@@ -67,6 +85,13 @@ private final class UserAgentEchoServer: @unchecked Sendable {
             connection.start(queue: queue)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
                 let request = String(decoding: data ?? Data(), as: UTF8.self)
+                // `GET /go?<url>` answers 302 to <url>.
+                let path = request.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init) ?? "/"
+                if path.hasPrefix("/go?") {
+                    let response = "HTTP/1.1 302 Found\r\nLocation: \(path.dropFirst(4))\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                    return
+                }
                 let header = request.components(separatedBy: "\r\n")
                     .first { $0.lowercased().hasPrefix("user-agent:") }
                     .map { String($0.dropFirst("user-agent:".count)).trimmingCharacters(in: .whitespaces) } ?? ""
@@ -74,10 +99,10 @@ private final class UserAgentEchoServer: @unchecked Sendable {
                 let body = """
                 <script>
                 const d = navigator.userAgentData;
-                (d ? d.getHighEntropyValues(['uaFullVersion']) : Promise.resolve({})).then(h => {
+                (d ? d.getHighEntropyValues(['uaFullVersion', 'architecture']) : Promise.resolve({})).then(h => {
                   window.result = {header: \(json), ua: navigator.userAgent, vendor: navigator.vendor,
                     brands: d ? d.brands.map(b => b.brand).join(',') : 'none', platform: d ? d.platform : 'none',
-                    high: h.uaFullVersion || 'none'};
+                    high: h.uaFullVersion || 'none', arch: h.architecture || 'none'};
                 });
                 </script>
                 """

@@ -50,19 +50,50 @@ import WebKit
         guard let url = tab.currentURL, let host = url.host(), !overridden else { return }
         set(host, on: !isOn(url, profileID: tab.profileID, isPrivate: tab.isPrivate),
             profileID: tab.profileID, isPrivate: tab.isPrivate)
-        tab.existingWeb?.customUserAgent = userAgent(for: url, profileID: tab.profileID, isPrivate: tab.isPrivate)
         tab.reload()     // the navigation policy picks the new identity for the reload
     }
 
-    /// Called as a main-frame navigation is allowed. The web view's UA covers the page and
-    /// its subresources; the guarded per-navigation preference makes the main request's own
-    /// header match even across a process swap (the same SPI ExtensionUserAgent relies on).
-    static func apply(_ url: URL?, to web: WKWebView, preferences: WKWebpagePreferences, tab: Tab) {
-        let ua = userAgent(for: url, profileID: tab.profileID, isPrivate: tab.isPrivate)
-        if web.customUserAgent != ua { web.customUserAgent = ua }
+    /// Called as a main-frame navigation is allowed. The guarded per-navigation preference
+    /// (the same SPI ExtensionUserAgent relies on) gives the switched site's document Chrome's
+    /// identity, header included, even across a process swap; the web view itself keeps the
+    /// normal identity, so a navigation that never commits leaves nothing behind. Off the
+    /// switch nothing is pinned, exactly as before.
+    ///
+    /// Returns a request to load instead when the outgoing header disagrees: a server
+    /// redirect into or out of a switched host carries the first request's User-Agent. Only
+    /// for GET (a POST's body can't be replayed from here, so a POST redirect keeps the old
+    /// header) and not for back/forward (a fresh load would rewrite history). The retry
+    /// carries the right header, and `tab.actAsChromeRetry` stops a second one if WebKit
+    /// ignores it.
+    static func apply(_ action: WKNavigationAction, to web: WKWebView, preferences: WKWebpagePreferences,
+                      tab: Tab) -> URLRequest? {
+        let url = action.request.url
+        let switched = !overridden && isOn(url, profileID: tab.profileID, isPrivate: tab.isPrivate)
+        let ua = resolve(global: Settings.userAgent, siteOn: switched)
+        let sent = action.request.value(forHTTPHeaderField: "User-Agent")
+        let mismatch = sent != nil && sent != ua
+        if mismatch, (action.request.httpMethod ?? "GET") == "GET", action.navigationType != .backForward,
+           ["http", "https"].contains(url?.scheme?.lowercased()), tab.actAsChromeRetry != url {
+            tab.actAsChromeRetry = url
+            var request = action.request
+            request.setValue(ua, forHTTPHeaderField: "User-Agent")
+            return request
+        }
+        tab.actAsChromeRetry = nil
         let setter = NSSelectorFromString("_setCustomUserAgent:")
-        if preferences.responds(to: setter) { _ = preferences.perform(setter, with: ua) }
+        guard preferences.responds(to: setter) else {
+            if web.customUserAgent != ua { web.customUserAgent = ua }   // no per-document UA here
+            return nil
+        }
+        if switched || mismatch { _ = preferences.perform(setter, with: ua) }
+        return nil
     }
+
+    /// `getHighEntropyValues`' architecture: the machine's, not this build's (Rosetta).
+    static let architecture: String = {
+        var arm: Int32 = 0, size = MemoryLayout<Int32>.size
+        return sysctlbyname("hw.optional.arm64", &arm, &size, nil, 0) == 0 && arm == 1 ? "arm" : "x86"
+    }()
 
     /// Chrome's navigator, whenever the page's UA says Chrome: `vendor` and a minimal
     /// `userAgentData`. Keyed on the UA rather than a host list, so no page can read which
@@ -78,7 +109,7 @@ import WebKit
       const data = Object.freeze({
         brands: Object.freeze(brands.map(b => Object.freeze({...b}))), mobile: false, platform: 'macOS',
         getHighEntropyValues: hints => Promise.resolve(Object.assign(low(), {
-          architecture: 'arm', bitness: '64', model: '', platformVersion: '15.0.0', uaFullVersion: full,
+          architecture: '\#(architecture)', bitness: '64', model: '', platformVersion: '15.0.0', uaFullVersion: full,
           fullVersionList: brands.map(b => ({brand: b.brand, version: b.version === '8' ? '8.0.0.0' : full})),
           wow64: false})),
         toJSON: low,
