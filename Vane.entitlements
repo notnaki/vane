@@ -28,8 +28,15 @@
   <!-- Web Serial (WebSerial.swift): opening a /dev/cu.* node the user picked for a site.
        Measured with a probe signed with these entitlements: without this, open() fails
        with EPERM; with it, open, termios and the modem-line ioctls work. Listing devices
-       only reads the IOKit registry and needs no entitlement, so device.usb is not here. -->
+       only reads the IOKit registry and needs no entitlement. -->
   <key>com.apple.security.device.serial</key><true/>
+  <!-- WebHID (WebHID.swift): opening an HID interface the user picked for a site. Despite
+       the name this is the entitlement that lets the sandbox open IOHIDLibUserClient,
+       whatever the device's transport. Measured on macOS 27 with a probe signed with these
+       entitlements: without it IOHIDDeviceOpen fails with kIOReturnNotPermitted; with it
+       the open works. device.bluetooth alone does not unlock it. Listing devices and
+       reading report descriptors only reads the IOKit registry and needs no entitlement. -->
+  <key>com.apple.security.device.usb</key><true/>
 
   <!-- ⌘P on a page. -->
   <key>com.apple.security.print</key><true/>

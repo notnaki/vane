@@ -10,7 +10,7 @@ import SwiftUI
     let persistentAllowTitle: String
     private let symbol: String
     private var width: CGFloat = 236
-    /// What the bubble shows instead of the Allow question: the serial port chooser.
+    /// What the bubble shows instead of the Allow question: a device chooser (serial port or HID).
     private var content: ((@escaping (NSApplication.ModalResponse) -> Void) -> AnyView)?
     private var continuation: CheckedContinuation<NSApplication.ModalResponse, Never>?
     /// Cancelled before the bubble was up (during the wait for an auto-hidden bar).

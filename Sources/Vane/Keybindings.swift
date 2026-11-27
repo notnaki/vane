@@ -259,7 +259,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .addFilterList: "Add Filter List…"
         case .makeDefaultBrowser: "Make Vane the Default Browser"
         case .forgetCertificateExceptions: "Forget Certificate Exceptions…"
-        case .resetMediaPermissions: "Reset Camera & Microphone Permissions…"
+        case .resetMediaPermissions: "Reset Site Permissions…"
         case .installExtension: "Install Extension…"
         case .showWebInspector: "Show Web Inspector"
         case .showJavaScriptConsole: "Show JavaScript Console"

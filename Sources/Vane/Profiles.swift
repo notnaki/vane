@@ -713,6 +713,7 @@ struct Space: Identifiable, Codable, Equatable {
         CertificateTrust.forget(profile: id)
         ExternalApps.forgetAll(profileID: id)
         WebSerial.forgetAll(profileID: id)
+        WebHID.forgetAll(profileID: id)
         try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         if sandboxed { try? fm.removeItem(at: Self.faviconDir(for: id, in: directory)) }
@@ -784,6 +785,7 @@ struct Space: Identifiable, Codable, Equatable {
         CertificateTrust.forget(profile: id)
         ExternalApps.forgetAll(profileID: id)
         WebSerial.forgetAll(profileID: id)
+        WebHID.forgetAll(profileID: id)
         try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         if sandboxed { try? fm.removeItem(at: Self.faviconDir(for: id, in: directory)) }

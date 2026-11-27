@@ -73,6 +73,8 @@ struct SiteControlModel: Equatable, Sendable {
     var apps: [App] = []
     /// The serial ports this site may connect to, by the name the chooser showed. See WebSerial.swift.
     var serialPorts: [String] = []
+    /// The HID devices this site may connect to, by the name the chooser showed. See WebHID.swift.
+    var hidDevices: [String] = []
     var boosted = false
     var developer = false
     var actAsChrome = false
@@ -91,6 +93,8 @@ extension SiteControlModel {
         case app(Int)
         /// The index into `serialPorts`: one device picked in the serial port chooser.
         case serial(Int)
+        /// The index into `hidDevices`: one device picked in the HID device chooser.
+        case hid(Int)
     }
 
     /// What sits at the trailing edge of a row.
@@ -241,6 +245,10 @@ extension SiteControlModel {
             out.append(Row(id: .serial(i), title: "Serial Port: " + port, glyph: "cable.connector",
                            control: .toggle(true),
                            note: "This site can connect to this serial port. Turn off to forget it."))
+        for (i, device) in hidDevices.enumerated() {
+            out.append(Row(id: .hid(i), title: "HID Device: " + device, glyph: "gamecontroller",
+                           control: .toggle(true),
+                           note: "This site can connect to this device. Turn off to forget it."))
         }
         if scheme?.lowercased() == "http" || scheme?.lowercased() == "https" {
             out.append(Row(id: .boost, title: boosted ? "Edit Boost" : "Boost This Site", glyph: "paintbrush.pointed", control: .action))
@@ -317,6 +325,9 @@ extension SiteControlModel {
         for (i, port) in serialPorts.enumerated() {
             out.append(Setting(id: .serial(i), title: "Serial Port: " + port, value: "Allowed",
                                glyph: "cable.connector", on: true))
+        for (i, device) in hidDevices.enumerated() {
+            out.append(Setting(id: .hid(i), title: "HID Device: " + device, value: "Allowed",
+                               glyph: "gamecontroller.fill", on: true))
         }
         return out
     }
@@ -382,6 +393,7 @@ extension SiteControlModel {
             return App(scheme: scheme, name: ExternalApps.name(of: handler) ?? scheme)
         }
         serialPorts = WebSerial.grants(scope: SitePermissions.scope(for: tab)).map(\.name)
+        hidDevices = WebHID.grants(scope: SitePermissions.scope(for: tab)).map(\.name)
         if let origin = SiteBoosts.origin(url) { boosted = SiteBoosts.value(origin: origin, tab: tab) != SiteBoost() }
         developer = tab.developer
         actAsChrome = ActAsChrome.isOn(url, profileID: tab.profileID, isPrivate: tab.isPrivate)
@@ -452,6 +464,10 @@ extension SiteControlModel {
             // Indexed and re-read the way `forgetApp` is, so a stale row forgets nothing.
             let scope = SitePermissions.scope(for: tab), all = WebSerial.grants(scope: scope)
             if all.indices.contains(i) { WebSerial.forget(scope: scope, id: all[i].id) }
+        case .hid(let i):
+            // Indexed and re-read the way `forgetApp` is, so a stale row forgets nothing.
+            let scope = SitePermissions.scope(for: tab), all = WebHID.grants(scope: scope)
+            if all.indices.contains(i) { WebHID.forget(scope: scope, id: all[i].id) }
         case .clearData: clearSiteData(host: host, tab: tab)
         case .developer: DeveloperMode.toggle(tab)
         case .actAsChrome: ActAsChrome.toggle(tab)
@@ -714,6 +730,11 @@ extension SiteControlModel {
                     wired.rows.first { $0.id == .serial(0) }?.control == .toggle(true)
                         && wired.settings.first { $0.id == .serial(0) }?.title == "Serial Port: CP2102 (cu.usbserial-0001)"
                         && !m.rows.contains { $0.id == .serial(0) }))
+        wired.hidDevices = ["Stream Deck"]
+        out.append(("a granted HID device is a row that is on, and a setting that says Allowed",
+                    wired.rows.first { $0.id == .hid(0) }?.control == .toggle(true)
+                        && wired.settings.first { $0.id == .hid(0) }?.title == "HID Device: Stream Deck"
+                        && !m.rows.contains { $0.id == .hid(0) }))
         out.append(("a scheme nothing claims any more is still listed, so it can be removed",
                     { var orphan = opens
                       orphan.apps = [SiteControlModel.App(scheme: "zoommtg", name: "zoommtg")]
@@ -967,6 +988,7 @@ struct SiteControlPopover: View {
             ForEach(rows.filter { row in
                 if case .app = row.id { return true }
                 if case .serial = row.id { return true }
+                if case .hid = row.id { return true }
                 return shown.contains(row.id)
             }) { SiteControlRow(row: $0, tab: tab) }
         }

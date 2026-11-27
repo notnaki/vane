@@ -177,6 +177,20 @@ The site keeps access to that device until you forget it: turn off its **Serial 
 row in **Site Controls**. Private windows forget when the tab closes. Only the page in
 the tab can ask, not frames embedded in it, and only on HTTPS or `localhost`.
 
+### HID devices
+
+Sites that configure hardware over WebHID work in Vane: VIA and other QMK keyboard
+configurators, Stream Deck tools, and game-controller setup pages. Click the site's
+connect button, pick your device in the list under the address bar, and click
+**Connect**. The list updates as you plug things in.
+
+The site keeps access until you forget the device: turn off its **HID Device** row in
+**Site Controls**. Private windows forget when the tab closes. Only the page in the tab
+can ask, not embedded frames, and only on HTTPS or `localhost`. Security keys are never
+listed. A site never gets a keyboard's keystrokes or a mouse's movement. If a device is
+also a keyboard, macOS may ask to allow Vane **Input Monitoring**. If you say no, the
+site can't open that device.
+
 ## AI connections and feature routing
 
 AI features are off until you turn them on in onboarding or **Settings → Max**. Apple's

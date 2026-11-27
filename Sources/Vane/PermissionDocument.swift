@@ -77,6 +77,7 @@ extension Tab {
         ExternalApps.dismiss(for: self)
         WebSerial.endDocument(tabID: id, navigationStarted: navigationStarted)
         FileSystemAccess.endDocument(tabID: id, navigationStarted: navigationStarted)
+        WebHID.endDocument(tabID: id, navigationStarted: navigationStarted)
         permissionGeneration &+= 1
         SitePermissions.endDocument(tabID: id, preservingLocation: navigationStarted)
         existingWeb?.setCameraCaptureState(.none, completionHandler: nil)
