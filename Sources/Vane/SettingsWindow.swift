@@ -1727,6 +1727,7 @@ struct PrivacyPane: View {
     @State private var grants: [SitePermissions.Grant] = []
     @State private var httpExceptions: [String] = []
     @State private var hidGrants: [(scope: SitePermissions.Scope, grant: WebHID.Grant)] = []
+    @State private var serialGrants: [(scope: SitePermissions.Scope, grant: WebSerial.Grant)] = []
     @State private var clearing: Profile?
     @State private var managingData: Profile?
 
@@ -1763,8 +1764,8 @@ struct PrivacyPane: View {
 
             SettingsSection("Site Permissions") {
                 SettingsCard {
-                    if grants.isEmpty && hidGrants.isEmpty && httpExceptions.isEmpty {
-                        Footnote("No camera, microphone, location, or HID device decisions are saved, and no "
+                    if grants.isEmpty && hidGrants.isEmpty && serialGrants.isEmpty && httpExceptions.isEmpty {
+                        Footnote("No camera, microphone, location, notification, serial port or HID device decisions are saved, and no "
                                  + "site has been allowed to load without encryption.")
                     }
                     ForEach(grants) { grant in
@@ -1777,6 +1778,19 @@ struct PrivacyPane: View {
                             } label: { Image(systemName: "minus.circle") }
                                 .buttonStyle(.plain).foregroundStyle(.secondary)
                                 .accessibilityLabel("Forget \(grant.what.lowercased()) for \(grant.scope.origin)")
+                        }
+                    }
+                    ForEach(serialGrants, id: \.grant.id) { entry in
+                        SettingsRow(entry.scope.origin) {
+                            Text("Serial port: \(entry.grant.name)")
+                                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                            Button {
+                                WebSerial.forget(scope: entry.scope, id: entry.grant.id)
+                                SiteChanges.shared.bump()
+                                reload()
+                            } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .accessibilityLabel("Forget \(entry.grant.name) for \(entry.scope.origin)")
                         }
                     }
                     ForEach(hidGrants, id: \.grant.id) { entry in
@@ -1815,7 +1829,7 @@ struct PrivacyPane: View {
                                 reload()
                             }
                         }
-                        .disabled(grants.isEmpty && hidGrants.isEmpty)
+                        .disabled(grants.isEmpty && hidGrants.isEmpty && serialGrants.isEmpty)
                     }
                     SettingsRow("Website Boosts", icon: "paintbrush.fill", tint: .purple) {
                         Button("Reset Boosts…") {
@@ -1879,6 +1893,7 @@ struct PrivacyPane: View {
         grants = SitePermissions.all(profileID: profile.id)
         httpExceptions = HTTPSOnly.exceptions(profileID: profile.id)
         hidGrants = WebHID.all(profileID: profile.id)
+        serialGrants = WebSerial.all(profileID: profile.id)
     }
 }
 

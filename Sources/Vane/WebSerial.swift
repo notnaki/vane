@@ -401,6 +401,17 @@ import WebKit
         return grant
     }
 
+    /// Every saved grant in a profile, for Settings.
+    static func all(profileID: UUID) -> [(scope: Scope, grant: Grant)] {
+        let match = prefix + profileID.uuidString.lowercased() + "."
+        return defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix(match) }.sorted().flatMap { key -> [(scope: Scope, grant: Grant)] in
+            guard let data = Data(base64Encoded: String(key.dropFirst(match.count))),
+                  let origin = String(data: data, encoding: .utf8),
+                  let scope = Scope(url: URL(string: origin), profileID: profileID) else { return [] }
+            return grants(scope: scope).map { (scope, $0) }
+        }
+    }
+
     /// Takes the grant back and closes the port wherever this origin has it open.
     static func forget(scope: Scope?, id: String) {
         guard let scope else { return }
@@ -440,7 +451,7 @@ import WebKit
     nonisolated static func isSecure(_ scope: Scope) -> Bool {
         if scope.scheme == "https" { return true }
         let host = scope.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if host == "localhost" || host.hasSuffix(".localhost") { return true }
+        if host == "localhost" { return true }    // as WebKit: not *.localhost
         // inet_pton, not a resolver: a name is never looked up to decide this.
         var v4 = in_addr(), v6 = in6_addr()
         if inet_pton(AF_INET, host, &v4) == 1 { return v4.s_addr & 0xff == 127 }    // network order: first octet

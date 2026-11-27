@@ -202,12 +202,12 @@ final class SerialPty: @unchecked Sendable {
 
     func testOnlySecureOriginsMayAsk() throws {
         func scope(_ url: String) throws -> WebSerial.Scope { try XCTUnwrap(WebSerial.Scope(url: URL(string: url), profileID: profile)) }
-        for url in ["https://flasher.example", "http://localhost:8080", "http://app.localhost", "http://127.0.0.1:3000",
+        for url in ["https://flasher.example", "http://localhost:8080", "http://127.0.0.1:3000",
                     "http://127.8.8.8", "http://[::1]:8000"] {
             XCTAssertTrue(WebSerial.isSecure(try scope(url)), url)
         }
         // 0.0.0.0 reaches this Mac too, but it is no loopback address and no secure context.
-        for url in ["http://flasher.example", "http://127.evil.example", "http://localhost.evil.example", "http://192.168.1.4",
+        for url in ["http://flasher.example", "http://127.evil.example", "http://localhost.evil.example", "http://app.localhost", "http://192.168.1.4",
                     "http://0.0.0.0:8080"] {
             XCTAssertFalse(WebSerial.isSecure(try scope(url)), url)
         }

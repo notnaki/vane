@@ -144,8 +144,10 @@ is checked again natively:
 
 Grants in a regular window are saved until forgotten. A private tab's grants live in
 memory and go with the tab. Backups leave grants out, like other security decisions.
-Forget one from **Site Controls** (the **Serial Port** row), with `port.forget()`, or by
-deleting the profile; an open port closes at once.
+Forget one from **Site Controls** (the **Serial Port** row), from **Settings → Privacy →
+Site Permissions** (one row per port, or **Reset Permissions…** for the profile; **Reset
+Site Permissions…** in the menu does every profile), with `port.forget()`, or by deleting
+the profile; an open port closes at once.
 
 Ports close when the document is replaced, the tab closes, or its WebContent process
 ends. A tab with an open port is not suspended, whether for being idle or to free memory
@@ -292,7 +294,7 @@ memory and go with the tab. Backups leave grants out. Forget one from **Site Con
 device, or **Reset Permissions…** for the profile; **Reset Site Permissions…** in the
 menu does every profile), with `device.forget()`, or by deleting the profile; an open
 device closes at once. Devices close when the document is replaced, the tab closes, or
-the device is unplugged (`disconnect` fires, and `connect` when it comes back). A page
+the device is unplugged (`disconnect` fires, and `connect` when it comes back, if it has a serial number). A page
 restored from the back/forward cache finds its devices closed and gets new
 `HIDDevice` objects from `getDevices()`. A tab
 with an open device is not suspended. Up to 1,024 input reports wait for a page that is

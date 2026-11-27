@@ -400,7 +400,8 @@ enum FileAccessDisk {
     /// The few kinds that do something on a double-click with no execute bit and no
     /// Gatekeeper prompt. A site may not create a file so named; anything else (`deploy.sh`
     /// in a web IDE) is fine, since new files aren't executable and commits are quarantined.
-    nonisolated static let followable: Set<String> = ["terminal", "fileloc", "inetloc", "webloc", "url"]
+    nonisolated static let followable: Set<String> = ["terminal", "fileloc", "inetloc", "webloc", "url",
+                                                      "afploc", "ftploc", "mailloc", "newsloc", "telnetloc"]
 
     /// `suggestedName` made safe: no leading dots (a hidden file the user can't see being
     /// made), and a launchable kind gets `.download` after it, as Chrome does for downloads.

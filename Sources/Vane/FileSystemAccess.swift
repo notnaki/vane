@@ -39,6 +39,8 @@ import WebKit
     for (const type of ['keydown', 'pointerdown', 'touchend']) {    // once per physical click or key
       addEventListener(type, e => { if (e.isTrusted) \(gestureUsed) = false; }, true);
     }
+    // VoiceOver and Voice Control press with a bare click: no pointer events, detail 0.
+    addEventListener('click', e => { if (e.isTrusted && e.detail === 0 && !e.pointerType) \(gestureUsed) = false; }, true);
     addEventListener('\(gestureEvent)', () => {
       if (\(gestureUsed) || !navigator.userActivation.isActive) return;
       \(gestureUsed) = true;
@@ -444,7 +446,7 @@ import WebKit
     nonisolated static func isSecure(_ scope: Scope) -> Bool {
         if scope.scheme == "https" { return true }
         let host = scope.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if host == "localhost" || host.hasSuffix(".localhost") || host == "::1" { return true }
+        if host == "localhost" || host == "::1" { return true }    // as WebKit: not *.localhost
         var v4 = in_addr()
         return inet_pton(AF_INET, host, &v4) == 1 && v4.s_addr & 0xff == 127    // network order: first octet
     }
