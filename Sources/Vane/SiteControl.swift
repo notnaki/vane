@@ -1270,7 +1270,8 @@ private struct SiteControlRow: View {
                 .frame(width: Look.rowIcon, height: Look.rowIcon)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Look.captionGap) {
-                Text(row.title).font(Look.rowTitle).lineLimit(1)
+                // Shrinks a little before truncating: "Notifications" beside a picker.
+                Text(row.title).font(Look.rowTitle).lineLimit(1).minimumScaleFactor(0.85)
                 if let note = inlineNote {
                     Text(note).font(Look.caption).foregroundStyle(Look.inkQuiet)
                         .lineLimit(3).fixedSize(horizontal: false, vertical: true)
