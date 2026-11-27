@@ -21,6 +21,8 @@ struct RootView: View {
     private var space: SpaceRow? { library.space(browser.spaceID) }
     /// How far the keyboard reaches above the bottom safe area.
     @State private var keyboard: CGFloat = 0
+    /// The keyboard on screen is for a field in the page, not the search sheet.
+    @State private var pageKeyboard = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -69,7 +71,7 @@ struct RootView: View {
             BottomBar(space: space, menu: $menu, openSettings: { settings = true }, openMac: { mac = true })
                 .modifier(OnWash(space: space))
                 // Out of the way while typing into a page; the keyboard's own bar takes its place.
-                .opacity(keyboard > 0 && browser.editing == nil ? 0 : 1)
+                .opacity(pageKeyboard ? 0 : 1)
             if browser.editing != nil {
                 // The page or Space stays in view above the sheet, dimmed; a tap there cancels.
                 Color.black.opacity(browser.selected == nil ? 0.08 : 0.3).ignoresSafeArea()
@@ -84,11 +86,17 @@ struct RootView: View {
         // the page; WebKit scrolls the focused field into view itself. Only the search sheet rides it.
         .ignoresSafeArea(.keyboard)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+            guard let screen = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
                   let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else { return }
-            withAnimation(.smooth(duration: 0.25)) {
-                keyboard = max(0, window.bounds.maxY - frame.minY - window.safeAreaInsets.bottom)
-            }
+            // The frame is in screen space; an iPad window in Stage Manager or Split View isn't at its origin.
+            let frame = window.convert(screen, from: window.screen.coordinateSpace)
+            let cover = window.bounds.intersection(frame)
+            // Only a keyboard along the bottom counts (iOS 27 insets its bar a little); a floating iPad one covers nothing here.
+            let docked = !cover.isNull && cover.maxY >= window.bounds.maxY - 48 && cover.width >= window.bounds.width * 0.8
+            let height = docked ? max(0, cover.height - window.safeAreaInsets.bottom) : 0
+            // A keyboard that comes up while no search sheet is open belongs to the page.
+            pageKeyboard = height > 0 && (browser.editing == nil || pageKeyboard)
+            withAnimation(.smooth(duration: 0.25)) { keyboard = height }
         }
         .animation(.smooth(duration: 0.32), value: browser.editing)
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
@@ -672,7 +680,7 @@ struct TabCard: View {
             switch pan.state {
             case .began, .changed: lift = min(0, dy)
             default:
-                if lift < -120 || (lift < -20 && pan.velocity(in: pan.view).y < -600) {
+                if pan.state == .ended, lift < -120 || (lift < -20 && pan.velocity(in: pan.view).y < -600) {
                     withAnimation(.easeOut(duration: 0.2)) { lift = -height } completion: { close() }
                 } else {
                     withAnimation(.spring(duration: 0.35, bounce: 0.3)) { lift = 0 }

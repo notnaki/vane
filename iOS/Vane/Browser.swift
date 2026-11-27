@@ -37,7 +37,7 @@ import WebKit
     /// The colours actually drawn along the page's top and bottom edges, so the pull strip and
     /// the strip under the bar continue the page exactly.
     /// Also paints the overscroll and the status-bar area, so the top reads as one surface with the page's top element.
-    var pageColor: UIColor? { didSet { if let pageColor { view?.underPageBackgroundColor = pageColor; view?.backgroundColor = pageColor } } }
+    var pageColor: UIColor? { didSet { if let pageColor { view?.underPageBackgroundColor = pageColor } } }
     private var lastOffset: CGFloat = 0
     private var view: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -66,7 +66,8 @@ import WebKit
         web.isFindInteractionEnabled = true
         web.allowsLinkPreview = true
         web.uiDelegate = PopupOpener.shared
-        // Until the site paints, the Space's colours show through instead of a white flash.
+        // Until the first page has loaded, the Space's colours show through instead of a white
+        // flash; then it's opaque again, so pages with no background of their own stay readable.
         web.isOpaque = false
         web.backgroundColor = .clear
         // Pull down at the top of a page for new tab / reload / close, as in Chrome.
@@ -84,7 +85,7 @@ import WebKit
             web.observe(\.canGoBack) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoBack = web.canGoBack } },
             web.observe(\.canGoForward) { [weak self] web, _ in MainActor.assumeIsolated { self?.canGoForward = web.canGoForward } },
             web.scrollView.observe(\.contentOffset) { [weak self] scroll, _ in MainActor.assumeIsolated { self?.scrolled(scroll) } },
-            web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { self?.onLoaded(); self?.sampleEdges(); self?.sampleSoon(after: 1.2) } } },
+            web.observe(\.isLoading) { [weak self] web, _ in MainActor.assumeIsolated { if !web.isLoading { web.isOpaque = true; self?.onLoaded(); self?.sampleEdges(); self?.sampleSoon(after: 1.2) } } },
         ]
         web.load(URLRequest(url: url))
         view = web
@@ -108,7 +109,9 @@ import WebKit
             let dx = abs(moved.0) >= abs(moved.1) ? moved.0 : moved.1
             // Pages that switch off the bounce (overscroll-behavior: none, as Wikipedia does) never
             // move past their top, so the finger's own travel down counts too, damped like a bounce.
-            let pulled = max(depth, (down - start.down) * 0.5)
+            // ponytail: a web app scrolling an inner element (document pinned at the top) also counts;
+            // if that misfires, count travel only when the page's own scroll has nowhere to go.
+            let pulled = depth > 12 ? depth : max(depth, (down - start.down) * 0.5)
             guard pulled > 0 else { if pull != nil { pull = nil }; return }
             let next = Pull(progress: min(pulled / 100, 1), choice: dx < -24 ? .newTab : dx > 24 ? .close : .reload, dx: dx, depth: pulled)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
@@ -117,7 +120,7 @@ import WebKit
             pull = next
         default:
             pullStart = nil
-            if let pull, pull.progress >= 1 {
+            if pan.state == .ended, let pull, pull.progress >= 1 {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 onPull(pull.choice)
             }
