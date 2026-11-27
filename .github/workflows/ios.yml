@@ -1,0 +1,61 @@
+name: ios
+
+# Only the iOS app, the Mac sync files it compiles, and its icon. Mac-only changes never
+# start this; iOS-only changes skip the Mac app jobs (scripts/ci-change-scope.py).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'iOS/**'
+      - 'Sources/Vane/ICloudModel.swift'
+      - 'Sources/Vane/ICloudJournal.swift'
+      - 'Sources/Vane/ICloudTransport.swift'
+      - 'Sources/Vane/ICloudRemoval.swift'
+      - 'Sources/Vane/ICloudApplyContext.swift'
+      - 'AppIcons/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'iOS/**'
+      - 'Sources/Vane/ICloudModel.swift'
+      - 'Sources/Vane/ICloudJournal.swift'
+      - 'Sources/Vane/ICloudTransport.swift'
+      - 'Sources/Vane/ICloudRemoval.swift'
+      - 'Sources/Vane/ICloudApplyContext.swift'
+      - 'AppIcons/**'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ios:
+    name: iOS build and tests
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The iOS 27.1 SDK is the first with the iPhone Duo layout; build with the newest Xcode.
+      - name: Select Xcode 27.1 or later
+        run: |
+          set -euo pipefail
+          app=$(ls -d /Applications/Xcode_27.[1-9]*.app 2>/dev/null | sort -V | tail -1 || true)
+          [ -n "$app" ] || { echo '::error::This runner has no Xcode 27.1 or later.'; ls -d /Applications/Xcode*.app; exit 1; }
+          echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version
+
+      - name: Generate project
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          cd iOS && xcodegen
+
+      - name: Build and test on a simulator
+        run: |
+          set -euo pipefail
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for r, ds in json.load(sys.stdin)["devices"].items() if "iOS" in r for d in ds if d["name"].startswith("iPhone")))')
+          xcodebuild -project iOS/Vane.xcodeproj -scheme Vane -destination "id=$device" CODE_SIGNING_ALLOWED=NO test

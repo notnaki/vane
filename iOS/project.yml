@@ -1,0 +1,103 @@
+# Generate Vane.xcodeproj with `xcodegen` in this folder. The project file is not committed.
+name: Vane
+options:
+  bundleIdPrefix: io.github.notnaki
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: T7X84HN3W3
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "3"
+targets:
+  Vane:
+    type: application
+    platform: iOS
+    sources:
+      - Vane
+      # The Mac app's own sync engine, compiled unchanged, so both apps speak the same format.
+      - path: ../Sources/Vane/ICloudModel.swift
+      - path: ../Sources/Vane/ICloudJournal.swift
+      - path: ../Sources/Vane/ICloudTransport.swift
+      - path: ../Sources/Vane/ICloudRemoval.swift
+      - path: ../Sources/Vane/ICloudApplyContext.swift
+      - path: ../AppIcons/AppIcon.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Candy.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-FlutedGlass.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-FlutedGlassDark.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Galaxy.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Luminous.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Neon.icon
+        buildPhase: resources
+      - path: ../AppIcons/AppIcon-Schoolbook.icon
+        buildPhase: resources
+    entitlements:
+      path: Vane/Vane.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.io.github.notnaki.vane]
+        com.apple.developer.icloud-services: [CloudKit]
+        aps-environment: development
+        keychain-access-groups: ["$(AppIdentifierPrefix)io.github.notnaki.vane.iphone"]
+        # Default browser. Uncomment once Apple grants the entitlement to this App ID, and set
+        # Look.canBeDefaultBrowser to true;
+        # signing fails while the profile doesn't include it.
+        # com.apple.developer.web-browser: true
+    info:
+      path: Vane/Info.plist
+      properties:
+        CFBundleDisplayName: Vane
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        # Required to be offered as the default browser.
+        CFBundleURLTypes:
+          - CFBundleURLName: Web
+            CFBundleURLSchemes: [http, https]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown,
+           UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # Websites ask through WebKit; iOS shows these when a page requests access.
+        NSCameraUsageDescription: A website you're visiting wants to use your camera.
+        NSMicrophoneUsageDescription: A website you're visiting wants to use your microphone.
+        NSLocationWhenInUseUsageDescription: A website you're visiting wants to know your location.
+        NSPhotoLibraryAddUsageDescription: Vane saves images you choose to your photo library.
+        NSFaceIDUsageDescription: Websites can use Face ID to sign you in with a passkey.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.notnaki.vane.iphone
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The Mac's alternate icons, chosen in Settings → App Icon.
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIcon-Candy AppIcon-FlutedGlass AppIcon-FlutedGlassDark AppIcon-Galaxy AppIcon-Luminous AppIcon-Neon AppIcon-Schoolbook
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+  VaneTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: Vane
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.notnaki.vane.iphone.tests
+schemes:
+  Vane:
+    build:
+      targets:
+        Vane: all
+    test:
+      targets: [VaneTests]

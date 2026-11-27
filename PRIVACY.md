@@ -2,7 +2,7 @@
 
 Effective and last updated: **26 November 2026**
 
-This policy covers the Vane macOS browser and its [project website](https://vane.so/), maintained by [notnaki](https://github.com/notnaki). It describes the current implementation in this repository. Older releases and third-party builds may behave differently.
+This policy covers the Vane macOS browser, the Vane iOS app, and its [project website](https://vane.so/), maintained by [notnaki](https://github.com/notnaki). It describes the current implementation in this repository. Older releases and third-party builds may behave differently.
 
 Vane stores your browser library on your Mac. It has no Vane account or Vane-hosted browsing-history service. Explicitly provisioned builds offer optional iCloud sync through Apple's services; sync starts off. Ordinary local builds keep sync unavailable. Vane does not include app analytics or automatic crash-report uploads. Browsing and the features below still make network requests; local storage does not mean that nothing leaves your device.
 
@@ -25,6 +25,12 @@ CloudKit records use encrypted fields and assets; this does not promise uncondit
 Disabling sync keeps existing local and cloud copies. Removing selected iCloud data is a separate confirmed action that preserves local copies and pauses devices when they observe its reset marker. Offline devices can take time to observe changes. Apple controls account availability, service retention and propagation. An Apple Account change pauses Vane sync until you deliberately approve merging the local library with the new account.
 
 Distributed builds require matching provisioning and a production schema. Signed one-Mac development checks cover account access, encrypted data, assets, queries and local synchronizable Keychain operations. Cross-Mac convergence and Keychain propagation remain unverified. See [provisioning and validation requirements](docs/ICLOUD-PROVISIONING.md).
+
+## Vane for iPhone and iPad
+
+The iOS app keeps its tabs, history, Spaces, favourites and pinned tabs on the device. It has no account, analytics, advertising or tracking, and the developer collects no data from it. Searches go to the search engine you choose in Settings; pages you open load directly from their websites through Apple's WebKit. Settings → Clear History and Website Data removes history, cookies and website storage from the device.
+
+Optional iCloud sync starts off. When you turn it on, profiles, Spaces, favourites, pinned tabs and a list of this device's open tabs (URLs and titles) are exchanged with Vane on your other devices through your Apple Account's private CloudKit database, with the same encrypted fields described above. Passwords, cookies, history and website data from the iOS app do not enter sync. Turning sync off keeps local and cloud copies.
 
 ## Browsing, searches, and website requests
 
