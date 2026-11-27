@@ -961,11 +961,18 @@ private struct SettingItem: View {
         }
     }
 
+    /// The glyph on an "on" disc: the ink's opposite, so it reads on the dark disc in light
+    /// mode as well as the light one in dark mode.
+    private static let onGlyph = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 0, alpha: 0.75) : NSColor(white: 1, alpha: 0.9)
+    })
+
     var body: some View {
         Button(action: flip) {
             HStack(spacing: Look.rowSpacing) {
                 Image(systemName: setting.glyph).font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(setting.on ? Color.black.opacity(0.75) : Look.inkPrimary)
+                    .foregroundStyle(setting.on ? Self.onGlyph : Look.inkPrimary)
                     .frame(width: Look.siteDisc, height: Look.siteDisc)
                     .background(setting.on ? Look.ink(0.9) : Look.ink(0.16), in: .circle)
                 VStack(alignment: .leading, spacing: 0) {
