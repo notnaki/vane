@@ -197,6 +197,11 @@ you quit, with their Back/Forward history.
 Downloads can be paused, resumed, or retried where the server allows. See
 [download reliability](DOWNLOAD-RELIABILITY.md).
 
+Sites that open and save files in place work: vscode.dev **Open Folder**, Excalidraw,
+Photopea, and other web editors. The site asks with a normal Open or Save panel, and asks
+again before it edits a file you opened or a folder. Access lasts until the tab reloads,
+navigates or closes. See [files and folders](SITE-PERMISSIONS.md#files-and-folders).
+
 ## Picture in Picture and media
 
 Press <kbd>⌥⌘P</kbd> to pop a video out. The floating player can be moved and resized and

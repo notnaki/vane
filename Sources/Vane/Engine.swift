@@ -890,6 +890,7 @@ struct TitleReveal: Equatable, Sendable {
         }
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
+        FileSystemAccess.install(on: c)
         c.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
@@ -941,6 +942,7 @@ struct TitleReveal: Equatable, Sendable {
         web.configuration.userContentController.add(draftProtection, contentWorld: DraftProtection.world, name: DraftProtection.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: ChromeWebStorePage.world, name: ChromeWebStorePage.messageName)
+        FileSystemAccess.attach(self, to: web)
         NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
             linkView.navigationOwner = self
@@ -1406,6 +1408,7 @@ struct TitleReveal: Equatable, Sendable {
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: SiteBoostScripts.messageName, contentWorld: SiteBoostScripts.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: ChromeWebStorePage.messageName, contentWorld: ChromeWebStorePage.world)
+        FileSystemAccess.detach(from: old)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: DraftProtection.messageName, contentWorld: DraftProtection.world)
         old.uiDelegate = nil
@@ -1477,7 +1480,7 @@ struct TitleReveal: Equatable, Sendable {
         easelSession?.liveItems.removeAll()
         easelObservation = nil
         vanePageObservation = nil
-        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
+        if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id); FileSystemAccess.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
         if isPrivate { Self.clearPrivateHTTPSStateIfUnused() }
@@ -4133,7 +4136,7 @@ struct Stash {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
-            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id) }
+            if isPrivate { SitePermissions.forgetPrivate(tabID: id); ExternalApps.forgetPrivate(tabID: id); FileSystemAccess.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
                                         isPrivate: isPrivate) { ClosedTabs.push(tab) }
             SharedTabs.remove(id, from: self)

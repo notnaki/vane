@@ -26,6 +26,7 @@ its pending app request. Restoring a backup requires fresh security consent; see
 | Camera and microphone | `WKUIDelegate` media permission request; `WKWebView.cameraCaptureState`, `microphoneCaptureState`, and their setters | Allow Once, saved Allow/Block, private-tab answers, Ask/reset, and stopping the revoked device with `.none`. State/setters cover the whole web view, so revoking one frame’s camera can also stop another frame’s camera. The untouched device continues. |
 | Location | WebKit compatibility geolocation delegate on macOS 26; public `WKUIDelegate` request on macOS 27 | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
 | Pop-ups | `WKUIDelegate` `createWebViewWith`, with tabs' `javaScriptCanOpenWindowsAutomatically` on so popups with no gesture arrive there | A popup the user's click or key opened always opens. For any other popup the main document's answer decides: Ask (the default) blocks it and shows a toast whose Open loads its URL beside the page, without `window.opener`; Allow opens it like a clicked one; Block drops it with no toast. A popup with no URL offers Allow instead. Never prompted. If WebKit's gesture accessor goes away, WebKit blocks these popups again itself, with no toast. |
+| Files and folders | None in WebKit for the user's own files (it has the handle classes only for the origin private file system). Vane injects `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker`; see [Files and folders](#files-and-folders) | Picking is the grant. Edit access to an opened file or a folder asks again in the permission bubble. Lasts for the document only; nothing is saved. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
 Location decisions and the Location row are available on the minimum macOS 26 runtime,
@@ -109,12 +110,74 @@ closure uses Vane’s existing page teardown; shared tabs retained by another wi
 keep their owning document rather than destroying it just because a snapshot window
 closed. Display capture and location document cleanup remain WebKit’s responsibility.
 
+## Files and folders
+
+System WebKit has `FileSystemHandle`, `FileSystemFileHandle`, `FileSystemDirectoryHandle`
+and `FileSystemWritableFileStream`, but only for the origin private file system. Vane adds
+the three pickers without patching WebKit: a page script makes handles whose prototypes
+are WebKit's own (so `instanceof` and `String(handle)` match Chrome), wraps those
+prototypes' methods so they serve both kinds, and forwards each call to a native bridge.
+WebKit cannot create a real platform handle for a path, so these are shim objects with
+WebKit's prototype rather than WebKit-made objects. File I/O runs off the main thread.
+
+What works: `kind`, `name`, `isSameEntry`, `queryPermission`, `requestPermission`,
+`getFile()` (a real `File`), `createWritable()` (`write`, `seek`, `truncate`, `close`,
+`abort`, and the `{type}` commands), `entries()`/`keys()`/`values()`/`for await`,
+`getFileHandle`/`getDirectoryHandle` with `create`, `removeEntry` with `recursive`, and
+`resolve()`. Picker options: `types`, `excludeAcceptAllOption`, `multiple`,
+`suggestedName`, `startIn` (a well-known folder or a handle), `id` (remembers the last
+folder for this run of the app), and `mode`.
+
+The page script is trusted with nothing. Every message is checked again natively:
+
+- **Who.** The main frame only, in a secure context (HTTPS, or HTTP to `localhost` or a
+  loopback address). Frames get no pickers. Opaque and `file:` origins get nothing.
+- **When.** A picker needs a user gesture, confirmed from a separate content world as
+  for Web Serial; a request posted straight to the bridge without one is refused. One
+  picker per tab at a time, as a sheet on the tab's window, only for the page on screen
+  and only when the origin asking is the one in the address bar. `requestPermission`
+  needs a gesture too.
+- **What.** The page holds an opaque token per pick and names, never paths. Every
+  operation resolves the entry again with `realpath` and refuses anything that lands
+  outside the picked file or folder: no `/`, `.` or `..` in names, links that lead out
+  are not listed and can't be opened, and a folder that was moved or replaced by a link
+  is gone. Removing a link removes the link. The panel refuses Chromium's blocked
+  locations with "contains system files": `/`, the home folder itself, Desktop,
+  Documents and Downloads themselves (their contents are fine), `~/Library` (except
+  `CloudStorage`, `Containers` and iCloud Drive), `~/.ssh`, `~/.gnupg`, system folders
+  (`/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/private`
+  apart from temporary folders), Vane itself and its own data.
+- **How much.** Opening grants read. Saving grants read and write. A folder picked with
+  `mode: 'readwrite'`, or a later `requestPermission({ mode: 'readwrite' })`, asks in
+  the permission bubble ("Allow site to edit files in “name”?"). Return and Escape mean
+  Not Now.
+
+Writes go to a copy (macOS's item-replacement folder on the same volume, or a
+`.crswap` file beside the target when that is refused) and replace the file on
+`close()`, keeping its permissions. Abort, an error, or the page going away leaves the
+file as it was. Written files are quarantined like downloads. Files are read and
+written in 4 MiB messages.
+
+Grants last for the document: a reload, navigation or closed tab ends them, and a
+private tab's picks go when it closes. Nothing is saved to disk. A handle stored in
+IndexedDB comes back as a handle in the same run of the app and can call
+`requestPermission()` again, which is how vscode.dev reopens a folder after it reloads.
+After Vane quits, an old handle reports `NotFoundError`; pick the folder again.
+
+Limits: no handles from drag and drop (`getAsFileSystemHandle`); `move()`, `remove()`
+and sync access handles are not supported on picked files; a handle survives a
+structured clone only as the value itself or in an array read from IndexedDB, so
+`postMessage` to a worker or nested in other objects gives a plain object; `types`
+filter the open panel only with `excludeAcceptAllOption` (there is no type menu);
+`getFile()` reads the whole file into memory; picks are not listed in Site Controls.
+
 ## Validation and remaining platform coverage
 
 Run the focused fixtures on a logged-in macOS desktop:
 
 ```sh
 swift test --filter 'SitePermissionTests|SitePermissionWebTests|SharedPresentationTests|LifecycleEfficiencyTests'
+swift test --filter 'FileSystemAccessDiskTests|FileSystemAccessWebKitTests'
 ./.build/debug/vane selfcheck --pure
 python3 scripts/check-permission-display.py
 ```
