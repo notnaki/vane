@@ -47,8 +47,8 @@ on **Settings → Links → Auto-hide toolbar in Little Vane and Peek**.
 Click the Site Controls button in the address pill for quick actions on the current site:
 **Share**, **Boost**, **Capture**, and **Reader**, plus a tile for each installed
 extension (click a dimmed tile to turn it on). Below, a short **Settings** list shows only
-what this site has changed: permissions you answered, zoom, ad blocking, translation,
-apps it may open, and Developer Mode. Click a row to flip it.
+what this site has changed: permissions you answered (including Notifications), zoom, ad blocking, translation,
+apps it may open, serial ports and HID devices it may use, and Developer Mode. Click a row to flip it.
 
 **⋯ → Site Settings…** lists every permission and site option. The **⋯** menu also has
 **Clear Site Data…**, **Translate Page**, extension management, and filter lists. Right-
@@ -216,6 +216,11 @@ you quit, with their Back/Forward history.
 
 Downloads can be paused, resumed, or retried where the server allows. See
 [download reliability](DOWNLOAD-RELIABILITY.md).
+
+Sites that open and save files in place work: vscode.dev **Open Folder**, Excalidraw,
+Photopea, and other web editors. The site asks with a normal Open or Save panel, and asks
+again before it edits a file you opened or a folder. Access lasts until the tab reloads,
+navigates or closes. See [files and folders](SITE-PERMISSIONS.md#files-and-folders).
 
 ## Picture in Picture and media
 

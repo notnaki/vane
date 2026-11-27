@@ -188,3 +188,39 @@ extension BlockerWebKitTests {
         await withCheckedContinuation { continuation in Blocker.refresh(completion: { continuation.resume() }) }
     }
 }
+
+extension BlockerWebKitTests {
+    /// CI: the scriptlet script runs at document start in the page world, so the page's
+    /// first inline script already sees the constant; a site exception skips it entirely.
+    func testScriptletsRunBeforeTheFirstInlineScriptAndRespectSiteExceptions() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let table = Blocker.convert("scriptlet.example##+js(set, vaneFlag, true)\nscriptlet.example##+js(rc, ad, #box)\n"
+            + "other.example##+js(set, vaneOther, 1)").scriptlets
+        let html = "<html><head><script>window.seen = [window.vaneFlag === true, window.vaneOther === undefined];</script></head>"
+            + "<body><div id='box' class='ad keep'></div></body></html>"
+        for (excepted, expected) in [(false, "true,true,keep"), (true, "false,true,ad keep")] {
+            let source = try XCTUnwrap(Scriptlets.source(table: table, siteExceptions: excepted ? ["scriptlet.example"] : []))
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .nonPersistent()
+            configuration.userContentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart,
+                                                                           forMainFrameOnly: false, in: .page))
+            let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: configuration)
+            let delegate = BlockerNavigationFixture()
+            web.navigationDelegate = delegate
+            defer { web.stopLoading(); web.navigationDelegate = nil }
+            web.loadHTMLString(html, baseURL: URL(string: "https://scriptlet.example/")!)
+            let deadline = Date().addingTimeInterval(10)
+            var result: String?
+            while Date() < deadline {
+                if delegate.finished {
+                    result = try await web.evaluateJavaScript("[...seen, document.getElementById('box').className].join()") as? String
+                    if result == expected { break }
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertTrue(delegate.finished, "excepted \(excepted)")
+            XCTAssertEqual(result, expected, "excepted \(excepted)")
+        }
+    }
+}

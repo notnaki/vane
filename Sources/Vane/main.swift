@@ -78,6 +78,7 @@ if args.first == "import" {
     // Remove private overrides written by earlier versions before opening any window.
     TidyTitles.forget(Profile.incognito.id)
     DeveloperMode.clearPrivateState()
+    WebNotifications.clearAtLaunch()
     FirstLaunch.prepare()
     await Suspension.SpaceState.prepare(profiles: ProfileManager.shared.profiles.map(\.id), in: Store.directory)
     await SiteBoosts.prepare(profiles: ProfileManager.shared.profiles.map(\.id))

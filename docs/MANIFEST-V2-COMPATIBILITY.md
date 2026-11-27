@@ -76,7 +76,8 @@ No rule is substituted for an unrepresentable operation.
 The manager reports active supported/unsupported counts, unsupported reasons,
 and bridge failures. Dynamic request decisions, redirects, header changes, CSP,
 HTML filtering and arbitrary regex filters remain unsupported. Cosmetics and
-scriptlets remain the extension's responsibility; the adapter does
+scriptlets remain the extension's responsibility (the built-in blocker runs its own
+scriptlets separately); the adapter does
 not establish that they work on every site. This is partial uBlock compatibility,
 not full uBlock Origin parity. MV3 blockers such as uBlock Origin Lite keep their
 native `declarativeNetRequest` path and do not use this adapter.

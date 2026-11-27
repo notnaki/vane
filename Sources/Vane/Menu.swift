@@ -355,9 +355,14 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         },
         item(.resetMediaPermissions) {
             let a = NSAlert()
-            a.messageText = "Forget camera and microphone permissions for every site?"
+            a.messageText = "Forget camera, microphone, location, notification, serial port and HID device permissions for every site?"
             a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { SitePermissions.resetAll() }
+            if a.runModal() == .alertFirstButtonReturn {
+                SitePermissions.resetAll()
+                WebHID.forgetAll()
+                WebSerial.forgetAll()
+                SiteChanges.shared.bump()
+            }
         },
     ]
 }
