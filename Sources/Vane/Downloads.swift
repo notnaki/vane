@@ -907,6 +907,9 @@ import Darwin
         // download over: with `await`, a tiny data: download could run on without one.
         return try await withCheckedThrowingContinuation { done in
             web.startDownload(using: request) { [self] download in
+                // Forgotten (profile deleted) while WebKit started it: attach would cancel it
+                // without a delegate, and the extension's promise would never settle.
+                guard !invalidated else { download.cancel { _ in }; done.resume(throwing: ExtensionHost.Failure("Downloads are unavailable.")); return }
                 extensionRequests[ObjectIdentifier(download)] = ExtensionRequest(path: path, overwrite: overwrite, by: by) { done.resume(with: $0) }
                 attach(download, alwaysAsk: saveAs, suggestedFilename: path?.last, from: web, in: window)
             }
