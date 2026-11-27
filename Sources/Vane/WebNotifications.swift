@@ -311,7 +311,7 @@ import WebKit
                         latest[identifier] = nil
                         // The tab closed, the page went, the answer changed or the entry was evicted
                         // (untracked, it could outlive the tab) while the icon loaded.
-                        guard shown[tabID]?[key] == identifier, WebNotifications.tab(tabID) != nil, tab.existingWeb === web,
+                        guard shown[tabID]?[key] == identifier, !tab.tornDown, tab.existingWeb === web,
                               tab.permissionGeneration == generation, answer() == true,
                               await WebNotifications.post(identifier, content) else {
                             if shown[tabID]?[key] == identifier { shown[tabID]?[key] = nil }
