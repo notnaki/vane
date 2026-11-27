@@ -342,7 +342,8 @@ import WebKit
               if (declared.has('notifications') && notifications && typeof notifications.create !== 'function') {
                 const listeners = {clicked: new Set(), closed: new Set(), buttonClicked: new Set()};
                 const worker = typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope;
-                let polling = false, again = false;
+                // This worker's name: the host hands a click again to a new worker if the old went mid-poll.
+                let polling = false, again = false, me = String(Math.random()).slice(2);
                 const poll = () => {
                   again = true;
                   if (polling || !worker) return;
@@ -351,7 +352,7 @@ import WebKit
                     while (again) {
                       again = false;
                       for (;;) {
-                        const {events = [], idle} = await ask('notifications.next').catch(() => ({idle: true}));
+                        const {events = [], idle} = await ask('notifications.next', {worker: me}).catch(() => ({idle: true}));
                         for (const {type, id, byUser, index} of events) for (const listener of [...(listeners[type] ?? [])])
                           try { type === 'closed' ? listener(id, byUser) : type === 'buttonClicked' ? listener(id, index) : listener(id); } catch (error) { console.error(error); }
                         if (idle) break;

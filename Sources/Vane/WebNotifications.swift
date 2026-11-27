@@ -146,6 +146,8 @@ import WebKit
     private static var answers: [UUID: [String: Bool]] = [:]
     /// `key(document, id)` → notification identifier, per tab, for `close()` and tab closure.
     static var shown: [UUID: [String: String]] = [:]
+    /// Tabs with an icon loading.
+    private static var loadingIcon: Set<UUID> = []
 
     nonisolated static func key(_ document: String, _ id: Int) -> String { "\(document)\u{1F}\(id)" }
 
@@ -210,15 +212,23 @@ import WebKit
     /// Private tabs' notifications must not outlive the app (`AppLifecycle`).
     static func terminating() {
         let identifiers = shown.values.flatMap(\.values).filter { $0.hasPrefix("web.private.") }
-        if !identifiers.isEmpty { remove(identifiers) }
+        guard !identifiers.isEmpty else { return }
+        remove(identifiers)
+        // The removal is asynchronous; a request queued behind it lets it land before exit.
+        guard let center else { return }
+        let done = DispatchSemaphore(value: 0)
+        center.getDeliveredNotifications { _ in done.signal() }
+        _ = done.wait(timeout: .now() + 0.3)
     }
 
     /// A crash skips `terminating`, and nothing from an earlier run can be clicked through, so
     /// launch clears every web and extension notification it left.
     static func clearAtLaunch() {
         guard let center else { return }
+        let launched = Date()
         Task {
-            let stale = await center.deliveredNotifications().map(\.request.identifier)
+            // Only an earlier run's: this run's first ones may already be up.
+            let stale = await center.deliveredNotifications().filter { $0.date < launched }.map(\.request.identifier)
                 .filter { $0.hasPrefix("web.") || $0.hasPrefix("ext.") }
             if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
         }
@@ -263,13 +273,19 @@ import WebKit
                     // Always the site: a page must not pass for another app or site.
                     content.subtitle = scope.scheme == "https" ? String(scope.origin.dropFirst("https://".count)) : scope.origin
                     if body["silent"] as? Bool != true { content.sound = .default }
-                    content.userInfo = ["tab": tab.id.uuidString, "page": id, "document": document]
+                    content.userInfo = ["tab": tab.id.uuidString, "page": id, "document": document, "origin": scope.origin]
                     let identifier = WebNotifications.identifier(scope: scope, tag: body["tag"] as? String ?? "")
                     let key = WebNotifications.key(document, id), tabID = tab.id, generation = tab.permissionGeneration
+                    // ponytail: drops an arbitrary entry, not the oldest; that one only loses close() and tab-close removal.
+                    if shown[tabID, default: [:]].count >= 100, let first = shown[tabID]?.keys.first { shown[tabID]?[first] = nil }
                     shown[tabID, default: [:]][key] = identifier
                     Task { @MainActor in
                         var file: URL?
-                        if let icon = (body["icon"] as? String).flatMap(URL.init(string:)) { file = await Self.iconFile(icon) }
+                        // One icon load per tab at a time: a page showing many at once gets the rest without.
+                        if let icon = (body["icon"] as? String).flatMap(URL.init(string:)), loadingIcon.insert(tabID).inserted {
+                            file = await Self.iconFile(icon)
+                            loadingIcon.remove(tabID)
+                        }
                         defer { if let file { try? FileManager.default.removeItem(at: file) } }
                         if let attachment = file.flatMap({ try? UNNotificationAttachment(identifier: "icon", url: $0) }) {
                             content.attachments = [attachment]
@@ -301,6 +317,7 @@ import WebKit
             configuration.httpCookieAcceptPolicy = .never
             configuration.httpShouldSetCookies = false
             configuration.urlCache = nil
+            configuration.urlCredentialStorage = nil
             configuration.timeoutIntervalForRequest = 3
             configuration.timeoutIntervalForResource = 5
             return URLSession(configuration: configuration)
@@ -383,7 +400,7 @@ import WebKit
         let identifier = response.notification.request.identifier, action = response.actionIdentifier
         let info = response.notification.request.content.userInfo
         let tabID = (info["tab"] as? String).flatMap(UUID.init(uuidString:))
-        let page = info["page"] as? Int, document = info["document"] as? String
+        let page = info["page"] as? Int, document = info["document"] as? String, origin = info["origin"] as? String
         let owner = info["extension"] as? String, notificationID = info["id"] as? String
         await MainActor.run {
             if let owner, let notificationID {
@@ -391,15 +408,16 @@ import WebKit
                 return
             }
             guard let tabID, let page else { return }
-            Self.responded(tabID: tabID, page: page, document: document, identifier: identifier,
+            Self.responded(tabID: tabID, page: page, document: document, origin: origin, identifier: identifier,
                            dismissed: action == UNNotificationDismissActionIdentifier)
         }
     }
 
     /// A click brings back the tab that showed it and tells the page, if it is still the same
     /// document; a dismissal only tells the page. A closed tab's notification is dropped.
-    private static func responded(tabID: UUID, page: Int, document: String?, identifier: String, dismissed: Bool) {
-        guard let tab = tab(tabID), let document else { return }
+    private static func responded(tabID: UUID, page: Int, document: String?, origin: String?, identifier: String,
+                                  dismissed: Bool) {
+        guard let tab = tab(tabID), let document, let origin else { return }
         let key = key(document, page)
         if shown[tabID]?[key] == identifier { shown[tabID]?[key] = nil }
         if !dismissed, let store = TabStore.all.first(where: { $0.everyTab.contains { $0 === tab } }),
@@ -408,8 +426,11 @@ import WebKit
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
         }
+        // Only into the same site: another site's page could hook `Symbol.for` and listen.
         // The shim ignores it unless `document` is the one still loaded.
-        if let web = tab.existingWeb { dispatch(web, dismissed ? "close" : "click", page, document: document) }
+        if let web = tab.existingWeb, SitePermissions.scope(for: tab)?.origin == origin {
+            dispatch(web, dismissed ? "close" : "click", page, document: document)
+        }
     }
 }
 
@@ -425,6 +446,10 @@ import WebKit
     private struct Owner {
         var live: [String: (options: [String: Any], shown: ContinuousClock.Instant)] = [:]
         var events: [[String: Any]] = []
+        /// Handed to `poller`'s last poll; dropped when that worker polls again, or handed out
+        /// again to another worker (one that started after WebKit unloaded the old mid-poll).
+        var pending: [[String: Any]] = []
+        var poller = ""
         /// Resumed with `true` when a newer poll takes over.
         var waiter: CheckedContinuation<Bool, Never>?
         var wake: @MainActor () -> Void = {}
@@ -477,10 +502,19 @@ import WebKit
         case "notifications.getPermissionLevel":
             return await WebNotifications.permissionLevel()
         case "notifications.next":
+            let worker = arguments["worker"] as? String ?? ""
+            // One poller: a newer one (a restarted worker) releases the older, which stops.
+            owners[owner]?.waiter?.resume(returning: true)
+            owners[owner]?.waiter = nil
+            if var state = owners[owner] {
+                if state.poller != worker { state.events = state.pending + state.events }
+                state.pending = []
+                owners[owner] = state
+            }
+            // Before looking at events: a click during it removes from `live` and queues one.
+            await reconcile(owner)
             if owners[owner]?.events.isEmpty != false {
-                await reconcile(owner)
                 guard owners[owner]?.live.isEmpty == false else { return ["events": [], "idle": true] }
-                // One poller: a newer one (a restarted worker) releases the older, which stops.
                 owners[owner]?.waiter?.resume(returning: true)
                 let superseded = await withCheckedContinuation { continuation in
                     owners[owner]?.waiter = continuation
@@ -493,6 +527,8 @@ import WebKit
             }
             let events = owners[owner]?.events ?? []
             owners[owner]?.events = []
+            owners[owner]?.pending = events
+            owners[owner]?.poller = worker
             return ["events": events, "idle": false]
         default:
             throw ExtensionHost.Failure("Vane does not answer \(operation).")
@@ -507,7 +543,8 @@ import WebKit
     }
 
     /// Ones cleared from Notification Center without a dismissal (Clear All) stop counting,
-    /// so they do not keep the worker polling.
+    /// so they do not keep the worker polling. With "Show in Notification Center" off for Vane,
+    /// macOS may not list ones still on screen, so those stop counting after `grace` too.
     private static func reconcile(_ owner: String) async {
         guard let delivered = await delivered() else { return }
         let settled = ContinuousClock.now - grace
@@ -524,7 +561,10 @@ import WebKit
         default: ["type": "clicked", "id": id]
         }
         owners[owner]?.events.append(event)
-        if owners[owner]?.waiter != nil { release(owner) } else { owners[owner]?.wake() }
+        // The held poll may belong to a worker WebKit has since unloaded: wake loads a fresh one,
+        // whose first poll gets the event again (and does nothing to a running one).
+        release(owner)
+        owners[owner]?.wake()
     }
 
     /// An unloaded extension's notifications go with it.

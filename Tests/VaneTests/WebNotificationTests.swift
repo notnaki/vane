@@ -318,6 +318,59 @@ import XCTest
         let all = try await ExtensionNotifications.answer("notifications.getAll", [:], owner: owner, name: "Ext") as? [String: Bool]
         XCTAssertEqual(all, [:])
     }
+
+    func testAClickDuringReconcileIsHandedOutNotLeftQueued() async throws {
+        let owner = "\(UUID())/ext"
+        let saved = (WebNotifications.post, ExtensionNotifications.delivered)
+        defer {
+            ExtensionNotifications.forget(owner: owner)
+            (WebNotifications.post, ExtensionNotifications.delivered) = saved
+        }
+        WebNotifications.post = { _, _ in true }
+        let created = try await ExtensionNotifications.answer("notifications.create", ["options": ["title": "T"]],
+                                                              owner: owner, name: "Ext") as? String
+        let id = try XCTUnwrap(created)
+        // The click lands while Notification Center is asked, and takes the last live one.
+        ExtensionNotifications.delivered = {
+            ExtensionNotifications.responded(owner: owner, id: id, action: "clicked")
+            return nil
+        }
+        let reply = try await ExtensionNotifications.answer("notifications.next", [:], owner: owner, name: "Ext") as? [String: Any]
+        XCTAssertEqual(reply?["idle"] as? Bool, false)
+        XCTAssertEqual((reply?["events"] as? [[String: Any]])?.first?["type"] as? String, "clicked")
+    }
+
+    func testAClickHandedToAnUnloadedWorkerReachesTheNextOne() async throws {
+        let owner = "\(UUID())/ext"
+        let post = WebNotifications.post
+        defer { ExtensionNotifications.forget(owner: owner); WebNotifications.post = post }
+        WebNotifications.post = { _, _ in true }
+        var woke = 0
+        func next(_ worker: String) async throws -> [String] {
+            let reply = try await ExtensionNotifications.answer("notifications.next", ["worker": worker], owner: owner,
+                                                                name: "Ext") as? [String: Any]
+            return (reply?["events"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+        }
+        let created = try await ExtensionNotifications.answer("notifications.create", ["options": ["title": "T"]],
+                                                              owner: owner, name: "Ext", wake: { woke += 1 }) as? String
+        let first = try XCTUnwrap(created)
+        _ = try await ExtensionNotifications.answer("notifications.create", ["options": ["title": "T"]], owner: owner, name: "Ext")
+        // Worker A's poll is held, then WebKit unloads A: the click's reply goes nowhere.
+        let dead = Task { try await next("A") }
+        for _ in 0..<20 { await Task.yield() }
+        ExtensionNotifications.responded(owner: owner, id: first, action: "clicked")
+        let lost = try await dead.value
+        XCTAssertEqual(lost, [first])
+        XCTAssertEqual(woke, 1, "releasing a held poll still loads the background")
+        let again = try await next("B")
+        XCTAssertEqual(again, [first], "the fresh worker gets it again")
+        // B polls again: it had them, so they are not handed out a third time (and B is held).
+        let held = Task { try await next("B") }
+        for _ in 0..<20 { await Task.yield() }
+        ExtensionNotifications.forget(owner: owner)
+        let none = try await held.value
+        XCTAssertEqual(none, [])
+    }
 }
 
 /// Real WebKit (CI): the shim reports the saved answer at parse time and posts to the bridge.
