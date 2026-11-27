@@ -96,7 +96,7 @@ These extensions were checked with unmodified packages; see
 | `chrome.debugger` | An extension that asks for it can read, click, type in and screenshot pages it has access to. A pill reads "*Extension* is controlling this tab" with **Stop**, and the tab's sidebar row shows a pointer. Only the tab on screen can be driven. |
 | `chrome.tabGroups` | A group is a folder in Today. Extensions can read your folders but change only folders an extension made. Pinned tabs and Favourites can't be grouped. |
 | `chrome.identity` | `launchWebAuthFlow` opens a sign-in window titled with the extension's name and the site, using the profile's cookies. |
-| `chrome.notifications` | `create`, `update`, `clear`, `getAll` and `getPermissionLevel` show text notifications in Notification Center under the extension's name. `onClicked`, `onClosed` and up to two buttons (`onButtonClicked`) reach the background worker. |
+| `chrome.notifications` | `create`, `update`, `clear`, `getAll` and `getPermissionLevel` show text notifications in Notification Center under the extension's name; `getPermissionLevel` says `denied` when macOS notifications are off for Vane. `onClicked`, `onClosed` and up to two buttons (`onButtonClicked`) reach the background worker. Needs the `notifications` permission. |
 | Chromium-only names | `downloads`, `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start, but `downloads` doesn't do anything. Chrome's enums and constants are filled in too. |
 | Native messaging | Extensions that declare `nativeMessaging` get Chrome's "Specified native messaging host not found." error, so ones that expect a desktop app (like Bitwarden) carry on. No desktop app is contacted. Turn it off with **Disable Error-Only Mode** in Manage Extensions → Compatibility. |
 
@@ -269,9 +269,13 @@ separate from link previews.
 - **Web notifications** come from open pages only: service-worker notifications and Push
   (`registration.showNotification`, `PushManager`) aren't available, so a closed site
   can't notify you. A closed tab's notifications are removed. Icons are best effort;
-  notification actions, images and badges aren't shown. Extension notifications are text
-  only (no icons or images), reach only the background worker, and keep it running while
-  they're showing.
+  notification actions, images and badges aren't shown. Like other browsers, Vane doesn't
+  limit how many notifications an allowed site shows. Private windows' notifications are
+  removed when Vane quits, and any left from an earlier run are removed at launch.
+  Extension notifications are text only (no icons or images) and reach only the background
+  worker, which keeps running while they're showing and is started for a click if it was
+  stopped. A worker that's running but had nothing showing itself (the notification came
+  from its popup) hears the click when it next adds a listener or shows one.
 - **Favourite previews** depend on each site's page layout; when one changes, the card
   shows **Preview unavailable** instead of an empty list.
 - Details and evidence: [Extension validation](EXTENSION-VALIDATION.md),

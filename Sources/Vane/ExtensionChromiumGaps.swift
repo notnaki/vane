@@ -336,7 +336,8 @@ import WebKit
                 define(api.idle, 'setDetectionInterval', () => {});
               }
               // Notification Center, under the extension's name (`ExtensionNotifications`). Its
-              // events reach the worker by a long poll that runs while notifications are up.
+              // events reach the worker by a long poll that runs while notifications are up;
+              // the host says when to stop (idle), and loads the worker again for a later event.
               const notifications = api.notifications;
               if (declared.has('notifications') && notifications && typeof notifications.create !== 'function') {
                 const listeners = {clicked: new Set(), closed: new Set(), buttonClicked: new Set()};
@@ -350,7 +351,7 @@ import WebKit
                     while (again) {
                       again = false;
                       for (;;) {
-                        const {events = [], idle = true} = await ask('notifications.next').catch(() => ({}));
+                        const {events = [], idle} = await ask('notifications.next').catch(() => ({idle: true}));
                         for (const {type, id, byUser, index} of events) for (const listener of [...(listeners[type] ?? [])])
                           try { type === 'closed' ? listener(id, byUser) : type === 'buttonClicked' ? listener(id, index) : listener(id); } catch (error) { console.error(error); }
                         if (idle) break;
@@ -380,7 +381,7 @@ import WebKit
                 method('update', (id, options, callback) => answer(ask('notifications.update', {id: String(id), options: plain(options)}), callback));
                 method('clear', (id, callback) => answer(ask('notifications.clear', {id: String(id)}), callback));
                 method('getAll', callback => answer(ask('notifications.getAll'), callback));
-                method('getPermissionLevel', callback => reply(callback, 'granted'));
+                method('getPermissionLevel', callback => answer(ask('notifications.getPermissionLevel'), callback));
               }
               define(api.scripting, 'ExecutionWorld', Object.freeze({ISOLATED: 'ISOLATED', MAIN: 'MAIN'}));
               // Only the types WebKit accepts in a listener filter: it refuses webtransport and webbundle.

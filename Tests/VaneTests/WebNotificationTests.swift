@@ -81,9 +81,14 @@ import XCTest
             var posted = [], events = [], replies = {request: 'granted', show: true, close: null}, active = false;
             var isSecureContext = true, location = {protocol: 'https:', origin: 'https://a.example', href: 'https://a.example/'};
             class Activation { get isActive() { return active; } }
-            var navigator = {userActivation: new Activation()};
+            // Like WebKit's: its accessors refuse anything not made natively.
+            globalThis.PermissionStatus = class extends EventTarget { get onchange() { throw new TypeError('Illegal'); } set onchange(v) { throw new TypeError('Illegal'); } }
+            var navigator = {userActivation: new Activation(), permissions: {query: () => Promise.resolve('native')}};
+            var crypto = {randomUUID: () => 'doc-1'};
             var attrs = \(saved.map { "{'\(WebNotifications.attribute)': '\($0)'}" } ?? "{}");
-            var document = {documentElement: {getAttribute: n => attrs[n] ?? null, removeAttribute: n => { delete attrs[n]; }}};
+            var loaded = [];
+            var document = {documentElement: {getAttribute: n => attrs[n] ?? null, removeAttribute: n => { delete attrs[n]; }},
+                            addEventListener: (type, listener) => { if (type === 'DOMContentLoaded') loaded.push(listener); }};
             var webkit = {messageHandlers: {\(WebNotifications.messageName): {postMessage(m) { posted.push(JSON.parse(JSON.stringify(m))); return Promise.resolve(replies[m.op]); }}}};
             var setTimeout = f => Promise.resolve().then(f);
             var structuredClone = x => x;
@@ -93,6 +98,49 @@ import XCTest
     }
 
     private func value(_ context: JSContext, _ code: String) -> String? { context.evaluateScript(code)?.toString() }
+
+    func testTheHandOffLeavesTheRootAtDOMContentLoadedAndQueryLooksNative() throws {
+        let context = try page(saved: "granted")
+        context.evaluateScript("loaded.forEach(f => f())")
+        XCTAssertEqual(value(context, "Object.keys(attrs).length"), "0", "gone before the page's scripts finish")
+        XCTAssertEqual(value(context, "Notification.permission"), "granted")
+        context.evaluateScript("""
+            var status; navigator.permissions.query({name: 'notifications'}).then(s => {
+              status = s; s.onchange = () => events.push('onchange'); s.addEventListener('change', () => events.push('change'));
+            });
+            """)
+        XCTAssertEqual(value(context, "status instanceof PermissionStatus"), "true")
+        XCTAssertEqual(value(context, "status.name + ' ' + status.state"), "notifications granted")
+        context.evaluateScript("globalThis[Symbol.for('vane.notifications')]('permission', 'denied', 'https://a.example')")
+        XCTAssertEqual(value(context, "events.join() + ' ' + status.state"), "change,onchange denied")
+        let other = try page()
+        other.evaluateScript("var q; navigator.permissions.query({name: 'camera'}).then(v => { q = v; });")
+        XCTAssertEqual(value(other, "q"), "native", "other names reach the native query")
+    }
+
+    func testIdentifiersNeverCollideAcrossSitesAndClosingATabKeepsAnotherTabsOwn() throws {
+        let tag = WebNotifications.identifier
+        XCTAssertNotEqual(tag(scope("https://a.example"), "x.y"), tag(scope("https://a.example.x"), "y"))
+        XCTAssertEqual(tag(scope("https://a.example"), "t"), tag(scope("https://a.example"), "t"), "a tag replaces its own")
+        XCTAssertNotEqual(tag(scope("https://a.example"), ""), tag(scope("https://a.example"), ""))
+        let privateTab = UUID()
+        XCTAssertTrue(tag(scope("https://a.example", privateTab: privateTab), "t").hasPrefix("web.private."))
+        XCTAssertTrue(tag(scope("https://a.example", privateTab: privateTab), "").hasPrefix("web.private."))
+        XCTAssertFalse(tag(scope("https://a.example"), "").hasPrefix("web.private."))
+
+        let saved = (WebNotifications.shown, WebNotifications.remove)
+        defer { (WebNotifications.shown, WebNotifications.remove) = saved }
+        var removed: [Set<String>] = []
+        WebNotifications.remove = { removed.append(Set($0)) }
+        let a = UUID(), b = UUID(), shared = tag(scope("https://a.example"), "t")
+        WebNotifications.shown = [a: [WebNotifications.key("d1", 1): "web.1", WebNotifications.key("d2", 1): "web.2",
+                                      WebNotifications.key("d2", 2): shared],
+                                  b: [WebNotifications.key("d3", 1): shared, WebNotifications.key("d3", 2): "web.private.p"]]
+        WebNotifications.drop(tabID: a)
+        XCTAssertEqual(removed, [["web.1", "web.2"]], "both documents' notifications go; the shared tag is tab B's too")
+        WebNotifications.terminating()
+        XCTAssertEqual(removed.last, ["web.private.p"], "quitting removes private tabs' notifications")
+    }
 
     func testShimReportsTheSavedAnswerAndRefusesWithoutIt() throws {
         let context = try page(saved: "denied")
@@ -113,11 +161,16 @@ import XCTest
             n.addEventListener('close', () => events.push('close'));
             """)
         XCTAssertEqual(value(context, "JSON.stringify(posted[0])"),
-                       #"{"id":1,"title":"Hi","body":"There","tag":"t","icon":"","silent":true,"op":"show","key":"secret-key"}"#)
-        context.evaluateScript("globalThis[Symbol.for('vane.notifications')]('click', 1)")
-        context.evaluateScript("n.close(); n.close();")
-        XCTAssertEqual(value(context, "events.join()"), "show,click,close")
-        XCTAssertEqual(value(context, "posted.filter(m => m.op === 'close').length"), "1")
+                       #"{"id":1,"document":"doc-1","title":"Hi","body":"There","tag":"t","icon":"","silent":true,"op":"show","key":"secret-key"}"#)
+        // A click on what an earlier document in the tab showed is not this page's.
+        context.evaluateScript("globalThis[Symbol.for('vane.notifications')]('click', 1, '', 'doc-0')")
+        context.evaluateScript("globalThis[Symbol.for('vane.notifications')]('click', 1, '', 'doc-1')")
+        context.evaluateScript("n.close(); n.close(); events.push('closing');")
+        XCTAssertEqual(value(context, "events.join()"), "show,click,closing,close", "close fires as a task, not inside close()")
+        XCTAssertEqual(value(context, "JSON.stringify(posted.filter(m => m.op === 'close'))"),
+                       #"[{"id":1,"document":"doc-1","op":"close","key":"secret-key"}]"#)
+        context.evaluateScript("new Notification('Bad icon', {icon: 'http://['})")
+        XCTAssertEqual(value(context, "posted.at(-1).icon"), "", "an icon that is not a URL is ignored")
         XCTAssertFalse(value(context, "Notification.toString() + Notification.requestPermission.toString()")!.contains("secret-key"),
                        "page code cannot read the key back out of the shim")
     }
@@ -175,6 +228,34 @@ import XCTest
         XCTAssertEqual(context.evaluateScript("typeof chrome.notifications.getPermissionLevel")?.toString(), "function")
     }
 
+    func testTheWorkerKeepsPollingUntilTheHostSaysIdle() throws {
+        let context = try XCTUnwrap(JSContext())
+        context.exceptionHandler = { _, exception in XCTFail(exception?.toString() ?? "exception") }
+        context.evaluateScript("""
+            class URLSearchParams {
+              constructor(init) { this.p = typeof init === 'string' ? Object.fromEntries(init.split('&').map(s => s.split('=').map(decodeURIComponent))) : init; }
+              get(key) { return this.p[key]; }
+              toString() { return Object.entries(this.p).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
+            }
+            function ServiceWorkerGlobalScope() {}
+            Object.defineProperty(ServiceWorkerGlobalScope, Symbol.hasInstance, {value: () => true});
+            var WebSocket = {vane: true}; // no worker WebSocket stand-in here
+            var asked = [], heard = [];
+            var replies = [{events: [], idle: false}, {events: [{type: 'clicked', id: 'n1'}], idle: false}, {events: [], idle: true}];
+            var chrome = {runtime: {id: 'x', getManifest: () => ({manifest_version: 3, name: 'X', version: '1', permissions: ['notifications']}),
+                                    getURL: path => 'webkit-extension://x' + path},
+                          tabs: {create({url}) {
+                            asked.push(new URLSearchParams(url.split('?')[1]).get('op'));
+                            return Promise.reject(new Error('\(ExtensionChromiumGaps.marker)' + JSON.stringify({value: replies.shift()})));
+                          }}};
+            """)
+        context.evaluateScript(ExtensionChromiumGaps.script)
+        context.evaluateScript("chrome.notifications.onClicked.addListener(id => heard.push(id));")
+        XCTAssertEqual(context.evaluateScript("asked.join()")?.toString(), "notifications.next,notifications.next,notifications.next",
+                       "a reply with nothing in it is not idle")
+        XCTAssertEqual(context.evaluateScript("heard.join()")?.toString(), "n1")
+    }
+
     func testExtensionNotificationsQueueEventsAndGoIdle() async throws {
         let owner = "\(UUID())/ext"
         defer { ExtensionNotifications.forget(owner: owner) }
@@ -182,18 +263,60 @@ import XCTest
         var shown: [String] = []
         WebNotifications.post = { identifier, content in shown.append(content.subtitle + "|" + content.title); return true }
         defer { WebNotifications.post = post }
+        var woke = 0
         let id = try await ExtensionNotifications.answer("notifications.create", ["options": ["title": "T", "message": "M"]],
-                                                         owner: owner, name: "Ext") as? String
+                                                         owner: owner, name: "Ext", wake: { woke += 1 }) as? String
         XCTAssertEqual(shown, ["Ext|T"], "shown under the extension's name")
         let all = try await ExtensionNotifications.answer("notifications.getAll", [:], owner: owner, name: "Ext") as? [String: Bool]
         XCTAssertEqual(all, [try XCTUnwrap(id): true])
         ExtensionNotifications.responded(owner: owner, id: try XCTUnwrap(id), action: "button.1")
+        XCTAssertEqual(woke, 1, "an event with no poll waiting loads the background")
         let next = try await ExtensionNotifications.answer("notifications.next", [:], owner: owner, name: "Ext") as? [String: Any]
         let event = try XCTUnwrap((next?["events"] as? [[String: Any]])?.first)
         XCTAssertEqual(event["type"] as? String, "buttonClicked")
         XCTAssertEqual(event["index"] as? Int, 1)
+        XCTAssertEqual(next?["idle"] as? Bool, false, "the worker polls again")
         let idle = try await ExtensionNotifications.answer("notifications.next", [:], owner: owner, name: "Ext") as? [String: Any]
         XCTAssertEqual(idle?["idle"] as? Bool, true, "no poll is held once nothing is showing")
+        let level = try await ExtensionNotifications.answer("notifications.getPermissionLevel", [:], owner: owner, name: "Ext") as? String
+        XCTAssertEqual(level, "denied", "no Notification Center here, so nothing can show")
+    }
+
+    func testANewerPollReleasesTheOlderAndClearedOnesStopCounting() async throws {
+        let owner = "\(UUID())/ext"
+        let saved = (WebNotifications.post, ExtensionNotifications.delivered, ExtensionNotifications.grace)
+        defer {
+            ExtensionNotifications.forget(owner: owner)
+            (WebNotifications.post, ExtensionNotifications.delivered, ExtensionNotifications.grace) = saved
+        }
+        WebNotifications.post = { _, _ in true }
+        /// Whether the poll said idle, and its first event's type.
+        func next() async throws -> (idle: Bool?, first: String?) {
+            let reply = try await ExtensionNotifications.answer("notifications.next", [:], owner: owner, name: "Ext") as? [String: Any]
+            return (reply?["idle"] as? Bool, (reply?["events"] as? [[String: Any]])?.first?["type"] as? String)
+        }
+        let created = try await ExtensionNotifications.answer("notifications.create", ["options": ["title": "T"]],
+                                                              owner: owner, name: "Ext") as? String
+        let id = try XCTUnwrap(created)
+        let older = Task { try await next() }
+        for _ in 0..<20 { await Task.yield() }
+        let newer = Task { try await next() }
+        let released = try await older.value
+        XCTAssertEqual(released.idle, true, "the older poller stops rather than ping-pong")
+        for _ in 0..<20 { await Task.yield() }
+        ExtensionNotifications.responded(owner: owner, id: id, action: "clicked")
+        let heard = try await newer.value
+        XCTAssertEqual(heard.first, "clicked")
+        XCTAssertEqual(heard.idle, false)
+
+        // Cleared from Notification Center with no dismissal: polling ends rather than hold for ever.
+        _ = try await ExtensionNotifications.answer("notifications.create", ["options": ["title": "T"]], owner: owner, name: "Ext")
+        ExtensionNotifications.delivered = { [] }
+        ExtensionNotifications.grace = .zero
+        let idle = try await next()
+        XCTAssertEqual(idle.idle, true)
+        let all = try await ExtensionNotifications.answer("notifications.getAll", [:], owner: owner, name: "Ext") as? [String: Bool]
+        XCTAssertEqual(all, [:])
     }
 }
 
@@ -268,6 +391,7 @@ import XCTest
         XCTAssertEqual(posted.map(\.title), ["Hello"])
         XCTAssertEqual(posted.first?.body, "World")
         XCTAssertEqual(posted.first?.subtitle, try site().origin, "the site is always named")
+        XCTAssertEqual((posted.first?.userInfo["document"] as? String)?.count, 36, "clicks name the document that showed it")
         let forged = try await evaluate(tab, """
             return await webkit.messageHandlers.\(WebNotifications.messageName).postMessage({op: 'show', id: 9, title: 'Forged', key: 'guess'})
               .then(() => 'accepted', () => 'refused');

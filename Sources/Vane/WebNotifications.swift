@@ -43,6 +43,9 @@ import WebKit
           const send = handler.postMessage.bind(handler), define = Object.defineProperty;
           // Nothing the page can patch later touches the key: a spread, not `Object.assign`.
           const ask = (op, fields = {}) => send({...fields, op, key});
+          // This document's own name: Vane hands it back with a click, so a later document in
+          // the tab ignores what an earlier one showed. A back-forward restore keeps it.
+          const doc = crypto.randomUUID();
           // Safari's rule: only a click or key press may prompt. Captured before the page runs.
           const activation = navigator.userActivation;
           const getter = activation && Object.getOwnPropertyDescriptor(Object.getPrototypeOf(activation), 'isActive')?.get;
@@ -57,6 +60,8 @@ import WebKit
             }
             return state;
           };
+          // The hand-off leaves the root element before the page's own scripts are done.
+          document.addEventListener?.('DOMContentLoaded', () => permission(), {once: true});
           const fire = (target, type) => {
             const event = new Event(type);
             target.dispatchEvent(event);
@@ -76,8 +81,11 @@ import WebKit
               super();
               if (!arguments.length) throw new TypeError("Failed to construct 'Notification': 1 argument required.");
               const o = options ?? {}, id = this.#id;
+              // An icon that is not a URL is ignored, as the spec says.
+              let icon = '';
+              if (o.icon) try { icon = new URL(String(o.icon), location.href).href; } catch {}
               const fields = {title: String(title), body: String(o.body ?? ''), tag: String(o.tag ?? ''),
-                icon: o.icon ? new URL(String(o.icon), location.href).href : '', silent: o.silent ?? null,
+                icon, silent: o.silent ?? null,
                 dir: o.dir ?? 'auto', lang: String(o.lang ?? ''), badge: '', image: '', renotify: Boolean(o.renotify),
                 requireInteraction: Boolean(o.requireInteraction), timestamp: Number(o.timestamp ?? Date.now()),
                 actions: Object.freeze([]), data: o.data === undefined ? null : structuredClone(o.data)};
@@ -87,15 +95,15 @@ import WebKit
               // A tag replaces its earlier notification, which then hears nothing more.
               if (fields.tag) for (const [other, shown] of live) if (shown.tag === fields.tag) live.delete(other);
               live.set(id, this);
-              ask('show', {id, title: fields.title, body: fields.body, tag: fields.tag, icon: fields.icon, silent: fields.silent === true})
+              ask('show', {id, document: doc, title: fields.title, body: fields.body, tag: fields.tag, icon: fields.icon, silent: fields.silent === true})
                 .then(shown => shown === true, () => false)
                 .then(shown => { if (!shown) live.delete(id); fire(this, shown ? 'show' : 'error'); });
             }
             close() {
               const id = this.#id;
               if (!live.delete(id)) return;
-              ask('close', {id}).catch(() => {});
-              fire(this, 'close');
+              ask('close', {id, document: doc}).catch(() => {});
+              setTimeout(() => fire(this, 'close'));
             }
             static get permission() { return permission(); }
             static get maxActions() { return 0; }
@@ -113,13 +121,16 @@ import WebKit
               status = new EventTarget();
               define(status, 'name', {value: 'notifications', enumerable: true});
               define(status, 'state', {get: () => ({granted: 'granted', denied: 'denied'})[permission()] ?? 'prompt', enumerable: true});
-              status.onchange = null;
+              define(status, 'onchange', {value: null, writable: true, enumerable: true});
+              // Still a real EventTarget underneath; its own fields shadow the native getters.
+              if (globalThis.PermissionStatus?.prototype) Object.setPrototypeOf(status, PermissionStatus.prototype);
             }
             return Promise.resolve(status);
           }});
           // Vane's way back in: a new answer, or what happened to a notification.
-          define(globalThis, Symbol.for('vane.notifications'), {value: (kind, value, origin) => {
+          define(globalThis, Symbol.for('vane.notifications'), {value: (kind, value, origin, from) => {
             if (kind === 'permission') { if (origin === location.origin) settle(value); return; }
+            if (from !== doc) return;
             const shown = live.get(value);
             if (!shown) return;
             if (kind === 'close') live.delete(value);
@@ -133,11 +144,20 @@ import WebKit
 
     /// The saved answers each profile's next web view reports. Cleared on any change.
     private static var answers: [UUID: [String: Bool]] = [:]
-    private static var generation = 0
-    /// The answers generation each tab's scripts were built from.
-    private static var built: [UUID: Int] = [:]
-    /// Page id → notification identifier, per tab, for `close()` and tab closure.
-    private static var shown: [UUID: [Int: String]] = [:]
+    /// `key(document, id)` → notification identifier, per tab, for `close()` and tab closure.
+    static var shown: [UUID: [String: String]] = [:]
+
+    nonisolated static func key(_ document: String, _ id: Int) -> String { "\(document)\u{1F}\(id)" }
+
+    /// A tag replaces the same site's notification with that tag, in this profile (or this
+    /// private tab). `\u{1F}` cannot appear in an origin, so no two sites share one.
+    /// Private tabs' carry `web.private.`, which goes at quit.
+    nonisolated static func identifier(scope: SitePermissions.Scope, tag: String) -> String {
+        let prefix = scope.privateTabID == nil ? "web." : "web.private."
+        guard !tag.isEmpty else { return prefix + UUID().uuidString }
+        return prefix + [scope.profileID.uuidString, scope.privateTabID?.uuidString ?? "", scope.origin, tag]
+            .joined(separator: "\u{1F}")
+    }
 
     /// From `Tab.attach`, on each fresh web view (and so each fresh content controller).
     static func attach(_ tab: Tab, _ web: WKWebView) {
@@ -149,7 +169,6 @@ import WebKit
             saved = answers[tab.profileID] ?? SitePermissions.notificationAnswers(profileID: tab.profileID, privateTabID: nil)
             answers[tab.profileID] = saved
         }
-        built[tab.id] = generation
         let key = UUID().uuidString
         controller.addUserScript(WKUserScript(source: stateScript(saved), injectionTime: .atDocumentStart,
                                               forMainFrameOnly: true, in: world))
@@ -158,14 +177,12 @@ import WebKit
         controller.addScriptMessageHandler(Bridge(tab: tab, key: key), contentWorld: .page, name: messageName)
     }
 
-    /// A tab whose scripts predate an answer change gets the right answer at each commit.
-    static func committed(_ tab: Tab) {
-        if built[tab.id] != generation { push(tab) }
-    }
+    /// A tab's scripts may predate an answer change, so each commit gets the current answer.
+    static func committed(_ tab: Tab) { push(tab) }
 
+    /// A Notifications answer changed (or every answer was reset).
     static func permissionChanged() {
         answers.removeAll()
-        generation += 1
         for tab in TabStore.all.flatMap(\.everyTab) where tab.existingWeb != nil { push(tab) }
     }
 
@@ -175,17 +192,36 @@ import WebKit
         dispatch(web, "permission", state(answer) as NSString, origin: scope.origin)
     }
 
-    private static func dispatch(_ web: WKWebView, _ kind: String, _ value: Any, origin: String = "") {
-        web.callAsyncJavaScript("globalThis[Symbol.for('vane.notifications')]?.(kind, value, origin)",
-                                arguments: ["kind": kind, "value": value, "origin": origin],
+    private static func dispatch(_ web: WKWebView, _ kind: String, _ value: Any, origin: String = "", document: String = "") {
+        web.callAsyncJavaScript("globalThis[Symbol.for('vane.notifications')]?.(kind, value, origin, document)",
+                                arguments: ["kind": kind, "value": value, "origin": origin, "document": document],
                                 in: nil, in: .page, completionHandler: nil)
     }
 
     /// A closed tab's notifications go with it, and its clicks would have nowhere to land.
+    /// One another tab replaced by tag is that tab's now, and stays.
     static func drop(tabID: UUID) {
-        built[tabID] = nil
-        guard let identifiers = shown.removeValue(forKey: tabID)?.values, !identifiers.isEmpty else { return }
-        center?.removeDeliveredNotifications(withIdentifiers: Array(identifiers))
+        guard let gone = shown.removeValue(forKey: tabID)?.values else { return }
+        let kept = Set(shown.values.flatMap(\.values))
+        let identifiers = Set(gone).subtracting(kept)
+        if !identifiers.isEmpty { remove(Array(identifiers)) }
+    }
+
+    /// Private tabs' notifications must not outlive the app (`AppLifecycle`).
+    static func terminating() {
+        let identifiers = shown.values.flatMap(\.values).filter { $0.hasPrefix("web.private.") }
+        if !identifiers.isEmpty { remove(identifiers) }
+    }
+
+    /// A crash skips `terminating`, and nothing from an earlier run can be clicked through, so
+    /// launch clears every web and extension notification it left.
+    static func clearAtLaunch() {
+        guard let center else { return }
+        Task {
+            let stale = await center.deliveredNotifications().map(\.request.identifier)
+                .filter { $0.hasPrefix("web.") || $0.hasPrefix("ext.") }
+            if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
+        }
     }
 
     private static func tab(_ id: UUID) -> Tab? {
@@ -219,29 +255,39 @@ import WebKit
                         replyHandler(decision == .grant ? "granted" : state(answer()), nil)
                     }
                 case "show":
-                    guard answer() == true, let id = (body["id"] as? NSNumber)?.intValue else { replyHandler(false, nil); return }
+                    guard answer() == true, let id = (body["id"] as? NSNumber)?.intValue,
+                          let document = body["document"] as? String else { replyHandler(false, nil); return }
                     let content = UNMutableNotificationContent()
                     content.title = String((body["title"] as? String ?? "").prefix(256))
                     content.body = String((body["body"] as? String ?? "").prefix(2048))
                     // Always the site: a page must not pass for another app or site.
                     content.subtitle = scope.scheme == "https" ? String(scope.origin.dropFirst("https://".count)) : scope.origin
                     if body["silent"] as? Bool != true { content.sound = .default }
-                    content.userInfo = ["tab": tab.id.uuidString, "page": id, "generation": Int(tab.permissionGeneration)]
-                    let tag = body["tag"] as? String ?? ""
-                    let identifier = tag.isEmpty ? "web." + UUID().uuidString
-                        : "web.\(scope.profileID).\(scope.privateTabID?.uuidString ?? "").\(scope.origin).\(tag)"
-                    shown[tab.id, default: [:]][id] = identifier
-                    let tabID = tab.id
+                    content.userInfo = ["tab": tab.id.uuidString, "page": id, "document": document]
+                    let identifier = WebNotifications.identifier(scope: scope, tag: body["tag"] as? String ?? "")
+                    let key = WebNotifications.key(document, id), tabID = tab.id, generation = tab.permissionGeneration
+                    shown[tabID, default: [:]][key] = identifier
                     Task { @MainActor in
-                        if let icon = (body["icon"] as? String).flatMap(URL.init(string:)),
-                           let attachment = await Self.attachment(icon) { content.attachments = [attachment] }
-                        // A tab closed while its icon loaded shows nothing.
-                        guard WebNotifications.tab(tabID) != nil else { replyHandler(false, nil); return }
-                        replyHandler(await WebNotifications.post(identifier, content), nil)
+                        var file: URL?
+                        if let icon = (body["icon"] as? String).flatMap(URL.init(string:)) { file = await Self.iconFile(icon) }
+                        defer { if let file { try? FileManager.default.removeItem(at: file) } }
+                        if let attachment = file.flatMap({ try? UNNotificationAttachment(identifier: "icon", url: $0) }) {
+                            content.attachments = [attachment]
+                        }
+                        // The tab closed, the page went or the answer changed while the icon loaded.
+                        guard WebNotifications.tab(tabID) != nil, tab.existingWeb === web,
+                              tab.permissionGeneration == generation, answer() == true,
+                              await WebNotifications.post(identifier, content) else {
+                            if shown[tabID]?[key] == identifier { shown[tabID]?[key] = nil }
+                            replyHandler(false, nil)
+                            return
+                        }
+                        replyHandler(true, nil)
                     }
                 case "close":
-                    if let id = (body["id"] as? NSNumber)?.intValue, let identifier = shown[tab.id]?.removeValue(forKey: id) {
-                        center?.removeDeliveredNotifications(withIdentifiers: [identifier])
+                    if let id = (body["id"] as? NSNumber)?.intValue, let document = body["document"] as? String,
+                       let identifier = shown[tab.id]?.removeValue(forKey: WebNotifications.key(document, id)) {
+                        remove([identifier])
                     }
                     replyHandler(nil, nil)
                 default:
@@ -250,18 +296,35 @@ import WebKit
             }
         }
 
-        /// Best effort: an http(s) or data image of up to 1 MB, fetched without cookies.
-        private static func attachment(_ url: URL) async -> UNNotificationAttachment? {
+        private static let iconSession: URLSession = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.httpCookieAcceptPolicy = .never
+            configuration.httpShouldSetCookies = false
+            configuration.urlCache = nil
+            configuration.timeoutIntervalForRequest = 3
+            configuration.timeoutIntervalForResource = 5
+            return URLSession(configuration: configuration)
+        }()
+
+        /// Best effort: an http(s) or data image of up to 1 MB, fetched without cookies, into
+        /// a temporary file the caller deletes. A bigger body is cut off as it streams.
+        nonisolated static func iconFile(_ url: URL) async -> URL? {
             guard ["http", "https", "data"].contains(url.scheme?.lowercased()) else { return nil }
-            var request = URLRequest(url: url, timeoutInterval: 3)
-            request.httpShouldHandleCookies = false
-            guard let (data, response) = try? await URLSession(configuration: .ephemeral).data(for: request),
-                  data.count <= 1 << 20, (response as? HTTPURLResponse)?.statusCode ?? 200 == 200,
+            let limit = 1 << 20
+            guard let (bytes, response) = try? await iconSession.bytes(for: URLRequest(url: url)) else { return nil }
+            defer { bytes.task.cancel() }
+            guard response.expectedContentLength <= limit, (response as? HTTPURLResponse)?.statusCode ?? 200 == 200,
                   let type = response.mimeType, type.hasPrefix("image/") else { return nil }
+            var data = Data()
+            do {
+                for try await byte in bytes {
+                    data.append(byte)
+                    if data.count > limit { return nil }
+                }
+            } catch { return nil }
             let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension(String(type.dropFirst("image/".count).prefix(8)))
-            guard (try? data.write(to: file)) != nil else { return nil }
-            return try? UNNotificationAttachment(identifier: "icon", url: file)
+            return (try? data.write(to: file)) != nil ? file : nil
         }
     }
 
@@ -298,6 +361,15 @@ import WebKit
     }
 
     /// Replaceable in tests, which have no Notification Center.
+    static var remove: @MainActor ([String]) -> Void = { center?.removeDeliveredNotifications(withIdentifiers: $0) }
+
+    /// What `chrome.notifications.getPermissionLevel` reports: denied once macOS says no.
+    static func permissionLevel() async -> String {
+        guard let center else { return "denied" }
+        return await center.notificationSettings().authorizationStatus == .denied ? "denied" : "granted"
+    }
+
+    /// Replaceable in tests, which have no Notification Center.
     static var post: @MainActor (String, UNMutableNotificationContent) async -> Bool = { identifier, content in
         guard let center, await authorized() else { return false }
         if content.categoryIdentifier.isEmpty { content.categoryIdentifier = category() }
@@ -311,7 +383,7 @@ import WebKit
         let identifier = response.notification.request.identifier, action = response.actionIdentifier
         let info = response.notification.request.content.userInfo
         let tabID = (info["tab"] as? String).flatMap(UUID.init(uuidString:))
-        let page = info["page"] as? Int, generation = info["generation"] as? Int
+        let page = info["page"] as? Int, document = info["document"] as? String
         let owner = info["extension"] as? String, notificationID = info["id"] as? String
         await MainActor.run {
             if let owner, let notificationID {
@@ -319,52 +391,68 @@ import WebKit
                 return
             }
             guard let tabID, let page else { return }
-            Self.responded(tabID: tabID, page: page, generation: generation, identifier: identifier,
+            Self.responded(tabID: tabID, page: page, document: document, identifier: identifier,
                            dismissed: action == UNNotificationDismissActionIdentifier)
         }
     }
 
     /// A click brings back the tab that showed it and tells the page, if it is still the same
     /// document; a dismissal only tells the page. A closed tab's notification is dropped.
-    private static func responded(tabID: UUID, page: Int, generation: Int?, identifier: String, dismissed: Bool) {
-        guard let tab = tab(tabID) else { return }
-        if shown[tabID]?[page] == identifier { shown[tabID]?[page] = nil }
-        let current = generation == Int(tab.permissionGeneration) ? tab.existingWeb : nil
+    private static func responded(tabID: UUID, page: Int, document: String?, identifier: String, dismissed: Bool) {
+        guard let tab = tab(tabID), let document else { return }
+        let key = key(document, page)
+        if shown[tabID]?[key] == identifier { shown[tabID]?[key] = nil }
         if !dismissed, let store = TabStore.all.first(where: { $0.everyTab.contains { $0 === tab } }),
            Windows.reveal(tab, in: store), let window = store.window {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
         }
-        if let current { dispatch(current, dismissed ? "close" : "click", page) }
+        // The shim ignores it unless `document` is the one still loaded.
+        if let web = tab.existingWeb { dispatch(web, dismissed ? "close" : "click", page, document: document) }
     }
 }
 
 /// `chrome.notifications` for MV3 extensions, over the gaps bridge (`ExtensionChromiumGaps`).
 /// Shown under the extension's name. Events reach the worker by long poll
-/// (`notifications.next`), which runs only while the extension has notifications out.
-// ponytail: events go to the background worker only, and a worker polling keeps WebKit
-// from suspending it while its notifications are up. Chrome wakes the worker instead.
+/// (`notifications.next`), held while the extension has notifications showing; one that
+/// arrives with no poll waiting loads the background, whose listeners start polling.
+// ponytail: a worker that is running but idle (its notifications came from its popup) is
+// not woken: `loadBackgroundContent` does nothing to a loaded worker, so the event waits for
+// its next poll (any listener added or notification it creates). Chrome dispatches directly.
 // ponytail: no images or templates beyond basic text; list items and progress become text.
 @MainActor enum ExtensionNotifications {
     private struct Owner {
-        var live: [String: [String: Any]] = [:]
+        var live: [String: (options: [String: Any], shown: ContinuousClock.Instant)] = [:]
         var events: [[String: Any]] = []
-        var waiter: CheckedContinuation<Void, Never>?
+        /// Resumed with `true` when a newer poll takes over.
+        var waiter: CheckedContinuation<Bool, Never>?
+        var wake: @MainActor () -> Void = {}
     }
     private static var owners: [String: Owner] = [:]
 
-    /// `owner` is the profile and the extension's unique identifier; `name` its display name.
-    static func answer(_ operation: String, _ arguments: [String: Any], owner: String, name: String) async throws -> Any {
+    /// Notification Center's delivered identifiers; nil without one. Replaceable in tests.
+    static var delivered: @MainActor () async -> Set<String>? = {
+        guard let center = WebNotifications.center else { return nil }
+        return Set(await center.deliveredNotifications().map(\.request.identifier))
+    }
+    /// How long a new notification counts as showing before Notification Center lists it.
+    static var grace: Duration = .seconds(10)
+
+    /// `owner` is the profile and the extension's unique identifier; `name` its display name;
+    /// `wake` loads its background.
+    static func answer(_ operation: String, _ arguments: [String: Any], owner: String, name: String,
+                       wake: (@MainActor () -> Void)? = nil) async throws -> Any {
         let id = arguments["id"] as? String ?? ""
+        if let wake { owners[owner, default: Owner()].wake = wake }
         switch operation {
         case "notifications.create", "notifications.update":
             let creating = operation.hasSuffix("create")
             if !creating && owners[owner]?.live[id] == nil { return false }
             let given = arguments["options"] as? [String: Any] ?? [:]
-            let options = creating ? given : (owners[owner]?.live[id] ?? [:]).merging(given) { $1 }
+            let options = creating ? given : (owners[owner]?.live[id]?.options ?? [:]).merging(given) { $1 }
             let notificationID = creating && id.isEmpty ? UUID().uuidString : id
-            owners[owner, default: Owner()].live[notificationID] = options
+            owners[owner, default: Owner()].live[notificationID] = (options, .now)
             let content = UNMutableNotificationContent()
             content.title = String((options["title"] as? String ?? "").prefix(256))
             content.subtitle = name
@@ -382,26 +470,30 @@ import WebKit
             return creating ? notificationID : true
         case "notifications.clear":
             guard owners[owner]?.live.removeValue(forKey: id) != nil else { return false }
-            WebNotifications.center?.removeDeliveredNotifications(withIdentifiers: [identifier(owner, id)])
+            WebNotifications.remove([identifier(owner, id)])
             return true
         case "notifications.getAll":
             return (owners[owner]?.live.keys).map { Dictionary(uniqueKeysWithValues: $0.map { ($0, true) }) } ?? [:]
+        case "notifications.getPermissionLevel":
+            return await WebNotifications.permissionLevel()
         case "notifications.next":
             if owners[owner]?.events.isEmpty != false {
+                await reconcile(owner)
                 guard owners[owner]?.live.isEmpty == false else { return ["events": [], "idle": true] }
-                // One poller: a newer one (a restarted worker) releases the older.
-                owners[owner]?.waiter?.resume()
-                await withCheckedContinuation { continuation in
+                // One poller: a newer one (a restarted worker) releases the older, which stops.
+                owners[owner]?.waiter?.resume(returning: true)
+                let superseded = await withCheckedContinuation { continuation in
                     owners[owner]?.waiter = continuation
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(25))
-                        wake(owner)
+                        release(owner)
                     }
                 }
+                if superseded { return ["events": [], "idle": true] }
             }
             let events = owners[owner]?.events ?? []
             owners[owner]?.events = []
-            return ["events": events]
+            return ["events": events, "idle": false]
         default:
             throw ExtensionHost.Failure("Vane does not answer \(operation).")
         }
@@ -409,9 +501,19 @@ import WebKit
 
     private static func identifier(_ owner: String, _ id: String) -> String { "ext.\(owner).\(id)" }
 
-    private static func wake(_ owner: String) {
-        owners[owner]?.waiter?.resume()
+    private static func release(_ owner: String) {
+        owners[owner]?.waiter?.resume(returning: false)
         owners[owner]?.waiter = nil
+    }
+
+    /// Ones cleared from Notification Center without a dismissal (Clear All) stop counting,
+    /// so they do not keep the worker polling.
+    private static func reconcile(_ owner: String) async {
+        guard let delivered = await delivered() else { return }
+        let settled = ContinuousClock.now - grace
+        for (id, entry) in owners[owner]?.live ?? [:] where entry.shown <= settled && !delivered.contains(identifier(owner, id)) {
+            owners[owner]?.live[id] = nil
+        }
     }
 
     static func responded(owner: String, id: String, action: String) {
@@ -422,13 +524,13 @@ import WebKit
         default: ["type": "clicked", "id": id]
         }
         owners[owner]?.events.append(event)
-        wake(owner)
+        if owners[owner]?.waiter != nil { release(owner) } else { owners[owner]?.wake() }
     }
 
     /// An unloaded extension's notifications go with it.
     static func forget(owner: String) {
         guard let gone = owners.removeValue(forKey: owner) else { return }
-        gone.waiter?.resume()
-        WebNotifications.center?.removeDeliveredNotifications(withIdentifiers: gone.live.keys.map { identifier(owner, $0) })
+        gone.waiter?.resume(returning: true)
+        WebNotifications.remove(gone.live.keys.map { identifier(owner, $0) })
     }
 }

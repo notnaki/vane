@@ -151,13 +151,14 @@ import WebKit
         if let tabID = scope.privateTabID { privateAnswers[tabID, default: [:]][name] = allow }
         else { defaults.set(allow, forKey: name) }
         if !allow { revoke(scope: scope, type: type) }
-        WebNotifications.permissionChanged()
+        if type == .notifications { WebNotifications.permissionChanged() }
     }
 
     private static func forget(scope: Scope, type: Kind) {
         let name = key(scope: scope, type: type)
         if let tabID = scope.privateTabID { privateAnswers[tabID]?.removeValue(forKey: name) }
         else { defaults.removeObject(forKey: name) }
+        if type == .notifications { WebNotifications.permissionChanged() }
     }
 
     /// A Block covering a requested device wins even against an older pair Allow.
@@ -213,7 +214,6 @@ import WebKit
         if let answer { remember(scope: scope, type: type, allow: answer) }
         else { forget(scope: scope, type: type) }
         if answer == nil { revoke(scope: scope, type: type) }
-        WebNotifications.permissionChanged()
     }
 
     static func makePrompt(scope: Scope, type: Kind) -> SitePermissionPrompt {
@@ -370,7 +370,6 @@ import WebKit
         for type in Kind.allCases {
             forget(scope: scope, type: type)
         }
-        WebNotifications.permissionChanged()
     }
 
     static func forgetPrivate(tabID: UUID) {

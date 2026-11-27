@@ -2373,8 +2373,12 @@ import WebKit
         case "fetch":
             return try await credentialedFetch(arguments, for: context)
         case let operation where operation.hasPrefix("notifications."):
+            guard (context.webExtension.manifest["permissions"] as? [String])?.contains("notifications") == true else {
+                throw Failure("The extension does not declare the notifications permission.")
+            }
             return try await ExtensionNotifications.answer(operation, arguments, owner: notificationOwner(context),
-                                                           name: context.webExtension.displayName ?? "Extension")
+                                                           name: context.webExtension.displayName ?? "Extension",
+                                                           wake: { [weak context] in context?.loadBackgroundContent { _ in } })
         case let operation where operation.hasPrefix("ws."):
             let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
             if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
