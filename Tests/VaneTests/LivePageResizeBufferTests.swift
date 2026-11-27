@@ -390,90 +390,66 @@ import XCTest
         XCTAssertTrue(f.buffer.isPreparing)
     }
 
-    func testWindowPublicationsCoalesceAtDisplayFramesAndStillRequirePaint() {
+    func testWindowDragCommitsOnlyExactlyPaintedSizesInsideThePaint() {
         var frame: (@MainActor () -> Void)?
         let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
-        f.buffer.start()
-        f.request(610)
+        f.buffer.start(); nextPaint(&f.paints)()
+        XCTAssertEqual(f.web.frame.width, 600, "No lookahead: the prime keeps the visible width")
+        f.request(720)
+        XCTAssertEqual(f.web.frame.width, 720, "Growth prepares exactly the requested width")
         frame?()
         XCTAssertTrue(f.commits.isEmpty, "A display tick must not bypass the paint barrier")
         nextPaint(&f.paints)()
-        XCTAssertTrue(f.commits.isEmpty, "Paint admits coverage, not a second publication clock")
-        f.request(614)
-        f.request(618)
-        XCTAssertTrue(f.commits.isEmpty)
-        frame?()
-        XCTAssertEqual(f.commits, [NSSize(width: 618, height: 400)])
-        f.request(620)
-        f.request(622)
-        XCTAssertEqual(f.commits.count, 1)
-        frame?()
-        XCTAssertEqual(f.commits.map(\.width), [618, 622])
-        frame?()
-        XCTAssertEqual(f.commits.count, 2, "An idle frame must not dirty the unchanged window")
+        XCTAssertEqual(f.commits.map(\.width), [720], "The window commits inside its paint")
+        frame?(); frame?()
+        XCTAssertTrue(f.paints.isEmpty, "A fitted page is not repainted every frame")
+        XCTAssertEqual(f.commits.count, 1, "An idle frame must not dirty the unchanged window")
     }
 
-    func testHeldWindowDragFitsThePageWithoutWaitingForRelease() {
+    func testWindowDragShrinkFollowsAtOnceWithTheOldPaintHeldInPlace() throws {
         var frame: (@MainActor () -> Void)?
         let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
         f.buffer.start(); nextPaint(&f.paints)()
-        f.request(720)
+        let child = try XCTUnwrap(f.web.subviews.first, "WebKit's native child must exist to prove the hold")
+        let childWidth = child.frame.width
+        let childOnScreen = child.convert(child.bounds, to: nil)
+        f.request(560)
+        XCTAssertEqual(f.web.frame.width, 560, "The smaller viewport is prepared at once")
+        XCTAssertEqual(child.frame.width, childWidth, "The old paint keeps its size meanwhile")
+        frame?()
+        XCTAssertEqual(f.window.frame.width, 560, "A shrink follows the pointer without waiting for paint")
+        XCTAssertEqual(child.convert(child.bounds, to: nil), childOnScreen, "The old paint does not move")
         nextPaint(&f.paints)()
-        frame?()
-        XCTAssertEqual(f.window.frame.width, 720)
-        XCTAssertGreaterThan(f.web.frame.width, 720, "A moving drag keeps painted lookahead")
-        f.time += 0.05
-        frame?()
-        XCTAssertTrue(f.paints.isEmpty, "A short gap between pointer samples keeps the lookahead")
-        f.time += 0.2
-        frame?()
-        XCTAssertEqual(f.web.frame.width, 720, "A held drag lays the page out at the visible width")
-        nextPaint(&f.paints)()
-        frame?(); frame?()
-        XCTAssertTrue(f.paints.isEmpty, "A fitted held page is not repainted every frame")
-        XCTAssertEqual(f.web.frame.width, 720)
-        f.request(740)
-        XCTAssertGreaterThan(f.web.frame.width, 740, "Moving again restores lookahead")
-        nextPaint(&f.paints)()
-        frame?()
-        XCTAssertEqual(f.window.frame.width, 740)
+        XCTAssertEqual(child.frame.width, childWidth - 40)
+        XCTAssertTrue(f.web.autoresizesSubviews)
         f.buffer.finish()
         for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
         XCTAssertEqual(f.completions, 1)
-        XCTAssertEqual(f.web.frame.width, 740)
+        XCTAssertEqual(f.web.frame.width, 560)
     }
 
-    func testPressHeldBeforeMovingKeepsThePrimedLookahead() {
-        var frame: (@MainActor () -> Void)?
-        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
-        f.buffer.start(); nextPaint(&f.paints)()
-        let primed = f.web.frame.width
-        XCTAssertGreaterThan(primed, 600)
-        f.time += 0.5
-        frame?(); frame?()
-        XCTAssertTrue(f.paints.isEmpty, "No pointer sample yet: keep the prime for the first outward move")
-        XCTAssertEqual(f.web.frame.width, primed)
+    func testTrailingAnchorKeepsTheRightEdgeStill() {
+        let anchor = LivePageResizeAnchor(originalFrame: NSRect(x: 10, y: 0, width: 580, height: 400),
+                                          originalParentBounds: NSRect(x: 0, y: 0, width: 600, height: 400),
+                                          flipped: true, trailing: true)
+        let frame = anchor.frame(for: NSSize(width: 520, height: 400), in: NSRect(x: 0, y: 0, width: 540, height: 400))
+        XCTAssertEqual(frame.maxX, 530, "The 10pt right gap is kept")
+        XCTAssertEqual(frame.width, 520)
     }
 
-    func testHeldDragSettlesWhenTheVisibleClipStaysWiderThanNominal() {
-        var frame: (@MainActor () -> Void)?
-        let f = Fixture(frameDriver: { frame = $0; return {} }); defer { f.close() }
+    func testWindowDragPublishesThePaintedSizeWhenThePointerMovedOn() {
+        let f = Fixture(frameDriver: { _ in {} }); defer { f.close() }
         f.buffer.start(); nextPaint(&f.paints)()
-        f.request(720)
+        f.request(620)
+        f.request(640)
         nextPaint(&f.paints)()
-        frame?()
-        XCTAssertEqual(f.window.frame.width, 720)
-        // A split pane's pixel rounding can leave its clip wider than the nominal share.
-        f.host.setFrameSize(NSSize(width: 720.5, height: f.host.frame.height))
-        f.time += 0.2
-        frame?()
-        for _ in 0..<3 where !f.paints.isEmpty { nextPaint(&f.paints)(); frame?() }
-        frame?(); frame?()
-        XCTAssertTrue(f.paints.isEmpty, "A held drag must not repaint the same clamped viewport every frame")
-        XCTAssertEqual(f.web.frame.width, 720.5, "The held fit covers the wider visible clip")
+        XCTAssertEqual(f.commits.map(\.width), [620], "Continuous input cannot starve the window")
+        XCTAssertEqual(f.web.frame.width, 640, "Then it chases the latest size")
+        nextPaint(&f.paints)()
+        XCTAssertEqual(f.commits.map(\.width), [620, 640])
     }
 
-    func testWindowPublicationReleaseDrainsWithoutAnotherDisplayTick() {
+    func testWindowPublicationReleaseWaitsForTheExactPaintOnly() {
         var frame: (@MainActor () -> Void)?
         var stops = 0
         let f = Fixture(frameDriver: { frame = $0; return { stops += 1 } }); defer { f.close() }
@@ -482,11 +458,9 @@ import XCTest
         f.request(620)
         XCTAssertTrue(f.commits.isEmpty)
         f.buffer.finish()
-        XCTAssertEqual(f.commits.map(\.width), [620])
         XCTAssertEqual(stops, 1)
-        // A velocity-driven refill may already be in flight at release; its
-        // callback must be followed by exact endpoint paint before retirement.
         for _ in 0..<3 where f.completions == 0 { nextPaint(&f.paints)() }
+        XCTAssertEqual(f.commits.map(\.width), [620])
         XCTAssertEqual(f.completions, 1)
         frame?()
         XCTAssertEqual(f.commits.count, 1)
