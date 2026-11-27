@@ -547,39 +547,64 @@ import XCTest
         }
     }
 
-    func testWorkerGetsPromisedAlarmsAndContextsFromTheHost() async throws {
-        // Claude's worker chains `alarms.create(…).catch` and asks getContexts which panels
-        // are open. `offscreen` stays absent: a hidden extension page gets the worker's
-        // process suspended, so Claude, which checks `chrome.offscreen &&`, goes without.
+    func testWorkerGetsPromisedAlarmsContextsAndOffscreenFromTheHost() async throws {
+        // Claude's worker chains `alarms.create(…).catch`, asks getContexts which panels are
+        // open and keeps an offscreen document, which shares the worker's process.
         try Data(#"{"manifest_version":3,"name":"Gaps Fixture","description":"Gaps","version":"1.0","permissions":["alarms","tabs","offscreen","sidePanel"],"background":{"service_worker":"worker.js"},"action":{},"side_panel":{"default_path":"shared.html"}}"#.utf8)
             .write(to: folder.appendingPathComponent("manifest.json"))
+        try Data("<title>Offscreen</title><script src='off.js'></script>".utf8).write(to: folder.appendingPathComponent("off.html"))
+        try Data("""
+            chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                if (message.target !== 'off') return;
+                // The document's own messages reach the worker too.
+                chrome.runtime.sendMessage({fromOffscreen: new DOMParser().parseFromString('<b>parsed</b>', 'text/html').body.textContent})
+                    .then(answer => respond('ready:' + answer));
+                return true;
+            });
+            """.utf8).write(to: folder.appendingPathComponent("off.js"))
         try Data("""
             const created = chrome.alarms.create('refresh', {delayInMinutes: 1});
             const promised = typeof created?.then === 'function';
             created.catch(() => {});
+            // A worker that stalls while the hidden document is open shows as a long gap.
+            let last = 0, gap = 0;
+            setInterval(() => { const now = Date.now(); if (last) gap = Math.max(gap, now - last); last = now; }, 100);
             chrome.runtime.onMessage.addListener((message, sender, respond) => {
+                if (message.fromOffscreen) { respond('heard ' + message.fromOffscreen); return; }
+                if (message.gap) { respond(String(gap)); return; }
+                if (message.target) return;
                 (async () => {
+                    const bad = await chrome.offscreen.createDocument({url: 'off.html', reasons: [], justification: 'Test'}).then(() => 'created', error => error.name);
+                    await chrome.offscreen.createDocument({url: 'off.html', reasons: [chrome.offscreen.Reason.DOM_PARSER], justification: 'Test'});
+                    // Chrome resolves once the document loaded: it answers at once.
+                    const ready = await chrome.runtime.sendMessage({target: 'off'});
                     const types = (await chrome.runtime.getContexts({})).map(context => context.contextType).sort();
-                    respond(JSON.stringify([promised, types, typeof chrome.offscreen, (await chrome.action.getUserSettings()).isOnToolbar]));
+                    const twice = await chrome.offscreen.createDocument({url: 'off.html', reasons: ['BLOBS'], justification: 'Test'}).then(() => 'twice', error => error.message);
+                    gap = 0;
+                    respond(JSON.stringify([promised, types, bad, ready, twice, await chrome.offscreen.hasDocument(), (await chrome.action.getUserSettings()).isOnToolbar]));
                 })().catch(error => respond('failed: ' + error.message));
                 return true;
             });
             """.utf8).write(to: folder.appendingPathComponent("worker.js"))
 
         try await withNativeWindowLoop {
-            let store = TabStore(profileID: profile, session: [])
-            _ = open(store)
             let host = ExtensionHost.host(for: profile)
             _ = try await host.load(folder, installing: true) { _ in true }
             let context = try XCTUnwrap(host.installed.first)
             XCTAssertTrue(ExtensionDiagnostics.runtimeErrors(context.errors, manifest: context.webExtension.manifest).isEmpty, "\(context.errors)")
             let notes = host.entries.first?.compatibility ?? []
-            XCTAssertTrue(notes.contains(where: { $0.hasPrefix("offscreen") && ExtensionDiagnostics.isUnsupported($0) }), "\(notes)")
-            host.sync()
+            XCTAssertTrue(notes.contains("offscreen: Vane runs the document hidden until the extension closes it or reloads."), "\(notes)")
             let page = try await page(context)
             defer { page.stopLoading() }
             let answer = try await run("return String(await chrome.runtime.sendMessage({}))", in: page)
-            XCTAssertEqual(answer, #"[true,["BACKGROUND"],"undefined",true]"#)
+            XCTAssertEqual(answer, #"[true,["BACKGROUND","OFFSCREEN_DOCUMENT"],"TypeError","ready:heard parsed","Only a single offscreen document may be created.",true,true]"#)
+            // #795 dropped offscreen on the belief that a hidden page suspends the worker's
+            // process. The worker's timers keep their pace with the document open.
+            try await Task.sleep(for: .seconds(6))
+            let gap = try await run("return String(await chrome.runtime.sendMessage({gap: true}))", in: page)
+            XCTAssertLessThan(Int(gap ?? "") ?? .max, 2000, "worker stalled with an offscreen document open")
+            let closed = try await run("await chrome.offscreen.closeDocument(); return String(await chrome.offscreen.hasDocument()) + '|' + await chrome.offscreen.closeDocument().then(() => 'closed', error => error.message)", in: page)
+            XCTAssertEqual(closed, "false|No current offscreen document.")
         }
     }
 }

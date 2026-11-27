@@ -8,9 +8,7 @@ import WebKit
 /// still tells the extension the feature is missing. The exceptions answer truthfully
 /// enough to be cheap: `management.getSelf` (from the manifest), `idle.queryState`
 /// (always active) and `action.getUserSettings`; and, from the host over `bridgePath`,
-/// `runtime.getContexts`. `offscreen` stays absent: WebKit runs an extension page in its
-/// worker's process, and suspends that process, worker included, once a hidden page has
-/// loaded. A hidden offscreen document froze Claude's worker two seconds after start.
+/// `runtime.getContexts` and `offscreen` (a hidden extension page the host keeps).
 /// A worker's `WebSocket` is Vane's too (`ExtensionWebSockets`): WebKit's own never connects there.
 /// So is a credentialed request to a site the extension may access (`ExtensionHost.credentialedFetch`).
 /// Vendor resources remain unchanged.
@@ -283,6 +281,23 @@ import WebKit
                   return answer(Promise.resolve(create(...args)), callback && (() => callback()));
                 }});
               }
+              // One hidden page per extension. Chrome validates reasons and justification.
+              if (declared.has('offscreen')) {
+                define(api, 'offscreen', namespace());
+                const reasons = ['TESTING', 'AUDIO_PLAYBACK', 'IFRAME_SCRIPTING', 'DOM_SCRAPING', 'BLOBS', 'DOM_PARSER', 'USER_MEDIA',
+                                 'DISPLAY_MEDIA', 'WEB_RTC', 'CLIPBOARD', 'LOCAL_STORAGE', 'WORKERS', 'BATTERY_STATUS', 'MATCH_MEDIA', 'GEOLOCATION'];
+                constants(api.offscreen, 'Reason', Object.fromEntries(reasons.map(key => [key, key])));
+                define(api.offscreen, 'createDocument', (parameters, callback) => answer((async () => {
+                  if (!Array.isArray(parameters?.reasons) || !parameters.reasons.length || !parameters.reasons.every(reason => reasons.includes(reason)))
+                    throw new TypeError('offscreen.createDocument needs one or more valid reasons.');
+                  if (typeof parameters.justification !== 'string') throw new TypeError('offscreen.createDocument needs a justification.');
+                  const root = new URL(api.runtime.getURL('/')), url = new URL(String(parameters.url ?? ''), root);
+                  if (url.origin !== root.origin) throw new Error('Offscreen documents must be inside the extension.');
+                  await ask('offscreenCreate', {url: url.pathname + url.search});
+                })(), callback));
+                define(api.offscreen, 'hasDocument', callback => answer(ask('offscreenHas'), callback));
+                define(api.offscreen, 'closeDocument', callback => answer(ask('offscreenClose').then(() => {}), callback));
+              }
               // Vane lists every extension with an action in its toolbar menu.
               if (api.action) define(api.action, 'getUserSettings', callback => reply(callback, {isOnToolbar: true}));
               // Workers, side panels, offscreen documents, popups and extension tabs. Tab and
@@ -369,7 +384,7 @@ import WebKit
               // The rest of Chrome's shape, last so the answers above win: enums, constants and
               // events (which never fire) of each namespace the extension already has, WebKit's
               // or a stand-in. Code that reads them at its top level no longer stops there.
-              // No namespace is invented: `chrome.offscreen` or `chrome.userScripts` existing is
+              // No namespace is invented: `chrome.userScripts` existing is
               // how extensions choose what to call, and an empty one would mislead them.
               for (const [path, {enums = {}, constants: values = {}, events = []}] of Object.entries(\#(shape))) {
                 const owner = path.split('.').reduce((parent, key) => parent?.[key], api);

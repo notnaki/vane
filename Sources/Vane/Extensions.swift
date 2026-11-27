@@ -2364,11 +2364,46 @@ import WebKit
 
     // MARK: Chromium stand-ins
 
+    /// `offscreen`: one hidden extension page per extension, as in Chrome. It shares the
+    /// worker's process; WebKit keeps both running (`ExtensionSidePanelTests` holds one open
+    /// for seconds and checks the worker's timers never stall).
+    private var offscreenDocuments: [ObjectIdentifier: WKWebView] = [:]
+
     private func answer(_ request: ExtensionChromiumGaps.Request, for context: WKWebExtensionContext) async throws -> Any {
-        let arguments = request.arguments
+        let key = ObjectIdentifier(context), arguments = request.arguments
         switch request.operation {
         case "contexts":
             return extensionContexts(context)
+        case "offscreenCreate", "offscreenHas", "offscreenClose":
+            guard Set(context.webExtension.manifest["permissions"] as? [String] ?? []).contains("offscreen") else {
+                throw Failure("This extension has not requested the offscreen permission.")
+            }
+            switch request.operation {
+            case "offscreenHas":
+                return offscreenDocuments[key] != nil
+            case "offscreenClose":
+                guard let web = offscreenDocuments.removeValue(forKey: key) else { throw Failure("No current offscreen document.") }
+                web.stopLoading()
+                return NSNull()
+            default:
+                guard offscreenDocuments[key] == nil else { throw Failure("Only a single offscreen document may be created.") }
+                // `page` keeps the document inside the extension; the stand-in sends its path.
+                guard let url = (arguments["url"] as? String).flatMap({ ExtensionSidePanelAPI.page($0, base: context.baseURL) }),
+                      let cfg = context.webViewConfiguration else { throw Failure("Invalid offscreen document URL.") }
+                let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: cfg)
+                userAgent.track(web)
+                web.isInspectable = Settings.inspectorEnabled
+                offscreenDocuments[key] = web
+                // Chrome resolves once the document has loaded, so its listeners are there for
+                // the extension's next message.
+                let loaded = await OffscreenLoad.run(web, url: url)
+                guard loaded, offscreenDocuments[key] === web else {
+                    if offscreenDocuments[key] === web { offscreenDocuments[key] = nil }
+                    web.stopLoading()
+                    throw Failure("The offscreen document could not be loaded.")
+                }
+                return NSNull()
+            }
         case "fetch":
             return try await credentialedFetch(arguments, for: context)
         case let operation where operation.hasPrefix("ws."):
@@ -2483,6 +2518,7 @@ import WebKit
             add("BACKGROUND", path.flatMap { URL(string: $0, relativeTo: context.baseURL)?.absoluteURL }, context, frameId: background?["service_worker"] != nil ? -1 : 0)
         }
         for panel in sidePanels where panel.context === context { add("SIDE_PANEL", panel.web.url ?? panel.page, panel) }
+        if let web = offscreenDocuments[ObjectIdentifier(context)] { add("OFFSCREEN_DOCUMENT", web.url, web) }
         for presentation in actionWindows.values where presentation.context === context { add("POPUP", presentation.web.url, presentation) }
         for adapter in requestedWindows.values where adapter.presentation.context === context {
             add("TAB", adapter.presentation.web.url, adapter.presentation)
@@ -2849,6 +2885,7 @@ import WebKit
         sidePanelOptions = sidePanelOptions.filter { $0.key.context != ObjectIdentifier(context) }
         sidePanelsOnAction.remove(ObjectIdentifier(context))
         sidePanelGestures[ObjectIdentifier(context)] = nil
+        offscreenDocuments.removeValue(forKey: ObjectIdentifier(context))?.stopLoading()
         debugger.forget(context)
         tabGroups.forget(context)
         for adapter in Array(requestedWindows.values) where adapter.presentation.context === context { adapter.presentation.close() }
@@ -3434,4 +3471,32 @@ extension View {
         store?.window?.performClose(nil)
         store.map { ExtensionHost.host(for: $0.profileID).sync() }
     }
+}
+
+/// One offscreen document's first load: finished, failed, or out of time.
+@MainActor private final class OffscreenLoad: NSObject, WKNavigationDelegate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    static func run(_ web: WKWebView, url: URL) async -> Bool {
+        let load = OffscreenLoad()
+        web.navigationDelegate = load
+        defer { web.navigationDelegate = nil }
+        return await withCheckedContinuation { continuation in
+            load.continuation = continuation
+            web.load(URLRequest(url: url))
+            Task { [weak load] in
+                try? await Task.sleep(for: .seconds(10))
+                load?.finish(false)
+            }
+        }
+    }
+
+    private func finish(_ loaded: Bool) {
+        continuation?.resume(returning: loaded)
+        continuation = nil
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish(true) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) { finish(false) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) { finish(false) }
 }
