@@ -30,6 +30,8 @@ its pending app request. Restoring a backup requires fresh security consent; see
 | Serial ports | None in WebKit. Vane injects `navigator.serial` and does the I/O itself; see [Serial ports](#serial-ports) | A chooser per request; the picked device is remembered for that origin and profile until forgotten. No Ask/Allow/Block answer: there is nothing to allow without a device. |
 | Files and folders | None in WebKit for the user's own files (it has the handle classes only for the origin private file system). Vane injects `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker`; see [Files and folders](#files-and-folders) | Picking is the grant. Edit access to an opened file or a folder asks again in the permission bubble. Lasts for the document only; nothing is saved. |
 | HID devices | None in WebKit. Vane injects `navigator.hid` and does the I/O itself; see [HID devices](#hid-devices) | A chooser per request; the picked device is remembered for that origin and profile until forgotten. No Ask/Allow/Block answer: there is nothing to allow without a device. |
+| USB devices | None in WebKit. Vane injects `navigator.usb` and does the I/O itself with IOUSBLib; see [USB devices](#usb-devices) | As for HID devices. |
+| Bluetooth devices | None in WebKit. Vane injects `navigator.bluetooth` and talks to the radio with CoreBluetooth; see [Bluetooth devices](#bluetooth-devices) | As for HID devices; the grant also names the GATT services the site may use. macOS asks once whether Vane may use Bluetooth. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
 Location decisions and the Location row are available on the minimum macOS 26 runtime,
@@ -303,6 +305,106 @@ busy; past that the oldest go.
 Limits: no `navigator.hid` in workers or frames. Bluetooth HID devices are listed like
 USB ones but have not been tried on hardware.
 
+## USB devices
+
+System WebKit has no WebUSB API. Vane adds one without patching WebKit: a page script
+defines `navigator.usb` (`requestDevice`, `getDevices`, `connect`/`disconnect`, and
+`USBDevice` with its descriptor attributes, `configuration`/`configurations` (with
+`USBInterface`, `USBAlternateInterface` and `USBEndpoint`), `open`, `close`, `forget`,
+`selectConfiguration`, `claimInterface`, `releaseInterface`, `selectAlternateInterface`,
+`controlTransferIn`/`Out`, `transferIn`/`Out`, `clearHalt` and `reset`). Each call is a
+script message answered natively with IOUSBLib (USBDevice.swift). Descriptors come from
+the copy macOS keeps, so listing a device sends it nothing. Every blocking call runs off the
+main thread on its own worker, so a `transferIn` waiting for data does not hold up a
+`transferOut`; transfers have no timeout, as in the spec. Data crosses as base64, at most
+4 MiB per transfer.
+
+The packaged app carries `com.apple.security.device.usb`, the entitlement WebHID already
+needed. macOS 27's sandbox profile (`/System/Library/Sandbox/Profiles/application.sb`)
+allows the IOUSBLib user clients, `IOUSBDeviceUserClientV2` and
+`IOUSBInterfaceUserClientV3`, only under it; the IOUSBHost framework's clients are not on
+that list, which is why Vane uses IOUSBLib. When a macOS driver holds the whole device (a
+composite device), Vane carries on as libusb does: interfaces no driver claimed, control
+transfers and the configuration macOS already set still work, but choosing another
+configuration or `reset()` does not. An interface a macOS driver claimed cannot be
+claimed (`NetworkError`).
+
+The page script is trusted with nothing. Every message is checked again natively, against
+the device's descriptors and this document's own record of what it opened and claimed:
+
+- **Who** and **when the chooser may open**: as for HID devices (main frame, secure
+  context, a user gesture confirmed from a separate content world, one chooser at a time,
+  closed when the page navigates, hides or closes).
+- **Which device.** Only one picked for that exact origin in that profile, behind an opaque
+  per-document id. Grants follow vendor, product and serial number; a device without a
+  serial number keeps its grant only in memory until it is unplugged, as in Chromium.
+  Chromium's USB blocklist (security keys, the same list WebHID uses) is never offered.
+- **Which interfaces.** Chromium's protected classes: an interface any alternate of which
+  is audio, HID, mass storage, smart card, video, audio/video or wireless controller
+  (Bluetooth) cannot be claimed (`SecurityError`). Transfers go only to an endpoint of the
+  selected alternate of a claimed interface, in the right direction. Control transfers to an
+  interface or endpoint need it claimed. Standard `SET_ADDRESS`, `SET_CONFIGURATION` and
+  `SET_INTERFACE` requests are refused; use `selectConfiguration` and
+  `selectAlternateInterface`.
+- **One change at a time.** While a `selectConfiguration`, `claimInterface`,
+  `releaseInterface`, `selectAlternateInterface` or `reset` is running on a device, another
+  rejects with `InvalidStateError`. The configuration is read from the device when it opens.
+  At most 16 calls and 16 MiB of transfer buffers may be in flight per device.
+
+Grants, forgetting (Site Controls' **USB Device** row, Settings → Privacy → Site
+Permissions, `device.forget()`, Reset Permissions, deleting the profile), private tabs,
+backups, unplugging, the back/forward cache and suspension behave as for HID devices.
+
+Limits: no `navigator.usb` in workers or frames; isochronous transfers reject with
+`NotSupportedError`; `configurationName` and `interfaceName` are `null`. Real devices
+have not been tried yet: the fixtures use fake devices.
+
+## Bluetooth devices
+
+System WebKit has no Web Bluetooth API. Vane adds one without patching WebKit: a page
+script defines `navigator.bluetooth` (`getAvailability`, `requestDevice` with `filters`
+(`services`, `name`, `namePrefix`, `manufacturerData`), `exclusionFilters`,
+`optionalServices` and `acceptAllDevices`, `getDevices`, and `BluetoothUUID`), and
+`BluetoothDevice` with `id`, `name`, `forget()` and `gatt`: `connect`, `disconnect`,
+`getPrimaryService(s)`, then `getCharacteristic(s)` and `getDescriptor(s)`,
+`readValue`, `writeValue`, `writeValueWithResponse`, `writeValueWithoutResponse`,
+`startNotifications`/`stopNotifications` and `characteristicvaluechanged`, and
+`gattserverdisconnected`. Each call is a script message answered natively with
+CoreBluetooth (BluetoothDevice.swift).
+
+The packaged app carries `com.apple.security.device.bluetooth`: the sandbox's
+`(bluetooth)` rule, which reaches `bluetoothd` and the LE ATT service, applies only under
+it. `NSBluetoothAlwaysUsageDescription` is in the Info.plist. Nothing touches
+CoreBluetooth until a site asks to pick a device (or connects to one it was given), so
+macOS asks "Allow Vane to use Bluetooth?" then, not at launch. If the user says no, the
+chooser says so and lists nothing. The radio scans only while the chooser is open.
+
+The page script is trusted with nothing:
+
+- **Who** and **when the chooser may open**: as for HID devices.
+- **Which device.** Only one picked for that exact origin in that profile. `device.id` is
+  random per grant, so two sites never see the same id; CoreBluetooth's own id never
+  reaches a page.
+- **Which services.** Only those the request named in `filters` and `optionalServices`;
+  asking for another rejects with `SecurityError`. Chromium's GATT blocklist: the HID,
+  FIDO, and Nordic and TI firmware-update services are never reachable (a filter naming one
+  rejects); the reconnection address and serial number string characteristics are hidden;
+  the peripheral privacy flag and the client and server characteristic configuration
+  descriptors can't be written. A filter on Apple's manufacturer data that could match an
+  iBeacon frame (its prefix, under its mask, doesn't rule out `02 15`; an empty prefix
+  could match anything) is refused.
+- **What it may do.** A characteristic's properties decide whether it can be read, written
+  with or without a response, or subscribed to. Values are at most 512 bytes.
+
+One connection per device serves every tab that uses it; it drops when the last one lets
+go. Grants, forgetting (the **Bluetooth Device** row), private tabs, backups and
+suspension behave as for HID devices; a document's connection drops when it is replaced.
+
+Limits: no `navigator.bluetooth` in workers or frames; no `watchAdvertisements`,
+`getIncludedService(s)`, `serviceData` filters or `referringDevice`; `BluetoothUUID`
+knows the common GATT names, not all of them. Real devices have not been tried yet: the
+fixtures use a fake radio.
+
 ## Validation and remaining platform coverage
 
 Run the focused fixtures on a logged-in macOS desktop:
@@ -312,6 +414,7 @@ swift test --filter 'SitePermissionTests|SitePermissionWebTests|WebNotification|
 swift test --filter 'WebSerialTests|SerialConnectionTests|WebSerialWebKitTests'
 swift test --filter 'FileSystemAccessDiskTests|FileSystemAccessWebKitTests'
 swift test --filter 'WebHIDTests|WebHIDWebKitTests'
+swift test --filter 'WebUSBTests|WebUSBWebKitTests|WebBluetoothTests|WebBluetoothWebKitTests'
 ./.build/debug/vane selfcheck --pure
 python3 scripts/check-permission-display.py
 ```
@@ -348,6 +451,12 @@ arithmetic and by hand on hardware, not by a fixture.
 boot keyboard, a FIDO key, a gaming mouse) and opens no window. `WebHIDWebKitTests`
 uses fake devices and answers the chooser itself; real IOKit opens, Input Monitoring and
 Bluetooth are checked by hand on hardware.
+
+`WebUSBTests` parses a real configuration descriptor (bulk, interrupt and isochronous
+endpoints, two alternates, a HID interface) and `WebUSBWebKitTests` drives a page against a
+fake device. `WebBluetoothTests` and `WebBluetoothWebKitTests` use a fake radio and never
+create a `CBCentralManager`, so they cannot make macOS ask about Bluetooth. Neither opens
+a window or touches hardware.
 
 This is not verification of real TCC Allow/deny/revocation, accuracy of delivered
 location coordinates, native screen-source chooser restrictions, audio sharing, or

@@ -191,6 +191,23 @@ listed. A site never gets a keyboard's keystrokes or a mouse's movement. If a de
 also a keyboard, macOS may ask to allow Vane **Input Monitoring**. If you say no, the
 site can't open that device.
 
+### USB devices
+
+Sites that flash or talk to USB hardware over WebUSB work in Vane: Arduino and
+Raspberry Pi Pico tools, ESP and STM32 flashers that use WebUSB, debug probes, and the
+like. Click the site's connect button, pick the device under the address bar, and click
+**Connect**. Turn off its **USB Device** row in **Site Controls** to forget it. Security
+keys are never listed, and a site can't use the part of a device macOS uses as a keyboard,
+disk, microphone or camera.
+
+### Bluetooth devices
+
+Sites that use Web Bluetooth work in Vane: heart-rate and fitness dashboards, smart lights,
+and device setup pages. Click the site's connect button and pick the device from the
+list of devices in range. The first time, macOS asks whether Vane may use Bluetooth. The
+site can use only the services it asked for; turn off its **Bluetooth Device** row in
+**Site Controls** to forget it.
+
 ## AI connections and feature routing
 
 AI features are off until you turn them on in onboarding or **Settings → Max**. Apple's

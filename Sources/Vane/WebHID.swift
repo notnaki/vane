@@ -472,16 +472,7 @@ import WebKit
 
     /// HTTPS, or HTTP to this Mac itself. Mirrors the page's `isSecureContext`, so not
     /// `DeveloperMode.isLocal`: that one also takes `0.0.0.0`, which is no loopback address and no secure context.
-    nonisolated static func isSecure(_ scope: Scope) -> Bool {
-        if scope.scheme == "https" { return true }
-        let host = scope.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        // Exactly localhost, as WebKit's isSecureContext has it; `*.localhost` is not one.
-        if host == "localhost" { return true }
-        // inet_pton, not a resolver: a name is never looked up to decide this.
-        var v4 = in_addr(), v6 = in6_addr()
-        if inet_pton(AF_INET, host, &v4) == 1 { return v4.s_addr & 0xff == 127 }    // network order: first octet
-        return inet_pton(AF_INET6, host, &v6) == 1 && withUnsafeBytes(of: &v6) { $0.dropLast().allSatisfy { $0 == 0 } && $0.last == 1 }
-    }
+    nonisolated static func isSecure(_ scope: Scope) -> Bool { DeviceAccess.isSecure(scope) }
 
     // MARK: - One document's devices
 
@@ -820,64 +811,15 @@ private struct HIDChooser: View {
     let excluding: [WebHID.Filter]
     let respond: (HIDDeviceInfo.Identity?) -> Void
     @ObservedObject private var devices = HIDDevices.shared
-    @State private var selection: HIDDeviceInfo.Identity?
 
     var body: some View {
         // The first interface of each device names its row.
-        let candidates = WebHID.Filter.candidates(devices.devices, filters: filters, excluding: excluding)
+        let rows = WebHID.Filter.candidates(devices.devices, filters: filters, excluding: excluding)
             .reduce(into: [HIDDeviceInfo]()) { rows, device in
                 if !rows.contains(where: { $0.identity == device.identity }) { rows.append(device) }
             }
-        let picked = selection.flatMap { identity in candidates.contains { $0.identity == identity } ? identity : nil }
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "gamecontroller")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 32, height: 32)
-                    .background(.quaternary, in: .circle)
-                    .accessibilityHidden(true)
-                Text("\(site) wants to connect to a HID device")
-                    .font(.system(size: 14, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            // One height whatever is plugged in, so the bubble does not resize under the pointer.
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(candidates, id: \.identity) { device in
-                        Button { selection = device.identity } label: {
-                            Text(device.label).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8).padding(.vertical, 6)
-                                .background(.primary.opacity(picked == device.identity ? 0.21 : 0.04), in: .rect(cornerRadius: 6))
-                                .contentShape(.rect(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(picked == device.identity ? .isSelected : [])
-                    }
-                }
-            }
-            .frame(height: 120)
-            .overlay {
-                if candidates.isEmpty {
-                    Text("No compatible devices found.").font(.system(size: 13)).foregroundStyle(.secondary)
-                }
-            }
-            HStack(spacing: 8) {
-                Button { respond(nil) } label: { Text("Cancel") }
-                    .buttonStyle(PermissionButtonStyle())
-                    .keyboardShortcut(.cancelAction)
-                // No default key: a keystroke meant for the page must not be able to grant.
-                Button { respond(picked) } label: { Text("Connect") }
-                    .buttonStyle(PermissionButtonStyle(emphasized: true))
-                    .disabled(picked == nil)
-                    .opacity(picked == nil ? 0.5 : 1)
-            }
-            .font(.system(size: 14, weight: .semibold))
-        }
-        .foregroundStyle(.primary.opacity(0.8))
-        .padding(10)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("HID device request from \(site)")
+        DeviceChooserList(symbol: "gamecontroller", title: "\(site) wants to connect to a HID device",
+                          rows: rows.map { .init(id: $0.identity, label: $0.label) },
+                          accessibility: "HID device request from \(site)", respond: respond)
     }
 }
