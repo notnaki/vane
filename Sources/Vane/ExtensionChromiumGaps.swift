@@ -298,6 +298,20 @@ import WebKit
                 define(api.offscreen, 'hasDocument', callback => answer(ask('offscreenHas'), callback));
                 define(api.offscreen, 'closeDocument', callback => answer(ask('offscreenClose').then(() => {}), callback));
               }
+              // A devtools_page runs in Safari's Web Inspector, where WebKit gives it panels.create,
+              // themeName, onThemeChanged, inspectedWindow (eval, reload, tabId) and
+              // network.onNavigated. Chrome's other members, as stand-ins: React DevTools
+              // subscribes to elements.onSelectionChanged as it starts. Methods (sidebar panes,
+              // getHAR, openResource) stay undefined.
+              const devtools = api.devtools;
+              if (devtools?.panels) {
+                owners.push(devtools.panels);
+                for (const key of ['elements', 'sources']) define(devtools.panels, key, Object.freeze({onSelectionChanged: event()}));
+              }
+              if (devtools?.network) {
+                owners.push(devtools.network);
+                define(devtools.network, 'onRequestFinished', event());
+              }
               // Vane lists every extension with an action in its toolbar menu.
               if (api.action) define(api.action, 'getUserSettings', callback => reply(callback, {isOnToolbar: true}));
               // Workers, side panels, offscreen documents, popups and extension tabs. Tab and

@@ -246,9 +246,17 @@ separate from link previews.
 ## Limits
 
 - **Not available:** real native messaging (so desktop-app bridges such as Claude Desktop's or
-  1Password's), developer-tools panels, replacement new-tab pages, omnibox keywords,
+  1Password's), replacement new-tab pages, omnibox keywords,
   Chrome's Google-account sign-in (`identity.getAuthToken` and `oauth2`),
-  `chrome.offscreen`, and ZIP or CRX files from disk.
+  and ZIP or CRX files from disk.
+- **Developer-tools panels** (`devtools_page`, such as React or Vue DevTools) are tabs in Web
+  Inspector: turn on **Allow Web Inspector**, then **Developer → Show Web Inspector**. WebKit
+  supplies `devtools.panels.create`, `themeName`, `inspectedWindow.eval`, `reload` and
+  `tabId`, and `network.onNavigated`. Element and source sidebars, `network.getHAR` and
+  request events aren't available.
+- **`chrome.offscreen`** runs one hidden document per extension until it's closed or the
+  extension reloads. It gets every extension API, not only `runtime`, and Chrome's
+  audio-only timeout doesn't apply.
 - **Apple's iCloud Passwords extension** can't run: macOS only starts its helper for
   Apple-approved browsers. See [Password manager](PASSWORD-MANAGER.md) and the
   [investigation](EXTENSION-VALIDATION.md#icloud-passwords-investigation--2026-11-22).

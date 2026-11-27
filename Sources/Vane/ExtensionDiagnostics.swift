@@ -38,6 +38,9 @@ import WebKit
         if missing.contains("offscreen"), required.contains("offscreen") {
             issues.append("offscreen: Vane runs the document hidden until the extension closes it or reloads.")
         }
+        if manifest["devtools_page"] != nil {
+            issues.append("devtools_page: panels are tabs in Web Inspector (Developer → Show Web Inspector, with Allow Web Inspector on). WebKit answers panels.create, themeName, inspectedWindow.eval, reload and tabId, and network.onNavigated; element and source sidebars, network.getHAR and request events are unavailable.")
+        }
         if declared.contains(ExtensionSidePanelAPI.permission) {
             issues.append("sidePanel: Vane docks the panel beside the page. Its options last until the extension reloads; panel events are unavailable.")
         }
@@ -69,7 +72,6 @@ import WebKit
         }
         for (key, detail) in [
             ("chrome_url_overrides", "replacement browser pages"),
-            ("devtools_page", "extension developer-tools panels"),
             ("omnibox", "extension search keywords"),
             ("oauth2", "Chrome identity integration")
         ] where manifest[key] != nil {

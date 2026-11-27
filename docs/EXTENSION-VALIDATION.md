@@ -43,7 +43,7 @@ A probe extension (made for this audit, not committed) requests every stable MV3
 | `main` at `67d08db7` | 214 | 396 |
 | This change | 270 | 340 |
 
-The gain is Chrome's enums, scalar constants and events, filled into every namespace an extension already has. `scripts/chromium-api-shape/` generates the table from Chromium's schemas. What remains is almost all methods: 278 members in 35 namespaces WebKit lacks entirely (`contentSettings`, `bookmarks`, `fontSettings`, `system.display`, `browsingData`, `history`, `tts`, `userScripts`, `omnibox`, `offscreen` and others), and 55 functions in namespaces that exist, among them `downloads.*`, `notifications.create`, `management.getAll` and `tabs.discard`. Each needs a real host feature, not a stand-in. Vane invents no namespace: extensions test `chrome.offscreen` or `chrome.userScripts` to choose what to call.
+The gain is Chrome's enums, scalar constants and events, filled into every namespace an extension already has. `scripts/chromium-api-shape/` generates the table from Chromium's schemas. What remains is almost all methods: 278 members in 35 namespaces WebKit lacks entirely (`contentSettings`, `bookmarks`, `fontSettings`, `system.display`, `browsingData`, `history`, `tts`, `userScripts`, `omnibox` and others), and 55 functions in namespaces that exist, among them `downloads.*`, `notifications.create`, `management.getAll` and `tabs.discard`. Each needs a real host feature, not a stand-in. Vane invents no empty namespace: extensions test `chrome.userScripts` to choose what to call. `offscreen` (since restored) is a real hidden document, not a stand-in.
 
 **Safari app extensions are left alone.** A signed Safari fixture (`SafariAppExtensionTests`) declaring `notifications`, `tabGroups` and `nativeMessaging` sees no stand-in namespace, no added `Symbol.dispose` and native messaging off, in its worker and its page, after this change.
 
@@ -234,7 +234,7 @@ One crash was found and fixed on the way: an extension page hosted by Vane (opti
 | `debugger` (`attach`, `sendCommand`, `onEvent`) | Absent; events only in Vane, methods undefined (since emulated in part: see the section above) | **Page actions do not work.** Claude clicks, types and takes screenshots through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`, `Network.*`). WebKit offers extensions no equivalent. |
 | `tabGroups`, `tabs.group`/`ungroup` | Absent; constants and events only | Claude's tab group is not created. |
 | `identity.launchWebAuthFlow` | Absent; undefined | Claude's silent OAuth refresh path fails. Whether interactive sign-in completes was not tested. |
-| `notifications`, `offscreen`, `downloads` | Absent; events only, methods undefined | No notifications, no offscreen audio/GIF document, no downloads from the extension. |
+| `notifications`, `downloads` | Absent; events only, methods undefined | No notifications, no downloads from the extension. (`offscreen` is now a hidden extension document.) |
 | `runtime.connectNative` | Hidden by Vane | Claude reports the desktop app and Claude Code connection as absent. |
 | `runtime.getContexts` | Absent | Claude's ⌘E command cannot tell that its panel is open, so it does not toggle. |
 | `action.getUserSettings`, `action.setBadgeTextColor`, `favicon` | Absent | Cosmetic. |

@@ -1,3 +1,4 @@
+import JavaScriptCore
 import XCTest
 @testable import vane
 
@@ -64,5 +65,29 @@ import XCTest
         for invalid in ["<all_urls>", "ftp://a.example/*", "https://a.*.example/*", "https://", "https://*/*", "*://*/*", "*://*.com/*"] {
             XCTAssertNil(ExtensionChromiumGaps.pageRegex(invalid), invalid)
         }
+    }
+
+    func testDevToolsPageAndOffscreenGetChromesMissingMembers() throws {
+        // The stand-in script, run against WebKit's devtools shape: panels.create, themeName,
+        // inspectedWindow and network.onNavigated are WebKit's; the rest are Vane's.
+        let js = try XCTUnwrap(JSContext())
+        js.exceptionHandler = { _, error in XCTFail("\(error?.toString() ?? "")") }
+        js.evaluateScript("""
+            const event = () => ({addListener() {}, removeListener() {}, hasListener: () => false});
+            globalThis.chrome = {
+              runtime: {getManifest: () => ({manifest_version: 3, permissions: ['offscreen']}), getURL: path => 'webkit-extension://abc' + path, id: 'abc'},
+              tabs: {create: () => Promise.reject(new Error('unused'))},
+              devtools: {panels: {create() {}, themeName: 'dark', onThemeChanged: event()}, network: {onNavigated: event()},
+                         inspectedWindow: {eval() {}, reload() {}, tabId: 4}}
+            };
+            """)
+        js.evaluateScript(ExtensionChromiumGaps.script)
+        let answer = js.evaluateScript("""
+            [typeof chrome.devtools.panels.elements.onSelectionChanged.addListener, typeof chrome.devtools.panels.sources.onSelectionChanged.addListener,
+             typeof chrome.devtools.panels.elements.createSidebarPane, typeof chrome.devtools.network.onRequestFinished.addListener,
+             typeof chrome.devtools.network.getHAR, chrome.devtools.panels.themeName, chrome.offscreen.Reason.CLIPBOARD,
+             typeof chrome.offscreen.createDocument, typeof chrome.offscreen.closeDocument].join(',')
+            """)?.toString()
+        XCTAssertEqual(answer, "function,function,undefined,function,undefined,dark,CLIPBOARD,function,function")
     }
 }
