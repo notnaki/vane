@@ -302,8 +302,9 @@ import WebKit
                         // A newer show with the same tag already posted while this icon loaded.
                         if latest[identifier] != key { replyHandler(true, nil); return }
                         latest[identifier] = nil
-                        // The tab closed, the page went or the answer changed while the icon loaded.
-                        guard WebNotifications.tab(tabID) != nil, tab.existingWeb === web,
+                        // The tab closed, the page went, the answer changed or the entry was evicted
+                        // (untracked, it could outlive the tab) while the icon loaded.
+                        guard shown[tabID]?[key] == identifier, WebNotifications.tab(tabID) != nil, tab.existingWeb === web,
                               tab.permissionGeneration == generation, answer() == true,
                               await WebNotifications.post(identifier, content) else {
                             if shown[tabID]?[key] == identifier { shown[tabID]?[key] = nil }
