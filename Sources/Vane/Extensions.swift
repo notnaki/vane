@@ -792,6 +792,7 @@ import WebKit
         if let path = loaded.first(where: { $0.context === context })?.path { revokeICloudStorageLeases(path) }
         nativeMessagingDenial.cancel(contextID: ObjectIdentifier(context))
         webSockets.close(owner: ObjectIdentifier(context))
+        ExtensionNotifications.forget(owner: notificationOwner(context))
         try controller.unload(context)
         filterBridges.removeValue(forKey: ObjectIdentifier(context))?.invalidate()
         backgroundViews.removeObject(forKey: context)
@@ -2371,6 +2372,9 @@ import WebKit
             return extensionContexts(context)
         case "fetch":
             return try await credentialedFetch(arguments, for: context)
+        case let operation where operation.hasPrefix("notifications."):
+            return try await ExtensionNotifications.answer(operation, arguments, owner: notificationOwner(context),
+                                                           name: context.webExtension.displayName ?? "Extension")
         case let operation where operation.hasPrefix("ws."):
             let origin = "chrome-extension://" + chromeID(of: context, path: loaded.first { $0.context === context }?.path).id
             if let value = try await webSockets.answer(operation, arguments, origin: origin, owner: ObjectIdentifier(context)) { return value }
@@ -2378,6 +2382,10 @@ import WebKit
         default:
             throw Failure("Vane does not answer \(request.operation).")
         }
+    }
+
+    private func notificationOwner(_ context: WKWebExtensionContext) -> String {
+        "\(profileID)/\(context.uniqueIdentifier)"
     }
 
     private let fetchSession: URLSession = {

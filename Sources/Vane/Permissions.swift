@@ -10,6 +10,8 @@ import WebKit
         /// A `window.open` nothing the user did asked for. Never prompted: Ask is "block it
         /// and say so", Allow opens it, Block drops it quietly. See `Tab.createWebViewWith`.
         case popups
+        /// The page `Notification` API, which only `WebNotifications`' shim gives a page.
+        case notifications
         init?(_ media: WKMediaCaptureType) {
             switch media {
             case .camera: self = .camera
@@ -128,6 +130,7 @@ import WebKit
         case .cameraAndMicrophone: "use your camera and microphone"
         case .location: "access your location"
         case .popups: "open pop-up windows"
+        case .notifications: "show notifications"
         }
     }
 
@@ -148,6 +151,7 @@ import WebKit
         if let tabID = scope.privateTabID { privateAnswers[tabID, default: [:]][name] = allow }
         else { defaults.set(allow, forKey: name) }
         if !allow { revoke(scope: scope, type: type) }
+        WebNotifications.permissionChanged()
     }
 
     private static func forget(scope: Scope, type: Kind) {
@@ -162,7 +166,7 @@ import WebKit
         let camera = remembered(scope: scope, type: .camera)
         let microphone = remembered(scope: scope, type: .microphone)
         let once = tabID.flatMap { onceAnswers[$0]?[scope] } ?? []
-        if type == .location || type == .popups {
+        if type == .location || type == .popups || type == .notifications {
             return remembered(scope: scope, type: type) ?? (once.contains(type) ? true : nil)
         }
         let oncePair: Bool? = once.contains(.cameraAndMicrophone) ? true : nil
@@ -179,7 +183,7 @@ import WebKit
             if pair == false || camera == false || microphone == false { return false }
             if pair == true { return true }
             return cameraAnswer == true && microphoneAnswer == true ? true : nil
-        case .location, .popups: return nil
+        case .location, .popups, .notifications: return nil
         }
     }
 
@@ -209,6 +213,7 @@ import WebKit
         if let answer { remember(scope: scope, type: type, allow: answer) }
         else { forget(scope: scope, type: type) }
         if answer == nil { revoke(scope: scope, type: type) }
+        WebNotifications.permissionChanged()
     }
 
     static func makePrompt(scope: Scope, type: Kind) -> SitePermissionPrompt {
@@ -218,6 +223,7 @@ import WebKit
         case .cameraAndMicrophone: "video.badge.waveform.fill"
         case .location: "location.fill"
         case .popups: "macwindow.on.rectangle"
+        case .notifications: "bell.fill"
         }
         let site = scope.scheme == "https" ? String(scope.origin.dropFirst("https://".count)) : scope.origin
         return SitePermissionPrompt(
@@ -364,11 +370,25 @@ import WebKit
         for type in Kind.allCases {
             forget(scope: scope, type: type)
         }
+        WebNotifications.permissionChanged()
     }
 
     static func forgetPrivate(tabID: UUID) {
         endDocument(tabID: tabID)
         privateAnswers.removeValue(forKey: tabID)
+    }
+
+    /// Origin → saved Notifications answer: what the shim reports as `Notification.permission`
+    /// before the page can ask. A private tab has only its own answers.
+    static func notificationAnswers(profileID: UUID, privateTabID: UUID?) -> [String: Bool] {
+        let saved: [String: Any] = privateTabID.map { privateAnswers[$0] ?? [:] } ?? defaults.dictionaryRepresentation()
+        var out: [String: Bool] = [:]
+        for (name, value) in saved {
+            guard let parsed = parse(key: name), parsed.what == "Notifications", parsed.scope.profileID == profileID,
+                  let allow = value as? Bool else { continue }
+            out[parsed.scope.origin] = allow
+        }
+        return out
     }
 
     struct Grant: Identifiable, Equatable, Sendable {
@@ -394,6 +414,7 @@ import WebKit
         case "cameraAndMicrophone": what = "Camera and microphone"
         case "location": what = "Location"
         case "popups": what = "Pop-ups"
+        case "notifications": what = "Notifications"
         default: return nil
         }
         return (scope, what)
@@ -430,6 +451,7 @@ import WebKit
                 }
             }
         } else { privateAnswers.removeAll() }
+        WebNotifications.permissionChanged()
     }
 
     // MARK: - check

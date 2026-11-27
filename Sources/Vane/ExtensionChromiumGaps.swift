@@ -5,7 +5,8 @@ import WebKit
 /// Without them the extension's first `chrome.notifications.onClicked.addListener(…)`
 /// throws and its whole background fails to load. Each stands in with its events, which
 /// never fire, and its constants. Its methods stay undefined, so `chrome.downloads?.download`
-/// still tells the extension the feature is missing. The exceptions answer truthfully
+/// still tells the extension the feature is missing. `notifications` is the exception: it
+/// works, through Notification Center (`ExtensionNotifications`). The exceptions answer truthfully
 /// enough to be cheap: `management.getSelf` (from the manifest), `idle.queryState`
 /// (always active) and `action.getUserSettings`; and, from the host over `bridgePath`,
 /// `runtime.getContexts`. `offscreen` stays absent: WebKit runs an extension page in its
@@ -333,6 +334,53 @@ import WebKit
                   Object.defineProperty(api.idle, 'IdleState', {configurable: true, value: Object.freeze({ACTIVE: 'active', IDLE: 'idle', LOCKED: 'locked'})});
                 define(api.idle, 'queryState', (threshold, callback) => reply(callback, 'active'));
                 define(api.idle, 'setDetectionInterval', () => {});
+              }
+              // Notification Center, under the extension's name (`ExtensionNotifications`). Its
+              // events reach the worker by a long poll that runs while notifications are up.
+              const notifications = api.notifications;
+              if (declared.has('notifications') && notifications && typeof notifications.create !== 'function') {
+                const listeners = {clicked: new Set(), closed: new Set(), buttonClicked: new Set()};
+                const worker = typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope;
+                let polling = false, again = false;
+                const poll = () => {
+                  again = true;
+                  if (polling || !worker) return;
+                  polling = true;
+                  (async () => {
+                    while (again) {
+                      again = false;
+                      for (;;) {
+                        const {events = [], idle = true} = await ask('notifications.next').catch(() => ({}));
+                        for (const {type, id, byUser, index} of events) for (const listener of [...(listeners[type] ?? [])])
+                          try { type === 'closed' ? listener(id, byUser) : type === 'buttonClicked' ? listener(id, index) : listener(id); } catch (error) { console.error(error); }
+                        if (idle) break;
+                      }
+                    }
+                    polling = false;
+                  })();
+                };
+                for (const type of Object.keys(listeners)) Object.defineProperty(notifications, 'on' + type[0].toUpperCase() + type.slice(1), {configurable: true, value: Object.freeze({
+                  addListener(listener) {
+                    if (typeof listener !== 'function') throw new TypeError('Listener must be a function');
+                    listeners[type].add(listener);
+                    poll();
+                  },
+                  removeListener(listener) { listeners[type].delete(listener); },
+                  hasListener: listener => listeners[type].has(listener),
+                  hasListeners: () => listeners[type].size > 0
+                })});
+                const plain = value => JSON.parse(JSON.stringify(value ?? {}));
+                const method = (key, value) => Object.defineProperty(notifications, key, {configurable: true, value});
+                method('create', (...args) => {
+                  const callback = typeof args.at(-1) === 'function' ? args.pop() : null;
+                  const [id, options] = args.length > 1 ? args : [undefined, args[0]];
+                  return answer(ask('notifications.create', {id: id == null ? '' : String(id), options: plain(options)})
+                    .then(value => { poll(); return value; }), callback);
+                });
+                method('update', (id, options, callback) => answer(ask('notifications.update', {id: String(id), options: plain(options)}), callback));
+                method('clear', (id, callback) => answer(ask('notifications.clear', {id: String(id)}), callback));
+                method('getAll', callback => answer(ask('notifications.getAll'), callback));
+                method('getPermissionLevel', callback => reply(callback, 'granted'));
               }
               define(api.scripting, 'ExecutionWorld', Object.freeze({ISOLATED: 'ISOLATED', MAIN: 'MAIN'}));
               // Only the types WebKit accepts in a listener filter: it refuses webtransport and webbundle.

@@ -54,6 +54,8 @@ struct SiteControlModel: Equatable, Sendable {
     var location: Bool?
     /// Ask here means blocked with a toast offering to open it, not a prompt.
     var popups: Bool?
+    var notifications: Bool?
+    var notificationsOnce = false
     var locationOnce = false
     var cameraOnce = false
     var microphoneOnce = false
@@ -77,7 +79,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, location, popups, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, translateOffers, capture, boost, clearData, developer
+        case camera, microphone, location, popups, notifications, pictureInPicture, zoom, blocker, blockerSettings, reader, translate, translateOffers, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -180,10 +182,9 @@ extension SiteControlModel {
             Row(id: .popups, title: "Pop-ups", glyph: "macwindow.on.rectangle",
                 control: .permission(popups),
                 note: "Pop-ups you click open either way. Ask blocks the rest and offers to open them."),
-            // ponytail: no Notifications row. WKWebView has no web-notification permission
-            // hook on macOS — nothing asks, so there is nothing to remember and nothing to
-            // switch, and a dead toggle is a promise Vane cannot keep. Upgrade path the day
-            // WebKit exposes one: a third `.permission` row keyed exactly like these two.
+            Row(id: .notifications, title: "Notifications", glyph: "bell",
+                control: .permission(notifications),
+                note: notificationsOnce ? "Allowed once, until this tab navigates or closes." : nil),
             // ponytail: the switch is offered whatever the page holds, because whether
             // there is a detachable video is a question only the page can answer and only
             // asynchronously — `window.__vanePiP()` returns 'unsupported' and the switch
@@ -269,6 +270,7 @@ extension SiteControlModel {
             (.microphone, "Microphone", "mic.fill", microphone, microphoneOnce),
             (.location, "Location", "location.fill", location, locationOnce),
             (.popups, "Pop-ups", "macwindow.on.rectangle", popups, false),
+            (.notifications, "Notifications", "bell.fill", notifications, notificationsOnce),
         ]
         for (id, title, glyph, answer, once) in permissions {
             guard let answer else { continue }
@@ -328,6 +330,8 @@ extension SiteControlModel {
             locationOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .location, tabID: tab.id)
             microphoneOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .microphone, tabID: tab.id)
             popups = SitePermissions.remembered(scope: permissionScope, type: .popups)
+            notifications = SitePermissions.effective(scope: permissionScope, type: .notifications, tabID: tab.id)
+            notificationsOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .notifications, tabID: tab.id)
         }
         pictureInPicture = tab.pictureInPicture
         zoom = tab.zoom
@@ -396,6 +400,7 @@ extension SiteControlModel {
         case .microphone: cycle(.microphone, on: tab)
         case .location: cycle(.location, on: tab)
         case .popups: cycle(.popups, on: tab)
+        case .notifications: cycle(.notifications, on: tab)
         case .pictureInPicture: PictureInPicture.toggle(tab)
         case .zoom: Zoom.reset(tab)
         case .blocker:
@@ -889,7 +894,7 @@ struct SiteControlPopover: View {
 
     /// Every setting this site has, as rows with their controls, one page in.
     private func siteSettings(_ model: SiteControlModel, rows: [SiteControlModel.Row]) -> some View {
-        let shown: Set<SiteControlModel.RowID> = [.camera, .microphone, .location, .popups, .pictureInPicture,
+        let shown: Set<SiteControlModel.RowID> = [.camera, .microphone, .location, .popups, .notifications, .pictureInPicture,
                                                   .zoom, .blocker, .translateOffers, .developer]
         return VStack(alignment: .leading, spacing: 0) {
             Button { show(allSettings: false) } label: {
@@ -928,6 +933,7 @@ private struct SettingItem: View {
         case .microphone: .microphone
         case .location: .location
         case .popups: .popups
+        case .notifications: .notifications
         default: nil
         }
     }
@@ -1324,6 +1330,7 @@ private struct SiteControlRow: View {
                     case .camera: .camera
                     case .location: .location
                     case .popups: .popups
+                    case .notifications: .notifications
                     default: .microphone
                     }
                     SiteControl.set(type, to: answer.value, on: tab)

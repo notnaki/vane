@@ -96,7 +96,8 @@ These extensions were checked with unmodified packages; see
 | `chrome.debugger` | An extension that asks for it can read, click, type in and screenshot pages it has access to. A pill reads "*Extension* is controlling this tab" with **Stop**, and the tab's sidebar row shows a pointer. Only the tab on screen can be driven. |
 | `chrome.tabGroups` | A group is a folder in Today. Extensions can read your folders but change only folders an extension made. Pinned tabs and Favourites can't be grouped. |
 | `chrome.identity` | `launchWebAuthFlow` opens a sign-in window titled with the extension's name and the site, using the profile's cookies. |
-| Chromium-only names | `notifications`, `downloads`, `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start, but `notifications` and `downloads` don't do anything. Chrome's enums and constants are filled in too. |
+| `chrome.notifications` | `create`, `update`, `clear`, `getAll` and `getPermissionLevel` show text notifications in Notification Center under the extension's name. `onClicked`, `onClosed` and up to two buttons (`onButtonClicked`) reach the background worker. |
+| Chromium-only names | `downloads`, `idle`, `management.getSelf`, `alarms` promises and others exist so extensions start, but `downloads` doesn't do anything. Chrome's enums and constants are filled in too. |
 | Native messaging | Extensions that declare `nativeMessaging` get Chrome's "Specified native messaging host not found." error, so ones that expect a desktop app (like Bitwarden) carry on. No desktop app is contacted. Turn it off with **Disable Error-Only Mode** in Manage Extensions → Compatibility. |
 
 These additions apply to Chrome Web Store and folder packages. Safari app extensions get
@@ -141,7 +142,7 @@ simple regular expressions. Rules it can't represent are skipped and listed unde
 
 ## Site permissions
 
-When a site asks for your camera, microphone or location, choose **Allow Once**,
+When a site asks for your camera, microphone, location or to show notifications, choose **Allow Once**,
 **Always Allow** or **Don't Allow**. Allow Once lasts until the page navigates or closes.
 Saved answers belong to that site in that profile; private windows keep them in memory.
 Requests from embedded frames are refused.
@@ -150,6 +151,10 @@ Change an answer from **Site Controls**: right-click a permission for Ask, Allow
 or choose **⋯ → Site Settings…** for every permission. Blocking stops the camera or
 microphone at once. macOS has its own permission for each device and for screen sharing;
 Vane can't override a macOS denial. See [Site permissions](SITE-PERMISSIONS.md).
+
+Sites can show notifications in Notification Center once allowed. A site can only ask
+after you click or type on it. Each notification names its site; clicking one brings
+back its tab. macOS asks once whether Vane may show notifications.
 
 ## AI connections and feature routing
 
@@ -260,7 +265,13 @@ separate from link previews.
   **`chrome.sidePanel`** forgets its options when the extension reloads.
 - **Content blocking** covers part of EasyList; scriptlets, procedural selectors and
   complex regular expressions are skipped. There are no per-request block counts.
-- **Embedded frames** can't use the camera, microphone or location.
+- **Embedded frames** can't use the camera, microphone, location or notifications.
+- **Web notifications** come from open pages only: service-worker notifications and Push
+  (`registration.showNotification`, `PushManager`) aren't available, so a closed site
+  can't notify you. A closed tab's notifications are removed. Icons are best effort;
+  notification actions, images and badges aren't shown. Extension notifications are text
+  only (no icons or images), reach only the background worker, and keep it running while
+  they're showing.
 - **Favourite previews** depend on each site's page layout; when one changes, the card
   shows **Preview unavailable** instead of an empty list.
 - Details and evidence: [Extension validation](EXTENSION-VALIDATION.md),
