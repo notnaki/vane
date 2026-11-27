@@ -75,7 +75,8 @@ import WebKit
         });
       };
 
-      let building = false, hid = null, listening = false;
+      // `generation` ends a listen loop left over from before the back/forward cache.
+      let building = false, hid = null, listening = false, used = false, generation = 0;
       const slots = new WeakMap(), devices = new Map();
       const slot = device => {
         const s = slots.get(device);
@@ -188,12 +189,14 @@ import WebKit
       // One held request, answered when a granted device comes or goes or sends a report.
       // Started on first use.
       const listen = async () => {
+        used = true;
         if (listening) return;
         listening = true;
+        const mine = generation;
         try {
           for (;;) {
             const events = await call('events');
-            if (!events) break;
+            if (!events || mine !== generation) break;
             for (const event of events) {
               if (event.type === 'connect') {
                 hid.dispatchEvent(new HIDConnectionEvent('connect', { device: adopt(event.device) }));
@@ -212,8 +215,18 @@ import WebKit
             }
           }
         } catch (e) {}
-        listening = false;
+        if (mine === generation) listening = false;
       };
+      // Back from the back/forward cache: this side's document ended when the page left,
+      // so every device closed and every id went stale. Start over with what is granted now.
+      addEventListener('pageshow', e => {
+        if (!e.persisted) return;
+        for (const device of devices.values()) slots.get(device).opened = false;
+        devices.clear();
+        generation++;
+        listening = false;
+        if (used) listen();
+      });
 
       class HID extends EventTarget {
         constructor() {
@@ -345,6 +358,10 @@ import WebKit
     private static let defaults: UserDefaults = .vane
     private static let prefix = "hidDevice.v1."
     private static var privateGrants: [UUID: [String: [Grant]]] = [:]
+    /// A device without a serial number is known only by the port it is in, so its grant
+    /// lives in memory and ends when it is unplugged, as in Chromium: another device in that
+    /// port later must not inherit it.
+    private static var unplugGrants: [String: [Grant]] = [:]
 
     private static func key(scope: Scope) -> String {
         prefix + scope.profileID.uuidString.lowercased() + "." + Data(scope.origin.utf8).base64EncodedString()
@@ -353,14 +370,48 @@ import WebKit
     static func grants(scope: Scope?) -> [Grant] {
         guard let scope else { return [] }
         if let tab = scope.privateTabID { return privateGrants[tab]?[key(scope: scope)] ?? [] }
-        return defaults.data(forKey: key(scope: scope)).flatMap { try? JSONDecoder().decode([Grant].self, from: $0) } ?? []
+        return stored(key(scope: scope)) + (unplugGrants[key(scope: scope)] ?? [])
+    }
+
+    private static func stored(_ key: String) -> [Grant] {
+        defaults.data(forKey: key).flatMap { try? JSONDecoder().decode([Grant].self, from: $0) } ?? []
     }
 
     private static func save(_ grants: [Grant], scope: Scope) {
         let key = key(scope: scope)
-        if let tab = scope.privateTabID { privateGrants[tab, default: [:]][key] = grants.isEmpty ? nil : grants }
-        else if grants.isEmpty { defaults.removeObject(forKey: key) }
-        else { defaults.set(try? JSONEncoder().encode(grants), forKey: key) }
+        if let tab = scope.privateTabID { privateGrants[tab, default: [:]][key] = grants.isEmpty ? nil : grants; return }
+        let kept = grants.filter { !$0.identity.serialNumber.isEmpty }, unplug = grants.filter { $0.identity.serialNumber.isEmpty }
+        unplugGrants[key] = unplug.isEmpty ? nil : unplug
+        if kept.isEmpty { defaults.removeObject(forKey: key) }
+        else { defaults.set(try? JSONEncoder().encode(kept), forKey: key) }
+    }
+
+    /// Ends the grants of serial-less devices that are no longer plugged in. True if any went.
+    private static func dropUnplugged() -> Bool {
+        let present = Set(HIDDevices.shared.devices.map(\.identity))
+        func keep(_ grants: [Grant]) -> [Grant]? {
+            let kept = grants.filter { !$0.identity.serialNumber.isEmpty || present.contains($0.identity) }
+            return kept.isEmpty ? nil : kept
+        }
+        let before = (unplugGrants, privateGrants)
+        unplugGrants = unplugGrants.compactMapValues(keep)
+        privateGrants = privateGrants.compactMapValues { tab in
+            let kept = tab.compactMapValues(keep)
+            return kept.isEmpty ? nil : kept
+        }
+        return before.0 != unplugGrants || before.1 != privateGrants
+    }
+
+    /// Settings' list: every origin of this profile outside private tabs, and what it was given.
+    static func all(profileID: UUID) -> [(scope: Scope, grant: Grant)] {
+        let match = prefix + profileID.uuidString.lowercased() + "."
+        let keys = Set(defaults.dictionaryRepresentation().keys).union(unplugGrants.keys).filter { $0.hasPrefix(match) }
+        return keys.sorted().flatMap { key -> [(scope: Scope, grant: Grant)] in
+            guard let data = Data(base64Encoded: String(key.dropFirst(match.count))),
+                  let origin = String(data: data, encoding: .utf8),
+                  let scope = Scope(url: URL(string: origin), profileID: profileID) else { return [] }
+            return grants(scope: scope).map { (scope, $0) }
+        }
     }
 
     /// The chooser's answer. Picking a device again refreshes its grant rather than adding one.
@@ -389,11 +440,13 @@ import WebKit
 
     static func forgetPrivate(tabID: UUID) { privateGrants.removeValue(forKey: tabID) }
 
-    /// A profile is going. Its private tabs keep theirs until they close.
-    static func forgetAll(profileID: UUID) {
-        let match = prefix + profileID.uuidString.lowercased() + "."
+    /// A profile is going, or Reset Permissions (every profile when nil). Private tabs keep
+    /// theirs until they close.
+    static func forgetAll(profileID: UUID? = nil) {
+        let match = prefix + (profileID.map { $0.uuidString.lowercased() + "." } ?? "")
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(match) { defaults.removeObject(forKey: key) }
-        for session in sessions.values where session.scope.profileID == profileID && session.scope.privateTabID == nil {
+        unplugGrants = unplugGrants.filter { !$0.key.hasPrefix(match) }
+        for session in sessions.values where (profileID == nil || session.scope.profileID == profileID) && session.scope.privateTabID == nil {
             session.revoke(keeping: [])
         }
     }
@@ -415,7 +468,8 @@ import WebKit
     nonisolated static func isSecure(_ scope: Scope) -> Bool {
         if scope.scheme == "https" { return true }
         let host = scope.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if host == "localhost" || host.hasSuffix(".localhost") { return true }
+        // Exactly localhost, as WebKit's isSecureContext has it; `*.localhost` is not one.
+        if host == "localhost" { return true }
         // inet_pton, not a resolver: a name is never looked up to decide this.
         var v4 = in_addr(), v6 = in6_addr()
         if inet_pton(AF_INET, host, &v4) == 1 { return v4.s_addr & 0xff == 127 }    // network order: first octet
@@ -436,7 +490,9 @@ import WebKit
         static let maxReports = 1024
 
         let scope: Scope
-        var open: [UInt64: (device: HIDDeviceInfo, transport: any HIDTransport)] = [:]
+        /// `token` names one opening: a report from an earlier one is not this one's.
+        var open: [UInt64: (device: HIDDeviceInfo, transport: any HIDTransport, token: UInt64)] = [:]
+        var tokens: UInt64 = 0
         var opening: Set<UInt64> = []
         /// The page's name for each interface it has been shown, and the grant that showed it.
         var handles: [String: (entryID: UInt64, grant: String)] = [:]
@@ -483,6 +539,12 @@ import WebKit
             return out
         }
 
+        /// Closes one interface and drops what it sent that the page has not collected.
+        func close(_ entryID: UInt64) {
+            open.removeValue(forKey: entryID)?.transport.close()
+            reports.removeAll { $0.entryID == entryID }
+        }
+
         func wake() {
             guard let waiter, !events.isEmpty || !reports.isEmpty else { return }
             self.waiter = nil
@@ -493,7 +555,7 @@ import WebKit
         func revoke(keeping present: [(grant: Grant, device: HIDDeviceInfo)]) {
             known = Set(present.map(\.device.entryID))
             for entryID in open.keys.sorted() where !known.contains(entryID) {
-                open.removeValue(forKey: entryID)?.transport.close()
+                close(entryID)
                 events.append(.closed(entryID))
             }
             wake()
@@ -503,6 +565,7 @@ import WebKit
             chooser?.finish(.abort)
             open.values.forEach { $0.transport.close() }
             open.removeAll()
+            reports.removeAll()
             waiter?.resume(returning: false)
             waiter = nil
         }
@@ -527,7 +590,8 @@ import WebKit
         sessions[tabID].map { !$0.open.isEmpty || !$0.opening.isEmpty } ?? false
     }
 
-    private static func watch() {
+    /// Internal for the tests; the bridge calls it on first use.
+    static func watch() {
         HIDDevices.shared.onChange = { devicesChanged() }
         HIDDevices.shared.start()
     }
@@ -565,11 +629,12 @@ import WebKit
     }
 
     private static func devicesChanged() {
+        if dropUnplugged() { SiteChanges.shared.bump() }
         for session in sessions.values {
             let present = present(scope: session.scope)
             let now = Set(present.map(\.device.entryID))
             for entryID in session.known.subtracting(now).sorted() {
-                session.open.removeValue(forKey: entryID)?.transport.close()
+                session.close(entryID)
                 session.events.append(.disconnect(entryID))
             }
             for entry in present where !session.known.contains(entry.device.entryID) {
@@ -582,8 +647,9 @@ import WebKit
 
     /// One input report, from the device's queue. Dropped unless that document still has
     /// the device open and the report is one a page may see.
-    private static func received(tabID: UUID, session: Session, entryID: UInt64, id: UInt8, data: Data) {
-        guard sessions[tabID] === session, let device = session.open[entryID]?.device, !device.isProtected(.input, id: id) else { return }
+    private static func received(tabID: UUID, session: Session, entryID: UInt64, token: UInt64, id: UInt8, data: Data) {
+        guard sessions[tabID] === session, let connection = session.open[entryID], connection.token == token,
+              !connection.device.isProtected(.input, id: id) else { return }
         if session.reports.count >= Session.maxReports { session.reports.removeFirst() }
         session.reports.append((entryID, id, data))
         session.wake()
@@ -640,19 +706,21 @@ import WebKit
             forget(scope: scope, id: named.grant)
             SiteChanges.shared.bump()
         case "close":
-            session.open.removeValue(forKey: entryID)?.transport.close()
+            session.close(entryID)
         case "open":
             let failed = HIDError.notAllowed("Failed to open the device.")
             guard session.open[entryID] == nil, !session.opening.contains(entryID) else { throw .state("The device is already open.") }
             guard let device = present(scope: scope).first(where: { $0.device.entryID == entryID })?.device else { throw failed }
             session.opening.insert(entryID)
             defer { session.opening.remove(entryID) }
+            session.tokens += 1
+            let token = session.tokens
             let input: @Sendable (UInt8, Data) -> Void = { id, data in
                 // The main queue keeps the device's order; a Task per report need not.
                 // ponytail: one hop per report. A device at 1000 reports a second is fine;
                 // batch on the device's queue if one ever is not.
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { received(tabID: tabID, session: session, entryID: entryID, id: id, data: data) }
+                    MainActor.assumeIsolated { received(tabID: tabID, session: session, entryID: entryID, token: token, id: id, data: data) }
                 }
             }
             var transport: (any HIDTransport)?
@@ -668,7 +736,7 @@ import WebKit
                 opened.close()
                 throw failed
             }
-            session.open[entryID] = (device, opened)
+            session.open[entryID] = (device, opened, token)
         case "send":
             let failed = HIDError.notAllowed(body["type"] as? String == "feature" ? "Failed to write the feature report." : "Failed to write the report.")
             guard let connection = session.open[entryID] else { throw .state("The device must be opened first.") }

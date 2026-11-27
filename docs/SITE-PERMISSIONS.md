@@ -140,8 +140,9 @@ is checked again natively:
   parent delegated `hid` to a child. Opaque and `file:` origins get nothing.
 - **Which device.** Only one the user picked in the chooser for that exact origin
   (scheme, host, port) in that profile. The page holds an opaque id per interface, never
-  an IOKit id. A grant follows the physical device by vendor, product and serial number,
-  or, without a serial number, by vendor, product and location.
+  an IOKit id. A grant follows the physical device by vendor, product and serial number.
+  A device without a serial number is known only by vendor, product and the port it is
+  in, so, as in Chromium, its grant is kept in memory and ends when it is unplugged.
 - **Which reports.** Chromium's HID blocklist: the FIDO usage page (`0xF1D0`) and listed
   security keys are never offered. Keyboard, keypad, mouse and pointer top-level
   collections keep their input and output reports from the page (feature reports, which
@@ -155,9 +156,13 @@ is checked again natively:
 
 Grants in a regular window are saved until forgotten. A private tab's grants live in
 memory and go with the tab. Backups leave grants out. Forget one from **Site Controls**
-(the **HID Device** row), with `device.forget()`, or by deleting the profile; an open
+(the **HID Device** row), from **Settings → Privacy → Site Permissions** (one row per
+device, or **Reset Permissions…** for the profile; **Reset Site Permissions…** in the
+menu does every profile), with `device.forget()`, or by deleting the profile; an open
 device closes at once. Devices close when the document is replaced, the tab closes, or
-the device is unplugged (`disconnect` fires, and `connect` when it comes back). A tab
+the device is unplugged (`disconnect` fires, and `connect` when it comes back). A page
+restored from the back/forward cache finds its devices closed and gets new
+`HIDDevice` objects from `getDevices()`. A tab
 with an open device is not suspended. Up to 1,024 input reports wait for a page that is
 busy; past that the oldest go.
 

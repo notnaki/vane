@@ -69,10 +69,12 @@ enum HIDFixtures {
                       serialNumber: serialNumber, locationID: locationID, descriptor: Data(descriptor))
     }
 
-    static let via = device(viaRawHID, entryID: 101, vendorID: 0x3434, productID: 0x0141, product: "Keychron Q1")
+    static let via = device(viaRawHID, entryID: 101, vendorID: 0x3434, productID: 0x0141, product: "Keychron Q1",
+                            serialNumber: "Q1-1")
     static let pad = device(gamepad, entryID: 102, vendorID: 0x054c, productID: 0x05c4, product: "Wireless Controller",
                             serialNumber: "PAD-1")
-    static let board = device(keyboard, entryID: 103, vendorID: 0x3434, productID: 0x0141, product: "Keychron Q1")
+    static let board = device(keyboard, entryID: 103, vendorID: 0x3434, productID: 0x0141, product: "Keychron Q1",
+                              serialNumber: "Q1-1")
     static let key = device(fido, entryID: 104, vendorID: 0x1209, productID: 0xbeee, product: "Security Key")
 }
 
@@ -261,10 +263,11 @@ enum HIDFixtures {
 
     func testOnlySecureOriginsMayAsk() throws {
         func scope(_ url: String) throws -> WebHID.Scope { try XCTUnwrap(WebHID.Scope(url: URL(string: url), profileID: profile)) }
-        for url in ["https://usevia.app", "http://localhost:8080", "http://app.localhost", "http://127.0.0.1:3000", "http://[::1]:8000"] {
+        for url in ["https://usevia.app", "http://localhost:8080", "http://127.0.0.1:3000", "http://[::1]:8000"] {
             XCTAssertTrue(WebHID.isSecure(try scope(url)), url)
         }
-        for url in ["http://usevia.app", "http://127.evil.example", "http://192.168.1.4", "http://0.0.0.0:8080"] {
+        for url in ["http://usevia.app", "http://127.evil.example", "http://192.168.1.4", "http://0.0.0.0:8080",
+                    "http://app.localhost"] {
             XCTAssertFalse(WebHID.isSecure(try scope(url)), url)
         }
     }
@@ -303,6 +306,44 @@ enum HIDFixtures {
         WebHID.forgetAll(profileID: profile)
         XCTAssertTrue(WebHID.grants(scope: scope).isEmpty)
         XCTAssertEqual(WebHID.grants(scope: elsewhere).count, 1, "Removing a profile's grants leaves other profiles alone")
+    }
+
+    /// Chromium keeps these in memory and ends them on unplug: the next device in that port is not this one.
+    func testASerialLessGrantIsNeverWrittenDownAndEndsWhenUnplugged() throws {
+        let plain = HIDFixtures.device(HIDFixtures.viaRawHID, entryID: 120, vendorID: 0x1234, productID: 0x5678, product: "No Serial")
+        HIDDevices.shared.listForTesting = { [plain, HIDFixtures.pad] }
+        HIDDevices.shared.refresh()
+        WebHID.watch()
+        defer { HIDDevices.shared.listForTesting = nil; HIDDevices.shared.refresh() }
+        let scope = try XCTUnwrap(WebHID.Scope(url: URL(string: "https://usevia.app"), profileID: profile))
+        WebHID.grant(plain, scope: scope)
+        WebHID.grant(HIDFixtures.pad, scope: scope)
+        XCTAssertEqual(WebHID.grants(scope: scope).map(\.name), ["Wireless Controller", "No Serial"])
+        XCTAssertEqual(WebHID.all(profileID: profile).map(\.scope), [scope, scope], "Settings lists both")
+        let stored = UserDefaults.vane.dictionaryRepresentation()
+            .filter { $0.key.hasPrefix("hidDevice.v1." + profile.uuidString.lowercased()) }.values.compactMap { $0 as? Data }
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertFalse(stored.contains { String(decoding: $0, as: UTF8.self).contains("No Serial") }, "Only the serial-numbered one is saved")
+
+        HIDDevices.shared.listForTesting = { [HIDFixtures.pad] }
+        HIDDevices.shared.refresh()
+        XCTAssertEqual(WebHID.grants(scope: scope).map(\.name), ["Wireless Controller"], "Unplugging ends the serial-less grant")
+        HIDDevices.shared.listForTesting = { [] }
+        HIDDevices.shared.refresh()
+        XCTAssertEqual(WebHID.grants(scope: scope).count, 1, "A serial number keeps its grant across unplugging")
+
+        WebHID.grant(plain, scope: scope)
+        WebHID.forgetAll()
+        XCTAssertTrue(WebHID.grants(scope: scope).isEmpty, "Reset with no profile clears every profile, memory too")
+        XCTAssertTrue(WebHID.all(profileID: profile).isEmpty)
+    }
+
+    func testAProtectedReportIdStaysProtectedForEveryType() {
+        // The gaming mouse protects report 2; any id it never declared is refused too.
+        let mouse = HIDFixtures.device(HIDFixtures.mouseAndVendor, entryID: 130, vendorID: 0x046d, productID: 0xc077, product: "Mouse")
+        XCTAssertTrue(mouse.isProtected(.input, id: 2))
+        XCTAssertFalse(mouse.isProtected(.input, id: 0x10))
+        XCTAssertTrue(mouse.isProtected(.input, id: 0x11), "An undeclared id on a device with a protected report")
     }
 
     func testSiteControlsListEachGrantedDeviceAsARowThatForgetsIt() {

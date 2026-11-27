@@ -69,8 +69,8 @@ final class FakeHIDTransport: HIDTransport, @unchecked Sendable {
         HIDDevices.shared.refresh()
     }
 
-    private func load(_ path: String, host: String = "127.0.0.1", in existing: Tab? = nil) async throws -> Tab {
-        let tab = existing ?? Tab(profileID: profile)
+    private func load(_ path: String, host: String = "127.0.0.1", in existing: Tab? = nil, isPrivate: Bool = false) async throws -> Tab {
+        let tab = existing ?? Tab(isPrivate: isPrivate, profileID: profile)
         if existing == nil { tabs.append(tab) }
         let url = try server.url(path, host: host)
         tab.navigate(to: url)
@@ -260,5 +260,129 @@ final class FakeHIDTransport: HIDTransport, @unchecked Sendable {
             return [events[1], devices[0] === device].join(',');
             """)
         XCTAssertEqual(back, "connect:true,true", "The same device comes back as the same object")
+    }
+
+    /// The page came back from the back/forward cache: its old ids died with its old
+    /// document, so it starts over with closed devices and a live listener.
+    func testABackForwardCacheRestoreStartsOverClosed() async throws {
+        let tab = try await load("/hid")
+        _ = try await js(tab, connect + """
+            window.shown = []; window.lost = 0;
+            addEventListener('pageshow', event => shown.push(event.persisted));
+            navigator.hid.ondisconnect = () => lost++;
+            return 'open';
+            """)
+        let first = try XCTUnwrap(transports.first)
+        _ = try await load("/next", in: tab)
+        XCTAssertTrue(first.closed)
+        let url = try server.url("/hid")
+        tab.web.goBack()
+        try await compatibilityWait { tab.web.url == url && !tab.web.isLoading }
+        let restored = try await js(tab, """
+            while (!shown.length) await new Promise(resolve => setTimeout(resolve, 20));
+            const [again] = await navigator.hid.getDevices();
+            const result = [shown[0], device.opened, again !== device, again.opened];
+            await again.open();
+            window.device = again;
+            return result.concat(again.opened).join(',');
+            """)
+        XCTAssertEqual(restored, "true,false,true,false,true", "A restored page must not believe its old devices are open")
+        plug([])
+        let lost = try await js(tab, """
+            while (!lost) await new Promise(resolve => setTimeout(resolve, 20));
+            return String(lost);
+            """)
+        XCTAssertEqual(lost, "1", "The restored page must hear of devices again")
+    }
+
+    func testACrossOriginFramePostingToTheBridgeIsRefused() async throws {
+        let frame = try server.url("/frame", host: "localhost")
+        server.pages["/frame"] = """
+            <script>
+            webkit.messageHandlers.\(WebHID.messageName).postMessage({ op: 'devices' })
+              .then(reply => parent.postMessage(reply && reply.error ? reply.error[0] : 'answered', '*'),
+                    () => parent.postMessage('rejected', '*'));
+            </script>
+            """
+        server.pages["/framed"] = """
+            <script>window.answer = null; addEventListener('message', event => window.answer = event.data);</script>
+            <iframe src="\(frame.absoluteString)"></iframe>
+            """
+        let tab = try await load("/framed")
+        WebHID.grant(HIDFixtures.via, scope: try XCTUnwrap(WebHID.Scope(url: frame, profileID: profile)))
+        try await compatibilityWait { try await tab.web.evaluateJavaScript("window.answer") as? String != nil }
+        let answer = try await tab.web.evaluateJavaScript("window.answer") as? String
+        XCTAssertEqual(answer, "SecurityError", "Only the main frame may use the bridge, whatever origin it is")
+    }
+
+    /// The gaming mouse: its pointer is report 2, its settings channel 0x10.
+    private let mouse = HIDFixtures.device(HIDFixtures.mouseAndVendor, entryID: 106, vendorID: 0x046d, productID: 0xc077,
+                                           product: "Gaming Mouse", serialNumber: "M-1")
+
+    func testProtectedReportsNeverCrossTheBridgeEitherWay() async throws {
+        plug([mouse])
+        let tab = try await load("/hid")
+        _ = try await js(tab, """
+            [window.device] = await navigator.hid.requestDevice({ filters: [{ vendorId: 0x046d }] });
+            await device.open();
+            window.reports = [];
+            device.oninputreport = event => reports.push(event.reportId);
+            return 'open';
+            """)
+        let transport = try XCTUnwrap(transports.first)
+        transport.input(2, Data([1, 0, 0]))
+        transport.input(0x11, Data([1]))
+        transport.input(0x10, Data([1, 2, 3, 4, 5, 6]))
+        let seen = try await js(tab, """
+            while (!reports.length) await new Promise(resolve => setTimeout(resolve, 20));
+            await new Promise(resolve => setTimeout(resolve, 200));
+            return reports.join(',');
+            """)
+        XCTAssertEqual(seen, "16", "The pointer report and an undeclared one are dropped")
+
+        let refused = try await js(tab, """
+            const bridge = webkit.messageHandlers.\(WebHID.messageName);
+            const [{ id }] = (await bridge.postMessage({ op: 'devices' })).value;
+            const send = reportId => bridge.postMessage({ op: 'send', id, type: 'output', reportId, data: 'AQ==' })
+              .then(reply => reply.error ? reply.error[0] : 'sent');
+            return [await send(2), await send(0x11), await send(0x10)].join(',');
+            """)
+        XCTAssertEqual(refused, "NotAllowedError,NotAllowedError,sent")
+        XCTAssertEqual(transport.sent, [.init(type: .output, id: 0x10, data: [1])], "Only the declared, unprotected report reaches the device")
+    }
+
+    func testAPrivateTabsGrantWorksAndGoesWithTheTab() async throws {
+        let tab = try await load("/hid", isPrivate: true)
+        let opened = try await js(tab, connect + "await device.sendReport(0, new Uint8Array(32)); return String(device.opened);")
+        XCTAssertEqual(opened, "true")
+        XCTAssertEqual(transports.first?.sent.count, 1)
+        let scope = try XCTUnwrap(SitePermissions.scope(for: tab))
+        XCTAssertEqual(WebHID.grants(scope: scope).count, 1)
+        XCTAssertTrue(WebHID.all(profileID: profile).isEmpty, "A private grant is not the profile's")
+        XCTAssertFalse(UserDefaults.vane.dictionaryRepresentation().keys.contains { $0.hasPrefix("hidDevice.v1." + profile.uuidString.lowercased()) })
+        let regular = try await load("/hid")
+        let unshared = try await js(regular, "return String((await navigator.hid.getDevices()).length);")
+        XCTAssertEqual(unshared, "0", "A regular tab must not see the private tab's device")
+        tab.tearDown()
+        tabs.removeAll { $0 === tab }
+        XCTAssertTrue(try XCTUnwrap(transports.first).closed)
+        XCTAssertTrue(WebHID.grants(scope: scope).isEmpty)
+    }
+
+    func testForgetClosesTheDeviceInEveryTabOfTheOrigin() async throws {
+        let one = try await load("/hid")
+        _ = try await js(one, connect + "return 'open';")
+        WebHID.chooserForTesting = { _ in XCTFail("A granted device needs no chooser"); return nil }
+        let two = try await load("/hid")
+        let opened = try await js(two, "[window.device] = await navigator.hid.getDevices(); await device.open(); return String(device.opened);")
+        XCTAssertEqual(opened, "true")
+        XCTAssertEqual(transports.count, 2)
+        _ = try await js(one, "await device.forget(); return 'gone';")
+        XCTAssertTrue(transports.allSatisfy(\.closed), "Forgetting closes it in the other tab too")
+        let after = try await js(two, """
+            while (device.opened) await new Promise(resolve => setTimeout(resolve, 20));
+            return String((await navigator.hid.getDevices()).length);
+            """)
+        XCTAssertEqual(after, "0")
     }
 }

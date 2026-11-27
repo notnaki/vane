@@ -369,7 +369,8 @@ struct HIDDeviceInfo: Equatable, Sendable {
             protected[type] = excluded ? ids : ids.filter { id in
                 top.contains { Self.protects($0, id: id, type: type, vendorID: vendorID, productID: productID, top: true) }
             }
-            if excluded || top.contains(where: { HIDBlocklist.alwaysProtected(usagePage: $0.usagePage, usage: $0.usage, type: type) }) {
+            if excluded || protected[type]?.isEmpty == false
+                || top.contains(where: { HIDBlocklist.alwaysProtected(usagePage: $0.usagePage, usage: $0.usage, type: type) }) {
                 guarded.insert(type)
             }
         }
@@ -555,7 +556,8 @@ final class HIDConnection: HIDTransport, @unchecked Sendable {
         self.onInput = onInput
         numbered = info.descriptor.usesReportIDs
         let longest = max(info.descriptor.maxBytes(.input), IOHIDDeviceGetProperty(device, kIOHIDMaxInputReportSizeKey as CFString) as? Int ?? 0)
-        buffer = .allocate(capacity: max(longest, 64) + 1)
+        // The property is the device's to claim; a report past 64 KiB is cut short rather than allocated for.
+        buffer = .allocate(capacity: min(max(longest, 64), 65536) + 1)
         // The callback holds this object until the device says it will call no more.
         let context = Unmanaged.passRetained(self)
         IOHIDDeviceRegisterInputReportCallback(device, buffer.baseAddress!, buffer.count, { context, result, _, _, _, report, length in
