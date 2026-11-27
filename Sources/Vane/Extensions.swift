@@ -395,6 +395,7 @@ import WebKit
         userAgent.configure(webConfiguration)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
+        _ = Self.watchesPageGestures
         controller.delegate = self
         for name in [WKWebExtensionContext.errorsDidUpdateNotification,
                      WKWebExtensionContext.permissionsWereGrantedNotification,
@@ -2589,26 +2590,39 @@ import WebKit
         CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown)
     }
 
-    /// The same for the keyboard (Enter or Space on a button; any key counts, as in Chrome).
-    var secondsSinceKey: () -> CFTimeInterval = {
-        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
-    }
-
     /// The user just pressed this extension's button or shortcut.
     func noteSidePanelGesture(_ context: WKWebExtensionContext) {
         sidePanelGestures[ObjectIdentifier(context)] = .now
     }
 
+    /// The last real click or key press, and the page it went to as it arrived: the web
+    /// view hit by the click, or the key window's focused one for a key. Never one
+    /// `chrome.debugger` made, nor a held key repeating.
+    private(set) static var lastPageGesture: (at: ContinuousClock.Instant, url: URL?)?
+    private static let watchesPageGestures: Any? = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { event in
+        guard !ExtensionDebuggerAPI.isSynthesized(event), !(event.type == .keyDown && event.isARepeat) else { return event }
+        var view = event.type == .keyDown ? event.window?.firstResponder as? NSView
+            : event.window?.contentView.flatMap { $0.hitTest(event.locationInWindow) }
+        while let current = view, !(current is WKWebView) { view = current.superview }
+        notePageGesture(to: (view as? WKWebView)?.url)
+        return event
+    }
+    static func notePageGesture(to url: URL?, at time: ContinuousClock.Instant = .now) { lastPageGesture = (time, url) }
+
+    /// Whether `gesture` went to a page of the extension at `base` under 5 s before `now`.
+    nonisolated static func isOwnPageGesture(_ gesture: (at: ContinuousClock.Instant, url: URL?)?, base: URL,
+                                             now: ContinuousClock.Instant = .now) -> Bool {
+        guard let gesture, now - gesture.at < .seconds(5), let url = gesture.url else { return false }
+        return url.scheme == base.scheme && url.host == base.host && url.port == base.port
+    }
+
     /// `downloads.open`'s gesture, which launches a file, so only what the host saw: the
-    /// extension's button or shortcut, or a real click or key press a moment ago while one
-    /// of the extension's own pages has focus in the key window. Never the page's own report.
+    /// extension's button or shortcut, or a real click or key press a moment ago that went
+    /// to one of the extension's own pages. A key typed into a website while an extension
+    /// page opens itself is the website's, so it never counts. Never the page's own report.
     func hasOwnPageGesture(_ context: WKWebExtensionContext) -> Bool {
         if let last = sidePanelGestures[ObjectIdentifier(context)], .now - last < .seconds(5) { return true }
-        guard min(secondsSinceClick(), secondsSinceKey()) < 5 else { return false }
-        var view = NSApp.keyWindow?.firstResponder as? NSView
-        while let current = view, !(current is WKWebView) { view = current.superview }
-        guard let url = (view as? WKWebView)?.url else { return false }
-        return url.scheme == context.baseURL.scheme && url.host == context.baseURL.host && url.port == context.baseURL.port
+        return Self.isOwnPageGesture(Self.lastPageGesture, base: context.baseURL)
     }
 
     /// `sidePanel.open()` answers a user gesture, as in Chrome: the extension's button or

@@ -172,6 +172,8 @@ import Darwin
         fileprivate var replaces: String?
         /// The extension gave the path, so Tidy Downloads leaves the name alone.
         fileprivate var namedByExtension = false
+        /// A paused row's reason the destination check's own covers for now.
+        fileprivate var reasonBeforeCheck: String?
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -566,23 +568,23 @@ import Darwin
     private var lastSave = Date.distantPast
     /// Whoever waits in `nextChange`, woken on every save, so `chrome.downloads` hears
     /// of changes without a clock.
-    private var changeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private var changeWaiters: [UUID: (waiter: CheckedContinuation<Void, Never>, timer: Task<Void, Never>)] = [:]
 
     private func changed() {
         let waiters = changeWaiters.values
         changeWaiters = [:]
-        for waiter in waiters { waiter.resume() }
+        for waiter in waiters { waiter.timer.cancel(); waiter.waiter.resume() }
     }
 
     /// Returns at the next save (or other change an extension can see), or after `limit`.
     func nextChange(within limit: Duration) async {
         let id = UUID()
         await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
-            changeWaiters[id] = waiter
-            Task { [weak self] in
-                try? await Task.sleep(for: limit)
-                self?.changeWaiters.removeValue(forKey: id)?.resume()
+            let timer = Task { [weak self] in
+                guard (try? await Task.sleep(for: limit)) != nil else { return }
+                self?.changeWaiters.removeValue(forKey: id)?.waiter.resume()
             }
+            changeWaiters[id] = (waiter, timer)
         }
     }
 
@@ -793,8 +795,9 @@ import Darwin
                         item.destinationBookmark = bookmark; changed = true
                     }
                     item.destinationLease = result.lease
-                    item.resumeEligibility = result.unavailable ? .pending
+                    let eligibility: Item.ResumeEligibility = result.unavailable ? .pending
                         : result.resumeIssue == nil && result.readable ? .available : .unavailable
+                    if item.resumeEligibility != eligibility { item.resumeEligibility = eligibility; changed = true }
                     if item.status == .done || item.status == .missing {
                         let want: Item.Status = result.readable ? .done : .missing
                         if item.status != want {
@@ -803,12 +806,17 @@ import Darwin
                             changed = true
                         }
                     } else if item.status == .paused {
-                        // Clear only what this check once said; "Interrupted — …" stays.
+                        // This check's own words cover the reason before them ("Interrupted —
+                        // …"), which comes back when the check clears. That reason is not
+                        // saved: after a relaunch it reads "Paused".
+                        var shown: String?
+                        if case .failed(let old) = item.state { shown = old }
+                        let ours = shown.map { $0.hasPrefix("Download folder unavailable") || $0.hasPrefix("Cannot resume") } ?? false
                         var reason: String?
                         if result.unavailable { reason = "Download folder unavailable. Reconnect it to resume." }
                         else if let issue = result.resumeIssue { reason = issue }
-                        else if case .failed(let old) = item.state,
-                                old.hasPrefix("Download folder unavailable") || old.hasPrefix("Cannot resume") { reason = "Paused" }
+                        if reason != nil, !ours { item.reasonBeforeCheck = shown }
+                        if reason == nil, ours { reason = item.reasonBeforeCheck ?? "Paused"; item.reasonBeforeCheck = nil }
                         if let reason, item.state != .failed(reason) { item.state = .failed(reason); changed = true }
                     }
                     item.inspectedDestination = destinationRequest(item)
@@ -947,8 +955,13 @@ import Darwin
     }
 
     private nonisolated static func isReserved(_ url: URL, _ reserved: [URL]) -> Bool {
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-        return reserved.contains { $0.standardizedFileURL.resolvingSymlinksInPath().path == path }
+        reserved.map(pathKey).contains(pathKey(url))
+    }
+
+    /// One key per file on APFS's default volume, which ignores case and Unicode form:
+    /// `Big.iso` is `big.iso`. A case-sensitive volume only gets a cautious extra number.
+    nonisolated static func pathKey(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path.precomposedStringWithCanonicalMapping.lowercased()
     }
 
     /// A server filename wins over the anchor's download attribute. Otherwise preserve
@@ -979,10 +992,9 @@ import Darwin
         var target = dir.appendingPathComponent(safe.isEmpty ? "download" : safe)
         let ext = target.pathExtension
         let stem = target.deletingPathExtension().lastPathComponent
-        let occupied = Set(reserved.map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
+        let occupied = Set(reserved.map(pathKey))
         var n = 2
-        while fm.fileExists(atPath: target.path)
-            || occupied.contains(target.standardizedFileURL.resolvingSymlinksInPath().path) {
+        while fm.fileExists(atPath: target.path) || occupied.contains(pathKey(target)) {
             target = dir.appendingPathComponent("\(stem) \(n)" + (ext.isEmpty ? "" : ".\(ext)"))
             n += 1
         }

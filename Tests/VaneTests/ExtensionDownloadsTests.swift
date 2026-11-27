@@ -117,6 +117,68 @@ import XCTest
         try Data("other".utf8).write(to: chosen.file)
         XCTAssertNil(Downloads.replace(partial, with: chosen.file, reserved: manager.writing))
         XCTAssertEqual(try String(contentsOf: partial, encoding: .utf8), "half")
+
+        // APFS ignores case: `Big.iso` is the paused `big.iso` too.
+        let other = try XCTUnwrap(Downloads.extensionDestination(["Big.iso"], in: root, overwrite: true, reserved: manager.writing))
+        XCTAssertNil(other.replaces)
+        try Data("other".utf8).write(to: other.file)
+        XCTAssertNil(Downloads.replace(root.appendingPathComponent("Big.iso"), with: other.file, reserved: manager.writing))
+        XCTAssertEqual(try String(contentsOf: partial, encoding: .utf8), "half")
+        XCTAssertEqual(Downloads.pathKey(root.appendingPathComponent("Cafe\u{301}.iso")), Downloads.pathKey(root.appendingPathComponent("café.ISO")))
+    }
+
+    /// `chrome.downloads` listeners wake at the next save, not at the end of their wait.
+    func testNextChangeReturnsAtTheNextSave() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("extension-downloads-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = Downloads(profileID: UUID(), directory: root, sandboxed: true)
+        var woke = false
+        let waiter = Task { await manager.nextChange(within: .seconds(25)); woke = true }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !woke, ContinuousClock.now < deadline {
+            manager.save()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(woke)
+        await waiter.value
+    }
+
+    /// The folder going away and coming back leaves a paused row's own reason as it was.
+    func testAFolderDetourKeepsTheInterruptedReason() async throws {
+        final class Gone: @unchecked Sendable { var on = true }
+        let gone = Gone()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("extension-downloads-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = Downloads(profileID: UUID(), directory: root, sandboxed: true, destinationProbe: { request in
+            .init(request: request, url: request.record.destination, readable: true, unavailable: gone.on)
+        })
+        let interrupted = "Interrupted — The network connection was lost. Resume available."
+        let row = manager.add(.init(name: "a.bin", destination: root.appendingPathComponent("a.bin"), total: 10, received: 4,
+                                    state: "paused", reason: interrupted))
+        manager.refreshMissing()
+        await manager.waitForDestinationRefresh()
+        XCTAssertEqual(row.state, .failed("Download folder unavailable. Reconnect it to resume."))
+        gone.on = false
+        manager.refreshMissing()
+        await manager.waitForDestinationRefresh()
+        XCTAssertEqual(row.state, .failed(interrupted))
+    }
+
+    /// `downloads.open` counts a click or key only if it went to the extension's own page.
+    func testTheOpenGestureMustHaveGoneToTheExtensionsOwnPage() {
+        let base = URL(string: "webkit-extension://abc/")!
+        let now = ContinuousClock.now
+        XCTAssertTrue(ExtensionHost.isOwnPageGesture((now, URL(string: "webkit-extension://abc/page.html")), base: base, now: now))
+        XCTAssertFalse(ExtensionHost.isOwnPageGesture((now, URL(string: "https://example.com/")), base: base, now: now),
+                       "typed into a website while the extension's page took focus")
+        XCTAssertFalse(ExtensionHost.isOwnPageGesture((now, URL(string: "webkit-extension://other/page.html")), base: base, now: now))
+        XCTAssertFalse(ExtensionHost.isOwnPageGesture((now, nil), base: base, now: now))
+        XCTAssertFalse(ExtensionHost.isOwnPageGesture((now - .seconds(6), URL(string: "webkit-extension://abc/page.html")), base: base, now: now))
+        XCTAssertFalse(ExtensionHost.isOwnPageGesture(nil, base: base, now: now))
+        ExtensionHost.notePageGesture(to: URL(string: "https://example.com/"))
+        XCTAssertFalse(ExtensionHost.isOwnPageGesture(ExtensionHost.lastPageGesture, base: base))
     }
 }
 
