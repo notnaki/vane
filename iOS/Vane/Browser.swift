@@ -3,13 +3,15 @@ import WebKit
 
 /// One open page. The web view is made on first show, so restored tabs cost nothing until opened.
 @MainActor @Observable final class Tab: Identifiable {
-    struct Saved: Codable { var id: UUID; var spaceID: UUID; var url: URL; var title: String; var home: URL? }
+    struct Saved: Codable { var id: UUID; var spaceID: UUID; var url: URL; var title: String; var home: URL?; var active: Date? }
     let id: UUID
     var spaceID: UUID
     /// The favourite or pinned link this tab was opened from, so tapping it again returns here.
     var home: URL?
     var url: URL
     var title: String
+    /// Last time it was on screen: picks the previous tab, and archives it once it's been idle long enough.
+    var active: Date
     var progress = 0.0
     var canGoBack = false
     var canGoForward = false
@@ -50,8 +52,8 @@ import WebKit
     /// website data live in memory until the last one closes.
     var isPrivate: Bool { spaceID == SpaceRow.incognito.id }
 
-    init(_ saved: Saved) { id = saved.id; spaceID = saved.spaceID; url = saved.url; title = saved.title; home = saved.home }
-    var saved: Saved { Saved(id: id, spaceID: spaceID, url: url, title: title, home: home) }
+    init(_ saved: Saved) { id = saved.id; spaceID = saved.spaceID; url = saved.url; title = saved.title; home = saved.home; active = saved.active ?? .now }
+    var saved: Saved { Saved(id: id, spaceID: spaceID, url: url, title: title, home: home, active: active) }
 
     var webView: WKWebView {
         if let view { return view }
@@ -260,12 +262,17 @@ final class PopupOpener: NSObject, WKUIDelegate {
 }
 
 struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date }
+/// A tab put away after sitting unopened, as Arc Search does; reopened from the tab switcher's archive.
+struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UUID; var url: URL; var title: String; var at: Date }
 
 @MainActor @Observable final class Browser {
     private(set) var tabs: [Tab] = []
     var selectedID: UUID?
     var spaceID: UUID { didSet { UserDefaults.standard.set(spaceID.uuidString, forKey: "space") } }
     private(set) var history: [Visit] = []
+    private(set) var archived: [Archived] = []
+    /// Seconds a tab can sit unopened before it's archived; 0 keeps tabs open.
+    var archiveAfter: Double { didSet { UserDefaults.standard.set(archiveAfter, forKey: "archiveAfter"); archiveIdle() } }
     var engine: SearchEngine { didSet { UserDefaults.standard.set(engine.rawValue, forKey: "engine") } }
     enum Editing { case current, newTab }
     /// The address field is open: for the page on screen, or for a new tab.
@@ -282,32 +289,41 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
     static var privateStore = WKWebsiteDataStore.nonPersistent()
     private let tabsFile = Store.directory.appending(path: "tabs.json")
     private let historyFile = Store.directory.appending(path: "history.json")
+    private let archiveFile = Store.directory.appending(path: "archive.json")
 
     init() {
         // Incognito never outlives the app, so a relaunch starts back in a Space.
         let space = UserDefaults.standard.string(forKey: "space").flatMap(UUID.init(uuidString:))
         spaceID = space == SpaceRow.incognito.id ? Local.space : space ?? Local.space
         engine = UserDefaults.standard.string(forKey: "engine").flatMap(SearchEngine.init(rawValue:)) ?? .google
+        archiveAfter = UserDefaults.standard.object(forKey: "archiveAfter") as? Double ?? 86_400
         if let data = try? Data(contentsOf: tabsFile), let saved = try? JSONDecoder().decode([Tab.Saved].self, from: data) {
             tabs = saved.map(Tab.init).filter { !$0.isPrivate }; tabs.forEach(watch)
         }
         if let data = try? Data(contentsOf: historyFile) { history = (try? JSONDecoder().decode([Visit].self, from: data)) ?? [] }
+        if let data = try? Data(contentsOf: archiveFile) { archived = (try? JSONDecoder().decode([Archived].self, from: data)) ?? [] }
         PopupOpener.shared.openInNewTab = { [weak self] url in self?.open(url) }
         selectedID = UserDefaults.standard.string(forKey: "tab").flatMap(UUID.init(uuidString:))
         if selected?.spaceID != spaceID { selectedID = nil }
+        archiveIdle()
     }
 
     var selected: Tab? { tabs.first { $0.id == selectedID } }
     var spaceTabs: [Tab] { tabs.filter { $0.spaceID == spaceID } }
+    /// The tab you were on before this one, in this Space: a flick up on the bar's tab stack swaps to it.
+    var previous: Tab? { spaceTabs.filter { $0.id != selectedID }.max { $0.active < $1.active } }
 
     func select(_ tab: Tab?) {
-        if tab?.id != selectedID { selected?.takeSnapshot() }
+        if tab?.id != selectedID { selected?.takeSnapshot(); selected?.active = .now }
+        tab?.active = .now
         selectedID = tab?.id
         UserDefaults.standard.set(tab?.id.uuidString, forKey: "tab")
     }
 
     /// Favourites and pinned links return to the tab they opened, like on the Mac.
     func open(_ url: URL, home: URL? = nil, newTab: Bool = true) {
+        // Whatever opens a page (a link from another app, a favourite) closes the search sheet over it.
+        editing = nil
         if let home, let existing = spaceTabs.first(where: { $0.home == home }) { return select(existing) }
         if !newTab, let tab = selected {
             tab.webView.load(URLRequest(url: url))
@@ -359,8 +375,27 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
         return allHistory.filter { ($0.url.absoluteString.localizedCaseInsensitiveContains(text) || $0.title.localizedCaseInsensitiveContains(text)) && seen.insert($0.url).inserted }.prefix(8).map { $0 }
     }
 
+    /// Archives tabs left unopened longer than `archiveAfter`. Tabs opened from a pinned tab or
+    /// favourite stay, as on the Mac, and so does the one on screen.
+    func archiveIdle() {
+        guard archiveAfter > 0 else { return }
+        let cutoff = Date.now.addingTimeInterval(-archiveAfter)
+        let idle = tabs.filter { !$0.isPrivate && $0.home == nil && $0.id != selectedID && $0.active < cutoff }
+        guard !idle.isEmpty else { return }
+        archived.insert(contentsOf: idle.reversed().map { Archived(id: $0.id, spaceID: $0.spaceID, url: $0.url, title: $0.title, at: .now) }, at: 0)
+        // ponytail: newest 500 kept; plenty for a phone's archive.
+        archived = Array(archived.prefix(500))
+        tabs.removeAll { tab in idle.contains { $0.id == tab.id } }
+        save(); saveArchive()
+    }
+    func unarchive(_ item: Archived) {
+        archived.removeAll { $0.id == item.id }; saveArchive()
+        open(item.url)
+    }
+    func clearArchive() { archived = []; saveArchive() }
+
     func clearHistory() {
-        history = []; saveHistory()
+        history = []; saveHistory(); clearArchive()
         WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {}
     }
 
@@ -401,6 +436,10 @@ struct Visit: Codable, Hashable { var url: URL; var title: String; var at: Date 
         try? FileManager.default.createDirectory(at: Store.directory, withIntermediateDirectories: true)
         try? JSONEncoder().encode(tabs.filter { !$0.isPrivate }.map(\.saved)).write(to: tabsFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         onTabsChanged()
+    }
+    private func saveArchive() {
+        try? FileManager.default.createDirectory(at: Store.directory, withIntermediateDirectories: true)
+        try? JSONEncoder().encode(archived).write(to: archiveFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
     private func saveHistory() {
         try? JSONEncoder().encode(history).write(to: historyFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])

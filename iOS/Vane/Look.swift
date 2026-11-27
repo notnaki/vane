@@ -11,7 +11,7 @@ enum Look {
     static let pageGap: CGFloat = 6
     static let pillRadius: CGFloat = 14
     /// The floating bar's height over a page; pages scroll their last line above it.
-    static let barHeight: CGFloat = 48
+    static let barHeight: CGFloat = 56
     static let rowRadius: CGFloat = 12
     /// "Streamlined" is the Mac's denser interface style; read at launch, as there.
     static let streamlined = UserDefaults.standard.string(forKey: "interfaceStyle") == "streamlined"

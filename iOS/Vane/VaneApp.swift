@@ -13,7 +13,7 @@ import SwiftUI
                     model.browser.open(url)
                 }
         }
-        .onChange(of: phase) { _, phase in if phase == .active { Task { await model.sync.run() } } }
+        .onChange(of: phase) { _, phase in if phase == .active { model.browser.archiveIdle(); Task { await model.sync.run() } } }
     }
 }
 
