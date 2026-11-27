@@ -30,7 +30,7 @@ struct RootView: View {
                 WebContainer(tab: tab).id(tab.id)
                     .ignoresSafeArea(edges: .top)
                     // Ends above the bar (or the small capsule while reading) so nothing on the page hides behind it.
-                    .padding(.bottom, tab.collapsed ? 12 : Look.barRoom)
+                    .padding(.bottom, tab.collapsed ? 12 : Look.barRoom - Look.barFade)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 if let pull = tab.pull {
@@ -227,7 +227,7 @@ struct BottomBar: View {
             .frame(width: 52, alignment: .trailing)
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 26)
         .frame(height: Look.barHeight)
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
@@ -244,6 +244,16 @@ struct BottomBar: View {
         }
         // On a page the bar wears the Space's colours; over the tab switcher they're already there.
         .background { if tab != nil { Wash(space: space, full: true) } }
+        // On a page, the colours fade up over the page's last line instead of stopping at a hard edge.
+        .background(alignment: .top) {
+            if tab != nil {
+                Wash(space: space, full: true)
+                    .frame(height: Look.barFade)
+                    .mask(LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom))
+                    .offset(y: -Look.barFade)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     private func round(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
