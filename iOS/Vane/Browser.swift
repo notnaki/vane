@@ -279,6 +279,10 @@ struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UU
     var editing: Editing?
     /// What's typed in the address field while editing.
     var query = ""
+    /// When a link from another app last arrived, so search doesn't open over it.
+    var externalOpen: Date?
+    /// The Space to go back to when Incognito is switched off.
+    private(set) var beforeIncognito: UUID?
     var onTabsChanged: () -> Void = {}
     var onVisit: (Tab) -> Void = { _ in }
     /// History from other devices, when history sync is on.
@@ -318,6 +322,8 @@ struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UU
         tab?.active = .now
         selectedID = tab?.id
         UserDefaults.standard.set(tab?.id.uuidString, forKey: "tab")
+        // Keeps the last-seen times on disk, so a tab just looked at isn't archived after a relaunch.
+        save()
     }
 
     /// Favourites and pinned links return to the tab they opened, like on the Mac.
@@ -344,12 +350,14 @@ struct Archived: Codable, Hashable, Identifiable { var id: UUID; var spaceID: UU
     func closeTabs(in space: UUID) {
         tabs.removeAll { $0.spaceID == space }
         forgetPrivateData()
+        archived.removeAll { $0.spaceID == space }; saveArchive()
         if selected == nil { select(nil) }
         save()
     }
     /// On the Spaces home you stay on the home; on a page you land on that Space's last tab.
     func switchSpace(_ id: UUID) {
         let home = selectedID == nil
+        if id == SpaceRow.incognito.id, spaceID != id { beforeIncognito = spaceID }
         spaceID = id
         select(home ? nil : spaceTabs.last)
     }

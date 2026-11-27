@@ -46,7 +46,7 @@ struct RootView: View {
                     .padding(.bottom, Look.barHeight)
                     .transition(.opacity.combined(with: .scale(scale: 1.04)))
             }
-            if menu, let tab = browser.selected, let space {
+            if menu, let tab = browser.selected, let space = space ?? library.spaces.first {
                 Color.black.opacity(0.25).ignoresSafeArea()
                     .onTapGesture { menu = false }
                     .transition(.opacity)
@@ -90,7 +90,12 @@ struct RootView: View {
     }
 
     private func search() {
-        guard browser.editing == nil, Frost.shared.sheets == 0 else { return }
+        // Not over a link that just came in from another app, an open menu, or any sheet or dialog.
+        let presenting = UIApplication.shared.connectedScenes.contains {
+            ($0 as? UIWindowScene)?.keyWindow?.rootViewController?.presentedViewController != nil
+        }
+        guard browser.editing == nil, !menu, !presenting,
+              Date.now.timeIntervalSince(browser.externalOpen ?? .distantPast) > 3 else { return }
         browser.editing = .newTab
     }
 
@@ -355,6 +360,8 @@ struct PageMenu: View {
         .frame(maxWidth: 420)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape, close)
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
@@ -483,7 +490,7 @@ struct TabSwitcher: View {
                 ForEach(pages) { page in
                     let here = page.id == browser.spaceID
                     Button { withAnimation(.smooth) { browser.switchSpace(page.id) } } label: {
-                        Circle().fill(.primary.opacity(here ? 0.85 : 0.25)).frame(width: 6, height: 6).frame(width: 18, height: 22)
+                        Circle().fill(.primary.opacity(here ? 0.85 : 0.25)).frame(width: 6, height: 6).frame(width: 24, height: 30).contentShape(Rectangle())
                     }
                     .accessibilityLabel(page.name)
                     .accessibilityAddTraits(here ? .isSelected : [])
@@ -587,6 +594,8 @@ struct TabCard: View {
     let width: CGFloat
     let height: CGFloat
     @State private var lift: CGFloat = 0
+    /// Set by a drag's first movement: up closes, sideways belongs to the scroll.
+    @State private var vertical: Bool?
 
     var body: some View {
         let space = library.space(tab.spaceID)
@@ -625,9 +634,11 @@ struct TabCard: View {
         .opacity(1 - Double(min(0.6, -lift / 400)))
         // Up closes, like the app switcher; sideways stays the scroll's.
         .simultaneousGesture(DragGesture(minimumDistance: 14).onChanged { value in
-            guard abs(value.translation.height) > abs(value.translation.width) else { return }
+            if vertical == nil { vertical = abs(value.translation.height) > abs(value.translation.width) }
+            guard vertical == true else { return }
             lift = min(0, value.translation.height)
         }.onEnded { value in
+            defer { vertical = nil }
             if lift < -120 || (lift < -20 && value.predictedEndTranslation.height < -300) {
                 withAnimation(.easeOut(duration: 0.2)) { lift = -height } completion: { close() }
             } else {
@@ -676,7 +687,8 @@ struct SearchSheet: View {
                     // Arc Search's Incognito switch, beside the field.
                     let on = space?.isIncognito == true
                     Button {
-                        browser.switchSpace(on ? library.spaces.first?.id ?? Local.space : SpaceRow.incognito.id)
+                        let back = browser.beforeIncognito.flatMap { id in library.spaces.first { $0.id == id }?.id }
+                        browser.switchSpace(on ? back ?? library.spaces.first?.id ?? Local.space : SpaceRow.incognito.id)
                     } label: {
                         HStack(spacing: 5) {
                             Text("Incognito").font(.subheadline.weight(.medium))

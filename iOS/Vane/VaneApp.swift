@@ -10,6 +10,7 @@ import SwiftUI
                 // Links from other apps, including when Vane is the default browser.
                 .onOpenURL { url in
                     guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+                    model.browser.externalOpen = .now
                     model.browser.open(url)
                 }
         }
