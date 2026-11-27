@@ -36,7 +36,7 @@ import WebKit
     static let gestureUsed = "vaneFileAccessGestureUsed"
     static let gestureScript = """
     var \(gestureUsed) = false;
-    for (const type of ['keydown', 'mousedown', 'pointerdown', 'pointerup', 'touchend', 'click']) {
+    for (const type of ['keydown', 'pointerdown', 'touchend']) {    // once per physical click or key
       addEventListener(type, e => { if (e.isTrusted) \(gestureUsed) = false; }, true);
     }
     addEventListener('\(gestureEvent)', () => {
@@ -790,6 +790,7 @@ import WebKit
         lastDirectory[scope, default: [:]][request.id] = kind == .directory ? urls[0] : urls[0].deletingLastPathComponent()
         return picked.map { root in
             let token = register(root, scope: scope)
+            session.denied.remove(token)    // picking it again is a new answer
             session.grant(token, mode)
             return ["root": token, "kind": kind.rawValue, "name": root.name]
         }

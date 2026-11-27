@@ -939,6 +939,8 @@ struct TitleReveal: Equatable, Sendable {
                                     forMainFrameOnly: true, in: .defaultClient))
         // A tab built around WebKit's own configuration never went through
         // `Tab.configuration`, so the blocker is attached here rather than there.
+        // Keep this last: its scriptlets patch page globals, and page-world scripts added
+        // after it would see the patched ones.
         Blocker.apply(to: c, profileID: profileID)
         return c
     }

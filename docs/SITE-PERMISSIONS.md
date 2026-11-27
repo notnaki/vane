@@ -209,9 +209,11 @@ The page script is trusted with nothing. Every message is checked again natively
 - **Where it may write.** Nothing inside a `.git` folder except the object store, refs,
   logs, `HEAD`, `index` and `packed-refs` (so `config` and `hooks/` stay read-only),
   nothing inside `.mvn`, and no file named `.git`, at any depth. A site can't create a
-  file Finder would run or follow (`.command`, `.app`, `.webloc`, `.sh` and similar);
-  a suggested save name with such an extension gets `.download` added and loses any
-  leading dots. Saving over an existing file empties it, as Chrome does. A page has at
+  file Finder follows on a double-click without asking (`.webloc`, `.inetloc`, `.fileloc`,
+  `.url`, `.terminal`). New files aren't executable and written files are quarantined, so
+  `deploy.sh` in a web IDE is fine. A suggested save name that Finder would run or follow
+  (`.command`, `.app`, `.sh` and similar) gets `.download` added and loses any leading
+  dots. Blocked names match in any letter case. Saving over an existing file empties it, as Chrome does. A page has at
   most 32 writes open at once. Creates and removes go through the folder's descriptor
   without following links.
 - **How much.** Opening grants read. Saving grants read and write. A folder picked with

@@ -217,7 +217,7 @@ final class ScriptletTests: XCTestCase {
         let c = try context("example.com##+js(nostif, adblock)\nexample.com##+js(nosiif, , 1000)\n"
             + "example.com##+js(aeld, scroll, track)\nexample.com##+js(nowoif, /popunder/)")
         _ = eval(c, "setTimeout(function () { 'adblock' }, 5); setTimeout(function () { 'fine' }, 5); setInterval(function () { 'gone' }, 1000); setInterval(function () { 'kept' }, 50)")
-        let log = eval(c, "log.map(e => e.join('|'))").toArray() as? [String] ?? []
+        let log = eval(c, "log.filter(e => !(e[0] === 'listen' && e[1] === 'error')).map(e => e.join('|'))").toArray() as? [String] ?? []
         XCTAssertEqual(log.count, 4)
         XCTAssertFalse(log[0].contains("adblock"))
         XCTAssertTrue(log[1].contains("fine"))

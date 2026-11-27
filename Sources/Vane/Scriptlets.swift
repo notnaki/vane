@@ -124,7 +124,7 @@ enum Scriptlets {
         case "no-setTimeout-if", "no-setInterval-if": return a.count <= 2 && at(1).wholeMatch(of: /!?\d*/) != nil
         case "prevent-fetch", "prevent-xhr": return a.count <= 2 && bodies.contains(at(1))
         case "remove-attr", "remove-class":
-            return a.count <= 3 && at(2).split(separator: " ").allSatisfy { ["stay", "complete", "interactive"].contains($0) }
+            return a.count <= 3 && at(2).split(separator: " ").allSatisfy { ["stay", "complete", "interactive", "asap"].contains($0) }
         case "addEventListener-defuser": return pairs(from: 2, ["elements"])
         case "window.open-defuser": return a.count <= 1 || (a.count == 2 && ["0", "1"].contains(at(0)))
         case "json-prune": return a.count <= 2 && plainPaths(at(0)) && plainPaths(at(1))
@@ -317,14 +317,10 @@ enum Scriptlets {
     const listen = W.EventTarget && EventTarget.prototype.addEventListener;
     const magic = Math.random().toString(36).slice(2);
     // Keep the abort scriptlets' errors out of the console and the page's error handlers.
-    let quiet = false;
-    const abort = () => {
-      if (!quiet && listen) {
-        quiet = true;
-        R.apply(listen, W, ['error', e => { if (String(e.message).includes(magic)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true]);
-      }
-      return new ReferenceError(magic);
-    };
+    // Added up front, before any page script, so it sees the error before the page's own
+    // capturing listeners do.
+    if (listen) R.apply(listen, W, ['error', e => { if (String(e.message).includes(magic)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true]);
+    const abort = () => new ReferenceError(magic);
 
     // Patched functions are Proxies; toString answers for the original so a page
     // comparing `fetch.toString()` against native code sees native code.

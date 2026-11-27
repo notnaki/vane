@@ -119,7 +119,8 @@ final class FileSystemAccessDiskTests: XCTestCase {
                         "/System/Library", "/private/etc/hosts", "/usr/bin", "/dev/null", "/Applications/Vane.app/Contents",
                         "/Users/me/Library/Mobile Documents", "/Users/me/Library/Containers",
                         "/Users/me/.config", "/Users/me/.config/gh/hosts.yml", "/Users/me/.cache/x", "/Users/me/.zshrc",
-                        "/Users/me/.bash_profile", "/Users/me/.profile", "/Users/me/.vimrc", "/Users/me/.vim/plugin/x.vim"] {
+                        "/Users/me/.bash_profile", "/Users/me/.profile", "/Users/me/.vimrc", "/Users/me/.vim/plugin/x.vim",
+                        "/Users/me/.ZSHRC", "/Users/me/.SSH/config", "/users/ME/library/x", "/Users/me/.gitconfig"] {
             XCTAssertTrue(FileAccessDisk.isBlocked(blocked, rules: rules), blocked)
         }
         for allowed in ["/Users/me/Projects", "/Users/me/Desktop/notes.txt", "/Users/me/Downloads/a.zip",
@@ -194,8 +195,10 @@ final class FileSystemAccessDiskTests: XCTestCase {
         XCTAssertEqual(FileAccessDisk.safeSaveName("site.webloc"), "site.webloc.download")
         XCTAssertEqual(FileAccessDisk.safeSaveName("notes.txt"), "notes.txt")
         XCTAssertNil(FileAccessDisk.safeSaveName(".."))
-        XCTAssertEqual(error { try FileAccessDisk.child(root: root, [], name: "x.command", kind: .file, create: true) }, "TypeError")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/x.command"))
+        XCTAssertEqual(error { try FileAccessDisk.child(root: root, [], name: "x.webloc", kind: .file, create: true) }, "TypeError")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/x.webloc"))
+        XCTAssertNoThrow(try FileAccessDisk.child(root: root, [], name: "deploy.sh", kind: .file, create: true),
+                         "a web IDE may make a script; it isn't executable and commits are quarantined")
     }
 
     func testSavePickerJudgesThePlaceBeforeCreatingAndEmptiesAnExistingFile() throws {

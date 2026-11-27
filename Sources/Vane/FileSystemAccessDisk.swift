@@ -104,7 +104,7 @@ enum FileAccessDisk {
         if lstat(entry, &info) == 0 { throw .escapes }    // a dangling link is not nothing
         guard create else { throw .notFound }
         guard !isWriteBlocked(entry, file: wanted == .file) else { throw .writeBlocked }
-        if wanted == .file, isLaunchable(name) { throw .badName }
+        if wanted == .file, followable.contains((name as NSString).pathExtension.lowercased()) { throw .badName }
         // Made through the folder itself, opened without following any link, so a component
         // swapped for a link since `directory` resolved it can't redirect the create.
         let dir = try openDirectory(parent)
@@ -351,13 +351,18 @@ enum FileAccessDisk {
                     home + "/Library/Mobile Documents", home + "/Library/Mobile Documents/com~apple~CloudDocs"]
         let dotfiles = [".ssh", ".gnupg", ".config", ".cache",
                         ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".bashrc", ".bash_profile", ".bash_login", ".profile",
-                        ".vimrc", ".gvimrc", ".exrc", ".vim"]
+                        ".vimrc", ".gvimrc", ".exrc", ".vim",
+                        ".gitconfig", ".aws", ".kube", ".docker", ".npmrc", ".netrc", ".tmux.conf"]
         let closed = [home + "/Library", home + "/Applications"] + dotfiles.map { home + "/" + $0 }
             + ["/System", "/Library", "/Applications", "/bin", "/sbin", "/usr", "/dev", "/private", "/cores"] + extra
         return open.map { Rule(path: $0, children: true) } + closed.map { Rule(path: $0, children: false) }
     }
 
+    /// Case-insensitive like APFS: a name that doesn't exist yet keeps the case it was typed
+    /// in, and `~/.ZSHRC` is the file zsh opens as `.zshrc`.
     nonisolated static func isBlocked(_ path: String, rules: [Rule]) -> Bool {
+        let path = path.lowercased()
+        let rules = rules.map { Rule(path: $0.path.lowercased(), children: $0.children) }
         if rules.contains(where: { contains(path, $0.path) }) { return true }
         guard let rule = rules.filter({ contains($0.path, path) }).max(by: { $0.path.count < $1.path.count }) else { return false }
         return !rule.children
@@ -381,7 +386,8 @@ enum FileAccessDisk {
         return false
     }
 
-    /// Kinds Finder runs or follows on a double-click. A site may not name a new file so.
+    /// Kinds Finder runs or follows on a double-click. A suggested save name of one gets
+    /// `.download` after it.
     nonisolated static let launchable: Set<String> = [
         "app", "command", "tool", "terminal", "term", "fileloc", "inetloc", "webloc", "url", "scpt", "scptd",
         "applescript", "workflow", "action", "sh", "bash", "zsh", "csh", "ksh", "pkg", "mpkg", "prefpane",
@@ -390,6 +396,11 @@ enum FileAccessDisk {
     nonisolated static func isLaunchable(_ name: String) -> Bool {
         launchable.contains((name as NSString).pathExtension.lowercased())
     }
+
+    /// The few kinds that do something on a double-click with no execute bit and no
+    /// Gatekeeper prompt. A site may not create a file so named; anything else (`deploy.sh`
+    /// in a web IDE) is fine, since new files aren't executable and commits are quarantined.
+    nonisolated static let followable: Set<String> = ["terminal", "fileloc", "inetloc", "webloc", "url"]
 
     /// `suggestedName` made safe: no leading dots (a hidden file the user can't see being
     /// made), and a launchable kind gets `.download` after it, as Chrome does for downloads.
@@ -426,9 +437,17 @@ enum FileAccessDisk {
             guard !isBlocked(path, rules: rules), !isBlocked(target, rules: rules) else { throw .blocked }
             guard !isWriteBlocked(target, file: true) else { throw .writeBlocked }
             // By path, not through the folder: a sandboxed app is given the file, not its folder.
-            let fd = open(target, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW_ANY | O_CLOEXEC, 0o666)
+            // Emptied only once the opened file's own path passes, so a case variant of a
+            // blocked name can't truncate the real one first.
+            let fd = open(target, O_CREAT | O_WRONLY | O_NOFOLLOW_ANY | O_CLOEXEC, 0o666)
             guard fd >= 0 else { throw .errno() }
-            close(fd)
+            defer { close(fd) }
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(fd, F_GETPATH, &buffer) == 0 else { throw .errno() }
+            let opened = String(cString: buffer)
+            guard !isBlocked(opened, rules: rules) else { throw .blocked }
+            guard !isWriteBlocked(opened, file: true) else { throw .writeBlocked }
+            guard ftruncate(fd, 0) == 0 else { throw .errno() }
         }
         guard let resolved = real(path) else { throw .notFound }
         guard !isBlocked(path, rules: rules), !isBlocked(resolved, rules: rules) else { throw .blocked }
