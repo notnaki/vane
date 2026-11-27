@@ -185,8 +185,9 @@ import WebKit
         async readValue() {
           const p = part(this);
           live(p.device, 'perform GATT operations');
-          p.value = bytes(await call('read', { id: slot(p.device).id, handle: p.handle }));
-          this.dispatchEvent(new Event('characteristicvaluechanged', { bubbles: true }));
+          const read = await call('read', { id: slot(p.device).id, handle: p.handle });
+          p.value = bytes(read.data);
+          if (!read.pushed) this.dispatchEvent(new Event('characteristicvaluechanged', { bubbles: true }));
           return p.value;
         }
         async #write(value, mode) {
@@ -893,7 +894,9 @@ import WebKit
             guard let value = await backend.read(peripheral, target.attribute.instance), current else {
                 throw .network("GATT operation failed for unknown reason.")
             }
-            return value.base64EncodedString()
+            guard target.kind == .characteristic else { return value.base64EncodedString() }
+            // A document subscribed to it gets the read's value as a notification already.
+            return ["data": value.base64EncodedString(), "pushed": session.notifying.contains(target.attribute.instance)]
         case "write":
             try connected("perform GATT operations")
             let target = try value()

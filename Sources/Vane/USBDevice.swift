@@ -448,11 +448,14 @@ final class USBConnection: USBTransport, @unchecked Sendable {
 
     /// One blocking call, off the main thread, and none once closed. `bytes` is what it buffers.
     private func run<T: Sendable>(_ refused: T, bytes: Int = 0, _ call: @escaping @Sendable () -> T) async -> T {
+        // Entered under the lock, so `close()` can't see an empty group and free the device
+        // between this check and the call.
         let admitted = locked { state -> Bool in
-            !state.closed && state.budget.admit(bytes)
+            guard !state.closed, state.budget.admit(bytes) else { return false }
+            group.enter()
+            return true
         }
         guard admitted else { return refused }
-        group.enter()
         return await withCheckedContinuation { done in
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 let result = call()

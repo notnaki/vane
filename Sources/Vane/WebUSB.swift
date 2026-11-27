@@ -206,9 +206,9 @@ import WebKit
             throw fail('NotFoundError', 'The configuration value provided is not supported by the device.');
           }
           if (s.active === configurationValue) return;
-          await changing(s, () => call('configure', { id: s.id, value: configurationValue }));
+          // Claims are released natively before the switch, so they go here even if it fails.
+          try { await changing(s, () => call('configure', { id: s.id, value: configurationValue })); } finally { reset(s); }
           s.active = configurationValue;
-          reset(s);
         }
         async claimInterface(number) {
           const s = configured(this), interfaceNumber = octet(number, 'interfaceNumber');

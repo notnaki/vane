@@ -386,6 +386,8 @@ import XCTest
         XCTAssertEqual(quiet, "60", "A document that let go hears nothing more")
 
         _ = try await js(two, "device.gatt.disconnect(); return 'off';")
+        // disconnect() posts without waiting, and the unsubscribe runs in a task: give both a turn.
+        try await compatibilityWait { radio.calls.contains("disconnect") && radio.calls.contains("notify:2:false") }
         XCTAssertTrue(radio.calls.contains("notify:2:false"))
         XCTAssertTrue(radio.calls.contains("disconnect"), "The last holder lets the radio go")
     }

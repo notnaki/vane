@@ -226,7 +226,9 @@ enum BluetoothEvent: Sendable {
               let peripheral = peripherals[id] ?? central.retrievePeripherals(withIdentifiers: [id]).first else { return false }
         peripherals[id] = peripheral
         peripheral.delegate = self
-        if peripheral.state == .connected { return true }
+        // Not while our own cancel is still on its way: the link is about to drop, so connect
+        // again (CoreBluetooth reconnects once the cancel completes).
+        if peripheral.state == .connected, !cancelled.contains(id) { return true }
         return await withCheckedContinuation { done in
             connecting[id, default: []].append(done)
             guard connecting[id]?.count == 1 else { return }
