@@ -167,7 +167,11 @@ import Darwin
         /// not saved, as Chrome's ids are not.
         fileprivate(set) var byExtension: (id: String, name: String, url: String)?
         /// `conflictAction: 'overwrite'`: the name in this folder the finished file takes.
+        // ponytail: not saved, so an overwrite a quit interrupts finishes, once resumed,
+        // under the stand-in name. Save it in the record if anyone notices.
         fileprivate var replaces: String?
+        /// The extension gave the path, so Tidy Downloads leaves the name alone.
+        fileprivate var namedByExtension = false
         fileprivate var sourceMethod: String?
         @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
@@ -537,7 +541,7 @@ import Darwin
     /// while bytes are arriving.
     func save() {
         guard !invalidated else { return }
-        revision &+= 1
+        changed()
         lastSave = .now
         var keep: [Item] = []
         var evicted: [Item] = []
@@ -560,8 +564,27 @@ import Darwin
     }
 
     private var lastSave = Date.distantPast
-    /// Bumped on every save, so `chrome.downloads` can wait for a change without rebuilding.
-    private(set) var revision = 0
+    /// Whoever waits in `nextChange`, woken on every save, so `chrome.downloads` hears
+    /// of changes without a clock.
+    private var changeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    private func changed() {
+        let waiters = changeWaiters.values
+        changeWaiters = [:]
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Returns at the next save (or other change an extension can see), or after `limit`.
+    func nextChange(within limit: Duration) async {
+        let id = UUID()
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            changeWaiters[id] = waiter
+            Task { [weak self] in
+                try? await Task.sleep(for: limit)
+                self?.changeWaiters.removeValue(forKey: id)?.resume()
+            }
+        }
+    }
 
     /// Bytes arrive dozens of times a second; the index does not need to. One write a
     /// second keeps a hard quit's record within a second of the truth.
@@ -780,9 +803,13 @@ import Darwin
                             changed = true
                         }
                     } else if item.status == .paused {
-                        if result.unavailable { item.state = .failed("Download folder unavailable. Reconnect it to resume.") }
-                        else if let issue = result.resumeIssue { item.state = .failed(issue) }
-                        else { item.state = .failed("Paused") }
+                        // Clear only what this check once said; "Interrupted — …" stays.
+                        var reason: String?
+                        if result.unavailable { reason = "Download folder unavailable. Reconnect it to resume." }
+                        else if let issue = result.resumeIssue { reason = issue }
+                        else if case .failed(let old) = item.state,
+                                old.hasPrefix("Download folder unavailable") || old.hasPrefix("Cannot resume") { reason = "Paused" }
+                        if let reason, item.state != .failed(reason) { item.state = .failed(reason); changed = true }
                     }
                     item.inspectedDestination = destinationRequest(item)
                 }
@@ -827,14 +854,14 @@ import Darwin
         }
         guard let granted = ScopedPaths.accessBookmark(bookmark, owner: item.scopeOwner) else { return nil }
         if item.destinationBookmarkIsFile == true {
-            if item.url != granted { item.url = granted }
+            if item.url != granted { item.url = granted; changed() }
             return granted
         }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: granted.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return nil }
         let resolved = granted.appendingPathComponent(saved.lastPathComponent)
-        if item.url != resolved { item.url = resolved }
+        if item.url != resolved { item.url = resolved; changed() }
         return resolved
     }
 
@@ -910,6 +937,13 @@ import Darwin
         }
         guard type == .typeRegular else { return nil }
         do { _ = try fm.replaceItemAt(target, withItemAt: file); return target } catch { return nil }
+    }
+
+    /// Every file a download may still write: chosen ones not yet begun, and the partial
+    /// files of running and paused rows in any profile, which `pendingDestinations` lets go of.
+    var writing: [URL] {
+        Array(Self.pendingDestinations.values)
+            + (items + Self.cache.values.flatMap(\.items)).filter(\.status.isLive).compactMap(\.url)
     }
 
     private nonisolated static func isReserved(_ url: URL, _ reserved: [URL]) -> Bool {
@@ -1013,7 +1047,7 @@ import Darwin
             target = chosen
         } else if let asked, let path = asked.path {
             if let chosen = Self.extensionDestination(path, in: destinationDirectory, overwrite: asked.overwrite,
-                                                      reserved: Array(Self.pendingDestinations.values)) {
+                                                      reserved: writing) {
                 target = chosen.file
                 replaces = chosen.replaces
             } else if FileManager.default.fileExists(atPath: destinationDirectory.path) {
@@ -1040,6 +1074,7 @@ import Darwin
             if entry.transfer?.scheme?.lowercased() == "data" { entry.transfer = nil }
             entry.byExtension = asked.by
             entry.replaces = replaces
+            entry.namedByExtension = asked.path != nil
         }
         entry.sourceMethod = download.originalRequest?.httpMethod
         entry.sourceWeb = origin?.web ?? download.webView
@@ -1106,7 +1141,7 @@ import Darwin
         if let name = i.replaces {
             i.replaces = nil
             if let replaced = Self.replace(destination.deletingLastPathComponent().appendingPathComponent(name), with: destination,
-                                           reserved: Array(Self.pendingDestinations.values)) {
+                                           reserved: writing) {
                 destination = replaced
                 i.url = replaced
                 i.name = Self.filenameWithoutBidiControls(name)
@@ -1114,7 +1149,7 @@ import Darwin
         }
         Self.quarantine(destination, source: i.source, page: i.sourceWeb?.url,
                         isPrivate: profileID == Profile.incognito.id)
-        TidyDownloads.tidy(download, in: self)      // before unwatch() nils out item.download
+        if !i.namedByExtension { TidyDownloads.tidy(download, in: self) }     // before unwatch() nils out item.download
         i.unwatch()
         i.state = .done
         i.status = .done

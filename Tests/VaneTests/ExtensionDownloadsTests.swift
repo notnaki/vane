@@ -97,6 +97,27 @@ import XCTest
         XCTAssertNil(Downloads.extensionDestination(["link", "deeper", "escape.txt"], in: root, overwrite: false))
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: outside.path), [])
     }
+
+    /// A paused row's partial file has left `pendingDestinations` but is still being
+    /// written: overwrite steps around it, then and at the end, so its resume survives.
+    func testOverwriteNeverReplacesAPausedDownloadsPartialFile() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("extension-downloads-\(UUID())")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let partial = root.appendingPathComponent("big.iso")
+        try Data("half".utf8).write(to: partial)
+        let manager = Downloads(profileID: UUID(), directory: root, sandboxed: true)
+        _ = manager.add(.init(name: "big.iso", destination: partial, total: 100, received: 4, state: "paused", reason: "Paused"))
+        XCTAssertTrue(manager.writing.contains(partial))
+
+        let chosen = try XCTUnwrap(Downloads.extensionDestination(["big.iso"], in: root, overwrite: true, reserved: manager.writing))
+        XCTAssertEqual(chosen.file.lastPathComponent, "big 2.iso")
+        XCTAssertNil(chosen.replaces)
+        try Data("other".utf8).write(to: chosen.file)
+        XCTAssertNil(Downloads.replace(partial, with: chosen.file, reserved: manager.writing))
+        XCTAssertEqual(try String(contentsOf: partial, encoding: .utf8), "half")
+    }
 }
 
 /// `chrome.downloads` end to end: a synthetic MV3 extension saves through Vane's own list.

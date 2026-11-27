@@ -2589,17 +2589,22 @@ import WebKit
         CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown)
     }
 
+    /// The same for the keyboard (Enter or Space on a button; any key counts, as in Chrome).
+    var secondsSinceKey: () -> CFTimeInterval = {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
+    }
+
     /// The user just pressed this extension's button or shortcut.
     func noteSidePanelGesture(_ context: WKWebExtensionContext) {
         sidePanelGestures[ObjectIdentifier(context)] = .now
     }
 
     /// `downloads.open`'s gesture, which launches a file, so only what the host saw: the
-    /// extension's button or shortcut, or a real click a moment ago while one of the
-    /// extension's own pages has focus in the key window. Never the page's own report.
+    /// extension's button or shortcut, or a real click or key press a moment ago while one
+    /// of the extension's own pages has focus in the key window. Never the page's own report.
     func hasOwnPageGesture(_ context: WKWebExtensionContext) -> Bool {
         if let last = sidePanelGestures[ObjectIdentifier(context)], .now - last < .seconds(5) { return true }
-        guard secondsSinceClick() < 5 else { return false }
+        guard min(secondsSinceClick(), secondsSinceKey()) < 5 else { return false }
         var view = NSApp.keyWindow?.firstResponder as? NSView
         while let current = view, !(current is WKWebView) { view = current.superview }
         guard let url = (view as? WKWebView)?.url else { return false }

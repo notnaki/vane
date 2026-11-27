@@ -53,7 +53,7 @@ import WebKit
 
     /// What a row reports as its `url`: a data: URL cut short, as it can be a whole file.
     nonisolated static func reported(_ url: String) -> String {
-        url.lowercased().hasPrefix("data:") && url.count > 100 ? String(url.prefix(100)) + "…" : url
+        url.prefix(5).lowercased() == "data:" && url.utf8.count > 100 ? String(url.prefix(100)) + "…" : url
     }
 
     // Requests travel over `ExtensionChromiumGaps`' `ask`, as `downloads.<op>`. Events come
@@ -244,7 +244,7 @@ import WebKit
         switch operation {
         case "download":
             // The URL the extension named: its blob: one, not the data: it was read into.
-            let named = (arguments["reported"] as? String).flatMap { $0.lowercased().hasPrefix("blob:") ? $0 : nil }
+            let named = (arguments["reported"] as? String).flatMap { $0.prefix(5).lowercased() == "blob:" ? $0 : nil }
                 ?? arguments["url"] as? String ?? ""
             let item = try await manager.start(try request(arguments), path: try path(arguments),
                                                overwrite: arguments["conflictAction"] as? String == "overwrite",
@@ -256,22 +256,17 @@ import WebKit
             return list()
         case "watch":
             // Wakes on the list's saves, not the clock; a save that only moved bytes, which
-            // Chrome does not report, keeps waiting.
-            // ponytail: polls an integer a few times a second per listening context; observe
-            // `revision` instead if that ever shows up in a profile.
+            // Chrome does not report, keeps waiting. 25 s answers anyway, so a call never hangs.
             let after = arguments["after"] as? String, deadline = ContinuousClock.now + .seconds(25)
-            var seen: Int?
             while true {
-                if seen != manager.revision {
-                    seen = manager.revision
-                    let items = list()
-                    let quiet = items.map { $0.filter { $0.key != "bytesReceived" } }
-                    let data = try JSONSerialization.data(withJSONObject: quiet, options: [.sortedKeys])
-                    let stamp = String(data.hashValue)
-                    if stamp != after { return ["stamp": stamp, "items": items] }
-                }
-                if ContinuousClock.now >= deadline { return ["stamp": after ?? "", "items": list()] }
-                try await Task.sleep(for: .milliseconds(250))
+                let items = list()
+                let quiet = items.map { $0.filter { $0.key != "bytesReceived" } }
+                let data = try JSONSerialization.data(withJSONObject: quiet, options: [.sortedKeys])
+                let stamp = String(data.hashValue)
+                if stamp != after { return ["stamp": stamp, "items": items] }
+                let left = deadline - .now
+                guard left > .zero else { return ["stamp": stamp, "items": items] }
+                await manager.nextChange(within: left)
             }
         case "pause":
             let item = try item(arguments)
