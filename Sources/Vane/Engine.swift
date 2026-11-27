@@ -53,6 +53,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     private func requested(_ navigation: WKNavigation?) -> WKNavigation? {
+        if navigation != nil { navigationOwner?.actAsChromeBrowserLoad = true }   // Vane's own load
         navigationOwner?.expectNavigation(navigation)
         // A same-document command can finish synchronously inside super, before expect
         // advances its generation. Reconcile again with that final command identity.
@@ -1163,8 +1164,11 @@ struct TitleReveal: Equatable, Sendable {
     /// provisional destination for the document already on screen.
     private var initialRequestedURL: URL?
     private var provisional = false
-    /// The url Act as Chrome last re-loaded to fix its header; see `ActAsChrome.apply`.
-    var actAsChromeRetry: URL?
+    /// Act as Chrome's header retries since the last commit, and whether the current
+    /// navigation chain began with a load Vane started; see `ActAsChrome.apply`.
+    var actAsChromeRetries = 0
+    var actAsChromeBrowserLoad = false
+    var actAsChromeBrowserChain = false
 
     /// A fragment link never starts a provisional load, so it must not hold the address.
     static func sameDocument(_ action: WKNavigationAction, from current: URL?) -> Bool {
@@ -2116,6 +2120,7 @@ struct TitleReveal: Equatable, Sendable {
         // Only the current navigation's failure means nothing is pending: a superseded
         // load fails after its replacement was allowed.
         guard ownsNavigation(navigation, in: w) else { return }
+        if ErrorPage.shouldShow(error) { actAsChromeRetries = 0 }   // a real failure, not a cancel
         DiagnosticLog.shared.record(.provisionalNavigationFailed, code: (error as NSError).code, isPrivate: isPrivate)
         #if DEBUG
         recordNavigationStage("provisional-failure-accepted", navigation: navigation)
@@ -2209,6 +2214,7 @@ struct TitleReveal: Equatable, Sendable {
                               detail: "owned=\(ownsNavigation(navigation, in: w))")
         #endif
         guard ownsNavigation(navigation, in: w) else { return }
+        actAsChromeRetries = 0
         cancelPasswordRead()
         if navigationState.simulated !== navigation { httpsOnlyContinuation = nil }
         DiagnosticLog.shared.record(.navigationCommitted, isPrivate: isPrivate)
@@ -2309,6 +2315,10 @@ struct TitleReveal: Equatable, Sendable {
             else { decisionHandler(policy, preferences); return }
             // Like HTTPS-only: cancel plus a re-load is the only way to change the header.
             decisionHandler(.cancel, preferences)
+            #if DEBUG
+            self.navigationStageObserver?(NavigationStageEvent(stage: "act-as-chrome-retry",
+                identity: .action(self.navigationActionStageSerial), detail: "policy=cancel"))
+            #endif
             self.expectNavigation(w.load(retry))
         }
     }

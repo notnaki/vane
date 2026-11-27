@@ -72,16 +72,53 @@ import XCTest
         XCTAssertEqual(r["header"], safariUA, "a 302 out of the switched host goes back to Safari")
         XCTAssertEqual(r["ua"], safariUA)
         XCTAssertEqual(r["vendor"], "Apple Computer, Inc.")
+
+        // A page's own link click is never replayed as a fresh load: the referrer and the
+        // history entry survive, and the navigator matches the destination either way.
+        func click(to host: String) async throws -> [String: String] {
+            let before = Int(try await page()["hist"] ?? "") ?? 0
+            _ = try await tab.web.evaluateJavaScript("""
+                window.result = undefined; const a = document.createElement('a');
+                a.href = 'http://\(host):\(port)/'; document.body.append(a); a.click(); 0
+                """)
+            let r = try await page()
+            XCTAssertEqual(Int(r["hist"] ?? ""), before + 1, "a click to \(host) adds one history entry")
+            XCTAssertFalse(r["referer"]?.isEmpty ?? true, "a click to \(host) keeps its referrer, so it wasn't re-loaded")
+            print("act as chrome: click to \(host) went out with \(r["header"] ?? "nil")")
+            return r
+        }
+        r = try await click(to: "127.0.0.1")     // from localhost, which is off
+        XCTAssertEqual(r["ua"], ActAsChrome.chromeUA)
+        XCTAssertEqual(r["vendor"], "Google Inc.")
+        r = try await click(to: "localhost")     // from 127.0.0.1, which is on
+        XCTAssertEqual(r["ua"], safariUA)
+        XCTAssertEqual(r["vendor"], "Apple Computer, Inc.")
+
+        // A 302 loop across the boundary retries a few times, then WebKit's redirect limit
+        // ends it instead of every retry starting a fresh 20 redirects.
+        server.loopRequests = 0
+        tab.navigate(to: URL(string: "http://localhost:\(port)/loop")!)
+        var last = -1
+        for _ in 0..<40 {      // until the server stops seeing requests
+            try await Task.sleep(for: .milliseconds(250))
+            if server.loopRequests == last, last > 0 { break }
+            last = server.loopRequests
+        }
+        XCTAssertGreaterThan(server.loopRequests, 10, "the loop ran into WebKit's limit")
+        XCTAssertLessThanOrEqual(server.loopRequests, 21 * (ActAsChrome.maxRetries + 1), "the loop ended")
     }
 }
 
 /// Answers every request with a page that reports the User-Agent header it was sent.
 private final class UserAgentEchoServer: @unchecked Sendable {
+    /// Requests to `/loop`, which 302s to the same path on the other loopback host.
+    var loopRequests: Int { get { queue.sync { loops } } set { queue.sync { loops = newValue } } }
+    private var loops = 0
     private let listener: NWListener
     private let queue = DispatchQueue(label: "vane-ua-echo")
     init() throws {
         listener = try NWListener(using: .tcp, on: .any)
-        listener.newConnectionHandler = { [queue] connection in
+        listener.newConnectionHandler = { [unowned self, queue] connection in
             connection.start(queue: queue)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
                 let request = String(decoding: data ?? Data(), as: UTF8.self)
@@ -92,15 +129,26 @@ private final class UserAgentEchoServer: @unchecked Sendable {
                     connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
                     return
                 }
-                let header = request.components(separatedBy: "\r\n")
-                    .first { $0.lowercased().hasPrefix("user-agent:") }
-                    .map { String($0.dropFirst("user-agent:".count)).trimmingCharacters(in: .whitespaces) } ?? ""
-                let json = String(decoding: try! JSONEncoder().encode(header), as: UTF8.self)
+                func field(_ name: String) -> String {
+                    request.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix(name + ":") }
+                        .map { String($0.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces) } ?? ""
+                }
+                if path == "/loop" {
+                    self.loops += 1
+                    let host = field("host"), other = host.hasPrefix("localhost") ? "127.0.0.1" : "localhost"
+                    let port = host.split(separator: ":").last.map(String.init) ?? ""
+                    let response = "HTTP/1.1 302 Found\r\nLocation: http://\(other):\(port)/loop\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                    return
+                }
+                let json = String(decoding: try! JSONEncoder().encode(field("user-agent")), as: UTF8.self)
+                let referer = String(decoding: try! JSONEncoder().encode(field("referer")), as: UTF8.self)
                 let body = """
                 <script>
                 const d = navigator.userAgentData;
                 (d ? d.getHighEntropyValues(['uaFullVersion', 'architecture']) : Promise.resolve({})).then(h => {
-                  window.result = {header: \(json), ua: navigator.userAgent, vendor: navigator.vendor,
+                  window.result = {header: \(json), referer: \(referer), hist: String(history.length),
+                    ua: navigator.userAgent, vendor: navigator.vendor,
                     brands: d ? d.brands.map(b => b.brand).join(',') : 'none', platform: d ? d.platform : 'none',
                     high: h.uaFullVersion || 'none', arch: h.architecture || 'none'};
                 });

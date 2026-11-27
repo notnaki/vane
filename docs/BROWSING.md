@@ -67,9 +67,12 @@ It matches the exact host (`www.example.com` and `example.com` are separate). If
 sends other browsers to an "unsupported browser" page on another host, go back to the
 site's own address and turn it on there, not on the warning page. Only the page itself
 gets Chrome's `navigator`: extension content scripts and Web Workers see a Chrome user
-agent but Apple's `navigator.vendor` and no `userAgentData`. A form that posts and then
-redirects onto or off a switched site keeps the first request's user agent for that one
-redirect.
+agent but Apple's `navigator.vendor` and no `userAgentData`. When a link, a form or the
+page's own script leads onto or off a switched site, directly or through a redirect, that
+first request may still carry the previous user agent. The page that loads gets the
+right identity. Turning the switch on for a page you reached by submitting a form reloads
+it with the previous user agent. Pages you type, reload or open from Vane, and the
+redirects they follow, always send the right one.
 
 ## Copy a clean link
 

@@ -59,12 +59,16 @@ import WebKit
     /// normal identity, so a navigation that never commits leaves nothing behind. Off the
     /// switch nothing is pinned, exactly as before.
     ///
-    /// Returns a request to load instead when the outgoing header disagrees: a server
-    /// redirect into or out of a switched host carries the first request's User-Agent. Only
-    /// for GET (a POST's body can't be replayed from here, so a POST redirect keeps the old
-    /// header) and not for back/forward (a fresh load would rewrite history). The retry
-    /// carries the right header, and `tab.actAsChromeRetry` stops a second one if WebKit
-    /// ignores it.
+    /// Returns a request to load instead when the outgoing header disagrees: a reload, or a
+    /// server redirect into or out of a switched host, carries the first request's
+    /// User-Agent. Only for a chain Vane itself started (typed, reload, its own retry): a
+    /// fresh load drops what a page's navigation carries (referrer, gesture, SameSite
+    /// context), so a link click, form or script navigation keeps WebKit's header for that
+    /// request. Only GET (a POST body can't be replayed from here), never back/forward (it
+    /// would rewrite history) or a download (it would open in the tab). At most
+    /// `maxRetries` until the next commit or real failure, so a redirect loop across the
+    /// boundary still ends at WebKit's redirect limit.
+    static let maxRetries = 3
     static func apply(_ action: WKNavigationAction, to web: WKWebView, preferences: WKWebpagePreferences,
                       tab: Tab) -> URLRequest? {
         let url = action.request.url
@@ -72,14 +76,18 @@ import WebKit
         let ua = resolve(global: Settings.userAgent, siteOn: switched)
         let sent = action.request.value(forHTTPHeaderField: "User-Agent")
         let mismatch = sent != nil && sent != ua
-        if mismatch, (action.request.httpMethod ?? "GET") == "GET", action.navigationType != .backForward,
-           ["http", "https"].contains(url?.scheme?.lowercased()), tab.actAsChromeRetry != url {
-            tab.actAsChromeRetry = url
+        // ponytail: SPI; without it no navigation counts as a redirect, so redirects never retry.
+        let isRedirect = action.responds(to: NSSelectorFromString("_isRedirect"))
+            && (action.value(forKey: "_isRedirect") as? Bool) == true
+        if !isRedirect { tab.actAsChromeBrowserChain = tab.actAsChromeBrowserLoad; tab.actAsChromeBrowserLoad = false }
+        if mismatch, tab.actAsChromeBrowserChain, tab.actAsChromeRetries < maxRetries,
+           (action.request.httpMethod ?? "GET") == "GET", action.navigationType != .backForward,
+           !action.shouldPerformDownload, ["http", "https"].contains(url?.scheme?.lowercased()) {
+            tab.actAsChromeRetries += 1
             var request = action.request
             request.setValue(ua, forHTTPHeaderField: "User-Agent")
             return request
         }
-        tab.actAsChromeRetry = nil
         let setter = NSSelectorFromString("_setCustomUserAgent:")
         guard preferences.responds(to: setter) else {
             if web.customUserAgent != ua { web.customUserAgent = ua }   // no per-document UA here
