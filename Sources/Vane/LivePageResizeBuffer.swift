@@ -885,7 +885,12 @@ struct LivePageResizeAnchor {
             // until native layout acknowledges the latest one, even if it
             // coalesces past every intermediate parent.
             let submitted = submittedSidebarFloor?[index] ?? .zero
-            let visible = frameDriver != nil ? .zero : page.currentVisibleSize
+            // A window drag shrinks the page ahead of the window only when nothing grows. A
+            // corner drag that also grows keeps the visible floor: an intermediate WK resize
+            // can answer the presentation callback before the grown viewport has painted.
+            let current = page.currentVisibleSize
+            let grows = size.width > current.width + 0.001 || size.height > current.height + 0.001
+            let visible = frameDriver != nil && !grows ? .zero : current
             // A mixed-axis proposal can wait for growth while its other axis
             // shrinks. Do not prepare a viewport smaller than the still-visible clip.
             return NSSize(width: max(submitted.width, visible.width,
