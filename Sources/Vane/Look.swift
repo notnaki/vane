@@ -492,19 +492,18 @@ enum Look {
     /// on the space's own wash, quieter than a hovered row so it is never mistaken for one.
     static let emptyPaneFillAlpha = 0.05
     static let emptyPaneFill = ink(emptyPaneFillAlpha)
-    /// The loading pill: a small capsule near the top of the page card, not a rule across
-    /// the whole of it. A proportion needs a beginning and an end to be read as one, and a
-    /// bar the width of the window has neither — it reads as the edge of the page rather
-    /// than as a thing filling up. Wide enough to show a quarter apart from a half, short
-    /// enough to sit on the page without dividing it, and inset from the corner so it clears
-    /// the card's own radius.
-    static let loadingPill = CGSize(width: 160, height: 5)
+    /// The loading pill, as Arc draws it: 48×4 in the 10pt margin above the card, 3pt from
+    /// the window's top so it sits in the middle of that margin. A long load stretches it
+    /// to `loadingWide`.
+    static let loadingPill = CGSize(width: 48, height: 4)
+    static let loadingWide: CGFloat = 128
     /// The plus that fills at the sidebar's edge during a pull past the last Space.
     static let pullPlus: CGFloat = 32
-    static let loadingInset: CGFloat = 8
-    /// The unfilled part of it. A shade under a hovered row, so the pill is visible on the
-    /// page for the whole of a load without being something you look at.
-    static let loadingTrack = ink(0.10)
+    static let loadingInset: CGFloat = 3
+    /// The pill and the sweep, and the wide phase's unlit track — Arc's strengths over its
+    /// chrome on a dark Space. The sweep is drawn over the track, as Arc's is.
+    static let loadingFill = ink(0.74)
+    static let loadingTrack = ink(0.23)
 
     /// What the page area is before a page has painted anything of its own. A WKWebView
     /// shows white until its first paint, so on a dark Space every switch and every load

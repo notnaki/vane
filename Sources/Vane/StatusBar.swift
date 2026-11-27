@@ -123,7 +123,7 @@ enum StatusBar {
             ("a link message is passed through", link(from: "https://a.example") == "https://a.example"),
             ("the script is idempotent across bfcache restores", script.contains("__vaneHover")),
             ("the script speaks to its own handler", script.contains("messageHandlers.\(messageName)")),
-        ] + PillState.check()
+        ] + PillState.check() + LoadingBar.Pose.check()
     }
 }
 
