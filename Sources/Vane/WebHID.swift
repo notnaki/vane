@@ -287,7 +287,8 @@ import WebKit
         web.configuration.userContentController.removeScriptMessageHandler(forName: gestureName, contentWorld: gestureWorld)
     }
 
-    private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
+    /// Main actor, so the gesture message and the request it unlocks are handled in the order they were sent.
+    @MainActor private final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         private weak var tab: Tab?
         init(_ tab: Tab) { self.tab = tab }
 
