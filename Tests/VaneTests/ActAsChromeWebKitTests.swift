@@ -94,8 +94,8 @@ import XCTest
         XCTAssertEqual(r["ua"], safariUA)
         XCTAssertEqual(r["vendor"], "Apple Computer, Inc.")
 
-        // A same-document Back (to a pushState entry) is a history command, not a load Vane
-        // owns, so the next click off the switched site still isn't replayed.
+        // Smoke check: a same-document Back (to a pushState entry) then a click off the
+        // switched site still loads normally.
         _ = try await tab.web.evaluateJavaScript("window.result = undefined; 0")
         tab.navigate(to: URL(string: "http://127.0.0.1:\(port)/")!)
         _ = try await page()
@@ -121,6 +121,20 @@ import XCTest
         XCTAssertGreaterThan(server.loopRequests, 10, "the loop ran into WebKit's limit")
         // WebKit's 20-redirect chain plus one request per retry, one spare.
         XCTAssertLessThanOrEqual(server.loopRequests, 22 + ActAsChrome.maxRetries, "the loop ended")
+
+        // A failed load on the switched host shows its error page and stays there: the
+        // simulated error page is never re-issued as a real load.
+        let closed = try NWListener(using: .tcp, on: .any)
+        closed.start(queue: .main)
+        while closed.port == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let closedPort = closed.port!.rawValue
+        closed.cancel()
+        tab.navigate(to: URL(string: "http://127.0.0.1:\(closedPort)/")!)
+        try await Task.sleep(for: .seconds(2))
+        for _ in 0..<10 {
+            XCTAssertFalse(tab.web.isLoading, "the error page settles instead of retrying")
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 }
 

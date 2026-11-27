@@ -73,7 +73,7 @@ first request may still carry the previous user agent. The page that loads gets 
 right identity. Turning the switch on for a page you reached through a form that posts
 reloads it with the previous user agent. Pages you type, reload or open from Vane, and
 the redirects they follow, send the right one where WebKit lets Vane recognize its own
-loads, up to a few redirects across the switch.
+loads, up to a few redirects across the switch. Error pages are never retried.
 
 ## Copy a clean link
 

@@ -74,13 +74,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func loadHTMLString(_ string: String, baseURL: URL?) -> WKNavigation? {
         navigationOwner?.prepareNavigation(to: baseURL ?? URL(string: "about:blank"))
-        return requested(super.loadHTMLString(string, baseURL: baseURL))
+        // Vane's own HTML (error pages, blank pages) is never re-issued by Act as Chrome.
+        return requested(super.loadHTMLString(string, baseURL: baseURL), own: false)
     }
 
     override func loadSimulatedRequest(_ request: URLRequest, responseHTML string: String) -> WKNavigation {
         navigationOwner?.prepareNavigation(to: request.url)
         let navigation = super.loadSimulatedRequest(request, responseHTML: string)
-        _ = requested(navigation)
+        // Error pages and the HTTPS-only interstitial: re-issuing one as a real load would
+        // fail again, show the page again, and loop.
+        _ = requested(navigation, own: false)
         return navigation
     }
 
