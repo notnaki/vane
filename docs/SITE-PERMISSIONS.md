@@ -26,6 +26,7 @@ its pending app request. Restoring a backup requires fresh security consent; see
 | Camera and microphone | `WKUIDelegate` media permission request; `WKWebView.cameraCaptureState`, `microphoneCaptureState`, and their setters | Allow Once, saved Allow/Block, private-tab answers, Ask/reset, and stopping the revoked device with `.none`. State/setters cover the whole web view, so revoking one frame’s camera can also stop another frame’s camera. The untouched device continues. |
 | Location | WebKit compatibility geolocation delegate on macOS 26; public `WKUIDelegate` request on macOS 27 | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
 | Pop-ups | `WKUIDelegate` `createWebViewWith`, with tabs' `javaScriptCanOpenWindowsAutomatically` on so popups with no gesture arrive there | A popup the user's click or key opened always opens. For any other popup the main document's answer decides: Ask (the default) blocks it and shows a toast whose Open loads its URL beside the page, without `window.opener`; Allow opens it like a clicked one; Block drops it with no toast. A popup with no URL offers Allow instead. Never prompted. If WebKit's gesture accessor goes away, WebKit blocks these popups again itself, with no toast. |
+| HID devices | None in WebKit. Vane injects `navigator.hid` and does the I/O itself; see [HID devices](#hid-devices) | A chooser per request; the picked device is remembered for that origin and profile until forgotten. No Ask/Allow/Block answer: there is nothing to allow without a device. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
 Location decisions and the Location row are available on the minimum macOS 26 runtime,
@@ -109,12 +110,67 @@ closure uses Vane’s existing page teardown; shared tabs retained by another wi
 keep their owning document rather than destroying it just because a snapshot window
 closed. Display capture and location document cleanup remain WebKit’s responsibility.
 
+## HID devices
+
+System WebKit has no WebHID API. Vane adds one without patching WebKit: a page script
+defines `navigator.hid` (`requestDevice`, `getDevices`, `connect`/`disconnect`, and
+`HIDDevice` with `opened`, `vendorId`, `productId`, `productName`, `collections`, `open`,
+`close`, `forget`, `sendReport`, `sendFeatureReport`, `receiveFeatureReport` and
+`inputreport` events). Each call is a script message answered natively with IOKit
+(`IOHIDDeviceOpen`, `SetReport`, `GetReport`, and an input-report callback on a queue of
+its own; nothing blocks the main thread). Reports cross as base64. `collections` comes
+from the device's report descriptor, parsed in Swift the way Chromium reads it.
+
+The packaged app carries `com.apple.security.device.usb`. Measured with a sandboxed probe
+on macOS 27: without it `IOHIDDeviceOpen` fails with `kIOReturnNotPermitted`, whatever
+the transport; with it the open works. `device.bluetooth` alone does not help. Listing
+devices and reading their descriptors only reads the IOKit registry and needs no
+entitlement. Devices are opened without seizing them, so macOS keeps using them too.
+
+macOS may ask for **Input Monitoring** when an app opens a keyboard interface. Most
+configurator interfaces (VIA's raw HID, Stream Deck, gamepads) are not keyboards and
+need nothing. If the user denies it, `open()` rejects with `NotAllowedError`; Vane does
+not ask again itself.
+
+The page script runs in the page's own world, so it is trusted with nothing. Every message
+is checked again natively:
+
+- **Who.** The main frame only, in a secure context (HTTPS, or HTTP to `localhost` or a
+  loopback address). Frames get no `navigator.hid`: `WKFrameInfo` cannot say whether a
+  parent delegated `hid` to a child. Opaque and `file:` origins get nothing.
+- **Which device.** Only one the user picked in the chooser for that exact origin
+  (scheme, host, port) in that profile. The page holds an opaque id per interface, never
+  an IOKit id. A grant follows the physical device by vendor, product and serial number,
+  or, without a serial number, by vendor, product and location.
+- **Which reports.** Chromium's HID blocklist: the FIDO usage page (`0xF1D0`) and listed
+  security keys are never offered. Keyboard, keypad, mouse and pointer top-level
+  collections keep their input and output reports from the page (feature reports, which
+  carry settings like backlight, stay reachable). System-control collections are blocked
+  outright. Blocked reports are left out of `collections`, are not delivered as
+  `inputreport`, and cannot be sent. A device left with nothing is not listed.
+- **When the chooser may open.** Only with a user gesture, confirmed from a separate
+  content world through `navigator.userActivation`. One chooser at
+  a time, only for the page on screen whose origin is in the address bar. It closes
+  when that page navigates, hides or closes. Return and Escape cannot connect.
+
+Grants in a regular window are saved until forgotten. A private tab's grants live in
+memory and go with the tab. Backups leave grants out. Forget one from **Site Controls**
+(the **HID Device** row), with `device.forget()`, or by deleting the profile; an open
+device closes at once. Devices close when the document is replaced, the tab closes, or
+the device is unplugged (`disconnect` fires, and `connect` when it comes back). A tab
+with an open device is not suspended. Up to 1,024 input reports wait for a page that is
+busy; past that the oldest go.
+
+Limits: no `navigator.hid` in workers or frames. Bluetooth HID devices are listed like
+USB ones but have not been tried on hardware.
+
 ## Validation and remaining platform coverage
 
 Run the focused fixtures on a logged-in macOS desktop:
 
 ```sh
 swift test --filter 'SitePermissionTests|SitePermissionWebTests|SharedPresentationTests|LifecycleEfficiencyTests'
+swift test --filter 'WebHIDTests|WebHIDWebKitTests'
 ./.build/debug/vane selfcheck --pure
 python3 scripts/check-permission-display.py
 ```
@@ -141,6 +197,11 @@ They run without the macOS 27 SDK/runtime gate, so the minimum-runtime CI exerci
 the compatibility dispatch.
 These exercise policy and engine cleanup without collecting physical device data or
 changing macOS authorization.
+
+`WebHIDTests` parses real report descriptors (a QMK/VIA raw HID interface, a gamepad, a
+boot keyboard, a FIDO key, a gaming mouse) and opens no window. `WebHIDWebKitTests`
+uses fake devices and answers the chooser itself; real IOKit opens, Input Monitoring and
+Bluetooth are checked by hand on hardware.
 
 This is not verification of real TCC Allow/deny/revocation, accuracy of delivered
 location coordinates, native screen-source chooser restrictions, audio sharing, or
