@@ -888,6 +888,9 @@ struct TitleReveal: Equatable, Sendable {
         if let script = ExtensionChromiumGaps.webPageScript(extensions) {
             c.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         }
+        // Every frame, page world: it does nothing unless the page's UA already says Chrome.
+        c.addUserScript(WKUserScript(source: ActAsChrome.script, injectionTime: .atDocumentStart,
+                                    forMainFrameOnly: false, in: .page))
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
         c.addUserScript(
@@ -2291,6 +2294,19 @@ struct TitleReveal: Equatable, Sendable {
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
         // on disk follows it.
         if stays { TabStore.savePins(owning: self) }
+    }
+
+    /// WebKit calls this variant when it exists. It only adds the per-site identity (Act as
+    /// Chrome) to an allowed main-frame load, before the request goes out.
+    func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        webView(w, decidePolicyFor: navigationAction) { [weak self] policy in
+            if policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let self {
+                ActAsChrome.apply(navigationAction.request.url, to: w, preferences: preferences, tab: self)
+            }
+            decisionHandler(policy, preferences)
+        }
     }
 
     /// HTTPS-only mode. `.cancel` plus a re-load is the only way to change a navigation's

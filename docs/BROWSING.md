@@ -55,6 +55,13 @@ apps it may open, and Developer Mode. Click a row to flip it.
 click an extension for its options, **Pin**/**Unpin**, or **Remove from Vane…**. See
 [site permissions](SITE-PERMISSIONS.md).
 
+**Act as Chrome** (in **⋯** and **Site Settings…**) is for sites that turn away browsers
+other than Chrome. It is off by default and works per site and per profile; private
+windows forget it. When on, that site sees a Chrome user agent and Chrome's `navigator`
+details. Other sites keep the normal identity. Turning it on reloads the page. Streaming
+video (Netflix, Disney+) may stop working with it on. If you picked a user agent in
+**Develop → User Agent**, that choice applies everywhere and this switch is unavailable.
+
 ## Copy a clean link
 
 <kbd>⇧⌘C</kbd> (**View → Copy Page URL**) or **Copy Link** copies the address with
