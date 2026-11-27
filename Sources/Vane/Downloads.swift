@@ -903,10 +903,16 @@ import Darwin
                by: (id: String, name: String, url: String), in window: NSWindow?) async throws -> Item {
         guard !invalidated, profileID != Profile.incognito.id else { throw ExtensionHost.Failure("Downloads are unavailable.") }
         let web = profileResumer()
-        let download = await web.startDownload(using: request)
+        // The completion form, so the delegate is set in the same turn WebKit hands the
+        // download over: with `await`, a tiny data: download could run on without one.
         return try await withCheckedThrowingContinuation { done in
-            extensionRequests[ObjectIdentifier(download)] = ExtensionRequest(path: path, overwrite: overwrite, by: by) { done.resume(with: $0) }
-            attach(download, alwaysAsk: saveAs, suggestedFilename: path?.last, from: web, in: window)
+            web.startDownload(using: request) { [self] download in
+                // Forgotten (profile deleted) while WebKit started it: attach would cancel it
+                // without a delegate, and the extension's promise would never settle.
+                guard !invalidated else { download.cancel { _ in }; done.resume(throwing: ExtensionHost.Failure("Downloads are unavailable.")); return }
+                extensionRequests[ObjectIdentifier(download)] = ExtensionRequest(path: path, overwrite: overwrite, by: by) { done.resume(with: $0) }
+                attach(download, alwaysAsk: saveAs, suggestedFilename: path?.last, from: web, in: window)
+            }
         }
     }
 
