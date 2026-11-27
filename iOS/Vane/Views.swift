@@ -23,12 +23,14 @@ struct RootView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             if let tab = browser.selected {
-                Wash(space: space)
-                // The page ends where the bar starts, so its own fixed bars and cards stay in view (WebKit
-                // only lifts them above an app's bar through private API); its last few points blur and
-                // fade into the Space's colours. While reading it runs to the foot of the screen.
-                WebContainer(tab: tab, bottom: Look.barFade).id(tab.id)
-                    .padding(.bottom, tab.collapsed ? 0 : Look.barRoom - Look.barFade)
+                // The Space's colours behind everything; the page sits on them as a card.
+                Wash(space: space, full: true).modifier(OnWash(space: space))
+                // The page is a card on the Space's colours, as on the Mac: it ends above the bar with
+                // rounded corners (so its own fixed bars stay in view), and runs to the foot while reading.
+                WebContainer(tab: tab).id(tab.id)
+                    .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: tab.collapsed ? 0 : Look.pageRadius,
+                                                      bottomTrailingRadius: tab.collapsed ? 0 : Look.pageRadius, style: .continuous))
+                    .padding(.bottom, tab.collapsed ? 0 : Look.barRoom)
                     .ignoresSafeArea(edges: tab.collapsed ? .all : .top)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
@@ -253,21 +255,7 @@ struct BottomBar: View {
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
         .padding(.bottom, -Look.barSink)
-        // On a page the bar wears the Space's colours, fading in from clear above it over the
-        // page's own soft blur; over the tab switcher they're already there.
-        .background {
-            if tab != nil {
-                Wash(space: space, full: true)
-                    .mask {
-                        // Clear at the top of the fade, solid by the time it reaches the buttons.
-                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3)],
-                                       startPoint: .top, endPoint: .bottom)
-                            .ignoresSafeArea(edges: .bottom)
-                    }
-                    .padding(.top, -Look.barFade)
-                    .allowsHitTesting(false)
-            }
-        }
+        // The bar sits straight on the Space's colours, drawn behind the page and the tab view.
     }
 
     private func round(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {

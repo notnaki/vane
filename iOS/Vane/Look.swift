@@ -14,8 +14,6 @@ enum Look {
     static let barHeight: CGFloat = 42
     /// How far the bar's buttons sit down into the home-indicator strip, as in Arc Search.
     static let barSink: CGFloat = 4
-    /// How far the bar's colours fade up over the foot of the page, so there's no hard edge.
-    static let barFade: CGFloat = 14
     /// The room a page leaves at its foot for the bar.
     static var barRoom: CGFloat { barHeight - barSink }
     static let rowRadius: CGFloat = 12
