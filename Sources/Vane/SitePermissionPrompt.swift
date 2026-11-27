@@ -122,11 +122,14 @@ private struct PermissionPromptContent: View {
                 .help("Allow Once, until this tab navigates or closes. More choices are available in the context menu.")
                 .contextMenu {
                     Button("Allow Once") { respond(.alertFirstButtonReturn) }
-                    Button(persistentAllowTitle) { respond(.alertSecondButtonReturn) }
+                    // Empty for a question with nothing to remember (file access).
+                    if !persistentAllowTitle.isEmpty { Button(persistentAllowTitle) { respond(.alertSecondButtonReturn) } }
                     Divider()
                     Button("Don’t Allow") { respond(.alertThirdButtonReturn) }
                 }
-                .accessibilityAction(named: persistentAllowTitle) { respond(.alertSecondButtonReturn) }
+                .accessibilityAction(named: persistentAllowTitle.isEmpty ? "Allow Once" : persistentAllowTitle) {
+                    respond(persistentAllowTitle.isEmpty ? .alertFirstButtonReturn : .alertSecondButtonReturn)
+                }
                 .accessibilityAction(named: "Don’t Allow") { respond(.alertThirdButtonReturn) }
             }
             .font(.system(size: 14, weight: .semibold))
