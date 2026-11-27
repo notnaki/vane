@@ -134,8 +134,10 @@ is checked again natively:
 - **When the chooser may open.** Only with a user gesture. A script in a separate content
   world confirms `navigator.userActivation` and tells Vane; a request that arrives
   without that, including one posted straight to the message handler, is refused. One
-  chooser at a time, only for the page on screen, and it closes when that page navigates,
-  hides or closes. Return and Escape cannot connect.
+  chooser at a time, only for the page on screen and only when the origin asking is the
+  one in the address bar, and it closes when that page navigates, hides or closes. A
+  camera or location question that arrives while it is open is turned away, as it would
+  be by another permission bubble. Return and Escape cannot connect.
 
 Grants in a regular window are saved until forgotten. A private tab's grants live in
 memory and go with the tab. Backups leave grants out, like other security decisions.
@@ -143,15 +145,25 @@ Forget one from **Site Controls** (the **Serial Port** row), with `port.forget()
 deleting the profile; an open port closes at once.
 
 Ports close when the document is replaced, the tab closes, or its WebContent process
-ends. A tab with an open port is not suspended for being idle. A navigation that has only started leaves them open, because it
-may turn into a download and leave the page in place. A port is opened exclusively, so a
-second tab or app gets an error instead of half the bytes.
+ends. A tab with an open port is not suspended, whether for being idle or to free memory
+under pressure. A navigation that has only started leaves them open, because it may turn
+into a download and leave the page in place. A port is opened exclusively, so a second
+tab or app gets an error instead of half the bytes; `port.close()` resolves only once the
+device is released, so a page can close and reopen it at once (as flashers do to change
+baud rate).
+
+Up to 1 MiB received from a device (or the page's `bufferSize`, if larger) waits natively
+for the page to read it; past that the device is held back. At most 16 MiB may wait to be
+written to one port: a write beyond that is rejected with a `QuotaExceededError`, which
+the page script, sending one megabyte at a time, never reaches.
 
 Limits: no Bluetooth service-class ports beyond what macOS already lists under
-`/dev/cu.*`; no BYOB readers; parity, framing, break and overrun errors are not reported
-(a slow reader holds the device back instead); `navigator.serial` is not in workers or
-frames. A page restored from the back/forward cache finds its ports closed and must reopen
-them.
+`/dev/cu.*`; no BYOB readers (`readable` is a default stream, not a byte stream); parity,
+framing, break and overrun errors are not reported (a slow reader holds the device back
+instead); `navigator.serial` is not in workers or frames. A page restored from the
+back/forward cache finds its ports closed and must reopen them, and gets no `connect` or
+`disconnect` events until it next calls `getPorts()`, `requestPort()` or
+`addEventListener()` on `navigator.serial`.
 
 ## Validation and remaining platform coverage
 

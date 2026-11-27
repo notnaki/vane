@@ -1,4 +1,5 @@
 import Darwin
+import os
 import XCTest
 @testable import vane
 
@@ -16,8 +17,10 @@ final class SerialPty: @unchecked Sendable {
         tcgetattr(slave, &settings)
         cfmakeraw(&settings)
         tcsetattr(slave, TCSANOW, &settings)
-        // The port takes the tty exclusively, and that lasts until its last close: a slave
-        // descriptor kept here would leave it locked after the port had gone.
+        // The port opens the slave by path, as it would a `/dev/cu.*` node. No descriptor is
+        // kept here, so the master reads end-of-file exactly while nothing holds the slave:
+        // that is how `slaveIsClosed` sees a port give its descriptor back. (A pty does not
+        // enforce the port's exclusive lock, so a second open cannot show it.)
         Darwin.close(slave)
         _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
         self.master = master
@@ -30,30 +33,49 @@ final class SerialPty: @unchecked Sendable {
         SerialDevice(path: path, vendorID: 0x10c4, productID: 0xea60, product: "Fixture UART", serialNumber: "F1")
     }
 
-    /// The device speaks.
-    func send(_ bytes: [UInt8]) async throws {
-        var offset = 0
-        let deadline = ContinuousClock.now + .seconds(10)
-        while offset < bytes.count {
-            let sent = bytes.withUnsafeBytes { Darwin.write(master, $0.baseAddress! + offset, $0.count - offset) }
-            if sent > 0 { offset += sent; continue }
-            guard ContinuousClock.now < deadline else { throw POSIXError(.ETIMEDOUT) }
-            try await Task.sleep(for: .milliseconds(2))
+    /// Whether every descriptor on the slave has gone. Takes whatever the port had sent.
+    var slaveIsClosed: Bool {
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let got = Darwin.read(master, &chunk, chunk.count)
+            if got <= 0 { return got == 0 }    // 0 is end-of-file; -1 is EAGAIN, a slave that is open and quiet
         }
     }
 
-    /// What the device heard. Never blocks the caller's thread, so a page can keep talking.
-    func receive(_ count: Int) async throws -> [UInt8] {
-        var out: [UInt8] = []
-        var chunk = [UInt8](repeating: 0, count: 65536)
-        let deadline = ContinuousClock.now + .seconds(10)
-        while out.count < count {
-            let got = Darwin.read(master, &chunk, min(chunk.count, count - out.count))
-            if got > 0 { out += chunk[0..<got]; continue }
-            guard ContinuousClock.now < deadline else { throw POSIXError(.ETIMEDOUT) }
-            try await Task.sleep(for: .milliseconds(2))
+    /// Moves `count` bytes one way; `step` is given how many have gone and returns how many
+    /// more did. It runs on a queue of its own and waits on the descriptor, not on a timer:
+    /// a page can keep talking meanwhile, and a runner with coarse timers is not slowed to a
+    /// kilobyte a tick. It gives up only when nothing has moved for ten seconds, because the
+    /// other end of a transfer waits for all of it and slow must not be taken for stuck.
+    private func move(_ count: Int, when events: Int32, _ step: @escaping @Sendable (Int) -> Int) async throws {
+        try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async { [master] in
+                var moved = 0, progress = ContinuousClock.now
+                while moved < count {
+                    let more = step(moved)
+                    if more > 0 { moved += more; progress = .now; continue }
+                    guard ContinuousClock.now - progress < .seconds(10) else { return done.resume(throwing: POSIXError(.ETIMEDOUT)) }
+                    var wait = pollfd(fd: master, events: Int16(events), revents: 0)
+                    poll(&wait, 1, 2)
+                }
+                done.resume()
+            }
         }
-        return out
+    }
+
+    /// The device speaks.
+    func send(_ bytes: [UInt8]) async throws {
+        try await move(bytes.count, when: POLLOUT) { [master] offset in
+            bytes.withUnsafeBytes { Darwin.write(master, $0.baseAddress! + offset, $0.count - offset) }
+        }
+    }
+
+    /// What the device heard.
+    func receive(_ count: Int) async throws -> [UInt8] {
+        nonisolated(unsafe) let heard = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: count)
+        defer { heard.deallocate() }
+        try await move(count, when: POLLIN) { [master] offset in Darwin.read(master, heard.baseAddress! + offset, count - offset) }
+        return Array(heard)
     }
 
     /// The device repeats everything back until `count` bytes have gone round.
@@ -184,7 +206,9 @@ final class SerialPty: @unchecked Sendable {
                     "http://127.8.8.8", "http://[::1]:8000"] {
             XCTAssertTrue(WebSerial.isSecure(try scope(url)), url)
         }
-        for url in ["http://flasher.example", "http://127.evil.example", "http://localhost.evil.example", "http://192.168.1.4"] {
+        // 0.0.0.0 reaches this Mac too, but it is no loopback address and no secure context.
+        for url in ["http://flasher.example", "http://127.evil.example", "http://localhost.evil.example", "http://192.168.1.4",
+                    "http://0.0.0.0:8080"] {
             XCTAssertFalse(WebSerial.isSecure(try scope(url)), url)
         }
         XCTAssertNil(WebSerial.Scope(url: URL(string: "file:///tmp/flasher.html"), profileID: profile), "No origin, no grant")
@@ -246,10 +270,37 @@ final class SerialPty: @unchecked Sendable {
 
 /// The read, write and signal paths of one open port, against a pty.
 final class SerialConnectionTests: XCTestCase {
-    private func open(_ pty: SerialPty, bufferSize: Int = 255) async throws(SerialError) -> SerialConnection {
+    /// The ports this test opened. A read waits for bytes and a write for room with no limit
+    /// of their own, so a test whose device stopped short would wait for good and take the
+    /// whole run with it. One that has not finished in a minute has its ports closed, which
+    /// ends every read and write on them, and it fails where it stands.
+    private let watch = OSAllocatedUnfairLock(initialState: Watch())
+    private struct Watch: Sendable { var ports: [SerialConnection] = [], over = false, expired = false }
+
+    override func setUp() {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 60) { [watch] in
+            watch.withLock { state -> [SerialConnection] in
+                guard !state.over else { return [] }
+                state.expired = true
+                return state.ports
+            }.forEach { $0.close() }
+        }
+    }
+
+    override func tearDown() {
+        let state = watch.withLock { state -> Watch in state.over = true; return state }
+        state.ports.forEach { $0.close() }
+        XCTAssertFalse(state.expired, "The test had not finished in 60 seconds; its ports were closed to end it")
+    }
+
+    /// The native buffer is the page's `bufferSize` and no more, unless a test says otherwise:
+    /// a megabyte of slack would hide what these fixtures are about.
+    private func open(_ pty: SerialPty, bufferSize: Int = 255, readBuffer: Int = 0) async throws(SerialError) -> SerialConnection {
         var options = SerialOptions(baudRate: 115200)
         options.bufferSize = bufferSize
-        return try await SerialConnection.open(path: pty.path, options: options)
+        let port = try await SerialConnection.open(path: pty.path, options: options, readBuffer: readBuffer)
+        if watch.withLock({ $0.ports.append(port); return $0.expired }) { port.close() }
+        return port
     }
 
     private func read(_ port: SerialConnection, _ count: Int) async throws -> [UInt8] {
@@ -297,6 +348,19 @@ final class SerialConnectionTests: XCTestCase {
         XCTAssertEqual(after, [1], "A cancelled read must not take the port down with it")
     }
 
+    /// A page asks for 255 bytes unless it says otherwise, which a UART at 921600 baud sends
+    /// in 3 ms. What is held natively must not be that small, or a busy page loses bytes.
+    func testThePortKeepsTakingBytesWhileNobodyReads() async throws {
+        let pty = try SerialPty()
+        let port = try await open(pty, bufferSize: 16, readBuffer: SerialOptions.minReadBuffer)
+        defer { port.close() }
+        let burst = (0..<65_536).map { UInt8(truncatingIfNeeded: $0 &* 13) }
+        // The tty itself holds about a kilobyte, so this ends only if the port took the rest.
+        try await pty.send(burst)
+        let got = try await read(port, burst.count)
+        XCTAssertEqual(got, burst)
+    }
+
     func testASmallBufferHoldsTheDeviceBackWithoutLosingBytes() async throws {
         let pty = try SerialPty()
         let port = try await open(pty, bufferSize: 16)
@@ -340,6 +404,48 @@ final class SerialConnectionTests: XCTestCase {
         try await port.write(Data([1]))
         let heard = try await pty.receive(1)
         XCTAssertEqual(heard, [1], "A refused signal must leave the port usable")
+    }
+
+    /// `await port.close(); await port.open()` is how a flasher changes baud rate. On a real
+    /// node the first descriptor still holds the exclusive lock until it is closed, so
+    /// `close` may not return before that, even with a write the device is not taking.
+    func testCloseReturnsOnlyOnceTheDescriptorIsGivenBack() async throws {
+        let pty = try SerialPty()
+        XCTAssertTrue(pty.slaveIsClosed)
+        let port = try await open(pty)
+        XCTAssertFalse(pty.slaveIsClosed)
+        async let stuck = serialFailure { try await port.write(Data(repeating: 7, count: 1 << 20)) }
+        defer { port.close() }    // before `stuck` is waited for, whatever throws below
+        // The write has begun, and nothing reads the rest: it waits in the tty queue.
+        _ = try await pty.receive(1)
+        await port.closeAndWait()
+        XCTAssertTrue(pty.slaveIsClosed, "close() returned with the descriptor still open")
+        let abandoned = await stuck
+        XCTAssertEqual(abandoned, "NetworkError")
+        await port.closeAndWait()    // twice is once, and the second caller is answered too
+
+        let next = try await open(pty)
+        try await pty.send([5])
+        let got = try await read(next, 1)
+        XCTAssertEqual(got, [5], "The next owner gets the device at once")
+        await next.closeAndWait()
+        XCTAssertTrue(pty.slaveIsClosed)
+    }
+
+    func testAStalledDeviceCannotQueueWritesWithoutLimit() async throws {
+        let pty = try SerialPty()
+        let port = try await open(pty)
+        async let stuck = serialFailure { try await port.write(Data(count: SerialOptions.maxBufferSize)) }
+        defer { port.close() }    // before `stuck` is waited for, whatever throws below
+        // The whole allowance is in one write that has begun, and nothing reads the rest.
+        _ = try await pty.receive(1)
+        // Were the extra byte accepted it would wait behind the rest for good; fail instead.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { port.close() }
+        let over = await serialFailure { try await port.write(Data([1])) }
+        XCTAssertEqual(over, "QuotaExceededError")
+        await port.closeAndWait()
+        let abandoned = await stuck
+        XCTAssertEqual(abandoned, "NetworkError")
     }
 
     /// The exclusive lock itself (`TIOCEXCL`) is not covered: the kernel enforces it on
@@ -388,6 +494,11 @@ final class SerialConnectionTests: XCTestCase {
     /// What pulling the cable does: the node is revoked under the open descriptor. Closing
     /// the master would not do it, because a port opened CLOCAL ignores the carrier drop.
     private func hangUp(_ pty: SerialPty) { XCTAssertEqual(revoke(pty.path), 0) }
+}
+
+/// The DOMException name a call failed with, or nil if it did not fail.
+private func serialFailure(_ work: () async throws -> Void) async -> String? {
+    do { try await work(); return nil } catch { return (error as? SerialError)?.name ?? "\(error)" }
 }
 
 private extension Duration {

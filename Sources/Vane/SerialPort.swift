@@ -16,6 +16,8 @@ struct SerialError: Error, Equatable, Sendable {
     static func state(_ message: String) -> SerialError { SerialError(name: "InvalidStateError", message: message) }
     static func security(_ message: String) -> SerialError { SerialError(name: "SecurityError", message: message) }
     static let lost = network("The device has been lost.")
+    /// Not one of the spec's write errors: its sink never holds more than it was asked to.
+    static let writeQueueFull = SerialError(name: "QuotaExceededError", message: "Too much data is waiting to be written.")
 }
 
 /// One `/dev/cu.*` node, with its USB identity when it has one.
@@ -46,6 +48,11 @@ struct SerialOptions: Equatable, Sendable {
 
     /// Chromium's ceiling for one port's buffer.
     static let maxBufferSize = 16 * 1024 * 1024
+    /// What is held natively before the device is made to wait, whatever smaller size the
+    /// page asked for. The page's `bufferSize` (255 by default) is far less than a UART at
+    /// 921600 baud sends while the main thread is busy for a moment, and a driver with no
+    /// flow control drops what it cannot hand over.
+    static let minReadBuffer = 1 << 20
 
     /// The rates termios takes directly; anything else goes through `IOSSIOSPEED`.
     static let standardRates: Set<Int> = [50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600,
@@ -223,6 +230,8 @@ final class SerialConnection: @unchecked Sendable {
     private let writes = DispatchQueue(label: "vane.serial.write")
     private let source: DispatchSourceRead
     private let closing = Atomic<Bool>(false)
+    /// Bytes handed to `write` and not yet sent or given up on.
+    private let queuedWrites = Atomic<Int>(0)
     // Everything below belongs to `queue`.
     private var buffer = Data()
     private var chunk = [UInt8](repeating: 0, count: 64 * 1024)
@@ -231,19 +240,23 @@ final class SerialConnection: @unchecked Sendable {
     private var lost = false
     private var sourceDone = false
     private var closed = false
+    private var released = false
+    private var onRelease: [@Sendable () -> Void] = []
 
-    /// Off the main thread: opening a Bluetooth port waits for its radio link.
-    static func open(path: String, options: SerialOptions) async throws(SerialError) -> SerialConnection {
+    /// Off the main thread: opening a Bluetooth port waits for its radio link. `readBuffer`
+    /// is a fixture's way to a small native buffer; a page never gets less than the default.
+    static func open(path: String, options: SerialOptions,
+                     readBuffer: Int = SerialOptions.minReadBuffer) async throws(SerialError) -> SerialConnection {
         let result: Result<SerialConnection, SerialError> = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                do throws(SerialError) { continuation.resume(returning: .success(try SerialConnection(path: path, options: options))) }
+                do throws(SerialError) { continuation.resume(returning: .success(try SerialConnection(path: path, options: options, readBuffer: readBuffer))) }
                 catch { continuation.resume(returning: .failure(error)) }
             }
         }
         return try result.get()
     }
 
-    private init(path: String, options: SerialOptions) throws(SerialError) {
+    private init(path: String, options: SerialOptions, readBuffer: Int) throws(SerialError) {
         // Nonblocking, so opening never waits for carrier and a write can be abandoned.
         let fd = Darwin.open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { throw .network("Failed to open serial port: \(String(cString: strerror(errno))).") }
@@ -275,7 +288,7 @@ final class SerialConnection: @unchecked Sendable {
             throw error
         }
         self.fd = fd
-        limit = options.bufferSize
+        limit = max(options.bufferSize, readBuffer)
         source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source.setEventHandler { [self] in receive() }
         source.setCancelHandler { [self] in
@@ -294,8 +307,8 @@ final class SerialConnection: @unchecked Sendable {
         if count > 0 {
             buffer.append(chunk, count: count)
             deliver()
-            // The page is not keeping up: stop reading and let the driver hold what follows.
-            // ponytail: no BufferOverrunError; the kernel's own queue is the overflow.
+            // The page is far behind: stop reading and let the driver hold what follows.
+            // ponytail: no BufferOverrunError; past `limit` the kernel's own queue is the overflow.
             if buffer.count >= limit, !paused { paused = true; source.suspend() }
         } else if count == 0 || (errno != EAGAIN && errno != EINTR) {
             lost = true
@@ -341,8 +354,14 @@ final class SerialConnection: @unchecked Sendable {
         }
     }
 
-    /// Resolves once the kernel has taken every byte.
+    /// Resolves once the kernel has taken every byte. A device that takes none cannot be
+    /// made to hold an unbounded backlog: past `maxBufferSize` waiting, a write is refused.
     func write(_ data: Data) async throws(SerialError) {
+        guard queuedWrites.add(data.count, ordering: .relaxed).newValue <= SerialOptions.maxBufferSize else {
+            queuedWrites.subtract(data.count, ordering: .relaxed)
+            throw .writeQueueFull
+        }
+        defer { queuedWrites.subtract(data.count, ordering: .relaxed) }
         let failure: SerialError? = await withCheckedContinuation { continuation in
             writes.async { [self] in continuation.resume(returning: send(data)) }
         }
@@ -414,9 +433,11 @@ final class SerialConnection: @unchecked Sendable {
     /// Ends the waiting read, abandons any write, and gives the descriptor back once both
     /// queues have let go of it. Safe to call twice. `lost` is the device or its grant going
     /// away rather than the page closing it: the waiting read then fails instead of ending.
-    func close(lost gone: Bool = false) {
+    /// `then` runs once the descriptor is closed, which is when the device can be opened again.
+    func close(lost gone: Bool = false, then done: (@Sendable () -> Void)? = nil) {
         closing.store(true, ordering: .relaxed)
         queue.async { [self] in
+            if let done { if released { done() } else { onRelease.append(done) } }
             guard !closed else { return }
             closed = true
             if gone { lost = true }
@@ -429,5 +450,22 @@ final class SerialConnection: @unchecked Sendable {
         }
     }
 
-    private func releaseDescriptor() { writes.async { [fd] in Darwin.close(fd) } }
+    /// `port.close()`: returns only once the exclusive lock is gone, so the page's next
+    /// `open()` (a flasher changing baud rate closes and reopens at once) finds the port free.
+    func closeAndWait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in close { continuation.resume() } }
+    }
+
+    /// Behind whatever write is still running: closing under it could hand its descriptor
+    /// number to another file.
+    private func releaseDescriptor() {
+        writes.async { [self] in
+            Darwin.close(fd)
+            queue.async { [self] in
+                released = true
+                onRelease.forEach { $0() }
+                onRelease = []
+            }
+        }
+    }
 }

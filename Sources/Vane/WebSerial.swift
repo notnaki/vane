@@ -413,12 +413,11 @@ import WebKit
 
     static func forgetPrivate(tabID: UUID) { privateGrants.removeValue(forKey: tabID) }
 
-    static func forgetAll(profileID: UUID? = nil) {
-        let match = profileID.map { prefix + $0.uuidString.lowercased() + "." } ?? "serialPort."
+    /// A profile is going. Its private tabs keep theirs until they close.
+    static func forgetAll(profileID: UUID) {
+        let match = prefix + profileID.uuidString.lowercased() + "."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(match) { defaults.removeObject(forKey: key) }
-        if profileID == nil { privateGrants.removeAll() }
-        for session in sessions.values
-        where profileID == nil || (session.scope.profileID == profileID && session.scope.privateTabID == nil) {
+        for session in sessions.values where session.scope.profileID == profileID && session.scope.privateTabID == nil {
             session.open.values.forEach { $0.close(lost: true) }
             session.open.removeAll()
             session.known.removeAll()
@@ -435,7 +434,8 @@ import WebKit
 
     // MARK: - Who may ask
 
-    /// HTTPS, or HTTP to this Mac itself. Mirrors the page's `isSecureContext`.
+    /// HTTPS, or HTTP to this Mac itself. Mirrors the page's `isSecureContext`, so not
+    /// `DeveloperMode.isLocal`: that one also takes `0.0.0.0`, which is no loopback address and no secure context.
     nonisolated static func isSecure(_ scope: Scope) -> Bool {
         if scope.scheme == "https" { return true }
         let host = scope.host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
@@ -458,6 +458,7 @@ import WebKit
         var waiter: CheckedContinuation<Event?, Never>?
         var gesture: ContinuousClock.Instant?
         var chooser: SitePermissionPrompt?
+        weak var chooserWindow: NSWindow?
         init(scope: Scope) {
             self.scope = scope
             known = Set(WebSerial.present(scope: scope).map(\.grant.id))
@@ -488,6 +489,12 @@ import WebKit
     /// Fixtures answer the chooser themselves: no popover, and no hardware to pick from.
     static var chooserForTesting: (([SerialDevice]) -> SerialDevice?)?
     #endif
+
+    /// The chooser open in this window, if any: a camera or location question that arrives
+    /// meanwhile is turned away, as it would be by any other bubble, rather than stacked on it.
+    static func chooser(in window: NSWindow) -> SitePermissionPrompt? {
+        sessions.values.first { $0.chooser != nil && $0.chooserWindow === window }?.chooser
+    }
 
     /// A tab in the middle of flashing a board is busy, however long it has been in the background.
     static func hasOpenPort(tabID: UUID) -> Bool {
@@ -599,7 +606,8 @@ import WebKit
             return nil
         }
         if op == "close" {
-            session.open.removeValue(forKey: id)?.close()
+            // Not answered until the device is free: `await port.close(); await port.open()` must work.
+            await session.open.removeValue(forKey: id)?.closeAndWait()
             return nil
         }
         if op == "open" {
@@ -639,11 +647,11 @@ import WebKit
 
     // MARK: - The chooser
 
-    private final class Choice { var device: SerialDevice? }
-
     /// The user's pick, or nil. Only the window showing this page can be asked, and only
     /// when nothing else is already asking there.
     private static func choose(session: Session, tab: Tab, web: WKWebView, filters: [Filter]) async -> SerialDevice? {
+        // The bubble names the origin that asked; that has to be the one in the address bar.
+        guard session.scope == SitePermissions.scope(for: tab) else { return nil }
         #if DEBUG
         if let chooserForTesting {
             return chooserForTesting(Filter.candidates(SerialDevices.shared.devices, filters: filters))
@@ -654,14 +662,15 @@ import WebKit
         else { return nil }
         let scope = session.scope
         let site = scope.scheme == "https" ? String(scope.origin.dropFirst("https://".count)) : scope.origin
-        let choice = Choice()
+        var picked: SerialDevice?
         let prompt = SitePermissionPrompt(width: 300) { respond in
             AnyView(SerialChooser(site: site, filters: filters) { device in
-                choice.device = device
+                picked = device
                 respond(device == nil ? .abort : .OK)
             })
         }
         session.chooser = prompt
+        session.chooserWindow = window
         // The page that asked has to stay the page on screen for as long as the question is.
         let monitor = Task { @MainActor in
             while !Task.isCancelled {
@@ -672,7 +681,7 @@ import WebKit
         let response = await prompt.present(in: window, tabID: tab.id)
         monitor.cancel()
         session.chooser = nil
-        return response == .OK ? choice.device : nil
+        return response == .OK ? picked : nil
     }
 }
 
