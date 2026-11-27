@@ -958,6 +958,13 @@ struct WebCard: View {
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: toolbar)
         .modifier(BrowserPageSurface(radius: radius, edgeToEdge: edgeToEdge))
+        // Arc's pill sits in the margin above the card, centred on it, clear of the page.
+        .overlay(alignment: .top) {
+            if !edgeToEdge, let tab = store.active {
+                LoadingBar(tab: tab).id(tab.id)
+                    .offset(y: Look.loadingInset - topGap)
+            }
+        }
         .modifier(ExtensionSidePanelDock(host: store.extensions, store: store, current: store.current,
                                          radius: radius, edgeToEdge: edgeToEdge))
         // The visible card, not its outer gaps: the download box keeps equal insets from it.
@@ -1009,7 +1016,11 @@ struct WebCard: View {
                     }
             }
             OffscreenPages()
-            if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
+            // Little Vane's page meets the window's edge, so there is no margin to sit in.
+            if edgeToEdge, let tab = store.active {
+                LoadingBar(tab: tab, onPage: true, hidden: store.findOpen).id(tab.id)
+                    .padding(.top, Look.loadingInset)
+            }
         }
         // Controls float over a viewport; their intrinsic widths must never
         // enlarge the page's layout proposal (especially next to Library).
@@ -1097,44 +1108,144 @@ struct EmptyPane: View {
     }
 }
 
-/// How far the page has got: a small capsule near the top of the card, the same one for
-/// every tab, pinned or not. It used to be a 2pt rule across the whole width, which is the
-/// one shape a proportion cannot be read in — with no end in sight there is nothing for the
-/// fill to be a fraction *of*, and a line along the top edge reads as the edge.
+/// Arc's loading pill: a short capsule in the margin above the card, centred on it. Nothing
+/// while the page is idle. A load breathes it in and out; one still going after about three
+/// seconds stretches it into a track with a highlight sweeping across; when the load ends it
+/// shrinks back and fades from wherever it was. Measured off Arc at 2x — see `Pose.at`.
 ///
-/// ponytail: two capsules in a `ZStack`, not `ProgressView(.linear)` — that style brings its
-/// own track, its own caps and its own idea of how wide it should be, and this is a shape
-/// and a fraction. The track is drawn whenever the pill is, so the fill has something to
-/// fill; both go together behind the same fade.
+/// It shows *that* the page is loading, not how far: Arc has no fill, and WebKit's
+/// `estimatedProgress` jumps around too much to be worth reading as a proportion.
 struct LoadingBar: View {
     @ObservedObject var tab: Tab
-    /// The find bar shares the top of the card; while it is open the pill steps aside
-    /// entirely rather than sitting off-centre for the rest of the time.
+    /// Where there is no margin (popups, Little Vane) the pill sits on the page itself.
+    var onPage = false
+    /// On Little Vane's page the find bar shares that strip, so the pill steps aside.
     var hidden = false
     /// Popups have no tab row to announce loading; their capsule supplies that copy.
     var accessible = false
-    /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
-    /// the same thing, it just stops moving.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var began: Date?
+    @State private var ended: Date?
+
+    /// What the pill is at a moment: its width, its own opacity, and in the wide phase the
+    /// track's and the sweeping highlight's span (0…1 of the width).
+    struct Pose: Equatable {
+        var width: CGFloat, opacity: Double, track: Double = 0, sweep: ClosedRange<Double>? = nil
+
+        static let pulse = 1.55      // one breath, out and back
+        static let stretchAfter = 3.0 // a load this long goes wide, at the next trough
+        static let stretch = 0.3      // pill → track
+        static let lap = 1.2          // one pass of the highlight, gap included
+        static let fade = 0.4         // the end, from any phase
+
+        /// `t` is seconds since the load began; `since` is seconds since it ended, if it has.
+        /// ponytail: a pure function of time instead of chained SwiftUI animations — a repeating
+        /// animation cannot be stopped mid-breath and faded from where it is.
+        static func at(_ t: Double, since end: Double? = nil, still: Bool = false) -> Pose {
+            if still { return Pose(width: Look.loadingPill.width, opacity: end == nil ? 1 : 0) }
+            // max: a paused timeline can hand back a date from before the load began.
+            let live = max(0, end.map { t - $0 } ?? t)
+            var s = shape(live)
+            if let end {
+                let k = min(1, end / fade)
+                // Arc drops the sweep and pulls the track back in as one solid pill.
+                if s.track > 0 { s = Pose(width: s.width, opacity: s.opacity) }
+                s.width += (Look.loadingPill.width - s.width) * k
+                s.opacity *= 1 - k
+            }
+            return s
+        }
+
+        private static func shape(_ t: Double) -> Pose {
+            let wide = (stretchAfter / pulse).rounded(.up) * pulse
+            guard t >= wide else {
+                let b = pow(abs(sin(.pi * t / pulse)), 1.5)
+                return Pose(width: Look.loadingPill.width * (0.85 + 0.15 * b), opacity: b)
+            }
+            let u = t - wide
+            let grow = ease(min(1, u / stretch))
+            let pill = Look.loadingPill.width
+            let x = u.truncatingRemainder(dividingBy: lap)
+            // The head crosses first, then the tail chases it out; a beat of empty track after.
+            let head = ease(min(1, x / 0.4)), tail = ease(min(1, max(0, x - 0.4) / 0.4))
+            return Pose(width: pill + (Look.loadingWide - pill) * grow, opacity: 1,
+                         track: grow, sweep: head > tail ? tail...head : nil)
+        }
+
+        private static func ease(_ x: Double) -> Double { x * x * (3 - 2 * x) }
+
+        nonisolated static func check() -> [(String, Bool)] {
+            let pill = Look.loadingPill.width
+            return [
+                ("a load starts invisible", at(0).opacity == 0),
+                ("…even when the clock reads from before it began", at(-0.8).opacity == 0),
+                ("…breathes to its peak half a breath in", abs(at(pulse / 2).opacity - 1) < 0.001),
+                ("…and again on the next breath", abs(at(pulse * 1.5).opacity - 1) < 0.001),
+                ("…at full width there", abs(at(pulse / 2).width - pill) < 0.001),
+                ("…and is narrower when faint", at(0.1).width < pill),
+                ("a short load never goes wide", at(stretchAfter - 0.1).track == 0),
+                ("a long one stretches at the trough after three seconds", at(2 * pulse - 0.01).track == 0
+                    && at(2 * pulse + stretch).width == Look.loadingWide),
+                ("…with a highlight sweeping across", at(2 * pulse + 0.4).sweep != nil),
+                ("…and a gap between laps", at(2 * pulse + lap - 0.01).sweep == nil),
+                ("…the head crossing before the tail sets off", at(2 * pulse + 0.4).sweep == 0...1),
+                ("the end fades it out", at(5, since: fade).opacity == 0),
+                ("…shrinking a wide pill back", at(5, since: fade).width == pill),
+                ("…as one solid pill, the sweep gone", at(5, since: 0.01).sweep == nil && at(5, since: 0.01).track == 0),
+                ("…from where it was, not from scratch", at(2, since: 0) == at(2)),
+                ("reduced motion holds it still", at(1, still: true).opacity == 1),
+            ]
+        }
+    }
+
+    private var still: Bool { reduceMotion || batterySaver.isActive }
+
+    /// One pose, drawn; the frame is always the wide width so nothing beside it moves.
+    struct PoseView: View {
+        var pose: Pose
+        var onPage = false
+        // On the chrome, ink; on a page of any colour, a grey that shows on white and black.
+        private var fill: Color { onPage ? Color(white: 0.5) : Look.loadingFill }
+        private var track: Color { onPage ? Color(white: 0.5).opacity(0.3) : Look.loadingTrack }
+        var body: some View {
+            ZStack(alignment: .leading) {
+                Capsule().fill(track).opacity(pose.track)
+                Capsule().fill(fill).opacity(pose.track > 0 ? 0 : 1)
+                if let sweep = pose.sweep {
+                    Rectangle().fill(fill)
+                        .frame(width: pose.width * (sweep.upperBound - sweep.lowerBound))
+                        .offset(x: pose.width * sweep.lowerBound)
+                }
+            }
+            .frame(width: pose.width, height: Look.loadingPill.height)
+            // The sweep is lit track, so its inner ends are square, as Arc's are.
+            .clipShape(Capsule())
+            .opacity(pose.opacity)
+            .frame(width: Look.loadingWide)
+        }
+    }
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            Capsule().fill(Look.loadingTrack)
-            GeometryReader { geo in
-                Capsule()
-                    .fill(Color(white: 0.5))
-                    .frame(width: geo.size.width * tab.progress)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
-            }
+        TimelineView(.animation(paused: began == nil || still || hidden)) { context in
+            let now = context.date
+            let shape = began.map { b in
+                Pose.at(now.timeIntervalSince(b), since: ended.map { now.timeIntervalSince($0) }, still: still)
+            } ?? Pose(width: Look.loadingPill.width, opacity: 0)
+            PoseView(pose: shape, onPage: onPage).opacity(hidden ? 0 : 1)
         }
-        .frame(width: Look.loadingPill.width, height: Look.loadingPill.height)
-        .padding(.top, Look.loadingInset)
-        // Centred on the page, not on what is left beside the find bar: the pill is the
-        // page's, and a pill that sits a third of the way across reads as misplaced.
-        // Fades out on finish instead of vanishing, and never sweeps backwards when the
-        // next navigation resets progress to zero behind the fade.
-        .opacity(tab.loading && !hidden ? 1 : 0)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: tab.loading)
+        .onAppear { if tab.loading { began = .now } }
+        .onChange(of: tab.loading) { _, loading in
+            // A load that picks up again mid-fade carries on from where the pill was.
+            if loading { if began == nil || ended == nil { began = .now }; ended = nil }
+            else if began != nil { ended = .now }
+        }
+        // Once the fade is over, stop the clock.
+        .task(id: ended) {
+            guard ended != nil else { return }
+            guard (try? await Task.sleep(for: .seconds(Pose.fade))) != nil, !tab.loading else { return }
+            began = nil; ended = nil
+        }
         .allowsHitTesting(false)
         // The main window already announces loading in its tab row; a popup has none.
         .accessibilityElement(children: .ignore)
