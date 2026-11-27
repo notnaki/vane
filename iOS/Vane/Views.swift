@@ -41,10 +41,13 @@ struct RootView: View {
                     ReaderView(article: article).padding(.bottom, Look.barRoom).transition(.opacity)
                 }
             } else {
-                Wash(space: space, full: true)
-                TabSwitcher(openArchive: { archive = true })
-                    .padding(.bottom, Look.barRoom)
-                    .transition(.opacity.combined(with: .scale(scale: 1.04)))
+                ZStack {
+                    Wash(space: space, full: true)
+                    TabSwitcher(openArchive: { archive = true })
+                        .padding(.bottom, Look.barRoom)
+                }
+                .modifier(OnWash(space: space))
+                .transition(.opacity.combined(with: .scale(scale: 1.04)))
             }
             if menu, let tab = browser.selected, let space = space ?? library.spaces.first {
                 Color.black.opacity(0.25).ignoresSafeArea()
@@ -55,6 +58,7 @@ struct RootView: View {
                     .transition(.scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity))
             }
             BottomBar(space: space, menu: $menu, openSettings: { settings = true }, openMac: { mac = true })
+                .modifier(OnWash(space: space))
             if browser.editing != nil {
                 // The page or Space stays in view above the sheet, dimmed; a tap there cancels.
                 Color.black.opacity(browser.selected == nil ? 0.08 : 0.3).ignoresSafeArea()
