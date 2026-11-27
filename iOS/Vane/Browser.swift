@@ -59,6 +59,8 @@ import WebKit
         if let view { return view }
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
+        // As in Safari: muted videos may start themselves (a site's looping demo); ones with sound wait for a tap.
+        configuration.mediaTypesRequiringUserActionForPlayback = .audio
         if isPrivate { configuration.websiteDataStore = Browser.privateStore }
         let web = WKWebView(frame: .zero, configuration: configuration)
         web.allowsBackForwardNavigationGestures = true
@@ -470,13 +472,41 @@ enum SearchEngine: String, CaseIterable, Identifiable {
 /// Hosts the selected tab's web view; swapping tabs swaps the child view.
 struct WebContainer: UIViewRepresentable {
     let tab: Tab
-    func makeUIView(context: Context) -> UIView { UIView() }
-    func updateUIView(_ host: UIView, context: Context) {
+    /// Room the page scrolls its last line clear of, above the home-indicator strip: the bar's.
+    var bottom: CGFloat = 0
+    final class Host: UIView {
+        /// Stands where the bar is, so UIKit draws the scroll view's soft edge (a blur that
+        /// deepens toward the bottom) under it, as under system bars.
+        let edge = UIView()
+    }
+    func makeUIView(context: Context) -> Host {
+        let host = Host()
+        host.edge.isUserInteractionEnabled = false
+        host.edge.autoresizingMask = [.flexibleWidth, .flexibleTopMargin]
+        host.addSubview(host.edge)
+        return host
+    }
+    func updateUIView(_ host: Host, context: Context) {
         let web = tab.webView
-        guard web.superview !== host else { return }
-        host.subviews.forEach { $0.removeFromSuperview() }
-        web.frame = host.bounds
-        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        host.addSubview(web)
+        if web.superview !== host {
+            host.subviews.filter { $0 !== host.edge }.forEach { $0.removeFromSuperview() }
+            web.frame = host.bounds
+            web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            host.insertSubview(web, belowSubview: host.edge)
+            host.edge.interactions.forEach { host.edge.removeInteraction($0) }
+            let interaction = UIScrollEdgeElementContainerInteraction()
+            interaction.scrollView = web.scrollView
+            interaction.edge = .bottom
+            host.edge.addInteraction(interaction)
+            web.scrollView.bottomEdgeEffect.style = .soft
+        }
+        if web.scrollView.contentInset.bottom != bottom {
+            UIView.animate(withDuration: 0.3) {
+                web.scrollView.contentInset.bottom = bottom
+                web.scrollView.verticalScrollIndicatorInsets.bottom = bottom
+            }
+        }
+        let height = bottom
+        host.edge.frame = CGRect(x: 0, y: host.bounds.height - height, width: host.bounds.width, height: height)
     }
 }

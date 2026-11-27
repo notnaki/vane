@@ -24,15 +24,20 @@ struct RootView: View {
         ZStack(alignment: .bottom) {
             if let tab = browser.selected {
                 Wash(space: space)
-                // Under the reading capsule: the colour of the page's own last row, so it reads as one surface.
-                Color(tab.footColor ?? .systemBackground).ignoresSafeArea()
-                    .animation(.easeOut(duration: 0.2), value: tab.footColor)
-                WebContainer(tab: tab).id(tab.id)
-                    .ignoresSafeArea(edges: .top)
-                    // Ends above the bar (or the small capsule while reading) so nothing on the page hides behind it.
-                    .padding(.bottom, tab.collapsed ? 12 : Look.barRoom - Look.barFade)
+                // The page ends where the bar starts, so its own fixed bars and cards stay in view (WebKit
+                // only lifts them above an app's bar through private API); its last few points blur and
+                // fade into the Space's colours. While reading it runs to the foot of the screen.
+                WebContainer(tab: tab, bottom: Look.barFade).id(tab.id)
+                    .padding(.bottom, tab.collapsed ? 0 : Look.barRoom - Look.barFade)
+                    .ignoresSafeArea(edges: tab.collapsed ? .all : .top)
                     .animation(.smooth(duration: 0.3), value: tab.collapsed)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                // Loading: a short rounded pill at the top of the screen, filling as the page loads.
+                if tab.progress > 0, tab.progress < 1 {
+                    LoadPill(progress: tab.progress)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .transition(.opacity)
+                }
                 if let pull = tab.pull {
                     PullActions(pull: pull, color: tab.pageColor).frame(maxHeight: .infinity, alignment: .top)
                 }
@@ -144,6 +149,22 @@ struct RootView: View {
     }
 }
 
+/// The page's load progress as a short capsule: a faint track and a brighter fill.
+struct LoadPill: View {
+    let progress: Double
+    var body: some View {
+        Capsule().fill(Color(white: 0.5).opacity(0.3))
+            .frame(width: 120, height: 4)
+            .overlay(alignment: .leading) {
+                Capsule().fill(Color(white: 0.55)).frame(width: max(4, 120 * progress))
+            }
+            .padding(.top, 4)
+            .animation(.easeOut(duration: 0.2), value: progress)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 /// A round or capsule control on the bar: a soft white over the Space's colours.
 struct BarFill: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color.Resolved {
@@ -232,25 +253,18 @@ struct BottomBar: View {
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
         .padding(.bottom, -Look.barSink)
-        .overlay(alignment: .top) {
-            // Loading: a thin line along the bar's top edge.
-            if let tab, tab.progress > 0, tab.progress < 1 {
-                GeometryReader { geo in
-                    Rectangle().fill(.primary.opacity(0.5)).frame(width: geo.size.width * tab.progress, height: 2)
-                }
-                .frame(height: 2)
-                .animation(.easeOut(duration: 0.2), value: tab.progress)
-            }
-        }
-        // On a page the bar wears the Space's colours; over the tab switcher they're already there.
-        .background { if tab != nil { Wash(space: space, full: true) } }
-        // On a page, the colours fade up over the page's last line instead of stopping at a hard edge.
-        .background(alignment: .top) {
+        // On a page the bar wears the Space's colours, fading in from clear above it over the
+        // page's own soft blur; over the tab switcher they're already there.
+        .background {
             if tab != nil {
                 Wash(space: space, full: true)
-                    .frame(height: Look.barFade)
-                    .mask(LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom))
-                    .offset(y: -Look.barFade)
+                    .mask {
+                        // Clear at the top of the fade, solid by the time it reaches the buttons.
+                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3)],
+                                       startPoint: .top, endPoint: .bottom)
+                            .ignoresSafeArea(edges: .bottom)
+                    }
+                    .padding(.top, -Look.barFade)
                     .allowsHitTesting(false)
             }
         }
