@@ -148,6 +148,9 @@ import WebKit
     static var shown: [UUID: [String: String]] = [:]
     /// Tabs with an icon loading.
     private static var loadingIcon: Set<UUID> = []
+    /// The newest show per identifier, so a tagged show that waited on its icon can't
+    /// replace a newer one that posted first.
+    private static var latest: [String: String] = [:]
 
     nonisolated static func key(_ document: String, _ id: Int) -> String { "\(document)\u{1F}\(id)" }
 
@@ -276,9 +279,15 @@ import WebKit
                     content.userInfo = ["tab": tab.id.uuidString, "page": id, "document": document, "origin": scope.origin]
                     let identifier = WebNotifications.identifier(scope: scope, tag: body["tag"] as? String ?? "")
                     let key = WebNotifications.key(document, id), tabID = tab.id, generation = tab.permissionGeneration
-                    // ponytail: drops an arbitrary entry, not the oldest; that one only loses close() and tab-close removal.
-                    if shown[tabID, default: [:]].count >= 100, let first = shown[tabID]?.keys.first { shown[tabID]?[first] = nil }
+                    // ponytail: evicts an arbitrary entry, not the oldest; it loses close(), and its
+                    // notification is removed now unless another entry still shares its identifier.
+                    if shown[tabID, default: [:]].count >= 100, let first = shown[tabID]?.keys.first,
+                       let gone = shown[tabID]?.removeValue(forKey: first),
+                       !shown.values.contains(where: { $0.values.contains(gone) }) {
+                        remove([gone])
+                    }
                     shown[tabID, default: [:]][key] = identifier
+                    latest[identifier] = key
                     Task { @MainActor in
                         var file: URL?
                         // One icon load per tab at a time: a page showing many at once gets the rest without.
@@ -290,6 +299,9 @@ import WebKit
                         if let attachment = file.flatMap({ try? UNNotificationAttachment(identifier: "icon", url: $0) }) {
                             content.attachments = [attachment]
                         }
+                        // A newer show with the same tag already posted while this icon loaded.
+                        if latest[identifier] != key { replyHandler(true, nil); return }
+                        latest[identifier] = nil
                         // The tab closed, the page went or the answer changed while the icon loaded.
                         guard WebNotifications.tab(tabID) != nil, tab.existingWeb === web,
                               tab.permissionGeneration == generation, answer() == true,
