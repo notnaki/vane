@@ -2221,7 +2221,6 @@ private struct FadingHost: View {
     }
 }
 
-/// Whether any of the pill's hover glyphs is showing, so the host knows to make room.
 /// Arc's Site Controls glyph, traced from its pill: a squircle a size above the link
 /// (32px to 25px) holding two hollow-knobbed sliders drawn a hair thinner than the box.
 /// SF's slider.horizontal.2.square has tighter corners and solid knobs.
@@ -2239,6 +2238,7 @@ private struct SiteControlsSliders: Shape {
     }
 }
 
+/// Whether any of the pill's hover glyphs is showing, so the host knows to make room.
 private struct PillGlyphsShown: PreferenceKey {
     static let defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
