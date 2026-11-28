@@ -22,6 +22,9 @@ targets:
       - path: ../Sources/Vane/ICloudTransport.swift
       - path: ../Sources/Vane/ICloudRemoval.swift
       - path: ../Sources/Vane/ICloudApplyContext.swift
+      # The backup format, to import a Mac backup (MacBackup.swift).
+      - path: ../Sources/Vane/BackupArchive.swift
+      - path: ../Sources/Vane/BackupEncryption.swift
       - path: ../AppIcons/AppIcon.icon
         buildPhase: resources
       - path: ../AppIcons/AppIcon-Candy.icon
@@ -62,6 +65,18 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: Web
             CFBundleURLSchemes: [http, https]
+        # A Mac backup opened from Files or AirDrop imports its Spaces, pins and folders.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: io.github.notnaki.vane.backup
+            UTTypeDescription: Vane Backup
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [vanebackup]
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Vane Backup
+            LSHandlerRank: Owner
+            LSItemContentTypes: [io.github.notnaki.vane.backup]
+        LSSupportsOpeningDocumentsInPlace: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:

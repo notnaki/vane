@@ -7,8 +7,10 @@ import SwiftUI
         WindowGroup {
             RootView().environment(model.library).environment(model.browser).environment(model.sync)
                 .task { await model.sync.run() }
-                // Links from other apps, including when Vane is the default browser.
+                // Links from other apps, including when Vane is the default browser,
+                // and a Mac backup opened from Files or AirDrop.
                 .onOpenURL { url in
+                    if url.isFileURL { MacBackupImport.start(url, library: model.library, sync: model.sync); return }
                     guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
                     model.browser.externalOpen = .now
                     model.browser.open(url)

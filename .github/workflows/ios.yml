@@ -12,6 +12,8 @@ on:
       - 'Sources/Vane/ICloudTransport.swift'
       - 'Sources/Vane/ICloudRemoval.swift'
       - 'Sources/Vane/ICloudApplyContext.swift'
+      - 'Sources/Vane/BackupArchive.swift'
+      - 'Sources/Vane/BackupEncryption.swift'
       - 'AppIcons/**'
       - '.github/workflows/ios.yml'
   pull_request:
@@ -22,6 +24,8 @@ on:
       - 'Sources/Vane/ICloudTransport.swift'
       - 'Sources/Vane/ICloudRemoval.swift'
       - 'Sources/Vane/ICloudApplyContext.swift'
+      - 'Sources/Vane/BackupArchive.swift'
+      - 'Sources/Vane/BackupEncryption.swift'
       - 'AppIcons/**'
       - '.github/workflows/ios.yml'
 

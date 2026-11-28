@@ -33,10 +33,11 @@ struct LinkRow: Identifiable, Hashable {
     let id: String
     var url: URL, title: String
 }
-/// A sidebar folder in a Space's Pinned section, with what's filed inside it.
+/// A sidebar folder in a Space's Pinned or Today section, with what's filed inside it.
+/// Today folders arrive without tabs: on the Mac those are open tabs, not pinned ones.
 struct FolderRow: Identifiable, Hashable {
     let id: UUID
-    var name: String, locked: Bool
+    var name: String, locked: Bool, today = false
     var links: [LinkRow], folders: [FolderRow]
 }
 /// Same shape as the Mac's `ICloudRemoteTab`, so open tabs read both ways.
@@ -122,16 +123,19 @@ struct RemoteTab: Codable, Equatable, Identifiable {
             return LinkRow(id: item.key, url: url, title: title.flatMap { $0.isEmpty ? nil : $0 } ?? url.host() ?? url.absoluteString)
         }
     }
-    /// The Pinned section's folders, nested as on the Mac.
-    func folders(space: UUID, parent: UUID? = nil) -> [FolderRow] {
-        all(.sidebarFolders).filter {
-            $0.parentID == space.uuidString && value($0, "section", Int.self) == 1 && (value($0, "parentFolderID", UUID?.self) ?? nil) == parent
-        }.compactMap { item in
-            guard let id = UUID(uuidString: item.id) else { return nil }
+    /// The Pinned section's folders, then Today's, nested as on the Mac: at most three levels
+    /// (`Pins.maxDepth`), however deep a synced or imported chain goes.
+    func folders(space: UUID, parent: UUID? = nil, depth: Int = 0) -> [FolderRow] {
+        guard depth <= MacBackup.maxDepth else { return [] }
+        let rows = all(.sidebarFolders).filter {
+            $0.parentID == space.uuidString && (value($0, "parentFolderID", UUID?.self) ?? nil) == parent
+        }.compactMap { item -> FolderRow? in
+            guard let id = UUID(uuidString: item.id), let section = value(item, "section", Int.self), section == 1 || section == 2 else { return nil }
             return FolderRow(id: id, name: value(item, "name", String.self) ?? "Folder",
-                             locked: value(item, "requiresAuthentication", Bool.self) == true,
-                             links: pinnedRows(space: space, folder: id), folders: folders(space: space, parent: id))
+                             locked: value(item, "requiresAuthentication", Bool.self) == true, today: section == 2,
+                             links: pinnedRows(space: space, folder: id), folders: folders(space: space, parent: id, depth: depth + 1))
         }
+        return rows.filter { !$0.today } + rows.filter(\.today)
     }
     /// Bookmarks by folder; unfiled ones first under a nil name.
     func bookmarks(profile: UUID) -> [(folder: String?, links: [LinkRow])] {
@@ -294,6 +298,27 @@ struct RemoteTab: Codable, Equatable, Identifiable {
             items[item.key] = merged
         }
         save()
+    }
+
+    /// Adds a Mac backup's records (`MacBackup`) that this phone doesn't have, and returns
+    /// them. A record already here, or one iCloud has seen and this phone since deleted
+    /// (`known`), is left alone, so an import never rolls back a name, a move or a deletion,
+    /// and importing again adds nothing.
+    func importBackup(_ records: [ICloudItem], known: Set<String> = []) -> [ICloudItem] {
+        var added = records.filter {
+            categories.contains($0.category) && $0.profileID != Local.profile && items[$0.key] == nil && !known.contains($0.key)
+        }
+        let folders = Set(added.filter { $0.category == .sidebarFolders }.map(\.key)).union(items.keys)
+        for index in added.indices where added[index].category == .sidebarFolders || added[index].category == .pinnedTabs {
+            // Filed in a folder that wasn't added (one deleted here): at the top of the section instead.
+            guard let parent = value(added[index], "parentFolderID", UUID?.self) ?? nil,
+                  !folders.contains(ICloudIdentity.recordKey(category: .sidebarFolders, id: parent.uuidString, profileID: added[index].profileID))
+            else { continue }
+            added[index].fields["parentFolderID"] = enc(UUID?.none)
+        }
+        for item in added { items[item.key] = item }
+        save(); onEdit()
+        return added
     }
 
     /// After an Apple Account change or a removal on another device: synced copies go, local ones stay.

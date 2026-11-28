@@ -4,6 +4,9 @@ A SwiftUI + WebKit browser that syncs Spaces, favourites, pinned tabs and open t
 Vane on the Mac. It compiles the Mac app's own sync engine (`ICloudModel`, `ICloudJournal`,
 `ICloudTransport`, `ICloudRemoval`, `ICloudApplyContext`) so both apps speak one format.
 Every record is kept verbatim, so fields the iOS app doesn't show go back unchanged.
+Without iCloud, Settings → Import from Mac Backup… (or opening a `.vanebackup` from Files)
+reads a Mac backup with the Mac's `BackupArchive` and `BackupEncryption` and turns its
+Spaces, favourites, pinned tabs and folders into the same records (`MacBackup.swift`).
 
 ```sh
 cd iOS && xcodegen && open Vane.xcodeproj
