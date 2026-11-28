@@ -2154,7 +2154,8 @@ private struct PillHoverGlyphs: View {
     private var visible: Bool { revealed || copyFocused || siteFocused || showingSiteControls }
     private var copied: Bool { feedback.copiedURL == address }
     var body: some View {
-        HStack(spacing: Look.pillGlyphGap) {
+        // Arc sets these two 28pt apart, centre to centre, tighter than the pill's other glyphs.
+        HStack(spacing: Look.pillGlyphGap / 2) {
             Button { copyLink() } label: {
                 CopyLinkGlyph(copied: copied)
                     .frame(width: Look.control, height: Look.control)
@@ -2167,7 +2168,9 @@ private struct PillHoverGlyphs: View {
                 .accessibilityValue(copied ? "Copied" : "")
                 .nativeSidebarKeyboardControl(focusChanged: { copyFocused = $0 })
             Button { showingSiteControls.toggle() } label: {
-                Image(systemName: "slider.horizontal.2.square")
+                SiteControlsGlyph()
+                    .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round))
+                    .frame(width: 16, height: 16)
                     .overlay(alignment: .topTrailing) {
                         if site.badge != nil {
                             Circle().fill(Color.accentColor)
@@ -2217,6 +2220,23 @@ private struct FadingHost: View {
 }
 
 /// Whether any of the pill's hover glyphs is showing, so the host knows to make room.
+/// Arc's Site Controls glyph, traced from its pill: a squircle a size above the link
+/// (32px to 25px) with two hollow-knobbed sliders. SF's slider.horizontal.2.square has
+/// tighter corners.
+private struct SiteControlsGlyph: Shape {
+    func path(in r: CGRect) -> Path {
+        let s = r.width
+        var p = Path(roundedRect: r.insetBy(dx: 0.625, dy: 0.625), cornerRadius: s * 0.26, style: .continuous)
+        for (y, knob) in [(0.37, 0.6), (0.63, 0.4)] {
+            let cy = r.minY + s * y, cx = r.minX + s * knob, k = s * 0.1
+            p.move(to: CGPoint(x: r.minX + s * 0.27, y: cy)); p.addLine(to: CGPoint(x: cx - k, y: cy))
+            p.move(to: CGPoint(x: cx + k, y: cy)); p.addLine(to: CGPoint(x: r.minX + s * 0.73, y: cy))
+            p.addEllipse(in: CGRect(x: cx - k, y: cy - k, width: 2 * k, height: 2 * k))
+        }
+        return p
+    }
+}
+
 private struct PillGlyphsShown: PreferenceKey {
     static let defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
