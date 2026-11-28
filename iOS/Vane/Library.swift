@@ -33,10 +33,11 @@ struct LinkRow: Identifiable, Hashable {
     let id: String
     var url: URL, title: String
 }
-/// A sidebar folder in a Space's Pinned section, with what's filed inside it.
+/// A sidebar folder in a Space's Pinned or Today section, with what's filed inside it.
+/// Today folders arrive without tabs: on the Mac those are open tabs, not pinned ones.
 struct FolderRow: Identifiable, Hashable {
     let id: UUID
-    var name: String, locked: Bool
+    var name: String, locked: Bool, today = false
     var links: [LinkRow], folders: [FolderRow]
 }
 /// Same shape as the Mac's `ICloudRemoteTab`, so open tabs read both ways.
@@ -122,16 +123,17 @@ struct RemoteTab: Codable, Equatable, Identifiable {
             return LinkRow(id: item.key, url: url, title: title.flatMap { $0.isEmpty ? nil : $0 } ?? url.host() ?? url.absoluteString)
         }
     }
-    /// The Pinned section's folders, nested as on the Mac.
+    /// The Pinned section's folders, then Today's, nested as on the Mac.
     func folders(space: UUID, parent: UUID? = nil) -> [FolderRow] {
-        all(.sidebarFolders).filter {
-            $0.parentID == space.uuidString && value($0, "section", Int.self) == 1 && (value($0, "parentFolderID", UUID?.self) ?? nil) == parent
-        }.compactMap { item in
-            guard let id = UUID(uuidString: item.id) else { return nil }
+        let rows = all(.sidebarFolders).filter {
+            $0.parentID == space.uuidString && (value($0, "parentFolderID", UUID?.self) ?? nil) == parent
+        }.compactMap { item -> FolderRow? in
+            guard let id = UUID(uuidString: item.id), let section = value(item, "section", Int.self), section == 1 || section == 2 else { return nil }
             return FolderRow(id: id, name: value(item, "name", String.self) ?? "Folder",
-                             locked: value(item, "requiresAuthentication", Bool.self) == true,
+                             locked: value(item, "requiresAuthentication", Bool.self) == true, today: section == 2,
                              links: pinnedRows(space: space, folder: id), folders: folders(space: space, parent: id))
         }
+        return rows.filter { !$0.today } + rows.filter(\.today)
     }
     /// Bookmarks by folder; unfiled ones first under a nil name.
     func bookmarks(profile: UUID) -> [(folder: String?, links: [LinkRow])] {
@@ -294,6 +296,13 @@ struct RemoteTab: Codable, Equatable, Identifiable {
             items[item.key] = merged
         }
         save()
+    }
+
+    /// A Mac backup's records (`MacBackup`), merged as an iCloud exchange merges them.
+    /// Importing again updates the same records rather than adding copies.
+    func importBackup(_ records: [ICloudItem]) async throws {
+        try await apply(records, deleted: [], enabled: categories)
+        onEdit()
     }
 
     /// After an Apple Account change or a removal on another device: synced copies go, local ones stay.

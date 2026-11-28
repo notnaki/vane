@@ -993,6 +993,10 @@ struct FolderView: View {
                 VStack(spacing: 2) {
                     ForEach(folder.folders) { FolderView(folder: $0, open: open) }
                     ForEach(folder.links) { LinkButton(link: $0, open: open) }
+                    if folder.today && folder.links.isEmpty && folder.folders.isEmpty {
+                        Text("A Today folder: its tabs stay on your Mac.").font(.footnote).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 6)
+                    }
                 }
                 .padding(.leading, 18)
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -1062,6 +1066,58 @@ struct BookmarksView: View {
     }
 }
 
+extension View {
+    /// Imports the Mac backup at `file` once it is set, asking for its password when it has one.
+    func macBackupImport(_ file: Binding<URL?>) -> some View { modifier(MacBackupImport(file: file)) }
+}
+
+private struct MacBackupImport: ViewModifier {
+    @Environment(Library.self) private var library
+    @Binding var file: URL?
+    @State private var data: Data?
+    @State private var asking = false
+    @State private var password = ""
+    @State private var wrong = false
+    @State private var message: String?
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: file, initial: true) {
+                guard let url = file else { return }
+                file = nil
+                do { data = try MacBackup.read(url); run(nil) } catch { message = error.localizedDescription }
+            }
+            .alert("Backup Password", isPresented: $asking) {
+                SecureField("Password", text: $password)
+                Button("Import") { run(password) }
+                Button("Cancel", role: .cancel) { data = nil }
+            } message: { Text(wrong ? BackupError.unlockFailed.localizedDescription : "Enter the password this backup was exported with.") }
+            .alert("Import from Mac Backup", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+                Button("OK") {}
+            } message: { Text(message ?? "") }
+    }
+    private func run(_ password: String?) {
+        guard let data else { return }
+        self.password = ""; wrong = false
+        Task {
+            do {
+                // Unlocking runs 600,000 PBKDF2 rounds; keep it off the main thread.
+                let records = try await Task.detached { try MacBackup.records(data, password: password) }.value
+                try await library.importBackup(records)
+                self.data = nil
+                let spaces = records.filter { $0.category == .spaces }.count
+                message = "Imported \(spaces) \(spaces == 1 ? "Space" : "Spaces") with their pinned tabs and folders, and your favourites."
+            } catch BackupError.passwordRequired {
+                asking = true
+            } catch BackupError.unlockFailed {
+                wrong = true; asking = true
+            } catch {
+                self.data = nil
+                message = error.localizedDescription
+            }
+        }
+    }
+}
+
 struct SettingsView: View {
     @Environment(Sync.self) private var sync
     @Environment(Browser.self) private var browser
@@ -1069,6 +1125,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClear = false
     @State private var styleChanged = false
+    @State private var choosing = false
+    @State private var backup: URL?
     var body: some View {
         @Bindable var sync = sync
         @Bindable var browser = browser
@@ -1083,6 +1141,11 @@ struct SettingsView: View {
                     Button("Sync Now") { Task { await sync.run() } }.disabled(!sync.enabled || sync.busy)
                 } header: { Text("iCloud") } footer: {
                     Text("Spaces, favourites, pinned tabs and folders, bookmarks and open tabs sync with Vane on your Mac through your private iCloud database. Nothing is sent to Vane.")
+                }
+                Section {
+                    Button("Import from Mac Backup…") { choosing = true }
+                } footer: {
+                    Text("Brings in the Spaces, favourites, pinned tabs and folders from a backup exported in Vane on your Mac. Importing again updates them.")
                 }
                 Section {
                     AppIconPicker()
@@ -1117,6 +1180,8 @@ struct SettingsView: View {
 
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
+            .fileImporter(isPresented: $choosing, allowedContentTypes: [.vaneBackup]) { backup = try? $0.get() }
+            .macBackupImport($backup)
             .confirmationDialog("Clear history, cookies and website data on this device?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear", role: .destructive) {
                     browser.clearHistory()
