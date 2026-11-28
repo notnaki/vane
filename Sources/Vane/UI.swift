@@ -2168,8 +2168,10 @@ private struct PillHoverGlyphs: View {
                 .accessibilityValue(copied ? "Copied" : "")
                 .nativeSidebarKeyboardControl(focusChanged: { copyFocused = $0 })
             Button { showingSiteControls.toggle() } label: {
-                SiteControlsGlyph()
-                    .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round))
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5.3, style: .continuous).strokeBorder(lineWidth: 1.25)
+                    SiteControlsSliders().stroke(lineWidth: 1)
+                }
                     .frame(width: 16, height: 16)
                     .overlay(alignment: .topTrailing) {
                         if site.badge != nil {
@@ -2221,16 +2223,16 @@ private struct FadingHost: View {
 
 /// Whether any of the pill's hover glyphs is showing, so the host knows to make room.
 /// Arc's Site Controls glyph, traced from its pill: a squircle a size above the link
-/// (32px to 25px) with two hollow-knobbed sliders. SF's slider.horizontal.2.square has
-/// tighter corners.
-private struct SiteControlsGlyph: Shape {
+/// (32px to 25px) holding two hollow-knobbed sliders drawn a hair thinner than the box.
+/// SF's slider.horizontal.2.square has tighter corners and solid knobs.
+private struct SiteControlsSliders: Shape {
     func path(in r: CGRect) -> Path {
-        let s = r.width
-        var p = Path(roundedRect: r.insetBy(dx: 0.625, dy: 0.625), cornerRadius: s * 0.26, style: .continuous)
-        for (y, knob) in [(0.37, 0.6), (0.63, 0.4)] {
-            let cy = r.minY + s * y, cx = r.minX + s * knob, k = s * 0.1
-            p.move(to: CGPoint(x: r.minX + s * 0.27, y: cy)); p.addLine(to: CGPoint(x: cx - k, y: cy))
-            p.move(to: CGPoint(x: cx + k, y: cy)); p.addLine(to: CGPoint(x: r.minX + s * 0.73, y: cy))
+        let s = r.width, k = s * 0.078
+        var p = Path()
+        for (y, knob) in [(0.375, 0.58), (0.625, 0.42)] {
+            let cy = r.minY + s * y, cx = r.minX + s * knob
+            p.move(to: CGPoint(x: r.minX + s * 0.26, y: cy)); p.addLine(to: CGPoint(x: cx - k, y: cy))
+            p.move(to: CGPoint(x: cx + k, y: cy)); p.addLine(to: CGPoint(x: r.minX + s * 0.75, y: cy))
             p.addEllipse(in: CGRect(x: cx - k, y: cy - k, width: 2 * k, height: 2 * k))
         }
         return p
