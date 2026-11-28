@@ -21,6 +21,7 @@ import XCTest
         var environmentChanges: [String] = []
         var storeChanges = 0
         var storeObservation: AnyCancellable?
+        var rawProbeUpdates = 0
     }
     /// Sits beside the section, inside the scroll view, so it sees every environment
     /// change the section's bridge can (macOS 26 updates both for any change) and
@@ -31,6 +32,7 @@ import XCTest
         func updateNSView(_ view: NSView, context: Context) {
             let entries = String(describing: context.environment).components(separatedBy: ", ")
             defer { controls.environment = entries }
+            if controls.tracing { controls.rawProbeUpdates += 1 }
             guard controls.tracing, entries != controls.environment else { return }
             let old = Set(controls.environment), new = Set(entries)
             let changed = (new.subtracting(old).map { "+" + $0 } + old.subtracting(new).map { "-" + $0 })
@@ -123,7 +125,7 @@ import XCTest
         let lease = try await NativeFixtureApplicationLoop.acquire()
         var failure: (any Error)?
         do {
-            for count in [100, 1_000] {
+            for count in [100] + Array(repeating: 1_000, count: 8) {
                 // Losing or regaining key status is a new environment, and on macOS 26
                 // every root is resubmitted to receive it. An earlier fixture's activation
                 // policy can still be settling after admission, and a pass that lands in
@@ -214,7 +216,8 @@ import XCTest
                 + " environmentConfigures=\(report.batchCounts.environmentConfigures - admittedEnvironmentConfigures)"
                 + " cachedGraphs=\(report.cachedGraphCount) disclosureUpdates=\(report.batchCounts.disclosureUpdates)"
                 + " environmentChanges=\(controls.environmentChanges.count) storeChanges=\(controls.storeChanges)"
-                + " activationUpdates=\(controls.activationUpdates - admittedActivationUpdates)")
+                + " activationUpdates=\(controls.activationUpdates - admittedActivationUpdates)"
+                + " rawProbe=\(controls.rawProbeUpdates) t=\(Date().timeIntervalSinceReferenceDate)")
         }
         var previousControls: [String: WeakButton] = [:]
         for fraction in [CGFloat(0), 0.5, 1, 0.25, 0] {
@@ -325,7 +328,7 @@ import XCTest
         let activationUpdates = controls.activationUpdates - admittedActivationUpdates
         print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates) activationUpdates=\(activationUpdates)")
         let reused = report.batchCounts.rootUpdates == admittedRootUpdates
-        if !reused {
+        if true {
             mark("protected")
             print("RESIDENT_BATCH_RESUBMISSION count=\(count)\n" + trace.joined(separator: "\n"))
             controls.environmentChanges.forEach { print("RESIDENT_BATCH_ENVIRONMENT \($0)") }

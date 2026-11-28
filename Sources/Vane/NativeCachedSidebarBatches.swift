@@ -2048,6 +2048,7 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
     final class Coordinator {
         var revision: UUID?
         var sample: NativeSidebarDisclosureSample?
+        var described: [String] = []
     }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeCachedSidebarBatchesView<Content> { NativeCachedSidebarBatchesView(frame: .zero) }
@@ -2061,9 +2062,18 @@ private struct NativeCachedSidebarBatchesBridge<Content: View>: NSViewRepresenta
             view.presentDisclosure(sample)
             return
         }
+        let described = String(describing: context.environment).components(separatedBy: ", ")
         if context.coordinator.revision == revision && context.coordinator.sample == sample {
             view.batchCounts.environmentConfigures += 1
+            // DIAGNOSTIC (not for merge)
+            let old = Set(context.coordinator.described), new = Set(described)
+            let changed = (new.subtracting(old).map { "+" + $0 } + old.subtracting(new).map { "-" + $0 })
+                .prefix(16).map { String($0.prefix(300)) }
+            print("RESIDENT_DIAG envConfigure changed=\(changed.count) \(changed.joined(separator: " | "))"
+                + " txAnim=\(String(describing: context.transaction.animation)) disables=\(context.transaction.disablesAnimations)"
+                + "\n  stack: " + Thread.callStackSymbols.prefix(60).joined(separator: "\n  "))
         }
+        context.coordinator.described = described
         context.coordinator.revision = revision
         context.coordinator.sample = sample
         // A structural update still reads its sample where it always has.
