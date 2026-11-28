@@ -780,6 +780,7 @@ struct SearchSheet: View {
         let favourites = keeps ? library.favourites(profile: space!.profileID) : []
         let pinned = keeps ? library.pinned(space: space!.id) : []
         let folders = keeps ? library.folders(space: space!.id) : []
+        let today = folders.filter(\.today)
         var seen = Set<URL>()
         let recent = space?.isIncognito == true ? [] : Array(browser.allHistory.filter { seen.insert($0.url).inserted }.prefix(6))
         VStack(alignment: .leading, spacing: 8) {
@@ -807,9 +808,13 @@ struct SearchSheet: View {
                     }
                 }
             }
-            if !pinned.isEmpty || !folders.isEmpty, let space {
+            if !pinned.isEmpty || folders.contains(where: { !$0.today }), let space {
                 section("Pinned · \(space.name)")
                 VStack(spacing: 2) { PinnedRows(space: space.id) { link in browser.editing = nil; browser.open(link.url, home: link.url) } }
+            }
+            if !today.isEmpty {
+                section("Today")
+                VStack(spacing: 2) { ForEach(today) { FolderView(folder: $0) { link in browser.editing = nil; browser.open(link.url, home: link.url) } } }
             }
             if !recent.isEmpty {
                 section("Recently Visited")
@@ -951,7 +956,7 @@ struct PinnedRows: View {
     let space: UUID
     let open: (LinkRow) -> Void
     var body: some View {
-        ForEach(library.folders(space: space)) { FolderView(folder: $0, open: open) }
+        ForEach(library.folders(space: space).filter { !$0.today }) { FolderView(folder: $0, open: open) }
         ForEach(library.pinned(space: space)) { LinkButton(link: $0, open: open) }
     }
 }
@@ -1066,54 +1071,61 @@ struct BookmarksView: View {
     }
 }
 
-extension View {
-    /// Imports the Mac backup at `file` once it is set, asking for its password when it has one.
-    func macBackupImport(_ file: Binding<URL?>) -> some View { modifier(MacBackupImport(file: file)) }
-}
-
-private struct MacBackupImport: ViewModifier {
-    @Environment(Library.self) private var library
-    @Binding var file: URL?
-    @State private var data: Data?
-    @State private var asking = false
-    @State private var password = ""
-    @State private var wrong = false
-    @State private var message: String?
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: file, initial: true) {
-                guard let url = file else { return }
-                file = nil
-                do { data = try MacBackup.read(url); run(nil) } catch { message = error.localizedDescription }
-            }
-            .alert("Backup Password", isPresented: $asking) {
-                SecureField("Password", text: $password)
-                Button("Import") { run(password) }
-                Button("Cancel", role: .cancel) { data = nil }
-            } message: { Text(wrong ? BackupError.unlockFailed.localizedDescription : "Enter the password this backup was exported with.") }
-            .alert("Import from Mac Backup", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
-                Button("OK") {}
-            } message: { Text(message ?? "") }
+/// Imports a Mac backup, asking for its password when it has one. The prompts are UIKit
+/// alerts on the topmost screen, so they show over Settings, any other sheet or onboarding,
+/// and nothing is left waiting when one is cancelled.
+@MainActor enum MacBackupImport {
+    static func start(_ url: URL, library: Library, sync: Sync) {
+        do { run(try MacBackup.read(url), password: nil, library: library, sync: sync) } catch { show(error.localizedDescription) }
     }
-    private func run(_ password: String?) {
-        guard let data else { return }
-        self.password = ""; wrong = false
+    private static func run(_ data: Data, password: String?, library: Library, sync: Sync) {
         Task {
             do {
                 // Unlocking runs 600,000 PBKDF2 rounds; keep it off the main thread.
                 let records = try await Task.detached { try MacBackup.records(data, password: password) }.value
-                try await library.importBackup(records)
-                self.data = nil
-                let spaces = records.filter { $0.category == .spaces }.count
-                message = "Imported \(spaces) \(spaces == 1 ? "Space" : "Spaces") with their pinned tabs and folders, and your favourites."
+                show(summary(library.importBackup(records, known: try await sync.knownKeys())))
             } catch BackupError.passwordRequired {
-                asking = true
+                ask(data, wrong: false, library: library, sync: sync)
             } catch BackupError.unlockFailed {
-                wrong = true; asking = true
+                ask(data, wrong: true, library: library, sync: sync)
             } catch {
-                self.data = nil
-                message = error.localizedDescription
+                show(error.localizedDescription)
             }
+        }
+    }
+    private static func summary(_ added: [ICloudItem]) -> String {
+        func count(_ category: ICloudCategory, _ one: String, _ many: String) -> String? {
+            let n = added.filter { $0.category == category && !$0.isSpaceOrder }.count
+            return n == 0 ? nil : "\(n) \(n == 1 ? one : many)"
+        }
+        let parts = [count(.spaces, "Space", "Spaces"), count(.pinnedTabs, "pinned tab", "pinned tabs"),
+                     count(.sidebarFolders, "folder", "folders"), count(.favourites, "favourite", "favourites")].compactMap { $0 }
+        guard !parts.isEmpty else { return "Nothing new: this iPhone already has everything in this backup." }
+        return "Added " + ListFormatter.localizedString(byJoining: parts) + ". What was already here is unchanged."
+    }
+    private static func ask(_ data: Data, wrong: Bool, library: Library, sync: Sync) {
+        let alert = UIAlertController(title: "Backup Password", message: wrong ? BackupError.unlockFailed.localizedDescription
+                                      : "Enter the password this backup was exported with.", preferredStyle: .alert)
+        alert.addTextField { $0.isSecureTextEntry = true; $0.placeholder = "Password" }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Import", style: .default) { [weak alert] _ in
+            run(data, password: alert?.textFields?.first?.text ?? "", library: library, sync: sync)
+        })
+        present(alert)
+    }
+    private static func show(_ message: String) {
+        let alert = UIAlertController(title: "Import from Mac Backup", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert)
+    }
+    /// On the topmost screen still showing; after one that is coming or going has settled.
+    private static func present(_ alert: UIAlertController) {
+        guard var top = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first?.rootViewController else { return }
+        while let next = top.presentedViewController, !next.isBeingDismissed, !(next is UIDocumentPickerViewController) { top = next }
+        if let transition = top.transitionCoordinator {
+            transition.animate(alongsideTransition: nil) { _ in present(alert) }
+        } else {
+            top.present(alert, animated: true)
         }
     }
 }
@@ -1126,7 +1138,6 @@ struct SettingsView: View {
     @State private var confirmClear = false
     @State private var styleChanged = false
     @State private var choosing = false
-    @State private var backup: URL?
     var body: some View {
         @Bindable var sync = sync
         @Bindable var browser = browser
@@ -1145,7 +1156,7 @@ struct SettingsView: View {
                 Section {
                     Button("Import from Mac Backup…") { choosing = true }
                 } footer: {
-                    Text("Brings in the Spaces, favourites, pinned tabs and folders from a backup exported in Vane on your Mac. Importing again updates them.")
+                    Text("Adds the Spaces, favourites, pinned tabs and folders from a backup exported in Vane on your Mac that this iPhone doesn't have yet. Nothing already here is changed.")
                 }
                 Section {
                     AppIconPicker()
@@ -1180,8 +1191,9 @@ struct SettingsView: View {
 
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
-            .fileImporter(isPresented: $choosing, allowedContentTypes: [.vaneBackup]) { backup = try? $0.get() }
-            .macBackupImport($backup)
+            .fileImporter(isPresented: $choosing, allowedContentTypes: [.vaneBackup]) {
+                if let url = try? $0.get() { MacBackupImport.start(url, library: library, sync: sync) }
+            }
             .confirmationDialog("Clear history, cookies and website data on this device?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear", role: .destructive) {
                     browser.clearHistory()

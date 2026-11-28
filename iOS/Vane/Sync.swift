@@ -36,6 +36,19 @@ import Foundation
         debounce = Task { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { await run() } }
     }
 
+    /// Every record iCloud has exchanged with this phone, live or deleted. One of these that
+    /// the library no longer holds was deleted here, so an import must not bring it back.
+    func knownKeys() async throws -> Set<String> {
+        let directory = Store.directory, device = library.deviceID
+        var journal = journal
+        if journal == nil, FileManager.default.fileExists(atPath: directory.appending(path: "icloud-journal.json").path) {
+            journal = try await Task.detached { try ICloudJournal(directory: directory, deviceID: device) }.value
+        }
+        guard let journal else { return [] }
+        let all = Set(ICloudCategory.allCases)
+        return Set((await journal.items(enabled: all) + journal.deleted(enabled: all)).map(\.key))
+    }
+
     func run() async {
         guard enabled, available else { return }
         guard !busy else { again = true; return }

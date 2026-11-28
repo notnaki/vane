@@ -3,16 +3,14 @@ import SwiftUI
 @main struct VaneApp: App {
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var phase
-    @State private var backup: URL?
     var body: some Scene {
         WindowGroup {
-            RootView().macBackupImport($backup)
-                .environment(model.library).environment(model.browser).environment(model.sync)
+            RootView().environment(model.library).environment(model.browser).environment(model.sync)
                 .task { await model.sync.run() }
                 // Links from other apps, including when Vane is the default browser,
                 // and a Mac backup opened from Files or AirDrop.
                 .onOpenURL { url in
-                    if url.isFileURL { backup = url; return }
+                    if url.isFileURL { MacBackupImport.start(url, library: model.library, sync: model.sync); return }
                     guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
                     model.browser.externalOpen = .now
                     model.browser.open(url)
