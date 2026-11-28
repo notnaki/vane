@@ -9,7 +9,7 @@ settings:
     DEVELOPMENT_TEAM: T7X84HN3W3
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
 targets:
   Vane:
     type: application
