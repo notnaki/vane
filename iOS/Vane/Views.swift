@@ -23,6 +23,9 @@ struct RootView: View {
     @State private var keyboard: CGFloat = 0
     /// The keyboard on screen is for a field in the page, not the search sheet.
     @State private var pageKeyboard = false
+    /// The search sheet is in place, below the screen until `raised` (see onChange of `browser.editing`).
+    @State private var searching = false
+    @State private var raised = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -40,7 +43,7 @@ struct RootView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 // Loading: a short rounded pill at the top of the screen, filling as the page loads.
                 if tab.progress > 0, tab.progress < 1 {
-                    LoadPill(progress: tab.progress)
+                    LoadPill(progress: tab.progress, colors: space?.palette.compactMap { Color(hex: $0) } ?? [])
                         .frame(maxHeight: .infinity, alignment: .top)
                         .transition(.opacity)
                 }
@@ -72,14 +75,15 @@ struct RootView: View {
                 .modifier(OnWash(space: space))
                 // Out of the way while typing into a page; the keyboard's own bar takes its place.
                 .opacity(pageKeyboard ? 0 : 1)
-            if browser.editing != nil {
+            if searching {
                 // The page or Space stays in view above the sheet, dimmed; a tap there cancels.
-                Color.black.opacity(browser.selected == nil ? 0.08 : 0.3).ignoresSafeArea()
+                Color.black.opacity(raised ? browser.selected == nil ? 0.08 : 0.3 : 0).ignoresSafeArea()
                     .onTapGesture { browser.editing = nil }
-                    .transition(.opacity)
-                SearchSheet(space: space)
-                    .padding(.bottom, keyboard)
-                    .transition(.move(edge: .bottom))
+                    .allowsHitTesting(raised)
+                // The sheet runs to the foot behind the keyboard, so only its list's inset follows the
+                // keyboard; it rises when the keyboard does, on the keyboard's curve, so the two move as one.
+                SearchSheet(space: space, keyboard: keyboard)
+                    .visualEffect { [raised] content, proxy in content.offset(y: raised ? 0 : proxy.size.height + 60) }
             }
         }
         // A page's keyboard covers the bar, as in Safari, instead of lifting the bar and squeezing
@@ -96,16 +100,30 @@ struct RootView: View {
             let height = docked ? max(0, cover.height - window.safeAreaInsets.bottom) : 0
             // A keyboard that comes up while no search sheet is open belongs to the page.
             pageKeyboard = height > 0 && (browser.editing == nil || pageKeyboard)
-            withAnimation(.smooth(duration: 0.25)) { keyboard = height }
+            keyboard = height
+            // A turn later: UIKit finishes setting the keyboard up after this note, and an animation started
+            // now would lose its first frames to that.
+            if height > 0, searching, browser.editing != nil, !raised { Task { raise() } }
         }
-        .animation(.smooth(duration: 0.32), value: browser.editing)
         .animation(.smooth(duration: 0.3), value: browser.selectedID)
         .animation(.smooth(duration: 0.25), value: menu)
         .animation(.easeInOut(duration: 0.25), value: browser.selected?.reading)
         .onChange(of: browser.selectedID) { menu = false }
         .onChange(of: browser.editing) {
-            // The card's picture is taken now, before the keyboard covers part of the page.
-            if browser.editing != nil { menu = false; browser.selected?.takeSnapshot() }
+            if browser.editing != nil {
+                // The card's picture is taken now, before the keyboard covers part of the page.
+                menu = false; browser.selected?.takeSnapshot()
+                // The sheet goes in below the screen and its field takes focus; it rises with the keyboard
+                // (above), so the keyboard's start-up cost lands before the motion rather than in it.
+                // Without a keyboard (a hardware one, a floating iPad one) it rises on its own.
+                searching = true
+                Task { try? await Task.sleep(for: .milliseconds(250)); raise() }
+                return
+            }
+            // The keyboard leaves first and the sheet goes down with it: removed while its field still
+            // had focus, the sheet used to vanish at once and the keyboard linger over the page after it.
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            Task { withAnimation(Look.keyboard) { raised = false } completion: { if browser.editing == nil { searching = false } } }
         }
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
@@ -124,6 +142,11 @@ struct RootView: View {
             if phase == .active, let away, Date.now.timeIntervalSince(away) > 5 * 60, onboarded { search() }
         }
         .task { if onboarded { search() }; demo() }
+    }
+
+    private func raise() {
+        guard searching, browser.editing != nil, !raised else { return }
+        withAnimation(Look.keyboard) { raised = true }
     }
 
     private func search() {
@@ -167,6 +190,9 @@ struct RootView: View {
         case "settings": settings = true
         case "address": browser.editing = .current
         case "search": browser.editing = .newTab
+        case "searchLoop":
+            // Opens and closes search over and over, for recording its motion.
+            Task { while true { try? await Task.sleep(for: .seconds(2.5)); browser.editing = browser.editing == nil ? .newTab : nil } }
         case "menu": browser.editing = nil; Task { try? await Task.sleep(for: .seconds(3)); menu = true }
         case "archive": browser.editing = nil; archive = true
         case "theme": themeDemo = true
@@ -177,26 +203,33 @@ struct RootView: View {
     }
 }
 
-/// The page's load progress as a short capsule: a faint track and a brighter fill.
+/// The page's load progress as a short capsule: a faint track, filled in the Space's colours with
+/// a soft glow, and a light sweeping across the fill so a slow page still looks alive.
 struct LoadPill: View {
     let progress: Double
+    let colors: [Color]
     var body: some View {
-        Capsule().fill(Color(white: 0.5).opacity(0.3))
-            .frame(width: 120, height: 4)
+        let ink = colors.isEmpty ? [Look.vane, Look.vane.mix(with: .white, by: 0.35)] : colors.count == 1 ? [colors[0], colors[0].mix(with: .white, by: 0.35)] : colors
+        Capsule().fill(.primary.opacity(0.1))
+            .frame(width: 120, height: 5)
             .overlay(alignment: .leading) {
-                Capsule().fill(Color(white: 0.55)).frame(width: max(4, 120 * progress))
+                Capsule().fill(LinearGradient(colors: ink, startPoint: .leading, endPoint: .trailing))
+                    .frame(width: max(5, 120 * progress))
+                    .overlay {
+                        // ponytail: one repeating sweep; stop it when nothing loads if it ever shows in a profile.
+                        PhaseAnimator([false, true]) { on in
+                            LinearGradient(colors: [.clear, .white.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: 30).offset(x: on ? 120 : -30)
+                        } animation: { on in on ? .easeInOut(duration: 1.1) : nil }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clipShape(Capsule())
+                    }
+                    .shadow(color: ink[0].opacity(0.6), radius: 4)
             }
             .padding(.top, 4)
-            .animation(.easeOut(duration: 0.2), value: progress)
+            .animation(.smooth(duration: 0.3), value: progress)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-    }
-}
-
-/// A round or capsule control on the bar: a soft white over the Space's colours.
-struct BarFill: ShapeStyle {
-    func resolve(in environment: EnvironmentValues) -> Color.Resolved {
-        (environment.colorScheme == .dark ? Color.white.opacity(0.14) : Color.white.opacity(0.5)).resolve(in: environment)
     }
 }
 
@@ -251,8 +284,8 @@ struct BottomBar: View {
             .frame(width: 52, alignment: .leading)
             Spacer()
             Button { browser.editing = .newTab } label: {
-                Image(systemName: "plus").font(.system(size: 17, weight: .regular))
-                    .frame(width: 72, height: 32).background(BarFill(), in: Capsule()).contentShape(Capsule())
+                Image(systemName: "plus").font(.system(size: 17, weight: .medium))
+                    .frame(width: 72, height: 34).glassEffect(.regular.interactive(), in: Capsule()).contentShape(Capsule())
             }
             .accessibilityLabel("New Search")
             Spacer()
@@ -260,8 +293,8 @@ struct BottomBar: View {
                 if tab != nil {
                     Image(systemName: "chevron.up").font(.system(size: 13, weight: .semibold))
                         .rotationEffect(.degrees(menu ? 180 : 0))
-                        .frame(width: 32, height: 32)
-                        .background(menu ? AnyShapeStyle(Color(.systemBackground)) : AnyShapeStyle(BarFill()), in: Circle())
+                        .frame(width: 34, height: 34)
+                        .glassEffect(menu ? .regular.tint(Color(.systemBackground)).interactive() : .regular.interactive(), in: Circle())
                         .contentShape(Circle())
                         .onTapGesture { menu.toggle() }
                         // Holding the chevron goes straight to Share, as in Arc Search.
@@ -287,7 +320,7 @@ struct BottomBar: View {
     private func round(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 13, weight: .medium))
-                .frame(width: 32, height: 32).background(BarFill(), in: Circle()).contentShape(Circle())
+                .frame(width: 34, height: 34).glassEffect(.regular.interactive(), in: Circle()).contentShape(Circle())
         }
         .accessibilityLabel(label)
     }
@@ -506,29 +539,27 @@ struct TabSwitcher: View {
     private func header(_ space: SpaceRow?) -> some View {
         let pages = library.spaces + [.incognito]
         return VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Button { switching = true } label: {
-                    HStack(spacing: 7) {
-                        if let space { SpaceMark(space: space, size: 15) }
-                        Text(space?.name ?? "Vane").font(.headline).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 12).frame(height: 36).contentShape(Capsule())
-                }
-                .accessibilityLabel("Space, \(space?.name ?? ""). Switch Space")
+            // One glass pill: a tap picks another Space, a hold opens this one's options.
+            let pill = HStack(spacing: 7) {
+                if let space { SpaceMark(space: space, size: 15) }
+                Text(space?.name ?? "Vane").font(.headline).lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16).frame(height: 38)
+            .glassEffect(.regular.interactive(), in: Capsule())
+            Group {
                 if let space, !space.isIncognito {
                     Menu {
                         Button("Edit Theme and Icon", systemImage: "paintpalette") { theming = true }
                         Button("Rename", systemImage: "pencil") { name = space.name; renaming = true }
                         Button("New Space", systemImage: "plus") { name = ""; creating = true }
                         Button("Delete Space", systemImage: "trash", role: .destructive) { deleting = true }
-                    } label: {
-                        Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).frame(width: 30, height: 30)
-                            .background(BarFill(), in: Circle())
-                    }
-                    .accessibilityLabel("Space options")
+                    } label: { pill } primaryAction: { switching = true }
+                } else {
+                    Button { switching = true } label: { pill }
                 }
             }
+            .accessibilityLabel("Space, \(space?.name ?? ""). Switch Space")
             HStack(spacing: 0) {
                 ForEach(pages) { page in
                     let here = page.id == browser.spaceID
@@ -560,9 +591,7 @@ struct TabSwitcher: View {
             HStack(spacing: 8) {
                 ForEach(links) { link in
                     Button { browser.open(link.url, home: link.url) } label: {
-                        SiteIcon(url: link.url, size: 20)
-                            .frame(width: 58, height: 44)
-                            .background(BarFill(), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        SiteIcon(url: link.url, size: 26).frame(width: 48, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(PressFill())
                     .accessibilityLabel(link.title)
@@ -577,7 +606,11 @@ struct TabSwitcher: View {
         .scrollIndicators(.hidden)
         .contentMargins(.horizontal, 18, for: .scrollContent)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        .padding(.top, 14)
+        // Icons fade out at the sides rather than being cut off there.
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.07),
+                                     .init(color: .black, location: 0.93), .init(color: .clear, location: 1)],
+                             startPoint: .leading, endPoint: .trailing))
+        .padding(.top, 10)
         .frame(maxWidth: 520)
     }
 
@@ -594,7 +627,7 @@ struct TabSwitcher: View {
                                 Image(systemName: "archivebox").font(.system(size: 18, weight: .medium))
                                 Text("Archive").font(.caption2.weight(.medium))
                             }
-                            .frame(width: 64, height: 88).background(BarFill(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .frame(width: 64, height: 88).glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }
@@ -652,8 +685,13 @@ struct TabCard: View {
                     Image(uiImage: snapshot).resizable().scaledToFill()
                         .frame(width: width, height: height, alignment: .top)
                 } else {
-                    // Not seen since launch: the site's icon, not a blank page.
-                    SiteIcon(url: tab.url, size: 36).frame(width: width, height: height)
+                    // Not seen since launch: the site's icon and name on a soft ground, not a blank page.
+                    VStack(spacing: 10) {
+                        SiteIcon(url: tab.url, size: 52).shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+                        Text(tab.url.host()?.replacingOccurrences(of: "www.", with: "") ?? "").font(.footnote.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                    .frame(width: width, height: height)
+                    .background(GroundFill(strength: 0.6))
                 }
             }
             .background(Color(.systemBackground))
@@ -706,6 +744,7 @@ struct SearchSheet: View {
     @Environment(Library.self) private var library
     @Environment(Browser.self) private var browser
     let space: SpaceRow?
+    let keyboard: CGFloat
     @State private var selection: TextSelection?
     @FocusState private var focused: Bool
     private var text: String { browser.query }
@@ -753,6 +792,8 @@ struct SearchSheet: View {
                     .padding(.horizontal, 12).padding(.bottom, 16)
             }
             .scrollDismissesKeyboard(.interactively)
+            .contentMargins(.bottom, keyboard, for: .scrollContent)
+            .contentMargins(.bottom, keyboard, for: .scrollIndicators)
         }
         .frame(maxWidth: 600)
         .background(Color(.secondarySystemBackground), in: UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26, style: .continuous))
