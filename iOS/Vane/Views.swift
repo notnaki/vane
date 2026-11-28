@@ -1076,7 +1076,10 @@ struct BookmarksView: View {
 /// and nothing is left waiting when one is cancelled.
 @MainActor enum MacBackupImport {
     static func start(_ url: URL, library: Library, sync: Sync) {
-        do { run(try MacBackup.read(url), password: nil, library: library, sync: sync) } catch { show(error.localizedDescription) }
+        // Off the main thread: a coordinated read waits for an iCloud Drive file to download.
+        Task {
+            do { run(try await Task.detached { try MacBackup.read(url) }.value, password: nil, library: library, sync: sync) } catch { show(error.localizedDescription) }
+        }
     }
     private static func run(_ data: Data, password: String?, library: Library, sync: Sync) {
         Task {
@@ -1119,8 +1122,13 @@ struct BookmarksView: View {
         present(alert)
     }
     /// On the topmost screen still showing; after one that is coming or going has settled.
-    private static func present(_ alert: UIAlertController) {
-        guard var top = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first?.rootViewController else { return }
+    private static func present(_ alert: UIAlertController, tries: Int = 10) {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        // Opened from Files on a cold launch, the window may not be key (or there) yet: wait for it.
+        guard var top = (scenes.compactMap(\.keyWindow).first ?? scenes.first { $0.activationState == .foregroundActive }?.windows.first)?.rootViewController else {
+            if tries > 0 { Task { try? await Task.sleep(for: .milliseconds(300)); present(alert, tries: tries - 1) } }
+            return
+        }
         while let next = top.presentedViewController, !next.isBeingDismissed, !(next is UIDocumentPickerViewController) { top = next }
         if let transition = top.transitionCoordinator {
             transition.animate(alongsideTransition: nil) { _ in present(alert) }
