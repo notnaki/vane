@@ -8,6 +8,8 @@ enum Look {
     /// The default profile colour on the Mac, and the ink of the sail-V icon.
     static let vane = Color(hex: "#6E7DD2")!
     static let pageRadius: CGFloat = 22
+    /// Close to the keyboard's own motion, so what rides with it lands with it.
+    static let keyboard = Animation.spring(duration: 0.4, bounce: 0)
     static let pageGap: CGFloat = 6
     static let pillRadius: CGFloat = 14
     /// The floating bar's height over a page; pages scroll their last line above it.
