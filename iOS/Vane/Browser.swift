@@ -113,7 +113,7 @@ import WebKit
             // if that misfires, count travel only when the page's own scroll has nowhere to go.
             let pulled = depth > 12 ? depth : max(depth, (down - start.down) * 0.5)
             guard pulled > 0 else { if pull != nil { pull = nil }; return }
-            let next = Pull(progress: min(pulled / 64, 1), choice: dx < -24 ? .newTab : dx > 24 ? .close : .reload, dx: dx, depth: pulled)
+            let next = Pull(progress: min(pulled / 64, 1), choice: dx < -24 ? .newTab : dx > 44 ? .close : .reload, dx: dx, depth: pulled)
             if next.progress >= 1, pull.map({ $0.progress < 1 || $0.choice != next.choice }) ?? true {
                 UISelectionFeedbackGenerator().selectionChanged()
             }

@@ -26,6 +26,9 @@ struct RootView: View {
     /// The search sheet is in place, below the screen until `raised` (see onChange of `browser.editing`).
     @State private var searching = false
     @State private var raised = false
+    /// Counts closes, so a close that was overtaken by reopening and closing again doesn't
+    /// take the sheet away in the middle of the later one.
+    @State private var closes = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -83,6 +86,7 @@ struct RootView: View {
                 // The sheet runs to the foot behind the keyboard, so only its list's inset follows the
                 // keyboard; it rises when the keyboard does, on the keyboard's curve, so the two move as one.
                 SearchSheet(space: space, keyboard: keyboard)
+                    .accessibilityHidden(!raised)
                     .visualEffect { [raised] content, proxy in content.offset(y: raised ? 0 : proxy.size.height + 60) }
             }
         }
@@ -123,7 +127,9 @@ struct RootView: View {
             // The keyboard leaves first and the sheet goes down with it: removed while its field still
             // had focus, the sheet used to vanish at once and the keyboard linger over the page after it.
             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-            Task { withAnimation(Look.keyboard) { raised = false } completion: { if browser.editing == nil { searching = false } } }
+            closes += 1
+            let close = closes
+            Task { withAnimation(Look.keyboard) { raised = false } completion: { if browser.editing == nil, close == closes { searching = false } } }
         }
         .blur(radius: Frost.shared.sheets > 0 ? 18 : 0)
         .animation(.easeOut(duration: 0.3), value: Frost.shared.sheets > 0)
@@ -208,6 +214,7 @@ struct RootView: View {
 struct LoadPill: View {
     let progress: Double
     let colors: [Color]
+    @Environment(\.accessibilityReduceMotion) private var still
     var body: some View {
         let ink = colors.isEmpty ? [Look.vane, Look.vane.mix(with: .white, by: 0.35)] : colors.count == 1 ? [colors[0], colors[0].mix(with: .white, by: 0.35)] : colors
         Capsule().fill(.primary.opacity(0.1))
@@ -215,16 +222,16 @@ struct LoadPill: View {
             .overlay(alignment: .leading) {
                 Capsule().fill(LinearGradient(colors: ink, startPoint: .leading, endPoint: .trailing))
                     .frame(width: max(5, 120 * progress))
+                    .shadow(color: ink[0].opacity(0.6), radius: 4)
                     .overlay {
                         // ponytail: one repeating sweep; stop it when nothing loads if it ever shows in a profile.
-                        PhaseAnimator([false, true]) { on in
+                        if !still { PhaseAnimator([false, true]) { on in
                             LinearGradient(colors: [.clear, .white.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
                                 .frame(width: 30).offset(x: on ? 120 : -30)
                         } animation: { on in on ? .easeInOut(duration: 1.1) : nil }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .clipShape(Capsule())
+                        .clipShape(Capsule()) }
                     }
-                    .shadow(color: ink[0].opacity(0.6), radius: 4)
             }
             .padding(.top, 4)
             .animation(.smooth(duration: 0.3), value: progress)
@@ -560,6 +567,14 @@ struct TabSwitcher: View {
                 }
             }
             .accessibilityLabel("Space, \(space?.name ?? ""). Switch Space")
+            .accessibilityActions {
+                if let space, !space.isIncognito {
+                    Button("Edit Theme and Icon") { theming = true }
+                    Button("Rename") { name = space.name; renaming = true }
+                    Button("New Space") { name = ""; creating = true }
+                    Button("Delete Space") { deleting = true }
+                }
+            }
             HStack(spacing: 0) {
                 ForEach(pages) { page in
                     let here = page.id == browser.spaceID
