@@ -128,10 +128,16 @@ import XCTest
                 // every root is resubmitted to receive it. An earlier fixture's activation
                 // policy can still be settling after admission, and a pass that lands in
                 // cannot show what scrolling alone does. Take that from a fresh fixture.
+                // The same holds for an environment-only section update SwiftUI delivers
+                // unprompted: on macOS 26 a layout pass can re-run the bridge's
+                // updateNSView with no printable environment change (CI runs 46038589764,
+                // 46075313067, traced in #839), and that configure must resubmit every
+                // owner once. A scroll-driven resubmission recurs on every pass, so three
+                // attempts still catch it; one without any configure fails at once.
                 var attempts = 1
                 while try await !checkDefaultGeometry(count: count) {
                     guard attempts < 3 else {
-                        XCTFail("The window's activation changed during every scroll pass (count=\(count))")
+                        XCTFail("The window's activation or environment changed during every scroll pass (count=\(count))")
                         break
                     }
                     attempts += 1
@@ -146,8 +152,8 @@ import XCTest
         if let failure { throw failure }
     }
 
-    /// False when the window's activation changed while scrolling and roots were
-    /// resubmitted, leaving reuse unmeasured.
+    /// False when the window's activation or the section's environment changed while
+    /// scrolling and roots were resubmitted, leaving reuse unmeasured.
     private func checkDefaultGeometry(count: Int) async throws -> Bool {
         let store = TabStore(isPrivate: true, session: [])
         store.sharingReady = false
@@ -325,12 +331,18 @@ import XCTest
         let activationUpdates = controls.activationUpdates - admittedActivationUpdates
         print("RESIDENT_BATCH_SCROLL count=\(count) rootUpdatesDelta=\(report.batchCounts.rootUpdates - admittedRootUpdates) activationUpdates=\(activationUpdates)")
         let reused = report.batchCounts.rootUpdates == admittedRootUpdates
+        // Configures the scroll pass did not ask for: no store publication drove them.
+        let environmentConfigures = report.batchCounts.environmentConfigures - admittedEnvironmentConfigures
+        let unprompted = environmentConfigures > 0
+            && report.batchCounts.configures - admittedConfigures == environmentConfigures
+            && controls.storeChanges == 0
+        let measured = reused || (activationUpdates == 0 && !unprompted)
         if !reused {
             mark("protected")
             print("RESIDENT_BATCH_RESUBMISSION count=\(count)\n" + trace.joined(separator: "\n"))
             controls.environmentChanges.forEach { print("RESIDENT_BATCH_ENVIRONMENT \($0)") }
         }
-        if activationUpdates == 0 || reused {
+        if measured {
             XCTAssertEqual(report.batchCounts.rootUpdates, admittedRootUpdates,
                            "Scrolling alone must reuse roots rather than resubmit SwiftUI content")
         }
@@ -360,6 +372,6 @@ import XCTest
                 XCTAssertTrue(previous === field, "Reordering preserves the existing native control identity")
             }
         }
-        return activationUpdates == 0 || reused
+        return measured
     }
 }
