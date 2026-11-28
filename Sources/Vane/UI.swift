@@ -2154,7 +2154,8 @@ private struct PillHoverGlyphs: View {
     private var visible: Bool { revealed || copyFocused || siteFocused || showingSiteControls }
     private var copied: Bool { feedback.copiedURL == address }
     var body: some View {
-        HStack(spacing: Look.pillGlyphGap) {
+        // Arc sets these two 28pt apart, centre to centre, tighter than the pill's other glyphs.
+        HStack(spacing: Look.pillGlyphGap / 2) {
             Button { copyLink() } label: {
                 CopyLinkGlyph(copied: copied)
                     .frame(width: Look.control, height: Look.control)
@@ -2167,7 +2168,11 @@ private struct PillHoverGlyphs: View {
                 .accessibilityValue(copied ? "Copied" : "")
                 .nativeSidebarKeyboardControl(focusChanged: { copyFocused = $0 })
             Button { showingSiteControls.toggle() } label: {
-                Image(systemName: "slider.horizontal.2.square")
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5.3, style: .continuous).strokeBorder(lineWidth: 1.25)
+                    SiteControlsSliders().stroke(lineWidth: 1)
+                }
+                    .frame(width: 16, height: 16)
                     .overlay(alignment: .topTrailing) {
                         if site.badge != nil {
                             Circle().fill(Color.accentColor)
@@ -2213,6 +2218,23 @@ private struct FadingHost: View {
                                      startPoint: .leading, endPoint: .init(x: 0.12, y: 0.5)))
         }
         .font(Look.text)
+    }
+}
+
+/// Arc's Site Controls glyph, traced from its pill: a squircle a size above the link
+/// (32px to 25px) holding two hollow-knobbed sliders drawn a hair thinner than the box.
+/// SF's slider.horizontal.2.square has tighter corners and solid knobs.
+private struct SiteControlsSliders: Shape {
+    func path(in r: CGRect) -> Path {
+        let s = r.width, k = s * 0.078
+        var p = Path()
+        for (y, knob) in [(0.375, 0.58), (0.625, 0.42)] {
+            let cy = r.minY + s * y, cx = r.minX + s * knob
+            p.move(to: CGPoint(x: r.minX + s * 0.26, y: cy)); p.addLine(to: CGPoint(x: cx - k, y: cy))
+            p.move(to: CGPoint(x: cx + k, y: cy)); p.addLine(to: CGPoint(x: r.minX + s * 0.75, y: cy))
+            p.addEllipse(in: CGRect(x: cx - k, y: cy - k, width: 2 * k, height: 2 * k))
+        }
+        return p
     }
 }
 
