@@ -12,9 +12,11 @@ struct BackupSettings: View {
                 .disabled(controller.busy)
             }
             Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exports offer password encryption; keep the password safe because Vane cannot recover it. Passwords, cookies, sign-ins, downloaded files, and extension code (including managed copies) and extension data are excluded.")
-            Feel06ActivityLine(busy: controller.busy,
-                text: controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress)
-                .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset)
+            if controller.busy {
+                Feel06ActivityLine(busy: true,
+                    text: controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress)
+                    .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset)
+            }
             if let status = controller.status { Footnote(status) }
             if let error = controller.error { errorRow(error) }
             SettingsRow("Automatic local recovery", icon: "clock.arrow.circlepath", tint: .green) {

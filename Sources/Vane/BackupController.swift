@@ -88,7 +88,7 @@ struct BackupCandidate: Identifiable, Sendable {
             let library = library
             try await worker.run {
                 let archive = try library.capture(reason: .manual)
-                try BackupCodec.write(archive, to: url, password: password)
+                try BackupCodec.write(archive, to: url, password: password, writer: BackupIO.writeSelected)
             }
             Motion.list { status = "Backup saved to \(url.lastPathComponent)." }
         } catch { self.error = error.localizedDescription }
